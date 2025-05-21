@@ -1,4 +1,3 @@
-import { User } from "./user";
 import { v4 as uuidv4 } from "uuid";
 
 export class MessageContent {
@@ -13,6 +12,7 @@ export class Message {
   senderId: string;
   receiverId: string;
   content: MessageContent;
+  isGroup: boolean;
   timestamp: Date;
 
   constructor(
@@ -20,11 +20,13 @@ export class Message {
     senderId: string,
     receiverId: string,
     content: MessageContent,
+    isGroup: boolean,
     timestamp: Date
   ) {
     this.id = id || uuidv4();
     this.senderId = senderId;
     this.receiverId = receiverId;
+    this.isGroup = isGroup;
     this.content = content;
     this.timestamp = timestamp;
   }
@@ -36,6 +38,7 @@ export class Message {
       receiverId: this.receiverId,
       content: this.content,
       timestamp: this.timestamp,
+      isGroup: this.isGroup,
     });
   }
 }
