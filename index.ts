@@ -5,6 +5,7 @@ import { v4 as uuidv4 } from "uuid";
 import { sendMessage } from "./utils/message";
 import { Message } from "./types/message";
 import { usersDb } from "./utils/users";
+import taskManagerRouter from "./src/taskManager/api";
 
 const app = express();
 const port = 3000;
@@ -56,6 +57,8 @@ app.post("/user/:userId/sendmessage", (req: Request, res: Response) => {
     res.status(400).send("Error sending message");
   }
 });
+
+app.use("/api", taskManagerRouter);
 
 app.listen(port, () => {
   console.log(`Server is running on http://localhost:${port}`);
