@@ -3,7 +3,6 @@ export interface AgentCapability {
   name: string;
   description: string;
   level: "basic" | "intermediate" | "advanced";
-  parameters?: Record<string, any>;
 }
 
 export interface Agent {
@@ -11,10 +10,7 @@ export interface Agent {
   name: string;
   description: string;
   capabilities: AgentCapability[];
-  status: "available" | "busy" | "offline" | "initializing";
-  created_at: Date;
-  last_heartbeat: Date;
-  metadata?: Record<string, any>;
+  status: "available" | "busy" | "offline";
 }
 
 export interface AgentTemplate {

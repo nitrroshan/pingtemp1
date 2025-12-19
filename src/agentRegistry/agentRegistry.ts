@@ -3,12 +3,7 @@ import { AzureOpenAIEmbeddings } from "@langchain/openai";
 import { Embeddings } from "@langchain/core/embeddings";
 
 // Level hierarchy definition
-const CAPABILITY_LEVELS = [
-  "basic",
-  "intermediate",
-  "advanced",
-  "expert",
-] as const;
+const CAPABILITY_LEVELS = ["basic", "intermediate", "advanced"] as const;
 
 type CapabilityLevel = (typeof CAPABILITY_LEVELS)[number];
 
@@ -21,20 +16,19 @@ export class ServiceRegistry {
   constructor() {
     this.embeddings = new AzureOpenAIEmbeddings({
       azureOpenAIEndpoint: process.env.AZURE_OPENAI_EMBEDDINGS_ENDPOINT_URL!,
-      azureOpenAIApiKey: process.env.AZURE_OPENAI_EMBEDDINGS_API_KEY!,
+      apiKey: process.env.AZURE_OPENAI_EMBEDDINGS_API_KEY!,
       azureOpenAIApiInstanceName:
         process.env.AZURE_OPENAI_EMBEDDINGS_INSTANCE_NAME!,
-      azureOpenAIApiDeploymentName: "text-embedding-3-large",
-      azureOpenAIApiVersion: "2023-05-15",
+
+      deploymentName: "text-embedding-3-small",
+      openAIApiVersion: "2023-05-15",
     });
   }
 
   /**
    * Register a new agent
    */
-  async registerAgent(
-    agent: Omit<Agent, "id" | "status" | "created_at" | "last_heartbeat">
-  ) {
+  async registerAgent(agent: Omit<Agent, "id" | "status">) {
     // Validate capabilities
     if (!agent.capabilities || agent.capabilities.length === 0) {
       throw new Error("Agent must declare capabilities");
@@ -47,8 +41,6 @@ export class ServiceRegistry {
       ...agent,
       id: agentId,
       status: "available",
-      created_at: new Date(),
-      last_heartbeat: new Date(),
     };
 
     // Store agent
@@ -151,13 +143,15 @@ export class ServiceRegistry {
     // Find best match for each required capability
     for (const [idx, reqCap] of requiredCaps.entries()) {
       const reqEmbedding = requiredEmbeddings[idx];
+      if (!reqEmbedding || !Array.isArray(reqEmbedding)) continue; // Skip if embedding is invalid
+
       let bestMatch = { similarity: 0, levelWeight: 0 };
 
       for (const [j, agentCap] of agent.capabilities.entries()) {
-        const similarity = this.cosineSimilarity(
-          reqEmbedding,
-          agentEmbeddings[j]
-        );
+        const agentEmbedding = agentEmbeddings[j];
+        if (!agentEmbedding || !Array.isArray(agentEmbedding)) continue; // Skip if embedding is invalid
+
+        const similarity = this.cosineSimilarity(reqEmbedding, agentEmbedding);
         const levelWeight = this.calculateLevelWeight(agentCap, reqCap);
         const capabilityScore = similarity * levelWeight;
 
@@ -223,24 +217,33 @@ export class ServiceRegistry {
    * Calculate cosine similarity between vectors
    */
   private cosineSimilarity(vecA: number[], vecB: number[]): number {
-    if (vecA.length !== vecB.length) return 0;
+    if (!vecA || !vecB || vecA.length !== vecB.length) return 0;
 
     let dotProduct = 0;
     let magnitudeA = 0;
     let magnitudeB = 0;
 
     for (let i = 0; i < vecA.length; i++) {
-      dotProduct += vecA[i] * vecB[i];
-      magnitudeA += vecA[i] ** 2;
-      magnitudeB += vecB[i] ** 2;
+      const a = vecA[i];
+      const b = vecB[i];
+
+      if (typeof a !== "number" || typeof b !== "number") {
+        continue;
+      }
+
+      dotProduct += a * b;
+      magnitudeA += a ** 2;
+      magnitudeB += b ** 2;
     }
 
-    magnitudeA = Math.sqrt(magnitudeA);
-    magnitudeB = Math.sqrt(magnitudeB);
+    const magnitudeARoot = Math.sqrt(magnitudeA);
+    const magnitudeBRoot = Math.sqrt(magnitudeB);
 
-    return magnitudeA && magnitudeB
-      ? dotProduct / (magnitudeA * magnitudeB)
-      : 0;
+    const magnitude = magnitudeARoot * magnitudeBRoot;
+    if (!magnitude || magnitude === 0) return 0;
+
+    const similarity = dotProduct / magnitude;
+    return Number.isFinite(similarity) ? similarity : 0;
   }
 
   private notifySubscribers(agent: Agent): void {

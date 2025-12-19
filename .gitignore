@@ -2,4 +2,14 @@
 
 # dependency directories
 /node_modules
-/.env
+.env
+./src/AgentChat/node_modules
+./src/AgentChat/.env
+./src/agentManager/node_modules
+./src/agentManager/.env
+./src/agentOrchestrator/node_modules
+./src/agentOrchestrator/.env
+./src/agentRegistry/node_modules
+./src/agentRegistry/.env
+./src/worker/node_modules
+./src/worker/.env

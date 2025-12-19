@@ -2,7 +2,18 @@ import { ServiceRegistry } from "../agentRegistry/agentRegistry";
 import { Agent, AgentCapability } from "../../types/agent";
 import { AgentAssignment, AgentSuggestion } from "../../types/agent";
 import { Task, Subtask } from "../../types/task";
+import { Logger } from "tslog";
+/*
+  RoleManager is responsible for managing agent roles and assignments.
+  It handles:
+  1) Assigning agents to subtasks based on capabilities.
+  2) Tracking agent assignments and statuses.
+  3) Suggesting new agents when no suitable ones are available.
+  4) Registering and discovering agents in the system.
+  It uses the ServiceRegistry to manage agent registrations and capabilities.
+*/
 
+const logger = new Logger({ name: "RoleManager" });
 export class RoleManager {
   private agentRegistry: ServiceRegistry;
   // private suggestionService: AgentSuggestionService;
@@ -29,17 +40,21 @@ export class RoleManager {
       requiredCapabilities,
       true
     );
-    console.log(
-      `Found ${agents.length} agents for subtask ${
-        subtask.id
-      } with capabilities: ${requiredCapabilities.join(", ")}`
+
+    const numberOfAgentsFound = agents.length;
+    const subtaskId = subtask.id;
+    const subtaskDescription = subtask.description;
+    logger.info(
+      `Found ${numberOfAgentsFound} agents for subtask ${subtaskId}: ${subtaskDescription} with capabilities: ${requiredCapabilities.join(
+        ", "
+      )}`
     );
 
-    // 2. Filter to available agents
-    agents = agents.filter((a) => a.status === "available");
+    // 3. Select the best agent
+    let agent = this.selectBestAgent(agents, subtask);
 
     // 3. If no agents available, get suggestions
-    if (agents.length === 0) {
+    if (agent === undefined || agent.status !== "available") {
       const userAgent: Agent = {
         id: "user-agent",
         name: "User",
@@ -49,9 +64,9 @@ export class RoleManager {
         created_at: new Date(),
         last_heartbeat: new Date(),
       };
-
-      console.log(
-        `No available agents found for subtask ${subtask.id}. Assigning to user.`
+      agent = userAgent;
+      logger.info(
+        `No available agents found for subtask ${subtaskId}: ${subtaskDescription}. Assigning to user.`
       );
       return this.createAssignment(task, subtask, userAgent);
       // agents = await this.handleNoAvailableAgents(
@@ -59,9 +74,6 @@ export class RoleManager {
       //   requiredCapabilities
       // );
     }
-
-    // 4. Select the best agent
-    const agent = this.selectBestAgent(agents, subtask);
 
     // 5. Create assignment
     return this.createAssignment(task, subtask, agent);
@@ -102,6 +114,9 @@ export class RoleManager {
    * Select the best agent based on multiple factors
    */
   private selectBestAgent(agents: Agent[], subtask: Subtask): Agent {
+    // Filter to available agents
+    agents = agents.filter((a) => a.status === "available");
+    // Get agent suggestions based on subtask capabilities
     return agents[0];
   }
 

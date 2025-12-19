@@ -1,6 +1,9 @@
 import { TaskManager } from "./task-manager";
 import { RoleManager } from "../roleManager/role-manager";
 import { ServiceRegistry } from "../agentRegistry/agentRegistry";
+import { Subtask } from "../../types/task";
+import { logger } from "../../utils/logger";
+
 import {
   codingAgent,
   researchAgent,
@@ -21,7 +24,7 @@ const roleManager = new RoleManager(agentRegistry);
 taskManager
   .createTask("Implement a new feature in the application")
   .then(async (task) => {
-    console.log("Task created:", task);
+    logger.info("Task created:", task);
     // Assign agents to subtasks
 
     // Process subtasks in the

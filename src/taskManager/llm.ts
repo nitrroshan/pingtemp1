@@ -37,9 +37,9 @@ Structured Output only in JSON format:
 {{
   "subtasks": [
     {{
-      "id": "unique_id_1",
+      "id": "unique_guid_1",
       "description": "Subtask 1 description",
-      "dependencies": [],
+      "dependencies": [unique_guid_2, unique_guid_3], // List of IDs this subtask depends on
       "requiredCapabilities": [
         {{
           "name": "Capability name",

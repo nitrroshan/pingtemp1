@@ -23,12 +23,6 @@ export const researchAgent: Agent = {
     },
   ],
   status: "available",
-  created_at: new Date("2023-10-15"),
-  last_heartbeat: new Date(),
-  metadata: {
-    type: "local",
-    version: "1.2.0",
-  },
 };
 
 // Coding Agent
@@ -46,12 +40,6 @@ export const codingAgent: Agent = {
     { name: "debugging", description: "Code debugging", level: "advanced" },
   ],
   status: "available",
-  created_at: new Date("2023-10-10"),
-  last_heartbeat: new Date(),
-  metadata: {
-    type: "local",
-    version: "2.0.1",
-  },
 };
 
 // Data Analysis Agent
@@ -77,10 +65,4 @@ export const dataAgent: Agent = {
     },
   ],
   status: "available",
-  created_at: new Date("2023-10-20"),
-  last_heartbeat: new Date(),
-  metadata: {
-    type: "local",
-    version: "1.5.3",
-  },
 };
