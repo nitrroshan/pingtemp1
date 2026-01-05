@@ -42,11 +42,13 @@
     {
       "type": "node",
       "request": "launch",
-      "name": "Debug AgentManager",
+      "name": "Debug AgentManager Test",
       "skipFiles": ["<node_internals>/**"],
       "runtimeExecutable": "npx",
       "runtimeArgs": ["tsx", "watch"],
-      "args": ["${workspaceFolder}/src/worker/agentManager/agentManager.ts"],
+      "args": [
+        "${workspaceFolder}/src/worker/agentManager/agentManager.test.ts"
+      ],
       "cwd": "${workspaceFolder}/src/worker",
       "console": "integratedTerminal",
       "internalConsoleOptions": "neverOpen",
