@@ -1,52 +1,159 @@
-# Documentation Summary
+# Ping Documentation
 
-This directory contains comprehensive documentation for the Agent Chat Backend system, covering the frontend, backend worker runtime, and agent registry service.
+**Ping** is a multi-agent collaboration platform that enables teams of AI agents to work together on complex tasks with human supervision and control.
+
+> **Quick Start**: See [INDEX.md](./INDEX.md) for complete documentation navigation
+
+---
+
+## 🌟 What is Ping?
+
+Ping combines two integrated modes:
+
+### Design Mode (Team Builder)
+Create and synthesize agents using the **Role Manager meta-agent**:
+- **Think** - Analyze team needs
+- **Plan** - Design agent roles
+- **Suggest** - Get human approval
+- **Build** - Instantiate agents
+
+### Execution Mode (Runtime)
+Orchestrate multi-agent teams with full visibility:
+- **Teams** - Execution boundaries with agents, tasks, artifacts
+- **Orchestration** - Coordinate work, assign tasks, manage dependencies
+- **Agent Supervision** - Monitor progress, control agents, human-in-the-loop
+- **Artifact Management** - Version outputs, review changes, approve deliverables
+
+---
 
 ## 📚 Documentation Structure
 
 ```
 docs/
-├── INDEX.md                          # Complete documentation index
-├── frontend/
-│   ├── README.md                     # Frontend overview
-│   └── components.md                 # Component documentation
-├── backend/
-│   ├── README.md                     # Backend overview
-│   ├── agentManager.md               # Core orchestrator
-│   ├── roleManager.md                # Role management
-│   ├── memoryManager.md              # Task management
-│   └── agentWorker.md                # Task execution
-├── services/
-│   └── agentRegistry.md              # Agent discovery service
-└── [existing docs]
-    ├── AGENTMANAGERSERVICE_INTEGRATION.md
-    ├── API_SPLIT.md
-    ├── BACKEND_FRONTEND_INTEGRATION.md
-    ├── project.md
-    ├── ROLE_DISCOVERY_ENHANCEMENT.md
-    ├── setup.md
-    ├── taskManager_roleManager.md
-    └── todo.md
+├── product/ping/                     # User-Facing Documentation
+│   ├── guides/                       # How to use Ping
+│   │   ├── getting-started.md        # Installation & first steps
+│   │   ├── creating-teams.md         # Team setup
+│   │   ├── designing-agents.md       # Using Team Builder
+│   │   └── reviewing-artifacts.md    # Approval workflows
+│   └── api/                          # API reference
+│       ├── orchestrator-api.md       # Give goals to teams
+│       ├── team-api.md               # Manage teams
+│       ├── artifact-api.md           # Access artifacts
+│       └── websocket-events.md       # Real-time agent chat
+├── developer-guide/                  # Implementation Guides
+│   ├── monorepo-architecture.md      # pnpm workspace structure
+│   ├── current-state-to-ping.md      # Migration roadmap
+│   ├── modules/                      # Backend components
+│   │   ├── orchestrator.md           # (AgentManager)
+│   │   ├── role-manager.md           # (Agent registry)
+│   │   ├── memory-manager.md         # (Task tracking)
+│   │   └── agent-worker.md           # (Execution engine)
+│   └── frontend/                     # Frontend components
+├── features/                         # Feature Development
+│   ├── team-service/                 # Team scoping (v1.0 planned)
+│   ├── artifact-store/               # Versioned outputs (TBD)
+│   ├── realtime-collaboration/       # ShareDB + OT/CRDT (TBD)
+│   ├── approval-governance/          # Human control (TBD)
+│   └── role-manager-meta-agent/      # Agent synthesis (TBD)
+└── archive/                          # Archived Planning Docs
+    ├── ping-vision.md                # Old vision docs
+    ├── ping-architecture.md          # Old architecture docs
+    └── REFACTORING_*.md              # Completed refactoring plans
 ```
+
+---
 
 ## 🎯 Quick Navigation
 
-### Getting Started
-- **New to the project?** Start with [INDEX.md](./INDEX.md)
-- **Setup instructions**: [setup.md](./setup.md)
-- **Project overview**: [project.md](./project.md)
+### For Product Understanding
+1. **[Getting Started](./product/ping/guides/getting-started.md)** - Install and run Ping
+2. **[Creating Teams](./product/ping/guides/creating-teams.md)** - Set up your first team
+3. **[Designing Agents](./product/ping/guides/designing-agents.md)** - Use Team Builder
 
-### Frontend Development
-- **Overview**: [frontend/README.md](./frontend/README.md)
-- **Components**: [frontend/components.md](./frontend/components.md)
-- **UI/UX patterns and React architecture**
+### For Development
+1. **[Monorepo Architecture](./developer-guide/monorepo-architecture.md)** - Project structure
+2. **[Current State to Ping](./developer-guide/current-state-to-ping.md)** - Migration roadmap
+3. **[Backend Modules](./developer-guide/modules/)** - Core components
+4. **[Frontend](./developer-guide/frontend/)** - Ping UI
 
-### Backend Development
-- **Overview**: [backend/README.md](./backend/README.md)
-- **AgentManager**: [backend/agentManager.md](./backend/agentManager.md)
-- **RoleManager**: [backend/roleManager.md](./backend/roleManager.md)
-- **MemoryManager**: [backend/memoryManager.md](./backend/memoryManager.md)
-- **AgentWorker**: [backend/agentWorker.md](./backend/agentWorker.md)
+### API Reference
+1. **[Orchestrator API](./product/ping/api/orchestrator-api.md)** - Give goals to teams
+2. **[Team API](./product/ping/api/team-api.md)** - Manage teams and agents
+3. **[Artifact API](./product/ping/api/artifact-api.md)** - Access outputs
+4. **[WebSocket Events](./product/ping/api/websocket-events.md)** - Real-time agent chat
+
+---
+
+## 🚀 Getting Started
+
+### Prerequisites
+- Node.js 18+
+- pnpm 8+
+- Azure OpenAI API key
+- Git
+
+### Installation
+```bash
+# Clone repository
+git clone <repository-url>
+
+# Install dependencies
+pnpm install
+
+# Set up environment
+cp .env.example .env
+# Edit .env with your Azure OpenAI credentials
+
+# Start development
+pnpm dev
+```
+
+> **Detailed setup**: See [Product Guide - Getting Started](./product/ping/guides/getting-started.md)
+
+---
+
+## 🏗️ Architecture Overview
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                     PING PLATFORM                            │
+├─────────────────────────────────────────────────────────────┤
+│                                                               │
+│  ┌───────────────────────────────────────────────────────┐  │
+│  │  DESIGN MODE (Team Builder)                           │  │
+│  │  ┌─────────────────────────────────────────────────┐  │  │
+│  │  │  Role Manager Meta-Agent                        │  │  │
+│  │  │  • Think  - Analyze team needs                  │  │  │
+│  │  │  • Plan   - Design agent roles                  │  │  │
+│  │  │  • Suggest - Get approval                       │  │  │
+│  │  │  • Build  - Instantiate agents                  │  │  │
+│  │  └─────────────────────────────────────────────────┘  │  │
+│  └───────────────────────────────────────────────────────┘  │
+│                           ↓                                   │
+│                    Team Configuration                         │
+│                           ↓                                   │
+│  ┌───────────────────────────────────────────────────────┐  │
+│  │  EXECUTION MODE (Runtime)                             │  │
+│  │  ┌─────────────────────────────────────────────────┐  │  │
+│  │  │  Teams (Execution Boundaries)                   │  │  │
+│  │  │  • Agents (team members)                        │  │  │
+│  │  │  • Tasks (work items)                           │  │  │
+│  │  │  • Artifacts (outputs)                          │  │  │
+│  │  └─────────────────────────────────────────────────┘  │  │
+│  │  ┌─────────────────────────────────────────────────┐  │  │
+│  │  │  Orchestration (Coordinate Work)                │  │  │
+│  │  │  • Goal → Tasks → Assignment → Execution        │  │  │
+│  │  └─────────────────────────────────────────────────┘  │  │
+│  │  ┌─────────────────────────────────────────────────┐  │  │
+│  │  │  Agent Supervision (Human Control)              │  │  │
+│  │  │  • Monitor progress                             │  │  │
+│  │  │  • Approve outputs                              │  │  │
+│  │  │  • Intervene when needed                        │  │  │
+│  │  └─────────────────────────────────────────────────┘  │  │
+│  └───────────────────────────────────────────────────────┘  │
+│                                                               │
+└─────────────────────────────────────────────────────────────┘
 
 ### Services
 - **Agent Registry**: [services/agentRegistry.md](./services/agentRegistry.md)

@@ -1,53 +1,81 @@
-# Agent Chat Backend - Complete Documentation Index
+# Ping Documentation Index
 
-## Project Overview
-A sophisticated multi-agent orchestration system with a React frontend, LangGraph-based backend worker runtime, and a semantic agent discovery service. The system enables dynamic role discovery, task planning, distributed execution, and real-time monitoring of AI agent collaborations.
+## Product Overview
+**Ping** is a multi-agent collaboration platform with two integrated modes:
+- **Design Mode** (Team Builder) - Create and synthesize agents using Role Manager meta-agent
+- **Execution Mode** (Orchestrator) - Orchestrate teams, supervise agents, manage artifacts
 
-## Quick Links
+> **For Archived Planning Docs**: See [Archive](./archive/) | Legacy docs moved during refactoring
 
-### Frontend
-- **[Frontend Overview](./frontend/README.md)** - React-based AgentChat UI
-- Technologies: React 19, TypeScript, Vite, Socket.IO, Electron
+---
 
-### Backend Worker System
-- **[Backend Overview](./backend/README.md)** - Multi-agent orchestration runtime
-- **[AgentManager](./backend/agentManager.md)** - Core orchestrator
-- **[RoleManager](./backend/roleManager.md)** - Role discovery and worker management
-- **[MemoryManager](./backend/memoryManager.md)** - Task and dependency tracking
-- **[AgentWorker](./backend/agentWorker.md)** - Task execution engine
+## Quick Navigation
 
-### Services
-- **[Agent Registry](./services/agentRegistry.md)** - Semantic agent discovery service
+### 👥 Product Documentation (User-Facing)
+- **[Getting Started](./product/ping/guides/getting-started.md)** - Installation and first steps
+- **[Creating Teams](./product/ping/guides/creating-teams.md)** - Team setup and management
+- **[Designing Agents](./product/ping/guides/designing-agents.md)** - Using Team Builder
+- **[Reviewing Artifacts](./product/ping/guides/reviewing-artifacts.md)** - Approval workflows
+- **[Orchestrator API](./product/ping/api/orchestrator-api.md)** - Give goals to teams
+- **[Team API](./product/ping/api/team-api.md)** - Manage teams and agents
+- **[Artifact API](./product/ping/api/artifact-api.md)** - Access artifacts
+- **[WebSocket Events](./product/ping/api/websocket-events.md)** - Real-time agent chat
 
-### Integration Guides
-- **[Backend-Frontend Integration](./BACKEND_FRONTEND_INTEGRATION.md)** - Communication protocols
-- **[Agent Manager Service Integration](./AGENTMANAGERSERVICE_INTEGRATION.md)** - Service layer
-- **[Role Discovery Enhancement](./ROLE_DISCOVERY_ENHANCEMENT.md)** - Role system details
+### 🔧 Developer Guide (Implementation)
+- **[Monorepo Architecture](./developer-guide/monorepo-architecture.md)** - pnpm workspace structure
+- **[Current State to Ping](./developer-guide/current-state-to-ping.md)** - Migration roadmap
+- **[Backend Modules](./developer-guide/modules/)** - Core components
+  - [Orchestrator](./developer-guide/modules/orchestrator.md) (AgentManager)
+  - [Role Manager](./developer-guide/modules/role-manager.md) (Agent registry)
+  - [Memory Manager](./developer-guide/modules/memory-manager.md) (Task tracking)
+  - [Agent Worker](./developer-guide/modules/agent-worker.md) (Execution engine)
+- **[Frontend](./developer-guide/frontend/)** - Ping UI components
+  - [Overview](./developer-guide/frontend/overview.md)
+  - [Components](./developer-guide/frontend/components.md)
+- **[Patterns](./developer-guide/patterns/)** - Design patterns
+- **[Setup](./developer-guide/setup/)** - Development environment
 
-### Setup & Development
-- **[Setup Guide](./setup.md)** - Installation and configuration
-- **[Project Structure](./project.md)** - Overall architecture
-- **[API Documentation](./API_SPLIT.md)** - REST and WebSocket APIs
+### 🚀 Features (Development Tracking)
+**MVP Features** (In Development):
+- **[Team Service](./features/team-service/)** - Team scoping & membership (Option A chosen)
+- **[Artifact Store](./features/artifact-store/)** - Versioned outputs (Git + S3) - TBD
+- **[Real-Time Collaboration](./features/realtime-collaboration/)** - ShareDB + OT/CRDT - TBD
+- **[Approval & Governance](./features/approval-governance/)** - Human control layer - TBD
+- **[Role Manager Meta-Agent](./features/role-manager-meta-agent/)** - Agent synthesis (Think/Plan/Suggest/Build) - TBD
 
-## System Architecture
+**Existing Features** (To Be Refactored):
+- **Database Persistence** - From [REHYDRATION_STRATEGY.md](./archive/REHYDRATION_STRATEGY.md)
+- **Role Discovery** - From [ROLE_DISCOVERY_ENHANCEMENT.md](./archive/ROLE_DISCOVERY_ENHANCEMENT.md)
+- **Agent Manager Service** - From [AGENTMANAGERSERVICE_INTEGRATION.md](./archive/AGENTMANAGERSERVICE_INTEGRATION.md)
+- **Ping UI Integration** - From [BACKEND_FRONTEND_INTEGRATION.md](./archive/BACKEND_FRONTEND_INTEGRATION.md)
 
-### High-Level Architecture
+### 📚 Archive
+- **[Archived Planning Docs](./archive/)** - Old vision, architecture, and planning documents
+  - `ping-vision.md`, `ping-architecture.md`, `ping-team-builder.md` (moved from docs/ping/)
+  - `REHYDRATION_STRATEGY.md`, `ROLE_DISCOVERY_ENHANCEMENT.md` (to be transformed into features)
+  - Old backend/frontend documentation
+
+---
+
+## System Architecture (High-Level)
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                        Frontend Layer                        │
-│  ┌────────────────────────────────────────────────────┐     │
-│  │         AgentChat (React + Electron)               │     │
-│  │  • Agent Hierarchy Management                      │     │
-│  │  • Chat Interface                                  │     │
-│  │  • Real-time Orchestration Monitoring             │     │
-│  │  • Task Management                                 │     │
-│  └────────────────────────────────────────────────────┘     │
+│                     PING PLATFORM                            │
+├─────────────────────────────────────────────────────────────┤
+│                                                               │
+│  ┌───────────────────┐        ┌───────────────────┐         │
+│  │  DESIGN MODE      │        │  EXECUTION MODE   │         │
+│  │  (Team Builder)   │───────▶│  (Runtime)        │         │
+│  └───────────────────┘        └───────────────────┘         │
+│         │                              │                     │
+│         │ Role Manager                 │ Teams               │
+│         │ Meta-Agent                   │ Orchestration       │
+│         │ Agent Synthesis              │ Supervision         │
+│         │                              │ Artifacts           │
+│         └──────────────────────────────┘                     │
+│                                                               │
 └─────────────────────────────────────────────────────────────┘
-                            ↕ WebSocket + HTTP
-┌─────────────────────────────────────────────────────────────┐
-│                       Backend Layer                          │
-│  ┌────────────────────────────────────────────────────┐     │
 │  │              Worker Runtime System                  │     │
 │  │  ┌──────────────┐  ┌─────────────┐  ┌──────────┐ │     │
 │  │  │AgentManager  │→ │RoleManager  │→ │Workers   │ │     │
