@@ -1,15 +1,45 @@
 # See https://help.github.com/articles/ignoring-files/
 
-# dependency directories
-/node_modules
+# Dependencies
+node_modules/
+data/
+
+# Environment files
 .env
-./src/AgentChat/node_modules
-./src/AgentChat/.env
-./src/agentManager/node_modules
-./src/agentManager/.env
-./src/agentOrchestrator/node_modules
-./src/agentOrchestrator/.env
-./src/agentRegistry/node_modules
-./src/agentRegistry/.env
-./src/worker/node_modules
-./src/worker/.env
+.env.*
+!.env.example
+
+# Build output
+dist/
+dist-ssr/
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Editor files
+.idea
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Data / artifacts
+data/artifacts/
+
+# TypeScript
+*.tsbuildinfo
+*.d.ts.map
+*.js.map
+
+# Local files
+*.local

@@ -1304,7 +1304,7 @@ After: "Write technical documentation for a Kubernetes operator,
 
 - **[Creating Teams](./creating-teams.md)** - Set up teams for your agents
 - **[Reviewing Artifacts](./reviewing-artifacts.md)** - Approve agent outputs
-- **[Orchestrator API](../api/orchestrator-api.md)** - Run workflows programmatically
+- **[Team Builder Deep Dive](../../ping/team-builder.md)** - Technical details on Role Manager
 
 ---
 

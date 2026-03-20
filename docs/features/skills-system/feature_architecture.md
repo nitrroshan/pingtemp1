@@ -557,35 +557,43 @@ Response: { agent: Agent }
 
 ## Implementation Strategy
 
-### Phase 1: Core Skills Infrastructure (v1.0)
+### Phase 1: Core Skills Infrastructure (v1.0) ✅
 **Goal:** Basic skill registry + team installation
 - Database schema (skills, role_templates, team_skills, agent_skills)
 - SkillRegistry service (CRUD, search, caching)
 - API endpoints (browse, install, uninstall)
 - Migration: Convert existing agent configs to skills
 
-### Phase 2: Progressive Disclosure (v1.1)
+### Phase 2: Agent-Driven Dynamic Loading (v1.1) ✅
+**Goal:** Agents read skills via tools (Anthropic pattern)
+- Skill Tools: `list_available_skills`, `read_skill`, `read_skill_file`, `run_skill_script`
+- Remove pre-loading from SkillIntegration
+- System prompt includes skill metadata only
+- Agents invoke tools to load full instructions on-demand
+- Script sandbox for safe code execution
+
+### Phase 3: Progressive Disclosure (v1.2) ← NEXT
 **Goal:** Optimize Orchestrator context usage
 - Lazy-load skill fullConfig (Redis cache)
 - Orchestrator loads descriptions only at startup
 - Fetch full configs when agents execute tasks
 - Metrics: Context size before/after
 
-### Phase 3: Role Templates (v1.2)
+### Phase 4: Role Templates (v1.3)
 **Goal:** Standardize common worker types
 - RoleTemplate service (CRUD, instantiation)
 - Official templates (Frontend Dev, Backend Dev, QA, DevOps)
 - Team Builder integration (suggest templates)
 - Migration: Existing agents → role template instances
 
-### Phase 4: GitHub Integration (v1.3)
+### Phase 5: GitHub Integration (v1.4)
 **Goal:** Enable community skill publishing
 - GitHub skill schema validation
 - Install-from-GitHub endpoint
 - Registry indexing of GitHub skills (webhooks)
 - Example: `npm install github:ping-skills/security-review`
 
-### Phase 5: Marketplace (v2.0)
+### Phase 6: Marketplace (v2.0)
 **Goal:** Full-featured skill ecosystem
 - Skill ratings + reviews
 - Dependency resolution (Skill A requires Skill B)
@@ -681,10 +689,10 @@ Teams discover via registry search:
 - TeamService.installSkill() method
 - Team Builder suggests skills during agent design
 
-### With Orchestrator
-- Orchestrator loads skill descriptions at startup (progressive disclosure)
-- AgentWorker fetches full skill config when executing task
-- MemoryManager tracks skill usage per team
+### With Orchestrator (v1.1+)
+- Orchestrator provides skill tools to agents (no pre-loading at startup)
+- AgentWorker calls `enhanceAgentWithSkills()` to add skill tools + system prompt
+- Agent dynamically discovers and loads skills via tool calls (`read_skill`, `run_skill_script`)
 - RoleManager uses role templates for worker creation
 
 ### With Team Builder
@@ -781,14 +789,122 @@ Teams discover via registry search:
 
 ---
 
+## Agent-Driven Dynamic Skills (v1.1) ✅ Implemented
+
+**Problem Solved:** v1.0 pre-loaded skills into agent context. Now following Anthropic's pattern - the agent **dynamically reads skills via tools** and decides when to load SKILL.md.
+
+### Anthropic's Pattern
+
+```
+Context Window Evolution:
+1. Startup: System prompt + skill metadata (name/description only)
+2. Task received: Agent evaluates if skill is relevant
+3. Agent triggers: Uses Bash tool to read "~/.skills/pdf/SKILL.md"
+4. Agent navigates: Reads supporting files (forms.md) as needed
+5. Agent executes: Runs bundled scripts (extract_forms.py)
+```
+
+**Key Insight:** Agent controls when/what to load. No pre-loading.
+
+### Skill Tools (New)
+
+```typescript
+// Tools exposed to agents for skill access
+const skillTools = [
+  {
+    name: "list_available_skills",
+    description: "List all installed skills with their name and description",
+    // Returns skill metadata only (30-50 tokens each)
+  },
+  {
+    name: "read_skill",
+    description: "Read a skill's SKILL.md file to get full instructions",
+    parameters: { skillId: string },
+    // Returns markdown body from SKILL.md
+  },
+  {
+    name: "read_skill_file",
+    description: "Read a supporting file from a skill directory",
+    parameters: { skillId: string, filePath: string },
+    // Returns content of owasp-rules.md, etc.
+  },
+  {
+    name: "run_skill_script",
+    description: "Execute a script bundled with a skill",
+    parameters: { skillId: string, scriptPath: string, args: string[] },
+    // Runs scripts/run_semgrep.py in sandboxed environment
+  }
+]
+```
+
+### System Prompt Integration
+
+```markdown
+## Available Skills
+
+You have access to the following skills. Use `read_skill` to load full instructions when needed:
+
+{{#each installedSkills}}
+- **{{name}}**: {{description}}
+{{/each}}
+
+When a task requires specialized knowledge, check if a skill applies before proceeding.
+```
+
+### Code Execution Support
+
+Skills can include executable scripts that agents run via `run_skill_script`:
+
+```
+security-review/
+├── SKILL.md
+├── scripts/
+│   ├── run_semgrep.py      # Static analysis
+│   ├── check_deps.py       # Dependency audit
+│   └── generate_report.py  # Output formatting
+└── config/
+    └── semgrep.yaml
+```
+
+**Execution Flow:**
+1. Agent reads SKILL.md, sees: "Run `scripts/run_semgrep.py <file>`"
+2. Agent calls: `run_skill_script("security-review", "scripts/run_semgrep.py", ["src/auth.ts"])`
+3. Script runs in sandbox, returns output
+4. Agent incorporates results into response
+
+**Security:**
+- Scripts run in isolated container (Docker/Firecracker)
+- No network access by default
+- Allowlisted commands only (from `allowed-tools` in YAML)
+- Timeout enforcement (30s default)
+
+### Updated Progressive Disclosure
+
+| Level | Trigger | Content | Tokens |
+|-------|---------|---------|--------|
+| L0: Discovery | Startup | Skill name + description | ~50 |
+| L1: Activation | Agent calls `read_skill` | Full SKILL.md instructions | ~500 |
+| L2: Deep Dive | Agent calls `read_skill_file` | Supporting docs | ~1000 |
+| L3: Execution | Agent calls `run_skill_script` | Script output | Variable |
+
+**Benefits:**
+- Agent only loads what it needs (true lazy loading)
+- No context bloat from unused skills
+- Scripts provide deterministic operations (sorting, parsing, scanning)
+- Agent can navigate skill resources dynamically
+
+---
+
 ## Comparison to Claude's Skills
 
-| Aspect | Claude's Skills | Ping's Skills |
-|--------|----------------|---------------|
+| Aspect | Claude's Skills | Ping's Skills (v1.1) |
+|--------|----------------|----------------------|
 | **Portability** | ✅ Sub-agents use shared skills | ✅ Teams install skills from registry |
-| **Progressive Disclosure** | ✅ 30-50 token descriptions | ✅ Lazy-load fullConfig |
+| **Progressive Disclosure** | ✅ 30-50 token descriptions | ✅ Agent-driven via `read_skill` tool |
+| **Dynamic Loading** | ✅ Agent reads SKILL.md via Bash | ✅ Agent uses `read_skill` tool |
+| **Code Execution** | ✅ Python scripts via Bash | ✅ `run_skill_script` in sandbox |
 | **Role Templates** | ✅ "Frontend Dev" role separate from skills | ✅ RoleTemplate → Agent instances |
-| **Open Source** | ❌ Closed (Anthropic internal) | ✅ GitHub repos + community registry |
+| **Open Source** | ✅ Published as open standard | ✅ GitHub repos + community registry |
 | **Team Ownership** | ❌ No team model | ✅ Teams own agents + skills |
 | **MCP Integration** | ✅ Universal data tools | ✅ Skills package MCP configs |
 | **Marketplace** | ❌ N/A | 🔮 Future (v2.0) |
@@ -812,4 +928,5 @@ The Skills System transforms Ping from a **team-centric multi-agent platform** i
 
 This aligns with the industry trend (Claude's Skills, GPT-4's Actions, Gemini's Extensions) while maintaining Ping's unique **team ownership model**.
 
-**Next Steps:** See [v1.0 Implementation Planning](v1.0/feature_implementation_planning.md)
+**Current Version:** v1.1 (Agent-Driven Dynamic Loading)
+**Next Steps:** See [v1.0 Implementation Planning](v1.0/feature_implementation_planning.md) for foundation, then Phase 3 (v1.2) for Redis caching

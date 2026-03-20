@@ -1,0 +1,5 @@
+{
+  "name": "Nexus Agent Browser",
+  "description": "A futuristic, Arc-inspired browser interface for managing and interacting with a hierarchy of AI agents using the Gemini API.",
+  "requestFramePermissions": []
+}

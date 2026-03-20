@@ -1,0 +1,721 @@
+paths:
+  /teams:
+    post:
+      summary: Create a new team
+      description: Creates a team with a Planner Agent and adds owner as manager
+      tags:
+        - Teams
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateTeamRequest'
+      responses:
+        '201':
+          description: Team created successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: created
+                  team:
+                    $ref: '#/components/schemas/Team'
+        '400':
+          description: Missing required fields
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+    get:
+      summary: List teams
+      description: List all teams for an owner
+      tags:
+        - Teams
+      parameters:
+        - in: query
+          name: ownerId
+          required: true
+          schema:
+            type: string
+          description: Owner user ID to filter by
+      responses:
+        '200':
+          description: List of teams
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  teams:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Team'
+                  count:
+                    type: integer
+        '400':
+          description: Missing ownerId parameter
+
+  /teams/{id}:
+    get:
+      summary: Get team by ID
+      description: Returns team details with agents and members
+      tags:
+        - Teams
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+          description: Team ID
+      responses:
+        '200':
+          description: Team details
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  team:
+                    $ref: '#/components/schemas/Team'
+                  agents:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Agent'
+                  members:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Member'
+        '404':
+          description: Team not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+    put:
+      summary: Update team
+      description: Update team name, description, or settings
+      tags:
+        - Teams
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+          description: Team ID
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                description:
+                  type: string
+                settings:
+                  $ref: '#/components/schemas/TeamSettings'
+      responses:
+        '200':
+          description: Team updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: updated
+                  team:
+                    $ref: '#/components/schemas/Team'
+        '404':
+          description: Team not found
+
+    delete:
+      summary: Delete team
+      description: Delete team and cascade delete agents, members, and skills
+      tags:
+        - Teams
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+          description: Team ID
+      responses:
+        '200':
+          description: Team deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: deleted
+                  teamId:
+                    type: string
+        '404':
+          description: Team not found
+
+  /teams/{id}/agents:
+    post:
+      summary: Add agent to team
+      description: Add a new worker agent to the team
+      tags:
+        - Agents
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+          description: Team ID
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AddAgentRequest'
+      responses:
+        '201':
+          description: Agent created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: created
+                  agent:
+                    $ref: '#/components/schemas/Agent'
+        '400':
+          description: Missing required fields
+        '404':
+          description: Team not found
+        '409':
+          description: Cannot add second planner
+
+  /teams/{id}/agents/{agentId}:
+    delete:
+      summary: Remove agent from team
+      description: Remove a worker agent (cannot remove planner)
+      tags:
+        - Agents
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+          description: Team ID
+        - in: path
+          name: agentId
+          required: true
+          schema:
+            type: string
+          description: Agent ID
+      responses:
+        '200':
+          description: Agent removed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: deleted
+                  agentId:
+                    type: string
+                  teamId:
+                    type: string
+        '404':
+          description: Team or agent not found
+        '409':
+          description: Cannot remove planner
+
+  /teams/{id}/agents/{agentId}/delegate:
+    post:
+      summary: Delegate agent to employee
+      description: Delegate a worker agent to a team employee
+      tags:
+        - Agents
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+          description: Team ID
+        - in: path
+          name: agentId
+          required: true
+          schema:
+            type: string
+          description: Agent ID
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DelegateAgentRequest'
+      responses:
+        '200':
+          description: Agent delegated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: delegated
+                  agent:
+                    type: object
+                    properties:
+                      id:
+                        type: string
+                      name:
+                        type: string
+                      delegatedTo:
+                        type: string
+        '404':
+          description: Agent not found
+        '409':
+          description: Cannot delegate planner or already delegated
+
+  /teams/{id}/agents/{agentId}/reclaim:
+    post:
+      summary: Reclaim delegated agent
+      description: Reclaim an agent that was delegated to an employee
+      tags:
+        - Agents
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+          description: Team ID
+        - in: path
+          name: agentId
+          required: true
+          schema:
+            type: string
+          description: Agent ID
+      responses:
+        '200':
+          description: Agent reclaimed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: reclaimed
+                  agent:
+                    type: object
+                    properties:
+                      id:
+                        type: string
+                      name:
+                        type: string
+                      delegatedTo:
+                        type: string
+                        nullable: true
+        '404':
+          description: Agent not found
+        '409':
+          description: Agent not delegated
+
+  /teams/{id}/agents/{agentId}/status:
+    put:
+      summary: Update agent status
+      description: Update agent execution status
+      tags:
+        - Agents
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+          description: Team ID
+        - in: path
+          name: agentId
+          required: true
+          schema:
+            type: string
+          description: Agent ID
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateAgentStatusRequest'
+      responses:
+        '200':
+          description: Status updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: updated
+                  agent:
+                    type: object
+                    properties:
+                      id:
+                        type: string
+                      name:
+                        type: string
+                      status:
+                        type: string
+                      errorMessage:
+                        type: string
+                        nullable: true
+        '400':
+          description: Missing status
+        '404':
+          description: Agent not found
+
+  /teams/{id}/agents/{agentId}/skills:
+    get:
+      summary: Get agent skills
+      description: List all skills assigned to an agent
+      tags:
+        - Skills
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+          description: Team ID
+        - in: path
+          name: agentId
+          required: true
+          schema:
+            type: string
+          description: Agent ID
+      responses:
+        '200':
+          description: List of skills
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  agentId:
+                    type: string
+                  skills:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Skill'
+        '404':
+          description: Agent not found
+
+    post:
+      summary: Assign skill to agent
+      description: Assign a skill to an agent
+      tags:
+        - Skills
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+          description: Team ID
+        - in: path
+          name: agentId
+          required: true
+          schema:
+            type: string
+          description: Agent ID
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - skillId
+              properties:
+                skillId:
+                  type: string
+                  description: Skill ID to assign
+      responses:
+        '201':
+          description: Skill assigned
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: assigned
+                  agentId:
+                    type: string
+                  skillId:
+                    type: string
+        '400':
+          description: Missing skillId
+        '404':
+          description: Agent not found
+        '409':
+          description: Skill already assigned
+
+  /teams/{id}/agents/{agentId}/skills/{skillId}:
+    delete:
+      summary: Remove skill from agent
+      description: Remove a skill assignment from an agent
+      tags:
+        - Skills
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+          description: Team ID
+        - in: path
+          name: agentId
+          required: true
+          schema:
+            type: string
+          description: Agent ID
+        - in: path
+          name: skillId
+          required: true
+          schema:
+            type: string
+          description: Skill ID
+      responses:
+        '200':
+          description: Skill removed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: removed
+                  agentId:
+                    type: string
+                  skillId:
+                    type: string
+        '404':
+          description: Agent or skill not found
+
+    put:
+      summary: Enable/disable skill
+      description: Enable or disable a skill for an agent
+      tags:
+        - Skills
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+          description: Team ID
+        - in: path
+          name: agentId
+          required: true
+          schema:
+            type: string
+          description: Agent ID
+        - in: path
+          name: skillId
+          required: true
+          schema:
+            type: string
+          description: Skill ID
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - enabled
+              properties:
+                enabled:
+                  type: boolean
+                  description: Whether to enable the skill
+      responses:
+        '200':
+          description: Skill updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: updated
+                  agentId:
+                    type: string
+                  skillId:
+                    type: string
+                  enabled:
+                    type: boolean
+        '400':
+          description: Missing enabled field
+        '404':
+          description: Agent or skill not found
+
+  /teams/{id}/members:
+    get:
+      summary: Get team members
+      description: List all members of a team
+      tags:
+        - Members
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+          description: Team ID
+      responses:
+        '200':
+          description: List of members
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  teamId:
+                    type: string
+                  members:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Member'
+                  count:
+                    type: integer
+        '404':
+          description: Team not found
+
+    post:
+      summary: Add member to team
+      description: Add a new employee member to the team
+      tags:
+        - Members
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+          description: Team ID
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AddMemberRequest'
+      responses:
+        '201':
+          description: Member added
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: added
+                  teamId:
+                    type: string
+                  userId:
+                    type: string
+                  role:
+                    type: string
+        '404':
+          description: Team not found
+        '409':
+          description: Member already exists
+
+  /teams/{id}/members/{userId}:
+    delete:
+      summary: Remove member from team
+      description: Remove a member from the team (cannot remove manager)
+      tags:
+        - Members
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+          description: Team ID
+        - in: path
+          name: userId
+          required: true
+          schema:
+            type: string
+          description: User ID to remove
+      responses:
+        '200':
+          description: Member removed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: removed
+                  teamId:
+                    type: string
+                  userId:
+                    type: string
+        '404':
+          description: Team or member not found
+        '409':
+          description: Cannot remove manager
+
+  /teams/{id}/workspace:
+    get:
+      summary: Get workspace info
+      description: Get the workspace configuration for a team
+      tags:
+        - Workspace
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+          description: Team ID
+      responses:
+        '200':
+          description: Workspace info
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  teamId:
+                    type: string
+                  workspace:
+                    $ref: '#/components/schemas/Workspace'
+        '404':
+          description: Team not found

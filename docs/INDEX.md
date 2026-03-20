@@ -5,11 +5,21 @@
 - **Design Mode** (Team Builder) - Create and synthesize agents using Role Manager meta-agent
 - **Execution Mode** (Orchestrator) - Orchestrate teams, supervise agents, manage artifacts
 
-> **For Archived Planning Docs**: See [Archive](./archive/) | Legacy docs moved during refactoring
+> **For Product Vision**: See [Ping Vision](./ping/vision.md) | [Architecture](./ping/architecture.md)
 
 ---
 
 ## Quick Navigation
+
+### 🎯 Ping Vision & Architecture
+- **[Ping Vision](./ping/vision.md)** - Complete platform vision (Teams + Orchestration + Living System)
+- **[Ping Organism](./ping/ping-organism.md)** - Living system architecture (Sense, Remember, React, etc.)
+- **[Architecture](./ping/architecture.md)** - Technical architecture (9 core modules)
+- **[Team Builder](./ping/team-builder.md)** - Design Mode (Role Manager meta-agent)
+- **[Unified Orchestrator](./ping/unified-orchestrator.md)** - Single entry point orchestration
+- **[Artifact Output Strategy](./ping/artifact-output-strategy.md)** - Hybrid Git + Object Storage
+- **[Real-Time Collaboration](./ping/realtime-collaboration.md)** - OT/CRDT multi-agent editing
+- **[Structured Document Model](./ping/structured-document-model.md)** - North star for rich documents
 
 ### 👥 Product Documentation (User-Facing)
 - **[Getting Started](./product/ping/guides/getting-started.md)** - Installation and first steps
@@ -24,11 +34,14 @@
 ### 🔧 Developer Guide (Implementation)
 - **[Monorepo Architecture](./developer-guide/monorepo-architecture.md)** - pnpm workspace structure
 - **[Current State to Ping](./developer-guide/current-state-to-ping.md)** - Migration roadmap
-- **[Backend Modules](./developer-guide/modules/)** - Core components
-  - [Orchestrator](./developer-guide/modules/orchestrator.md) (AgentManager)
-  - [Role Manager](./developer-guide/modules/role-manager.md) (Agent registry)
-  - [Memory Manager](./developer-guide/modules/memory-manager.md) (Task tracking)
-  - [Agent Worker](./developer-guide/modules/agent-worker.md) (Execution engine)
+- **[Backend Modules](./developer-guide/modules/_index.md)** - Core components
+  - [Overview & Data Flow](./developer-guide/modules/_index.md) (start here)
+  - [MemoryManager](./developer-guide/modules/memory-manager.md) (task storage & dependencies)
+  - [InternalAgent](./developer-guide/modules/internal-agent.md) (LangGraph execution engine)
+  - [WorkerPool](./developer-guide/modules/worker-pool.md) (agent lifecycle & tool injection)
+  - [OrchestratorService](./developer-guide/modules/orchestrator-service.md) (planning engine)
+  - [AgentManager](./developer-guide/modules/agent-manager.md) (top-level coordinator)
+  - [MemoryCoordinator](./developer-guide/modules/memory-coordinator.md) (L1/L2/L3 memory layers)
 - **[Frontend](./developer-guide/frontend/)** - Ping UI components
   - [Overview](./developer-guide/frontend/overview.md)
   - [Components](./developer-guide/frontend/components.md)

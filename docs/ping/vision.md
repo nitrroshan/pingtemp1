@@ -438,23 +438,364 @@ Team Artifact Workspace (Git-like)
 
 ---
 
-## 7. Final Positioning
+## 7. Ping as a Living System
 
-> **Ping is where teams and AI agents work together—structured, supervised, and accountable.**
-
-Not chat.
-Not prompts.
-**Execution.**
+Ping is not just a tool—it's an **intelligent organism** that coordinates work between humans and AI agents. This section defines the core capabilities that make Ping a living, adaptive system.
 
 ---
 
-## 8. Next Steps
+### 🧬 The Ping Organism Model
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                     PING ORGANISM                            │
+├─────────────────────────────────────────────────────────────┤
+│                                                               │
+│  SENSE ──────► REACT ──────► COMMUNICATE                     │
+│    │             │                │                          │
+│    │             ▼                ▼                          │
+│    │          FOCUS ◄────── COLLABORATE                      │
+│    │             │                │                          │
+│    ▼             ▼                ▼                          │
+│  ANTICIPATE    ADAPT          PROTECT                        │
+│    │             │                │                          │
+│    │             ▼                │                          │
+│    │           GROW ◄─────────────┘                          │
+│    │             │                                           │
+│    └───────────► │                                           │
+│                  ▼                                           │
+│              REMEMBER                                        │
+│                  │                                           │
+│                  ▼                                           │
+│              REPRODUCE                                       │
+│                                                               │
+└─────────────────────────────────────────────────────────────┘
+```
+
+---
+
+### Core Capabilities
+
+#### 1. SENSE (Perceive Environment)
+
+Ping perceives its environment, detects changes, and maintains resource awareness.
+
+| Aspect | What Ping Senses |
+|--------|------------------|
+| **Resources** | Budget remaining, API rate limits, compute availability |
+| **Time** | Deadlines, durations, scheduling constraints |
+| **Dependencies** | External API status, blocked tasks, waiting states |
+| **Context** | User activity, team state, environmental changes |
+| **Quality** | Error rates, success patterns, performance metrics |
+
+```typescript
+interface SenseCapabilities {
+  resources: {
+    budget: BudgetStatus;
+    rateLimits: RateLimitStatus[];
+    compute: ComputeAvailability;
+  };
+  time: {
+    deadlines: Deadline[];
+    estimatedDurations: Map<TaskId, Duration>;
+  };
+  environment: {
+    apiStatus: Map<string, HealthStatus>;
+    userActivity: ActivityStatus;
+    teamState: TeamState;
+  };
+}
+```
+
+---
+
+#### 2. REMEMBER (State & Context)
+
+Ping maintains comprehensive memory across sessions, decisions, and executions.
+
+| Memory Type | What's Stored |
+|-------------|---------------|
+| **Team Memory** | Shared facts, decisions, preferences across all agents |
+| **Task Context** | Why each task exists, what led to it, dependencies |
+| **Decision Log** | Why X was chosen over Y, with rationale |
+| **User Preferences** | Communication style, approval patterns, working hours |
+| **Execution History** | What worked, what failed, performance data |
+
+```typescript
+interface MemorySystem {
+  teamMemory: SharedContext;           // Facts all agents know
+  taskContext: Map<TaskId, TaskContext>; // Per-task history
+  decisionLog: Decision[];              // Audit trail
+  userPreferences: UserProfile;         // Learned preferences
+  executionHistory: ExecutionRecord[];  // Past runs
+}
+```
+
+---
+
+#### 3. REPRODUCE (Learn & Create)
+
+Ping creates new knowledge, patterns, and agents based on experience.
+
+| Reproduction Type | Description |
+|-------------------|-------------|
+| **Pattern Recognition** | "Users always reject X, stop suggesting it" |
+| **Agent Cloning** | Duplicate successful agent with modifications |
+| **Prompt Evolution** | Improve prompts based on approval/rejection |
+| **Template Creation** | Generalize successful workflows for reuse |
+| **Knowledge Synthesis** | Combine learnings into actionable insights |
+
+```typescript
+interface ReproductionCapabilities {
+  learnFromFeedback(rejection: Rejection): PromptImprovement;
+  cloneAgent(source: Agent, modifications: Partial<AgentConfig>): Agent;
+  createTemplate(workflow: Workflow): WorkflowTemplate;
+  synthesizeKnowledge(executions: ExecutionRecord[]): Insight[];
+}
+```
+
+---
+
+#### 4. REACT (Respond to Stimuli)
+
+Ping acts on what it senses—both reflexively and deliberately.
+
+| Reaction Type | Examples |
+|---------------|----------|
+| **Reflexes** (instant, no approval) | Rate limit → queue; Crash → restart; Timeout → retry |
+| **Deliberate** (approval needed) | Pivot approach; Involve another team; Exceed budget |
+| **Triggers** | Deadline < 24h → Alert; Error rate > 3 → Escalate |
+
+```typescript
+interface ReactSystem {
+  reflexes: Reflex[];  // Instant responses
+  triggers: Trigger[]; // Condition → Action rules
+  
+  // Example trigger
+  interface Trigger {
+    condition: () => boolean;
+    action: () => Promise<void>;
+    requiresApproval: boolean;
+  }
+}
+```
+
+---
+
+#### 5. COMMUNICATE (Express & Negotiate)
+
+Ping doesn't just route messages—it expresses intent and negotiates between parties.
+
+| Communication Type | Description |
+|--------------------|-------------|
+| **Express** | Status, confidence, uncertainty, intent |
+| **Negotiate** | Priority conflicts, resource sharing, handoffs |
+| **Broadcast** | Announcements, discoveries, warnings |
+| **Report** | Progress summaries, blockers, recommendations |
+
+```typescript
+interface CommunicationCapabilities {
+  express: {
+    status(task: Task): StatusUpdate;
+    confidence(output: Artifact): ConfidenceScore;
+    uncertainty(decision: Decision): ClarificationRequest;
+    intent(plan: Plan): IntentExplanation;
+  };
+  negotiate: {
+    resolvePriority(tasks: Task[]): PriorityResolution;
+    requestResource(resource: Resource): ResourceRequest;
+    handoff(from: Agent, to: Agent, context: Context): Handoff;
+  };
+  broadcast: {
+    announce(event: SystemEvent): void;
+    warn(issue: Issue): void;
+    discover(insight: Insight): void;
+  };
+}
+```
+
+---
+
+#### 6. FOCUS (Attention & Priority)
+
+Ping determines what to work on RIGHT NOW among competing demands.
+
+| Focus Aspect | How It Works |
+|--------------|--------------|
+| **Prioritization** | Urgency × Importance × Dependency × Momentum |
+| **Attention Allocation** | Which tasks get compute now |
+| **Interruption Handling** | Urgent → switch; Can wait → queue |
+| **Context Preservation** | Save state before switching |
+
+```typescript
+interface FocusSystem {
+  prioritize(tasks: Task[]): PrioritizedQueue;
+  allocateAttention(agents: Agent[], tasks: Task[]): Allocation;
+  handleInterrupt(interrupt: Interrupt, current: Task): InterruptResponse;
+  preserveContext(task: Task): SavedContext;
+}
+```
+
+---
+
+#### 7. ADAPT (Change Strategy)
+
+Ping changes behavior based on situation—not just learns, but adapts mid-execution.
+
+| Adaptation Type | Description |
+|-----------------|-------------|
+| **Strategy Switch** | "Sequential isn't working, try parallel" |
+| **Agent Substitution** | "Agent X keeps failing, use Agent Y" |
+| **Plan Revision** | "New info invalidates step 3, replan" |
+| **Self-Correction** | "My output was rejected, try different approach" |
+
+```typescript
+interface AdaptSystem {
+  switchStrategy(current: Strategy, reason: FailureReason): Strategy;
+  substituteAgent(failing: Agent, task: Task): Agent;
+  revisePlan(plan: Plan, newInfo: Context): RevisedPlan;
+  selfCorrect(rejection: Rejection): CorrectedApproach;
+}
+```
+
+---
+
+#### 8. PROTECT (Safety & Boundaries)
+
+Ping protects itself, users, and the environment from harm.
+
+| Protection Type | What It Covers |
+|-----------------|----------------|
+| **Self-Preservation** | Don't exhaust budget; Don't overload systems |
+| **Containment** | Agent can't exceed permissions; Runaway loop detection |
+| **Safety** | No PII in outputs; No harmful content; Audit trail |
+| **Recovery** | Checkpoints; Rollback capability; Graceful degradation |
+
+```typescript
+interface ProtectionSystem {
+  checkBudget(operation: Operation): BudgetCheck;
+  enforcePermissions(agent: Agent, action: Action): PermissionCheck;
+  detectRunaway(execution: Execution): RunawayDetection;
+  createCheckpoint(state: State): Checkpoint;
+  rollback(checkpoint: Checkpoint): void;
+  sanitizeOutput(output: Artifact): SanitizedArtifact;
+}
+```
+
+---
+
+#### 9. GROW (Evolve Capabilities)
+
+Ping becomes more capable over time through learning and evolution.
+
+| Growth Type | Description |
+|-------------|-------------|
+| **Agent Evolution** | Agents gain new capabilities, expertise |
+| **Team Evolution** | Teams become faster, more efficient |
+| **Skill Acquisition** | Learn new tools, develop domain expertise |
+| **Inheritance** | Clone successful patterns, share across orgs |
+
+```typescript
+interface GrowthSystem {
+  evolveAgent(agent: Agent, learnings: Learning[]): EvolvedAgent;
+  evolveTeam(team: Team, metrics: PerformanceMetrics): EvolvedTeam;
+  acquireSkill(agent: Agent, skill: Skill): void;
+  inheritPattern(pattern: Pattern, target: Team): void;
+}
+```
+
+---
+
+#### 10. COLLABORATE (Joint Work)
+
+Ping enables true collaboration—not just communication, but shared ownership.
+
+| Collaboration Type | Description |
+|--------------------|-------------|
+| **Within Team** | Shared artifacts, handoffs, pair work |
+| **Across Teams** | Shared dependencies, cross-team reviews |
+| **With Humans** | Co-authoring, review loops, supervised execution |
+| **With External** | A2A protocol, third-party services |
+
+```typescript
+interface CollaborationSystem {
+  sharedArtifact(artifact: Artifact, participants: Agent[]): SharedArtifact;
+  handoff(from: Agent, to: Agent, work: Work): Handoff;
+  pairWork(agents: [Agent, Agent], task: Task): PairSession;
+  crossTeamReview(artifact: Artifact, reviewer: Team): Review;
+  coAuthor(human: User, agent: Agent, document: Document): CoAuthorSession;
+}
+```
+
+---
+
+#### 11. ANTICIPATE (Predict & Prepare)
+
+Ping doesn't just react—it prepares for what's coming.
+
+| Anticipation Type | Description |
+|-------------------|-------------|
+| **Prediction** | Estimate durations, predict rejection likelihood |
+| **Preparation** | Pre-fetch data, warm up agents, cache queries |
+| **Planning Ahead** | Queue weekend tasks, prepare alternatives |
+
+```typescript
+interface AnticipationSystem {
+  predict: {
+    duration(task: Task): Duration;
+    approvalLikelihood(artifact: Artifact): Probability;
+    resourceNeeds(plan: Plan): ResourceEstimate;
+  };
+  prepare: {
+    prefetch(data: DataRequirement[]): void;
+    warmUp(agents: Agent[]): void;
+    cache(queries: Query[]): void;
+  };
+  planAhead: {
+    queueForLater(tasks: Task[], when: Schedule): void;
+    prepareAlternative(task: Task): AlternativeApproach;
+  };
+}
+```
+
+---
+
+### Capability Summary
+
+| # | Capability | One-liner | Priority |
+|---|------------|-----------|----------|
+| 1 | **SENSE** | Perceive environment, resources, changes | MVP |
+| 2 | **REMEMBER** | State, context, history, decisions | MVP |
+| 3 | **REACT** | Triggers → Conditions → Actions | MVP |
+| 4 | **COMMUNICATE** | Express, negotiate, broadcast | MVP |
+| 5 | **PROTECT** | Safety, boundaries, recovery | MVP |
+| 6 | **FOCUS** | Prioritize, allocate attention | Stable |
+| 7 | **ADAPT** | Change strategy mid-execution | Stable |
+| 8 | **COLLABORATE** | Joint work, shared ownership | Stable |
+| 9 | **REPRODUCE** | Learn, create patterns, evolve | Incremental |
+| 10 | **GROW** | Evolve capabilities over time | Incremental |
+| 11 | **ANTICIPATE** | Predict and prepare for future | Incremental |
+
+---
+
+## 8. Final Positioning
+
+> **Ping is a living system where teams and AI agents work together—sensing, adapting, and evolving—with full human control and accountability.**
+
+Not chat.
+Not prompts.
+**A living coordination organism.**
+
+---
+
+## 9. Next Steps
 
 1. Freeze **MVP data models** (Team, Task, Artifact, Agent)
 2. Draw **Team → Task → Artifact lifecycle**
 3. Define **one concrete end-to-end use case** (e.g., "Product launch with 3 teams")
 4. Build **Team Builder** (design mode) for creating teams and synthesizing agents
 5. Build **Ping Runtime** (execution mode) for running team workflows
+6. Implement **Core Organism Capabilities** (Sense, Remember, React, Communicate, Protect)
 
 ---
 
@@ -462,4 +803,5 @@ Not prompts.
 
 - [Architecture](./architecture.md) - Technical architecture and module design
 - [Team Builder](./team-builder.md) - Design mode for creating teams and agents
+- [Ping Organism](./ping-organism.md) - Deep dive into living system capabilities
 - [Developer Guide](../developer-guide/monorepo-architecture.md) - Monorepo structure and implementation

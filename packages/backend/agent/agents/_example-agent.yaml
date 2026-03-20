@@ -1,0 +1,250 @@
+# =============================================================================
+# Agent Definition YAML - Complete Reference
+# =============================================================================
+# This file documents all required and optional fields for agent definitions.
+# Prefix with underscore (_) so AgentLoader skips it during normal loading.
+#
+# Agent Types:
+# - 'internal': LangChain-based agents (tools or structured output)
+# - 'external': External API agents (your own endpoints)
+# - 'agentic-ui': UI automation agents (browser, electron, native)
+#
+# Internal Agent Variants:
+# - Worker: Has tools[], executes tasks with tool calling
+# - Builder: Has responseFormat, returns structured JSON output
+# =============================================================================
+
+# =============================================================================
+# IDENTITY (Required)
+# =============================================================================
+
+id: example-agent                    # REQUIRED: Unique identifier, used by AgentFactory
+name: "Example Agent"                # REQUIRED: Display name
+role: team/example                   # REQUIRED: Role path (e.g., 'system/role-builder', 'team/engineer')
+description: |                       # OPTIONAL: Detailed description for documentation
+  This is an example agent that demonstrates all available YAML fields.
+  Use this as a reference when creating new agents.
+
+# =============================================================================
+# TYPE (Required)
+# =============================================================================
+
+type: internal                       # REQUIRED: 'internal' | 'external' | 'agentic-ui'
+
+# =============================================================================
+# GOAL & BEHAVIOR (Required)
+# =============================================================================
+
+goal: "Demonstrate all agent configuration options"  # REQUIRED: What the agent aims to achieve
+
+systemPrompt: |                      # OPTIONAL: Instructions for the agent
+  You are an example agent demonstrating configuration options.
+  
+  Your responsibilities:
+  1. Show how agents are configured
+  2. Demonstrate best practices
+  3. Provide helpful examples
+  
+  Always be clear and concise in your responses.
+
+# =============================================================================
+# CONFIG - INTERNAL AGENT (for type: internal)
+# =============================================================================
+
+config:
+  # ---------------------------------------------------------------------------
+  # Model Configuration (Required for internal agents)
+  # ---------------------------------------------------------------------------
+  model:
+    provider: azure-openai           # REQUIRED: 'anthropic' | 'openai' | 'azure-openai'
+    deployment: gpt-4o-2             # REQUIRED for azure-openai: Azure deployment name
+    # model: gpt-4o                  # REQUIRED for openai/anthropic: Model name
+    temperature: 0.7                 # OPTIONAL: 0.0-2.0, default varies by provider
+    maxTokens: 4096                  # OPTIONAL: Max tokens in response
+
+  # ---------------------------------------------------------------------------
+  # Tools - For Worker Agents (Optional)
+  # ---------------------------------------------------------------------------
+  # Worker agents use tools to interact with the world.
+  # If responseFormat is set, agent becomes a Builder (structured output).
+  
+  tools:                             # OPTIONAL: Array of tool configurations
+    - name: read_file                # Tool name
+      type: builtin                  # 'builtin' | 'mcp' | 'custom'
+      config: {}                     # Tool-specific configuration
+      
+    - name: write_file
+      type: builtin
+      config:
+        allowedPaths:
+          - "./workspace"
+          
+    - name: filesystem               # MCP server example
+      type: mcp
+      config:
+        serverName: filesystem-server
+        
+    - name: custom_tool
+      type: custom
+      config:
+        endpoint: "http://localhost:3000/tool"
+        auth: bearer
+
+  # ---------------------------------------------------------------------------
+  # Skills - Portable Capabilities (Optional)
+  # ---------------------------------------------------------------------------
+  # Skills are loaded from SkillRegistry at runtime.
+  # Use enhanceAgentWithSkills() to add skill tools to the agent.
+  
+  skills:                            # OPTIONAL: Array of skill IDs from SkillRegistry
+    - security-review
+    - code-analysis
+    - api-development
+
+  # ---------------------------------------------------------------------------
+  # Memory Configuration (Optional)
+  # ---------------------------------------------------------------------------
+  
+  memory:                            # OPTIONAL: Memory settings
+    shortTerm: true                  # Keep conversation history in session
+    checkpoint: true                 # Use LangGraph MemorySaver for checkpoints
+    longTerm: false                  # Persist across sessions (future feature)
+
+  # ---------------------------------------------------------------------------
+  # Response Format - For Builder Agents (Optional)
+  # ---------------------------------------------------------------------------
+  # When set, agent uses structured output instead of tool calling.
+  # The schema must be registered in builder/schemas/
+  
+  # responseFormat: AgentRoleSchema  # OPTIONAL: Schema name for structured output
+                                     # Available: 'AgentRoleSchema', 'AgentConfigSchema', 
+                                     #            'AgentPlanSchema', 'AgentConfigItemSchema'
+
+# =============================================================================
+# SETTINGS (Optional)
+# =============================================================================
+
+settings:
+  streaming: true                    # OPTIONAL: Enable streaming responses (default: false)
+  timeout: 60000                     # OPTIONAL: Execution timeout in ms (default: 30000)
+  retries: 3                         # OPTIONAL: Retry count on failure (default: 0)
+
+
+# =============================================================================
+# ALTERNATIVE CONFIGS - For Other Agent Types
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# CONFIG - EXTERNAL AGENT (for type: external)
+# ---------------------------------------------------------------------------
+# Uncomment to use external agent configuration:
+#
+# config:
+#   endpoint: "https://api.example.com/agent"   # REQUIRED: Agent API endpoint
+#   healthEndpoint: "/health"                    # OPTIONAL: Health check endpoint
+#   timeout: 30000                               # OPTIONAL: Request timeout in ms
+#   retries: 3                                   # OPTIONAL: Retry count
+#   auth:                                        # OPTIONAL: Authentication
+#     type: bearer                               # 'bearer' | 'api-key' | 'none'
+#     token: "your-token"                        # Direct token (not recommended)
+#     tokenEnvVar: "EXTERNAL_AGENT_TOKEN"        # Use environment variable (recommended)
+
+# ---------------------------------------------------------------------------
+# CONFIG - AGENTIC UI AGENT (for type: agentic-ui)
+# ---------------------------------------------------------------------------
+# Uncomment to use agentic-ui agent configuration:
+#
+# config:
+#   appType: browser                             # REQUIRED: 'browser' | 'electron' | 'native'
+#   appUrl: "https://app.example.com"            # For browser/electron: URL to open
+#   executable: "/path/to/app"                   # For native: Path to executable
+#   hotspotDetection: hybrid                     # REQUIRED: 'dom' | 'vision' | 'hybrid'
+
+
+# =============================================================================
+# COMPLETE EXAMPLES
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# Example 1: Builder Agent (Structured Output)
+# ---------------------------------------------------------------------------
+# id: role-builder
+# name: "Role Builder"
+# role: system/role-builder
+# type: internal
+# goal: "Generate agent roles based on task requirements"
+# systemPrompt: |
+#   You are an expert in designing AI agent teams...
+# config:
+#   model:
+#     provider: azure-openai
+#     deployment: gpt-4o-2
+#     temperature: 0.3
+#     maxTokens: 4096
+#   responseFormat: AgentRoleSchema    # <-- Makes it a Builder
+# settings:
+#   streaming: false
+#   timeout: 60000
+
+# ---------------------------------------------------------------------------
+# Example 2: Worker Agent (Tool-Calling)
+# ---------------------------------------------------------------------------
+# id: code-reviewer
+# name: "Code Reviewer"
+# role: team/code-reviewer
+# type: internal
+# goal: "Review code for quality, security, and best practices"
+# systemPrompt: |
+#   You are an expert code reviewer...
+# config:
+#   model:
+#     provider: azure-openai
+#     deployment: gpt-4o-2
+#     temperature: 0.2
+#   tools:                              # <-- Makes it a Worker
+#     - name: read_file
+#       type: builtin
+#     - name: grep_search
+#       type: builtin
+#   skills:
+#     - security-review
+#     - code-analysis
+#   memory:
+#     shortTerm: true
+#     checkpoint: true
+# settings:
+#   streaming: true
+#   timeout: 120000
+
+# ---------------------------------------------------------------------------
+# Example 3: External Agent
+# ---------------------------------------------------------------------------
+# id: custom-ml-agent
+# name: "Custom ML Agent"
+# role: external/ml-predictor
+# type: external
+# goal: "Run ML predictions via external API"
+# config:
+#   endpoint: "https://ml-api.example.com/predict"
+#   healthEndpoint: "/health"
+#   timeout: 60000
+#   auth:
+#     type: bearer
+#     tokenEnvVar: "ML_API_TOKEN"
+# settings:
+#   retries: 3
+
+# ---------------------------------------------------------------------------
+# Example 4: Agentic UI Agent
+# ---------------------------------------------------------------------------
+# id: browser-agent
+# name: "Browser Agent"
+# role: ui/browser-automation
+# type: agentic-ui
+# goal: "Automate web browser interactions"
+# config:
+#   appType: browser
+#   appUrl: "https://app.example.com"
+#   hotspotDetection: hybrid
+# settings:
+#   timeout: 300000

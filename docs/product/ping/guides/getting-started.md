@@ -652,7 +652,8 @@ Now that Ping is running, explore:
 ## Get Help
 
 - **Documentation**: See [docs/INDEX.md](../../INDEX.md) for complete documentation index
-- **Developer Guide**: [Backend Modules](../../developer-guide/modules/) for implementation details
+- **Architecture**: [Ping Architecture](../../ping/architecture.md)
+- **Vision**: [Ping Vision](../../ping/vision.md)
 - **Issues**: Report bugs in your project's issue tracker
 - **Community**: [Configure your team's chat/support channel]
 

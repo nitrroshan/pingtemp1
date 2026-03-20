@@ -17,14 +17,17 @@ Team Service provides the foundational execution boundary for Ping. Each team:
 ```
 Manager talks to Team Builder (Role Manager)
   → Team Builder helps design worker agents conversationally
-  → Team Builder publishes agent configs as JSON
-  → Orchestrator reads JSON and creates team
+  → Team Builder publishes agent configs as YAML (AgentDefinition format)
+  → Orchestrator reads YAML and creates team
   → System automatically adds Planner Agent to team
   → Orchestrator starts worker agents
-  → Manager gives goal to team
-  → Planner Agent helps break down goal into tasks
-  → Planner Agent manages task assignments to worker agents
-  → Worker agents collaborate with humans to execute tasks
+  → Manager plans with help of Planner Agent (break down goals, prioritize)
+  → Planner Agent creates tasks and assigns to worker agents
+  → Worker agents execute tasks (collaborate with humans as needed)
+  → Worker agents can delegate to other agents:
+      - Create task for another agent (e.g., "Designer: create login mockup")
+      - Create follow-up task for self with dependency on first task
+      - Continue execution when dependency completes
   → Artifacts saved to workspace
 ```
 
@@ -64,8 +67,20 @@ Agent {
   name: string
   ownedBy: string              // Manager ID
   delegatedTo: string?         // Employee ID or null
-  capabilities: string[]
-  mcpServers: string[]         // Linked MCP tool servers
+  
+  // Agent Definition (stored as YAML text)
+  definitionYaml: string       // Full YAML content from Team Builder
+                               // Parsed by AgentFactory.createFromYaml()
+  
+  // Skills (assigned via SkillRegistry, stored separately)
+  // Agent → AgentSkill → Skill (junction table)
+  // Skills provide: tools, prompts, files (loaded at runtime)
+  
+  // Lifecycle (database-driven sync)
+  status: 'pending' | 'running' | 'stopped' | 'error'
+  lastStartedAt: timestamp?    // When agent was last started
+  errorMessage: string?        // Error details if status='error'
+  
   createdAt: timestamp
   isActive: boolean
 }
@@ -106,29 +121,114 @@ TeamMember {
 - Workspace initialization integration
 - Unit and integration tests
 
-**AgentManager Integration:**
+**AgentManager Integration with AgentFactory:**
 ```typescript
-// Option A: AgentManager uses TeamService for clean team access
+import { AgentFactory } from './agent/AgentFactory.js'
+import { enhanceAgentWithSkills, autoAssignSkillsForRole } from './skillRegistry/SkillIntegration.js'
+
 class AgentManager {
+  private agentFactory: AgentFactory
+  private agentInstances: Map<string, IAgent> = new Map()
+  
+  constructor(
+    private teamService: TeamService,
+    agentsDir: string = './agents'
+  ) {
+    this.agentFactory = new AgentFactory(agentsDir)
+  }
+  
   async executeGoal(teamId: string, goal: string) {
     // Get team with all agents
-    const team = await teamService.getTeam(teamId)
+    const team = await this.teamService.getTeam(teamId)
     
-    // Planner Agent guaranteed to exist
-    const planner = team.agents.find(a => a.type === 'planner')
+    // Get or create IAgent instances via AgentFactory
+    const plannerRecord = team.agents.find(a => a.type === 'planner')
+    const planner = await this.getOrCreateAgentInstance(plannerRecord)
     
     // Route goal to Planner
     await this.routeToAgent(planner, goal)
     
-    // Get worker agents
-    const workers = team.agents.filter(a => a.type === 'worker')
-    // Execute tasks with workers...
+    // Workers instantiated on-demand when tasks assigned
   }
   
-  async addAgent(teamId: string, agentConfig: AgentConfig) {
-    // Validate team exists, then add agent
-    const agent = await teamService.addAgent(teamId, agentConfig)
-    // Start agent...
+  async getOrCreateAgentInstance(agentRecord: Agent): Promise<IAgent> {
+    if (this.agentInstances.has(agentRecord.id)) {
+      return this.agentInstances.get(agentRecord.id)!
+    }
+    
+    // Parse AgentDefinition from stored YAML
+    const definition = this.buildDefinition(agentRecord)
+    
+    // Create IAgent instance via AgentFactory
+    const agent = this.agentFactory.create(definition)
+    
+    // Load skills separately (from AgentSkill junction table)
+    const skills = await this.skillRegistry.getAgentSkills(agentRecord.id)
+    await agent.loadSkills(skills)  // Adds skill tools + prompts
+    
+    await agent.initialize()
+    
+    this.agentInstances.set(agentRecord.id, agent)
+    return agent
+  }
+  
+  private buildDefinition(agentRecord: Agent): AgentDefinition {
+    // Parse stored YAML from database
+    const definition = this.agentFactory.parseYaml(agentRecord.definitionYaml)
+    
+    // Skills are loaded separately via SkillIntegration
+    // (not stored in YAML, linked via AgentSkill junction table)
+    return definition
+  }
+  
+  async addAgent(teamId: string, yaml: string, skillIds?: string[]) {
+    // Store YAML directly in database (status='pending')
+    const agentRecord = await this.teamService.addAgent(teamId, yaml)
+    
+    // Assign skills via junction table (separate from YAML)
+    if (skillIds?.length) {
+      await this.skillRegistry.assignSkillsToAgent(agentRecord.id, skillIds)
+    }
+    
+    // Agent remains pending until startTeam() is called
+    return agentRecord
+  }
+  
+  // Database-driven sync: Orchestrator reads DB, starts pending agents
+  async startTeam(teamId: string) {
+    const agents = await this.teamService.getTeamAgents(teamId)
+    
+    for (const agentRecord of agents) {
+      // Skip already running agents
+      if (agentRecord.status === 'running') continue
+      
+      // Start pending agents
+      if (agentRecord.status === 'pending') {
+        await this.startAgent(agentRecord)
+      }
+    }
+  }
+  
+  private async startAgent(agentRecord: Agent) {
+    try {
+      // Create IAgent instance (parses YAML + loads skills)
+      const agent = await this.getOrCreateAgentInstance(agentRecord)
+      
+      // Update status in database
+      await this.teamService.updateAgentStatus(agentRecord.id, {
+        status: 'running',
+        lastStartedAt: new Date()
+      })
+      
+      return agent
+    } catch (error) {
+      // Mark agent as errored
+      await this.teamService.updateAgentStatus(agentRecord.id, {
+        status: 'error',
+        errorMessage: error.message
+      })
+      throw error
+    }
   }
 }
 ```
@@ -505,31 +605,55 @@ class AgentManager {
 ## Integration Points
 
 ### With AgentManager (Orchestrator)
-- Team Builder publishes agent configs as JSON
-- Orchestrator (AgentManager/TeamService) reads JSON
-- Orchestrator creates team and agents via TeamService
-- Orchestrator starts agents (initializes LangGraph instances, connects MCP tools)
-- When user gives goal: `Orchestrator.executeGoal(teamId, goal)`
-  → Orchestrator retrieves team's Planner Agent
-  → Routes goal to Planner Agent
-  → Planner Agent helps break down and coordinate
-  → Orchestrator manages human-agent collaboration for task execution
+
+**Database-Driven Sync Pattern:**
+- Team Builder writes agent configs to database (status='pending')
+- Orchestrator reads from database periodically or on-demand
+- Orchestrator calls `startTeam(teamId)` to start all pending agents
+- Running agents are skipped (idempotent startup)
+
+**Flow:**
+1. Team Builder publishes agent configs as YAML → stored in DB (status='pending')
+2. Orchestrator calls `startTeam(teamId)`
+3. For each agent in team:
+   - If status='running' → skip (already started)
+   - If status='pending' → create IAgent instance, update status='running'
+   - If status='error' → log and skip (or retry based on policy)
+4. When user gives goal: `Orchestrator.executeGoal(teamId, goal)`
+   → Orchestrator retrieves team's Planner Agent
+   → Routes goal to Planner Agent
+   → Planner Agent helps break down goal into tasks
+
+**Human-Planner Collaboration (Conversational Task Management):**
+- Manager/User talks directly to Planner Agent for ongoing task coordination
+- Planner proposes task breakdown → User approves, modifies, or rejects
+- When task gets blocked:
+  - Worker agent reports blocker to Planner
+  - Planner notifies User: "Task X is blocked because Y"
+  - User helps resolve: provides info, changes priority, or creates new task
+  - Planner updates task plan accordingly
+- User can ask Planner anytime:
+  - "What's the status of the login feature?"
+  - "Reprioritize: focus on API first"
+  - "Add a new task: write unit tests"
+  - "Why is Designer blocked?"
+- Planner maintains task context and coordinates worker agents
+- Human-in-the-loop: User guides, Planner coordinates, Workers execute
 
 ### With RoleManager (Team Builder)
 - **Team creation flow**:
   - User talks to Team Builder conversationally
   - Team Builder designs worker agents based on requirements
-  - Team Builder publishes agent configs as JSON
-  - Orchestrator reads JSON and calls TeamService.createTeam(name, ownerId, workerAgentConfigs)
-  - TeamService creates team + system adds Planner Agent + creates worker agents
-  - Orchestrator starts worker agents
+  - Team Builder publishes agent configs as YAML → stored in DB (status='pending')
+  - Team Builder creates Team record via TeamService
+  - TeamService auto-adds Planner Agent + creates worker agents
 - **Adding agents later**:
-  - User asks Team Builder to add agent
-  - Team Builder designs worker agent conversationally
-  - Team Builder publishes agent config as JSON
-  - Orchestrator reads JSON and calls TeamService.addAgent(teamId, workerAgentConfig)
-  - Agent stored with `ownedBy: managerId, delegatedTo: null`
-  - Orchestrator starts new agent
+  - User talks to Team Builder: "Add a security specialist to my team"
+  - Team Builder fetches existing team from database
+  - Team Builder designs new worker agent conversationally
+  - Team Builder publishes agent config as YAML
+  - TeamService.addAgent(teamId, yaml) → stored with status='pending'
+  - Orchestrator starts new agent (via startTeam or on-demand)
 
 ### With MemoryManager
 - Each goal execution creates tasks in MemoryManager
@@ -551,12 +675,21 @@ User talks to Team Builder: "I need a team for mobile app development"
   → Team Builder (Role Manager): "What agents do you need?"
   → User describes requirements conversationally
   → Team Builder designs worker agents (Engineer, Designer, QA)
-  → Team Builder publishes JSON config: {
-      teamName: 'Mobile App Team',
-      ownerId: 'user-123',
-      agents: [engineerConfig, designerConfig, qaConfig]
-    }
-  → Orchestrator reads JSON
+  → Team Builder publishes YAML config:
+      # team-config.yaml
+      teamName: 'Mobile App Team'
+      ownerId: 'user-123'
+      agents:
+        - name: 'Alex (Engineer)'
+          role: engineer
+          definitionId: backend-engineer  # or inline definition
+        - name: 'Sam (Designer)'
+          role: designer
+          definitionId: ui-designer
+        - name: 'Jordan (QA)'
+          role: qa
+          assignedSkills: ['testing-automation']
+  → Orchestrator reads YAML
   → Orchestrator calls: TeamService.createTeam()
     → Create Team record
     → System automatically creates Planner Agent (type: 'planner', system-managed)
@@ -570,12 +703,20 @@ User talks to Team Builder: "I need a team for mobile app development"
 ```
 User talks to Team Builder: "Add a security specialist"
   → Team Builder helps design security agent conversationally
-  → Team Builder publishes JSON config: {
-      role: 'security-specialist',
-      capabilities: ['security-audit', 'penetration-testing'],
-      mcpServers: ['security-tools']
-    }
-  → Orchestrator reads JSON
+  → Team Builder publishes YAML config:
+      # security-specialist.yaml
+      name: 'Security Specialist'
+      role: security-specialist
+      type: internal
+      goal: 'Audit code for security vulnerabilities'
+      config:
+        model:
+          provider: azure-openai
+          deployment: gpt-4o-2
+        skills:
+          - security-review
+          - penetration-testing
+  → Orchestrator reads YAML
   → Orchestrator calls: TeamService.addAgent()
     → Create Agent record (type: 'worker', ownedBy: 'user-123', delegatedTo: null)
     → Link MCP servers
@@ -651,41 +792,130 @@ CREATE INDEX idx_team_members_team ON team_members(teamId);
 
 ## Skills System Integration
 
-**Feature:** Portable, reusable agent capabilities (see [Skills System](../skills-system/feature_architecture.md))
+**Feature:** Portable, reusable agent capabilities via SkillRegistry
 
-### How Skills Enhance Teams
+### Current Implementation (SkillIntegration.ts)
 
-**Without Skills:**
-- Agent configs duplicated across teams
-- No reusability (each team configures tools/prompts separately)
-- Updates require manual propagation
+The skills system is already implemented in `src/worker/skillRegistry/`. Key components:
 
-**With Skills:**
-- Teams **install skills** from registry (like npm install)
-- Agents **inherit skills** from team
-- **Skill updates propagate** automatically (update "Security Review" skill → all teams benefit)
+1. **SkillRegistry** - Stores skills in MongoDB with embeddings for semantic search
+2. **SkillIntegration** - Enhances agents with skill tools at runtime
+3. **AgentSkill** - Junction table linking agents to skills
 
-### Team-Skills Architecture
+### How Skills Work with AgentFactory
 
+```typescript
+// 1. Agent record in database has assignedSkills
+Agent {
+  id: 'agent-123',
+  assignedSkills: ['security-review', 'code-analysis']
+}
+
+// 2. When creating IAgent instance, enhance with skills
+import { enhanceAgentWithSkills } from './skillRegistry/SkillIntegration.js'
+
+const enhancedConfig = await enhanceAgentWithSkills({
+  systemPrompt: agent.definition.systemPrompt,
+  tools: agent.definition.config.tools || [],
+  preloadMetadata: agent.assignedSkills,  // Load specific skills
+  agentId: agent.id
+})
+
+// 3. Agent now has:
+// - Skill tools: list_available_skills, read_skill, read_skill_file, run_skill_script
+// - Skill metadata in system prompt (progressive disclosure)
+// - Can load full skill instructions on-demand
+```
+
+### Skill Assignment Methods
+
+**Method 1: Manual Assignment (Manager decides)**
+```typescript
+// Manager installs skill to agent
+POST /api/agents/:agentId/skills { skillId: 'security-review' }
+  → skillRegistry.assignSkillToAgent(agentId, skillId)
+```
+
+**Method 2: Auto-Assignment (Based on role)**
+```typescript
+import { autoAssignSkillsForRole } from './skillRegistry/SkillIntegration.js'
+
+// When agent created, auto-assign relevant skills
+await autoAssignSkillsForRole(
+  agentId,
+  'Security specialist who reviews code for vulnerabilities',
+  3  // max skills to assign
+)
+// Uses semantic search to find matching skills
+```
+
+**Method 3: Team-Level Skills (All agents inherit)**
 ```typescript
 Team {
   id, name, ownerId, workspaceId
-  installedSkills: string[]      // ["security-review", "react-expert"]
+  installedSkills: string[]  // Skills available to all team agents
 }
 
+// When agent executes, combine team + agent skills
+const allSkills = [...team.installedSkills, ...agent.assignedSkills]
+```
+
+### Progressive Disclosure (Context Optimization)
+
+Skills use Anthropic's progressive disclosure pattern:
+
+1. **Level 1 - Discovery**: Only skill metadata loaded at startup (30-50 tokens each)
+2. **Level 2 - Activation**: Full skill instructions loaded when agent needs them
+3. **Level 3 - Deep Dive**: Supporting files loaded on-demand
+
+```typescript
+// Startup: Lightweight (just metadata)
+const enhancedConfig = await enhanceAgentWithSkills({
+  systemPrompt: basePrompt,
+  preloadMetadata: true  // Just loads skill names/descriptions
+})
+
+// Runtime: Agent uses tools to load full content
+// - list_available_skills → See what skills exist
+// - read_skill('security-review') → Load full instructions
+// - read_skill_file('security-review', 'checklist.md') → Load supporting file
+```
+
+### Database Schema for Skills
+
+```typescript
+// Agent record (PostgreSQL)
 Agent {
-  id, teamId, type, ownedBy, delegatedTo
-  assignedSkills: string[]       // Subset of team's installed skills
-  customConfig?: object          // Team-specific overrides
+  id: string
+  teamId: string
+  definitionYaml: string     // Full YAML from Team Builder (parsed at runtime)
+  // ... other fields
 }
 
+// Skills stored separately (MongoDB)
 Skill {
-  id, name, description
-  fullConfig: {
-    tools: Tool[]
-    prompts: PromptTemplate[]
-    examples: Example[]
-  }
+  skillId: string           // 'security-review'
+  name: string              // 'Security Review'
+  description: string       // Embedded for search
+  skillPath: string         // Path to skill directory
+  skillMdPath: string       // Path to SKILL.md
+  embedding: number[]       // Vector for semantic search
+  tags: string[]
+}
+
+// Junction table: Agent → Skills (MongoDB)
+AgentSkill {
+  agentId: string           // References Agent.id
+  skillId: string           // References Skill.skillId
+  assignedAt: Date
+}
+
+// Team-level skills (PostgreSQL)
+TeamSkill {
+  teamId: string
+  skillId: string
+  installedAt: Date
+  installedBy: string       // User ID
 }
 ```
 

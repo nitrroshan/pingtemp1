@@ -19,18 +19,20 @@
 - Database schema with proper indexes and constraints
 
 **What's NOT Included (Future Versions):**
-- **Skills System integration** (v1.0 uses full agent configs, Skills added later via migration)
+- Team-level skill installation (v1.1)
 - Cross-team agent sharing (Option D feature)
 - Advanced team analytics/metrics
 - Team templates
 - Bulk agent operations
 - Team archiving/restoration
 
-**Skills System Compatibility:**
-- Team Service v1.0 creates teams with agents using **full configs** (tools, prompts embedded)
-- Skills System v1.0 (implemented after) will **migrate** these configs to portable skills
-- Migration script extracts common tool patterns → creates skills → assigns to agents
-- No architectural changes needed (Skills layer sits on top)
+**Skills Integration (Already Implemented):**
+- `src/worker/skillRegistry/` provides full skill management
+- `SkillIntegration.enhanceAgentWithSkills()` adds skill tools to agents
+- `SkillIntegration.autoAssignSkillsForRole()` auto-assigns skills based on role
+- Team Service v1.0 integrates with existing SkillRegistry
+- Agents store `assignedSkills[]` in database
+- Skills loaded progressively (metadata at startup, full content on-demand)
 
 ---
 
@@ -43,66 +45,126 @@
 
 ## Implementation Steps
 
-### Step 1: Database Schema & Migrations ✅
+### Step 1: Database Schema (MongoDB) ✅
 **Files to create:**
-- `src/worker/database/migrations/001_create_teams.sql`
-- `src/worker/database/migrations/002_create_agents.sql`
-- `src/worker/database/migrations/003_create_team_members.sql`
+- `src/worker/database/collections/teams.ts`
+- `src/worker/database/collections/agents.ts`
+- `src/worker/database/collections/teamMembers.ts`
+- `src/worker/database/indexes.ts`
 
-**Schema:**
-```sql
--- Team table
-CREATE TABLE teams (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  name VARCHAR(255) NOT NULL,
-  owner_id UUID NOT NULL,
-  workspace_id VARCHAR(255) NOT NULL,
-  settings JSONB DEFAULT '{"executionMode": "parallel", "maxConcurrency": 3}',
-  created_at TIMESTAMP DEFAULT NOW(),
-  updated_at TIMESTAMP DEFAULT NOW()
-);
+**Note:** Using MongoDB for v1.0 (already configured). Plan for PostgreSQL migration in v2.0 if constraint enforcement or complex transactions needed.
 
--- Agent table
-CREATE TABLE agents (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  team_id UUID NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
-  role VARCHAR(100) NOT NULL,
-  type VARCHAR(20) NOT NULL CHECK (type IN ('planner', 'worker')),
-  name VARCHAR(255) NOT NULL,
-  owned_by UUID NOT NULL,
-  delegated_to UUID,
-  capabilities TEXT[] DEFAULT '{}',
-  mcp_servers TEXT[] DEFAULT '{}',
-  is_active BOOLEAN DEFAULT TRUE,
-  created_at TIMESTAMP DEFAULT NOW(),
-  updated_at TIMESTAMP DEFAULT NOW()
-);
+**Collections:**
+```typescript
+// teams collection
+interface Team {
+  _id: ObjectId
+  name: string
+  ownerId: string                        // Manager (user ID)
+  workspaceId: string                    // Git repo reference
+  settings: {
+    executionMode: 'sequential' | 'parallel' | 'hybrid'
+    maxConcurrency: number
+  }
+  createdAt: Date
+  updatedAt: Date
+}
 
--- Team members table
-CREATE TABLE team_members (
-  team_id UUID NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
-  user_id UUID NOT NULL,
-  role VARCHAR(20) NOT NULL CHECK (role IN ('manager', 'employee')),
-  joined_at TIMESTAMP DEFAULT NOW(),
-  PRIMARY KEY (team_id, user_id)
-);
+// agents collection
+interface Agent {
+  _id: ObjectId
+  teamId: ObjectId                       // Reference to teams._id
+  role: string                           // 'planner' | 'engineer' | 'designer' | ...
+  type: 'planner' | 'worker'
+  name: string
+  ownedBy: string                        // Manager ID
+  delegatedTo: string | null             // Employee ID or null
+  
+  // Agent Definition (stored as YAML text)
+  definitionYaml: string                 // Full YAML from Team Builder
+  
+  // Lifecycle (database-driven sync)
+  status: 'pending' | 'running' | 'stopped' | 'error'
+  lastStartedAt: Date | null
+  errorMessage: string | null
+  
+  isActive: boolean
+  createdAt: Date
+  updatedAt: Date
+}
 
--- Indexes
-CREATE INDEX idx_teams_owner ON teams(owner_id);
-CREATE INDEX idx_teams_created ON teams(created_at DESC);
-CREATE INDEX idx_agents_team ON agents(team_id);
-CREATE INDEX idx_agents_owner ON agents(owned_by);
-CREATE INDEX idx_agents_delegated ON agents(delegated_to);
-CREATE INDEX idx_agents_type ON agents(type);
-CREATE UNIQUE INDEX idx_one_planner_per_team ON agents(team_id, type) WHERE type = 'planner';
-CREATE INDEX idx_team_members_user ON team_members(user_id);
-CREATE INDEX idx_team_members_team ON team_members(team_id);
+// teamMembers collection
+interface TeamMember {
+  _id: ObjectId
+  teamId: ObjectId                       // Reference to teams._id
+  userId: string
+  role: 'manager' | 'employee'
+  joinedAt: Date
+}
+
+// agentSkills collection (junction table)
+interface AgentSkill {
+  _id: ObjectId
+  agentId: ObjectId                      // Reference to agents._id
+  skillId: string                        // Reference to skills.skillId
+  enabled: boolean                       // Runtime enable/disable
+  assignedAt: Date
+}
+```
+
+**Indexes (create on startup):**
+```typescript
+// src/worker/database/indexes.ts
+export async function createIndexes(db: Db) {
+  // Teams
+  await db.collection('teams').createIndex({ ownerId: 1 })
+  await db.collection('teams').createIndex({ createdAt: -1 })
+  
+  // Agents
+  await db.collection('agents').createIndex({ teamId: 1 })
+  await db.collection('agents').createIndex({ ownedBy: 1 })
+  await db.collection('agents').createIndex({ delegatedTo: 1 })
+  await db.collection('agents').createIndex({ type: 1 })
+  await db.collection('agents').createIndex({ status: 1 })
+  // Note: "one planner per team" enforced in code, not DB
+  
+  // Team Members
+  await db.collection('teamMembers').createIndex({ teamId: 1, userId: 1 }, { unique: true })
+  await db.collection('teamMembers').createIndex({ userId: 1 })
+  
+  // Agent Skills
+  await db.collection('agentSkills').createIndex({ agentId: 1 })
+  await db.collection('agentSkills').createIndex({ skillId: 1 })
+  await db.collection('agentSkills').createIndex({ agentId: 1, skillId: 1 }, { unique: true })
+}
+```
+
+**Constraint Enforcement (in code):**
+```typescript
+// TeamService.addAgent() - enforce one Planner per team
+async addAgent(teamId: string, yaml: string, type: 'planner' | 'worker') {
+  if (type === 'planner') {
+    const existing = await db.agents.findOne({ teamId: new ObjectId(teamId), type: 'planner' })
+    if (existing) throw new CannotAddSecondPlannerError(teamId)
+  }
+  // Create agent...
+}
+
+// TeamService.deleteTeam() - cascade delete manually
+async deleteTeam(teamId: string) {
+  const oid = new ObjectId(teamId)
+  await db.agents.deleteMany({ teamId: oid })
+  await db.teamMembers.deleteMany({ teamId: oid })
+  await db.agentSkills.deleteMany({ agentId: { $in: agentIds } })
+  await db.teams.deleteOne({ _id: oid })
+}
 ```
 
 **Testing:**
-- Run migrations on test database
-- Verify constraints (one Planner per team, valid types)
-- Test cascade deletes
+- Indexes created on startup
+- Constraint enforcement works (one Planner per team)
+- Cascade deletes work correctly
+- Skills junction table queries efficient
 
 ---
 
@@ -113,6 +175,8 @@ CREATE INDEX idx_team_members_team ON team_members(team_id);
 
 **TeamService interface:**
 ```typescript
+import type { AgentDefinition } from '../agent/types.js'
+
 interface ITeamService {
   // Team CRUD
   createTeam(params: CreateTeamParams): Promise<Team>
@@ -121,11 +185,16 @@ interface ITeamService {
   updateTeam(teamId: string, updates: TeamUpdates): Promise<Team>
   deleteTeam(teamId: string): Promise<void>
   
-  // Agent management
+  // Agent management (uses AgentFactory internally)
   addAgent(teamId: string, agentConfig: AgentConfig): Promise<Agent>
   removeAgent(teamId: string, agentId: string): Promise<void>
   delegateAgent(teamId: string, agentId: string, employeeId: string): Promise<Agent>
   reclaimAgent(teamId: string, agentId: string): Promise<Agent>
+  
+  // Skill management
+  assignSkillToAgent(agentId: string, skillId: string): Promise<void>
+  removeSkillFromAgent(agentId: string, skillId: string): Promise<void>
+  autoAssignSkills(agentId: string, roleDescription: string): Promise<string[]>
   
   // Member management
   addMember(teamId: string, userId: string, role: 'employee'): Promise<void>
@@ -133,6 +202,17 @@ interface ITeamService {
   
   // Workspace
   getWorkspace(teamId: string): Promise<WorkspaceInfo>
+}
+
+// Agent config for addAgent()
+interface AgentConfig {
+  name: string
+  role: string
+  definitionId?: string           // Use existing YAML definition
+  definition?: AgentDefinition    // Or provide inline definition
+  assignedSkills?: string[]       // Skills to assign
+  autoAssignSkills?: boolean      // Auto-assign based on role
+  roleDescription?: string        // For auto-assignment
 }
 ```
 
@@ -210,39 +290,111 @@ GET    /api/v1/teams/:id/workspace      // Get workspace info
 - `src/worker/agentManager/AgentManager.ts`
 
 **Changes:**
-- Add `teamService` dependency
-- Update `executeGoal()` to accept `teamId` instead of bare agents
-- Retrieve team and agents via `teamService.getTeam(teamId)`
-- Route goal to team's Planner Agent
+- Add `AgentFactory` for creating IAgent instances
+- Add `teamService` dependency for database operations
+- Update `executeGoal()` to accept `teamId`
+- Integrate with SkillIntegration for skill-enhanced agents
 
 **Implementation:**
 ```typescript
+import { AgentFactory } from '../agent/AgentFactory.js'
+import { enhanceAgentWithSkills, autoAssignSkillsForRole } from '../skillRegistry/SkillIntegration.js'
+import type { AgentDefinition, IAgent } from '../agent/types.js'
+
 class AgentManager {
+  private agentFactory: AgentFactory
+  private agentInstances: Map<string, IAgent> = new Map()
+  
   constructor(
     private teamService: TeamService,
-    private memoryManager: MemoryManager
-  ) {}
+    private memoryManager: MemoryManager,
+    agentsDir: string = './agents'
+  ) {
+    this.agentFactory = new AgentFactory(agentsDir)
+  }
   
   async executeGoal(teamId: string, goal: string) {
-    // Get team with all agents
+    // Get team with all agents from database
     const team = await this.teamService.getTeam(teamId)
     
-    // Get Planner Agent (guaranteed to exist)
-    const plannerAgent = team.agents.find(a => a.type === 'planner')
+    // Get Planner Agent record (guaranteed to exist)
+    const plannerRecord = team.agents.find(a => a.type === 'planner')
     
-    // Route goal to Planner
-    await this.routeToPlanner(plannerAgent, goal)
+    // Get or create IAgent instance via AgentFactory
+    const planner = await this.getOrCreateAgent(plannerRecord)
     
-    // Planner creates tasks and assigns to workers
-    // (existing AgentManager logic continues)
+    // Route goal to Planner (Planner creates tasks, assigns to workers)
+    await this.routeToPlanner(planner, goal)
+  }
+  
+  async getOrCreateAgent(agentRecord: AgentRecord): Promise<IAgent> {
+    // Return cached instance if exists
+    if (this.agentInstances.has(agentRecord.id)) {
+      return this.agentInstances.get(agentRecord.id)!
+    }
+    
+    // Build AgentDefinition from database record
+    const definition = this.buildDefinition(agentRecord)
+    
+    // Create IAgent instance via AgentFactory
+    const agent = this.agentFactory.create(definition)
+    
+    // Enhance with skills (adds skill tools to agent)
+    await this.enhanceWithSkills(agent, agentRecord)
+    
+    // Initialize agent
+    await agent.initialize()
+    
+    this.agentInstances.set(agentRecord.id, agent)
+    return agent
+  }
+  
+  private buildDefinition(agentRecord: AgentRecord): AgentDefinition {
+    // Use YAML definition if specified
+    if (agentRecord.definitionId) {
+      return this.agentFactory.loader.load(agentRecord.definitionId)
+    }
+    
+    // Use inline definition if provided
+    if (agentRecord.definition) {
+      return agentRecord.definition
+    }
+    
+    // Build minimal definition from database fields
+    return {
+      id: agentRecord.id,
+      name: agentRecord.name,
+      role: agentRecord.role,
+      type: 'internal',
+      goal: `Execute tasks as ${agentRecord.role}`,
+      config: {
+        model: { provider: 'azure-openai', deployment: 'gpt-4o-2' },
+        skills: agentRecord.assignedSkills
+      }
+    }
+  }
+  
+  private async enhanceWithSkills(agent: IAgent, agentRecord: AgentRecord): Promise<void> {
+    if (agentRecord.assignedSkills?.length > 0) {
+      const enhanced = await enhanceAgentWithSkills({
+        systemPrompt: agent.definition.systemPrompt || '',
+        tools: agent.definition.config?.tools || [],
+        preloadMetadata: agentRecord.assignedSkills,
+        agentId: agentRecord.id
+      })
+      // Apply enhanced config to agent
+      agent.definition.systemPrompt = enhanced.systemPrompt
+      agent.definition.config.tools = enhanced.tools
+    }
   }
 }
 ```
 
 **Testing:**
+- Test AgentFactory creates IAgent instances correctly
+- Test skill enhancement adds skill tools
 - Test goal routing to Planner Agent
-- Test with teams that have different worker agents
-- Test delegation doesn't affect execution
+- Test agent instance caching
 
 ---
 
@@ -251,33 +403,65 @@ class AgentManager {
 - `src/worker/roleManager/RoleManager.ts`
 
 **Changes:**
-- After designing agents, publish JSON config
-- Orchestrator reads JSON and calls `teamService.createTeam()`
+- After designing agents, publish YAML config with AgentDefinition format
+- Orchestrator reads YAML and creates agents via AgentFactory
+- Optionally auto-assign skills based on role description
 
 **Flow:**
 ```typescript
-// Team Builder publishes JSON
-const teamConfig = {
-  teamName: 'Mobile App Team',
-  ownerId: 'user-123',
-  agents: [
-    { role: 'engineer', capabilities: [...], mcpServers: [...] },
-    { role: 'designer', capabilities: [...], mcpServers: [...] }
-  ]
-}
+import type { AgentDefinition } from '../agent/types.js'
+import { autoAssignSkillsForRole } from '../skillRegistry/SkillIntegration.js'
+import { parse } from 'yaml'
 
-// Orchestrator reads and creates team
+// Team Builder publishes YAML with AgentDefinition format
+// Example: mobile-app-team.yaml
+//
+// teamName: Mobile App Team
+// ownerId: user-123
+// agents:
+//   - name: Alex (Engineer)
+//     role: engineer
+//     definitionId: backend-engineer
+//     assignedSkills:
+//       - api-development
+//       - database-design
+
+// Orchestrator reads YAML and parses it
+const yamlContent = await fs.readFile('mobile-app-team.yaml', 'utf-8')
+const teamConfig = parse(yamlContent)
+
+// Create team
 const team = await teamService.createTeam({
   name: teamConfig.teamName,
-  ownerId: teamConfig.ownerId,
-  agents: teamConfig.agents  // Worker agents only, Planner auto-added
+  ownerId: teamConfig.ownerId
 })
+
+// Create each agent
+for (const agentConfig of teamConfig.agents) {
+  const agent = await teamService.addAgent(team.id, {
+    name: agentConfig.name,
+    role: agentConfig.role,
+    definitionId: agentConfig.definitionId,
+    definition: agentConfig.definition,
+    assignedSkills: agentConfig.assignedSkills
+  })
+  
+  // Auto-assign skills based on role description
+  if (agentConfig.autoAssignSkills && agentConfig.roleDescription) {
+    await autoAssignSkillsForRole(
+      agent.id,
+      agentConfig.roleDescription,
+      3  // max skills
+    )
+  }
+}
 ```
 
 **Testing:**
-- Test Team Builder → Orchestrator → TeamService flow
+- Test Team Builder → Orchestrator → TeamService → AgentFactory flow
 - Verify Planner Agent auto-created
-- Verify worker agents created with correct config
+- Verify worker agents created with correct AgentDefinition
+- Test auto-skill assignment finds relevant skills
 
 ---
 
@@ -430,15 +614,19 @@ class AgentAlreadyDelegatedError extends Error {}
 ## Dependencies
 
 **Required:**
-- Database (PostgreSQL 14+)
+- Database (MongoDB 6+) - already configured
 - Git (for workspace management)
 - Node.js 18+ (for async/await)
 
 **NPM packages:**
-- Prisma or TypeORM (database ORM)
+- mongodb (native driver, already installed)
 - simple-git (Git operations)
 - express (API endpoints)
-- joi or zod (validation)
+- zod (validation)
+
+**Future (v2.0):**
+- PostgreSQL (if constraint enforcement or complex transactions needed)
+- Prisma (for PostgreSQL ORM)
 
 ---
 
@@ -472,21 +660,24 @@ class AgentAlreadyDelegatedError extends Error {}
 - [ ] API returns proper error codes
 - [ ] Integration tests pass (95%+ coverage)
 - [ ] E2E flow works: Design agents → Create team → Give goal → Execute
-- [ ] **Skills compatibility**: Agent configs structured for future Skills migration
+- [ ] **AgentFactory integration**: IAgent instances created from AgentDefinition
+- [ ] **Skills integration**: Skills can be assigned to agents via SkillRegistry
+- [ ] **Auto-assign skills**: `autoAssignSkillsForRole()` finds relevant skills
+- [ ] **Skill enhancement**: `enhanceAgentWithSkills()` adds skill tools to agents
 
 ---
 
 ## Next Steps After v1.0
 
-**v1.1 - Skills System Integration:**
-- Implement Skills System v1.0 (7.5 days, see [Skills Planning](../../skills-system/v1.0/feature_implementation_planning.md))
-- Run migration script to convert agent configs → skills
-- Update TeamService to support skill installation
-- Update API to handle skill-based agent creation
-- Progressive disclosure optimization (8x context reduction)
+**v1.1 - Enhanced Skills Integration:**
+Skills System already implemented in `src/worker/skillRegistry/`. Enhancements:
+- Team-level skill installation (all agents inherit)
+- UI for browsing/installing skills from registry
+- Skill usage analytics per team
 
 **v1.2 - Role Templates:**
 - Official role templates (Frontend Dev, Backend Dev, QA)
+- Templates reference AgentDefinition YAML files
 - Team Builder suggests templates during agent design
 - UI for creating agents from templates
 
@@ -496,7 +687,9 @@ class AgentAlreadyDelegatedError extends Error {}
 - Bulk agent operations
 
 **v2.0 - Cross-Team Collaboration (Option D):**
+- Migrate to Option D (Hybrid architecture)
 - Agent sharing across teams
+- Cross-team goal coordination
 - GitHub skill integration
 - Skill marketplace
 
