@@ -1,0 +1,37 @@
+name: Sync dev → main
+
+on:
+  # Auto-sync whenever dev is pushed
+  push:
+    branches: [dev]
+
+  # Also run on a schedule (every 6 hours)
+  schedule:
+    - cron: "0 */6 * * *"
+
+  # Manual trigger from GitHub Actions tab
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Configure Git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Merge dev into main
+        run: |
+          git fetch origin dev
+          git merge origin/dev --no-edit
+          git push origin main
