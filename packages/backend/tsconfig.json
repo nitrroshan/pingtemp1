@@ -1,0 +1,51 @@
+{
+  // Visit https://aka.ms/tsconfig to read more about this file
+  "compilerOptions": {
+    // File Layout
+    // "rootDir": "./src",
+    "outDir": "./dist",
+
+    // Environment Settings
+    // See also https://aka.ms/tsconfig/module
+    "module": "nodenext",
+    "target": "ES2020",
+    "lib": ["ES2020"],
+    "types": ["bun"],
+
+    // ESM/CommonJS Interop
+    "esModuleInterop": true,
+    "allowSyntheticDefaultImports": true,
+    "downlevelIteration": true,
+    "resolveJsonModule": true,
+
+    // Other Outputs
+    "sourceMap": true,
+    // declaration/declarationMap disabled — not publishing as library
+    // "declaration": true,
+    // "declarationMap": true,
+
+    // Stricter Typechecking Options
+    "noUncheckedIndexedAccess": true,
+    // exactOptionalPropertyTypes disabled — causes expensive type computation
+    // "exactOptionalPropertyTypes": true,
+
+    // Recommended Options
+    "strict": true,
+    "jsx": "react-jsx",
+    "verbatimModuleSyntax": true,
+    "isolatedModules": true,
+    "noUncheckedSideEffectImports": true,
+    "moduleDetection": "force",
+    "skipLibCheck": true
+  },
+  "include": ["./**/*.ts"],
+  "exclude": [
+    "_deprecated",
+    "agentManager/workspace",
+    "node_modules",
+    "dist",
+    "**/*.test.ts",
+    "**/*.integration.test.ts",
+    "**/__tests__/**"
+  ]
+}

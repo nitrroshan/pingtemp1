@@ -30,6 +30,13 @@ Orchestrate multi-agent teams with full visibility:
 
 ```
 docs/
+├── ping/                             # Ping Vision & Architecture
+│   ├── vision.md                     # Complete platform vision
+│   ├── architecture.md               # Technical architecture
+│   ├── team-builder.md               # Design Mode (Role Manager)
+│   ├── artifact-output-strategy.md   # Hybrid Git + Object Storage
+│   ├── realtime-collaboration.md     # OT/CRDT multi-agent editing
+│   └── structured-document-model.md  # North star for rich documents
 ├── product/ping/                     # User-Facing Documentation
 │   ├── guides/                       # How to use Ping
 │   │   ├── getting-started.md        # Installation & first steps
@@ -51,15 +58,12 @@ docs/
 │   │   └── agent-worker.md           # (Execution engine)
 │   └── frontend/                     # Frontend components
 ├── features/                         # Feature Development
-│   ├── team-service/                 # Team scoping (v1.0 planned)
-│   ├── artifact-store/               # Versioned outputs (TBD)
-│   ├── realtime-collaboration/       # ShareDB + OT/CRDT (TBD)
-│   ├── approval-governance/          # Human control (TBD)
-│   └── role-manager-meta-agent/      # Agent synthesis (TBD)
-└── archive/                          # Archived Planning Docs
-    ├── ping-vision.md                # Old vision docs
-    ├── ping-architecture.md          # Old architecture docs
-    └── REFACTORING_*.md              # Completed refactoring plans
+│   ├── team-service/                 # Team scoping (MVP)
+│   ├── artifact-store/               # Versioned outputs (MVP)
+│   ├── realtime-collaboration/       # ShareDB + OT/CRDT (MVP)
+│   ├── approval-governance/          # Human control (MVP)
+│   └── role-manager-meta-agent/      # Agent synthesis (Team Builder)
+└── archive/                          # Obsolete Documentation
 ```
 
 ---
@@ -67,21 +71,19 @@ docs/
 ## 🎯 Quick Navigation
 
 ### For Product Understanding
-1. **[Getting Started](./product/ping/guides/getting-started.md)** - Install and run Ping
-2. **[Creating Teams](./product/ping/guides/creating-teams.md)** - Set up your first team
-3. **[Designing Agents](./product/ping/guides/designing-agents.md)** - Use Team Builder
+1. **[Ping Vision](./ping/vision.md)** - Start here to understand the platform
+2. **[Architecture](./ping/architecture.md)** - Technical deep dive (9 modules)
+3. **[Team Builder](./ping/team-builder.md)** - How agents are created
 
 ### For Development
 1. **[Monorepo Architecture](./developer-guide/monorepo-architecture.md)** - Project structure
-2. **[Current State to Ping](./developer-guide/current-state-to-ping.md)** - Migration roadmap
-3. **[Backend Modules](./developer-guide/modules/)** - Core components
-4. **[Frontend](./developer-guide/frontend/)** - Ping UI
+2. **[Current State to Ping](./developer-guide/current-state-to-ping.md)** - What exists vs what's needed
+3. **[Developer Guide](./developer-guide/)** - Implementation guides
 
-### API Reference
-1. **[Orchestrator API](./product/ping/api/orchestrator-api.md)** - Give goals to teams
-2. **[Team API](./product/ping/api/team-api.md)** - Manage teams and agents
-3. **[Artifact API](./product/ping/api/artifact-api.md)** - Access outputs
-4. **[WebSocket Events](./product/ping/api/websocket-events.md)** - Real-time agent chat
+### For Contributing
+1. **[Feature Development Guide](./.github/instructions/feature-development.instructions.md)** - How to add features
+2. **[Features Folder](./features/)** - Active feature development
+3. **[Task Management](./.github/instructions/task-management.instructions.md)** - Creating tasks
 
 ---
 

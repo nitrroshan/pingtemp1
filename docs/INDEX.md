@@ -5,11 +5,21 @@
 - **Design Mode** (Team Builder) - Create and synthesize agents using Role Manager meta-agent
 - **Execution Mode** (Orchestrator) - Orchestrate teams, supervise agents, manage artifacts
 
-> **For Archived Planning Docs**: See [Archive](./archive/) | Legacy docs moved during refactoring
+> **For Product Vision**: See [Ping Vision](./ping/vision.md) | [Architecture](./ping/architecture.md)
 
 ---
 
 ## Quick Navigation
+
+### 🎯 Ping Vision & Architecture
+- **[Ping Vision](./ping/vision.md)** - Complete platform vision (Teams + Orchestration + Living System)
+- **[Ping Organism](./ping/ping-organism.md)** - Living system architecture (Sense, Remember, React, etc.)
+- **[Architecture](./ping/architecture.md)** - Technical architecture (9 core modules)
+- **[Team Builder](./ping/team-builder.md)** - Design Mode (Role Manager meta-agent)
+- **[Unified Orchestrator](./ping/unified-orchestrator.md)** - Single entry point orchestration
+- **[Artifact Output Strategy](./ping/artifact-output-strategy.md)** - Hybrid Git + Object Storage
+- **[Real-Time Collaboration](./ping/realtime-collaboration.md)** - OT/CRDT multi-agent editing
+- **[Structured Document Model](./ping/structured-document-model.md)** - North star for rich documents
 
 ### 👥 Product Documentation (User-Facing)
 - **[Getting Started](./product/ping/guides/getting-started.md)** - Installation and first steps
@@ -24,11 +34,14 @@
 ### 🔧 Developer Guide (Implementation)
 - **[Monorepo Architecture](./developer-guide/monorepo-architecture.md)** - pnpm workspace structure
 - **[Current State to Ping](./developer-guide/current-state-to-ping.md)** - Migration roadmap
-- **[Backend Modules](./developer-guide/modules/)** - Core components
-  - [Orchestrator](./developer-guide/modules/orchestrator.md) (AgentManager)
-  - [Role Manager](./developer-guide/modules/role-manager.md) (Agent registry)
-  - [Memory Manager](./developer-guide/modules/memory-manager.md) (Task tracking)
-  - [Agent Worker](./developer-guide/modules/agent-worker.md) (Execution engine)
+- **[Backend Modules](./developer-guide/modules/_index.md)** - Core components
+  - [Overview & Data Flow](./developer-guide/modules/_index.md) (start here)
+  - [MemoryManager](./developer-guide/modules/memory-manager.md) (task storage & dependencies)
+  - [InternalAgent](./developer-guide/modules/internal-agent.md) (LangGraph execution engine)
+  - [WorkerPool](./developer-guide/modules/worker-pool.md) (agent lifecycle & tool injection)
+  - [OrchestratorService](./developer-guide/modules/orchestrator-service.md) (planning engine)
+  - [AgentManager](./developer-guide/modules/agent-manager.md) (top-level coordinator)
+  - [MemoryCoordinator](./developer-guide/modules/memory-coordinator.md) (L1/L2/L3 memory layers)
 - **[Frontend](./developer-guide/frontend/)** - Ping UI components
   - [Overview](./developer-guide/frontend/overview.md)
   - [Components](./developer-guide/frontend/components.md)
@@ -36,18 +49,53 @@
 - **[Setup](./developer-guide/setup/)** - Development environment
 
 ### 🚀 Features (Development Tracking)
-**MVP Features** (In Development):
-- **[Team Service](./features/team-service/)** - Team scoping & membership (Option A chosen)
-- **[Artifact Store](./features/artifact-store/)** - Versioned outputs (Git + S3) - TBD
-- **[Real-Time Collaboration](./features/realtime-collaboration/)** - ShareDB + OT/CRDT - TBD
-- **[Approval & Governance](./features/approval-governance/)** - Human control layer - TBD
-- **[Role Manager Meta-Agent](./features/role-manager-meta-agent/)** - Agent synthesis (Think/Plan/Suggest/Build) - TBD
 
-**Existing Features** (To Be Refactored):
-- **Database Persistence** - From [REHYDRATION_STRATEGY.md](./archive/REHYDRATION_STRATEGY.md)
-- **Role Discovery** - From [ROLE_DISCOVERY_ENHANCEMENT.md](./archive/ROLE_DISCOVERY_ENHANCEMENT.md)
-- **Agent Manager Service** - From [AGENTMANAGERSERVICE_INTEGRATION.md](./archive/AGENTMANAGERSERVICE_INTEGRATION.md)
-- **Ping UI Integration** - From [BACKEND_FRONTEND_INTEGRATION.md](./archive/BACKEND_FRONTEND_INTEGRATION.md)
+> **[📋 MASTER FEATURE LIST](./features/FEATURE-LIST.md)** — Complete list of all 32 features with status, dependencies, phased execution plan, and OSS research.
+
+**Core Runtime (A):**
+- [A1: Mastra/AI SDK Migration](./features/mastra-migration/) — Replace LangChain with AI SDK
+- [A2: Agentic Streaming](./features/agentic-streaming/) — Real-time streaming via Socket.IO
+- [A3: Tools as MCP Servers](./features/tools-as-mcp/) — All tools exported as MCP
+- [A4: Worker Sandboxing](./features/worker-sandboxing/) — Isolated agent execution
+- [A5: Planner as Agent](./features/planner-as-agent/) — Swappable planner agents
+- [A6: Task Orchestration Redesign](./features/task-orchestration/) — DAG-based task lifecycle
+- [A7: External Agent Invocation](./features/external-agent-invocation/) — Call agents outside our system
+- [A8: Git-Based Task Context](./features/git-task-context/) — Branch-per-task, git persistence
+
+**Platform Architecture (B):**
+- [B1: Team Package Extraction](./features/team-package/) — @ping/teams as npm package
+- [B2: CLI App](./features/cli-system/) — Claude Code-like CLI consuming AgentManager
+- [B3: Dev/Prod Setup](./features/dev-prod-setup/) — Environment profiles, Docker Compose
+- [B4: Seed Data System](./features/seed-data/) — Configurable test data seeding
+- [B5: Bun Monorepo](./features/bun-monorepo-migration/) — 🔄 In Progress
+
+**Intelligence & Quality (C):**
+- [C1: LLM Response Grading](./features/llm-response-grading/) — Mastra evals + custom scoring
+- [C2: Skills System](./features/skills-system/) — Portable agent capabilities
+- [C3: Skills Integration](./features/skills-integration/) — Wire skills into runtime
+
+**Memory & Search (D):**
+- [D1: Memory System](./features/memory-system/) — L1/L2/L3 memory layers (🔄 In Progress)
+- [D2: L2 Search & Indexing](./features/l2-search-indexing/) — Keyword + structured queries
+- [D3: L2 as Service](./features/l2-service/) — Deploy L2 standalone
+
+**Orchestration & Teams (E):**
+- [E1: Orchestrator Agent](./features/orchestrator-agent/) — LLM-driven planning (🔄 In Progress)
+- [E2: AgentManager Redesign](./features/agentmanager-redesign/) (🔄 In Progress)
+- [E3: Agent Refactoring](./features/agent-refactoring/) (🔄 In Progress)
+- [E4: Agent Manager Migration](./features/agent-manager-migration/) (✅ Done)
+- [E5: Team Service](./features/team-service/) — Team CRUD
+- [E6: Teams Integration](./features/teams-integration/) — Frontend + CLI teams
+
+**Frontend & Integration (F):**
+- [F1: Frontend Orchestrator](./features/frontend-orchestrator-integration/) — Plan approval UI
+- [F2: MCP Server Integration](./features/mcp-integration/) — Real MCP servers end-to-end
+- [F3: OpenClaw Integration](./features/openclaw-integration/) — External gateways (🔬 Research)
+
+**Research & Vision (G):**
+- [G1: Evolving Agent](./features/evolving-agent/) (🔬 Research)
+- [G2: Agent Collaboration](./features/agent-collab-docs/) (🔬 Research)
+- [G3: Open-Source Research](./features/opensource-research/) — OSS evaluation tracker
 
 ### 📚 Archive
 - **[Archived Planning Docs](./archive/)** - Old vision, architecture, and planning documents

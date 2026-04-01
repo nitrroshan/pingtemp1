@@ -1,0 +1,16 @@
+{
+  "search.exclude": {
+    "**/.yarn": true,
+    "**/.pnp.*": true
+  },
+  "typescript.tsdk": ".yarn/sdks/typescript/lib",
+  "typescript.enablePromptUseWorkspaceTsdk": true,
+  // Cap TS language server memory (default is unlimited — was eating 2+ GB)
+  "typescript.tsserver.maxTsServerMemory": 1024,
+  // Reduce file watcher pressure on 8GB machine
+  "files.watcherExclude": {
+    "**/node_modules/**": true,
+    "**/dist/**": true,
+    "**/.git/objects/**": true
+  }
+}

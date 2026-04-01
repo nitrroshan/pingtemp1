@@ -1,0 +1,178 @@
+/**
+ * HttpServer - Express HTTP server for REST API endpoints
+ */
+
+import express from "express";
+import cors from "cors";
+import swaggerUi from "swagger-ui-express";
+import { Logger } from "tslog";
+import { AgentManager } from "../agentManager/AgentManagerV2.js";
+import { createAgentMangerRouteHandlers } from "./agentManagerHandler.js";
+import { createAgentManagerHandlerV2 } from "./agentManagerHandlerV2.js";
+import { createTeamRoutes } from "./routes/index.js";
+import { TeamService } from "../team/index.js";
+import { swaggerSpec } from "./swagger.js";
+import { skillsRouter } from "../skills/index.js";
+
+const logger = new Logger({ name: "HttpServer" });
+
+// Feature flag: Use V2 API as default (V1 still available)
+const USE_API_V2 = process.env.USE_API_V2 !== "false";
+
+export interface HttpServerOptions {
+  agentManager: AgentManager;
+  teamService?: TeamService;
+}
+
+export class HttpServer {
+  private app: express.Application;
+  private server: any;
+
+  constructor(options: HttpServerOptions) {
+    this.app = express();
+    this.setupMiddleware();
+    this.setupRoutes(options);
+  }
+
+  /**
+   * Setup Express middleware
+   */
+  private setupMiddleware() {
+    this.app.use(cors());
+    this.app.use(express.json());
+  }
+
+  /**
+   * Setup HTTP routes
+   */
+  private setupRoutes(options: HttpServerOptions) {
+    // Health check
+    this.app.get("/health", (req, res) => {
+      logger.info("[HttpServer] Health check requested");
+      res.json({
+        status: "ok",
+        timestamp: Date.now(),
+        service: "AgentManager API",
+      });
+    });
+
+    // Mount agentManager route handlers (V1)
+    const agentManagerRouteHandlers = createAgentMangerRouteHandlers(
+      options.agentManager,
+    );
+    this.app.use("/api", agentManagerRouteHandlers);
+    logger.info("[HttpServer] V1 API mounted at /api");
+
+    // Mount V2 API routes (uses registry, no AgentManager passed)
+    const v2Routes = createAgentManagerHandlerV2();
+    this.app.use("/api/v2", v2Routes);
+    logger.info("[HttpServer] V2 API mounted at /api/v2");
+
+    if (USE_API_V2) {
+      logger.info(
+        "[HttpServer] V2 API is the recommended path (USE_API_V2=true)",
+      );
+    }
+
+    // Mount skills API routes
+    this.app.use("/api/skills", skillsRouter);
+    logger.info("[HttpServer] Skills API mounted at /api/skills");
+
+    // Mount team routes (v1 API)
+    if (options.teamService) {
+      const teamRoutes = createTeamRoutes(options.teamService);
+      this.app.use("/api/v1/teams", teamRoutes);
+      logger.info("[HttpServer] Team routes mounted at /api/v1/teams");
+    }
+
+    // Mount Swagger UI
+    this.app.use("/api-docs", swaggerUi.serve, swaggerUi.setup(swaggerSpec));
+    this.app.get("/api-docs.json", (req, res) => {
+      res.json(swaggerSpec);
+    });
+    logger.info("[HttpServer] Swagger UI available at /api-docs");
+
+    // Collab docs listing endpoint — returns CRDT doc names for a team
+    this.app.get("/api/collab/:teamId/docs", async (req, res) => {
+      try {
+        const { agentManagerRegistry } =
+          await import("../agentManager/AgentManagerRegistry.js");
+        const manager = await agentManagerRegistry.getForTeam(
+          req.params.teamId,
+        );
+        const coordinator = manager.getMemoryCoordinator();
+        const l2 = coordinator?.L2;
+        if (!l2) {
+          res.json({ docs: [] });
+          return;
+        }
+        const collabServer =
+          (l2 as any).collabServer || (l2 as any)._collabServer;
+        if (!collabServer?.getDocNames) {
+          res.json({ docs: [] });
+          return;
+        }
+        const allDocs: string[] = await collabServer.getDocNames();
+        // Filter by team prefix and strip it
+        const teamPrefix = req.params.teamId + "/";
+        const docs = allDocs
+          .filter((d: string) => d.startsWith(teamPrefix))
+          .map((d: string) => d.slice(teamPrefix.length));
+        res.json({ docs });
+      } catch (err: any) {
+        res.status(500).json({ error: err.message });
+      }
+    });
+    logger.info(
+      "[HttpServer] Collab docs API mounted at /api/collab/:teamId/docs",
+    );
+  }
+
+  /**
+   * Start the HTTP server
+   */
+  listen(port: number): Promise<void> {
+    return new Promise((resolve) => {
+      this.server = this.app.listen(port, () => {
+        logger.info(`[HttpServer] HTTP API listening on port ${port}`);
+        resolve();
+      });
+    });
+  }
+
+  /**
+   * Get Express app instance (for Socket.IO integration)
+   */
+  getApp(): express.Application {
+    return this.app;
+  }
+
+  // /**
+  //  * Get HTTP server instance
+  //  */
+  // getServer(): any {
+  //   return this.server;
+  // }
+
+  /**
+   * Close the HTTP server
+   */
+  close(): Promise<void> {
+    return new Promise((resolve, reject) => {
+      if (this.server) {
+        logger.info("[HttpServer] Closing HTTP server...");
+        this.server.close((err: any) => {
+          if (err) {
+            logger.error("[HttpServer] Error closing server:", err);
+            reject(err);
+          } else {
+            logger.info("[HttpServer] HTTP server closed");
+            resolve();
+          }
+        });
+      } else {
+        resolve();
+      }
+    });
+  }
+}
