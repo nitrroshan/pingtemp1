@@ -49,6 +49,11 @@ Planner Agent (the brain / leader)
   ├── model: configurable (gpt-4o, claude, etc.)
   └── tools:
         │
+        │  USER INTERACTION TOOLS (talk with the user):
+        ├── ask_user(question)       → Human: ask clarifying question, block until answer
+        ├── tell_user(message)       → Human: send update/finding (fire-and-forget)
+        ├── discuss_approach(options) → Human: present trade-offs, get user's choice
+        │
         │  KNOWLEDGE TOOLS (research before planning):
         ├── research_domain(topic)   → LLM/RAG: deep-dive on architecture, patterns, pitfalls
         ├── analyze_requirements(goal)→ LLM: decompose into components, risks, unknowns
@@ -62,7 +67,15 @@ Planner Agent (the brain / leader)
         ├── get_critical_path()      → Orchestrator: longest dependency chain
         ├── cancel_task(taskId)      → Orchestrator: stop a running task
         ├── request_approval(plan)   → Human: pause for approval
-        └── search_agents(capability)→ Registry: find available agents/roles
+        ├── search_agents(capability)→ Registry: find available agents/roles
+        │
+        │  PLAN MUTATION TOOLS (update plans mid-flight):
+        ├── update_task(taskId, patch)→ Orchestrator: modify task description, role, priority, deps
+        ├── add_tasks(tasks[])       → Orchestrator: inject new tasks into active plan (with deps)
+        ├── remove_task(taskId)       → Orchestrator: remove pending task + cascade dep updates
+        ├── reprioritize(taskId, pri) → Orchestrator: change task priority (affects dispatch order)
+        ├── reassign_task(taskId,role)→ Orchestrator: move task to different worker role
+        └── replan(reason, newPlan)   → Orchestrator: replace remaining plan (cancel pending, submit new)
 
 Orchestrator (the task master / execution engine)
   ├── IS the task master — owns task lifecycle end-to-end
@@ -100,11 +113,12 @@ One shot. No tools. No iteration. The plan quality is entirely bounded by whatev
 
 **What an agentic planner does:**
 ```
-Goal → Research domain → Analyse requirements → Assess team capabilities
+Goal → Clarify with user → Research domain → Analyse requirements
+     → Assess team capabilities → Discuss findings with user
      → Reason about trade-offs → Build dependency graph → Submit plan
-     → Monitor execution → Replan when needed
+     → Monitor execution → Update user → Replan when needed
 ```
-Multiple LLM calls with tools in between. The planner gathers real knowledge before committing to a plan.
+Multiple LLM calls with tools in between. The planner gathers real knowledge AND user intent before committing to a plan.
 
 ### The Planner's Cognitive Workflow
 
@@ -114,62 +128,182 @@ The planner follows a mandatory multi-step workflow. It MUST NOT skip straight t
 ┌─────────────────────────────────────────────────────────┐
 │                PLANNER COGNITIVE LOOP                    │
 │                                                         │
-│  1. RESEARCH                                            │
+│  1. CLARIFY                                             │
+│     │  Talk to the user. Ask about scope, constraints,  │
+│     │  preferences, priorities. Don't assume — ask.     │
+│     │  Can ask multiple rounds until goal is clear.     │
+│     ▼                                                   │
+│  2. RESEARCH                                            │
 │     │  Call research tools to understand the domain.    │
 │     │  Topics: architecture patterns, tech stack,       │
 │     │  common pitfalls, prior art, best practices.      │
 │     │  Can call multiple times for different angles.    │
 │     ▼                                                   │
-│  2. ANALYSE                                             │
+│  3. ANALYSE                                             │
 │     │  Decompose the goal into components.              │
 │     │  Identify hard vs soft constraints.               │
 │     │  Surface risks, unknowns, assumptions.            │
 │     ▼                                                   │
-│  3. ASSESS TEAM                                         │
+│  4. DISCUSS                                             │
+│     │  Present findings and analysis to the user.       │
+│     │  Share trade-offs, risks, proposed approach.      │
+│     │  Get feedback before committing to a plan.        │
+│     ▼                                                   │
+│  5. ASSESS TEAM                                         │
 │     │  Query available roles and their capabilities.    │
 │     │  Match task types to roles. Identify gaps.        │
 │     ▼                                                   │
-│  4. REASON                                              │
+│  6. REASON                                              │
 │     │  Weigh trade-offs (speed vs quality vs risk).     │
 │     │  Choose an approach with explicit rationale.      │
 │     │  The planner's chain-of-thought is visible in L2. │
 │     ▼                                                   │
-│  5. PLAN                                                │
+│  7. PLAN                                                │
 │     │  Call submit_plan with a dependency-aware DAG.    │
 │     │  Inject research findings into task context.notes │
 │     │  so workers get domain knowledge for free.        │
 │     ▼                                                   │
-│  6. MONITOR & ADAPT                                     │
+│  8. MONITOR & ADAPT                                     │
 │     │  Read execution progress via orchestrator tools.  │
+│     │  Update user on progress, ask for input on blocks.│
 │     │  Replan if tasks fail or scope changes.           │
+│     │                                                   │
+│     │  USER UPDATES (proactive, during execution):      │
+│     │  • tell_user(progress) — share milestones, task   │
+│     │    completions, interesting findings from workers  │
+│     │  • tell_user(warning) — flag risks, delays, cost  │
+│     │  • ask_user(decision) — when planner needs input: │
+│     │    task failed (retry/skip/replan?), scope creep   │
+│     │    detected, multiple valid approaches, budget     │
+│     │    concerns, quality vs speed trade-offs           │
+│     │                                                   │
+│     │  PLAN MUTATIONS (mid-flight adjustments):         │
+│     │  • update_task — fix description, change criteria │
+│     │  • add_tasks — discovered new work needed         │
+│     │  • remove_task — no longer relevant               │
+│     │  • reprioritize — shift urgency based on findings │
+│     │  • reassign_task — wrong role, move to better fit │
+│     │  • replan — major pivot, replace remaining plan   │
 │     └──────────────────────────────────────────────────  │
 └─────────────────────────────────────────────────────────┘
 ```
 
-### Planner Tools: Two Categories
+### Planner Tools: Three Categories
 
-The planner's tools fall into two groups:
+The planner's tools fall into three groups:
+
+**User Interaction Tools** — how the planner talks with the user:
+
+| Tool | Purpose | When Used |
+|---|---|---|
+| `ask_user` | Ask the user a clarifying question. Returns user's response. Can ask about scope, constraints, preferences, priorities, ambiguities. Blocks until user responds. | Step 1 — before research, whenever ambiguous |
+| `tell_user` | Send the user an informational message (progress update, findings summary, status report). Does NOT block — fire-and-forget. | Any step — share findings, report progress |
+| `discuss_approach` | Present the user with trade-offs or options and ask them to choose. Returns user's choice + rationale. Use when multiple valid approaches exist. | Step 4 — after research, before committing to plan |
 
 **Knowledge Tools** — how the planner learns before planning:
 
 | Tool | Purpose | When Used |
 |---|---|---|
-| `research_domain` | Query an LLM/knowledge source for domain expertise. Architecture patterns, tech stack analysis, best practices, pitfalls. Can be called multiple times with different topics. | Step 1 — always before planning |
-| `analyze_requirements` | Decompose a goal into components, constraints, risks, and unknowns. Returns structured analysis. | Step 2 — after initial research |
-| `get_team_capabilities` | Query available roles and what each can do. Maps role → skills/tools/limitations. | Step 3 — before assigning tasks to roles |
-| `get_context` | Search L2 shared memory for prior work, past plans, prior failures, related outputs. | Steps 1-4 — whenever prior context exists |
+| `research_domain` | Query an LLM/knowledge source for domain expertise. Architecture patterns, tech stack analysis, best practices, pitfalls. Can be called multiple times with different topics. | Step 2 — always before planning |
+| `analyze_requirements` | Decompose a goal into components, constraints, risks, and unknowns. Returns structured analysis. | Step 3 — after initial research |
+| `get_team_capabilities` | Query available roles and what each can do. Maps role → skills/tools/limitations. | Step 5 — before assigning tasks to roles |
+| `get_context` | Search L2 shared memory for prior work, past plans, prior failures, related outputs. | Steps 1-5 — whenever prior context exists |
 
 **Execution Tools** — how the planner drives the orchestrator:
 
 | Tool | Purpose | When Used |
 |---|---|---|
-| `submit_plan` | Submit a complete task plan to the orchestrator for approval and execution. | Step 5 — only after research and analysis |
-| `get_status` | Query current task states, progress, completions, failures. | Step 6 — during monitoring |
-| `get_blocked` | Get blocked tasks and their reasons. | Step 6 — when tasks stall |
-| `get_critical_path` | Get the longest dependency chain (bottleneck). | Steps 4-6 — for scheduling reasoning |
-| `cancel_task` | Cancel a running or pending task. | Step 6 — during replanning |
+| `submit_plan` | Submit a complete task plan to the orchestrator for approval and execution. | Step 7 — only after research, discussion, and analysis |
+| `get_status` | Query current task states, progress, completions, failures. | Step 8 — during monitoring |
+| `get_blocked` | Get blocked tasks and their reasons. | Step 8 — when tasks stall |
+| `get_critical_path` | Get the longest dependency chain (bottleneck). | Steps 6-8 — for scheduling reasoning |
+| `cancel_task` | Cancel a running or pending task. | Step 8 — during replanning |
 | `request_approval` | Pause and request human approval before proceeding. | Any step — when stakes are high |
-| `search_agents` | Look up agent registry for available capabilities/roles. | Step 3 — team assessment |
+| `search_agents` | Look up agent registry for available capabilities/roles. | Step 5 — team assessment |
+
+**Plan Mutation Tools** — how the planner updates plans mid-execution:
+
+| Tool | Purpose | When Used |
+|---|---|---|
+| `update_task` | Modify a task's description, acceptance criteria, assigned role, priority, or dependencies. Only works on `pending` or `ready` tasks (not `in_progress` — use `cancel_task` + re-add for those). | Step 8 — when monitoring reveals a task needs adjustment |
+| `add_tasks` | Inject new tasks into the active plan. New tasks can depend on existing tasks and vice versa (existing pending tasks can be updated to depend on new ones). Orchestrator resolves the new DAG. | Step 8 — when execution reveals missing work ("we also need a migration script") |
+| `remove_task` | Remove a `pending` or `ready` task from the plan. Cascades: any task depending on the removed task has that dependency dropped. If a downstream task's only dependency was the removed one, it becomes ready. | Step 8 — when a task is no longer needed (scope reduction, duplicate, superseded) |
+| `reprioritize` | Change a task's priority. Re-sorts the dispatch overflow queue immediately via `PriorityQueue.updatePriority()` — higher priority tasks jump ahead. **Only the planner can reprioritize** — user can only start ready tasks, not reorder them. **No preemption:** in-progress tasks are not interrupted for higher-priority work; the new priority takes effect at next dispatch. | Step 8 — when urgency shifts ("do the API first, frontend can wait") |
+| `reassign_task` | Move a pending/ready task to a different worker role. Updates the Orchestrator's dispatch routing. | Step 8 — when the planner realizes a task fits a different role better |
+| `replan` | Nuclear option: cancel all `pending`/`ready` tasks, submit a new plan for the remaining work. In-progress tasks continue unless explicitly cancelled first. Takes a `reason` string logged to L2. | Step 8 — major pivot after failure, scope change, or user decision |
+
+### Plan Mutation Guard Rails
+
+Plan mutations are powerful but dangerous. Every mutation tool enforces guard rails:
+
+| Rule | Why | Tool Affected |
+|---|---|---|
+| Cannot mutate `in_progress` tasks | Worker is actively executing — changing the task under it causes chaos. Use `cancel_task` first, then re-create. | `update_task`, `remove_task`, `reassign_task` |
+| Cannot mutate `completed` tasks | Completed work is done. If the output is wrong, create a new task. | All mutation tools |
+| Cannot create dependency cycles | Circular deps deadlock the plan — nothing becomes `ready`. DAG validator rejects and returns the cycle path to the planner. | `add_tasks`, `update_task` (when modifying deps) |
+| Cannot assign to nonexistent roles | Role must exist in the registry. Error response includes available roles. | `reassign_task` |
+| `replan` requires reason | Every replan decision is logged to L2 for auditability. Why did the plan change? What failed? | `replan` |
+| `replan` may require approval | If `plan.metadata.requiresApproval`, replan pauses for human approval before cancelling + re-submitting. | `replan` |
+| All mutations emit Socket.IO events | Frontend must stay in sync with plan state. Every mutation fires a typed event (`plan:task_updated`, `plan:tasks_added`, etc.). | All mutation tools |
+
+### MONITOR Phase: User Updates + Plan Adaptation
+
+The planner doesn't go quiet during execution. But it also doesn't **poll**. Polling burns LLM tokens on empty `get_status()` calls while workers are still working. Instead, the planner **suspends** after dispatching tasks and the orchestrator **wakes** it when something happens.
+
+```
+MONITOR (suspend/resume — NOT a polling loop):
+
+  1. Planner submits plan → orchestrator dispatches tasks
+     │
+  2. Planner SUSPENDS (returns, no LLM running, zero tokens)
+     │  Orchestrator resolves plannerWakeSignal when:
+     │  - Task completes
+     │  - Task fails
+     │  - Worker stalls/dies
+     │  - User sends message
+     │  - All tasks done
+     │
+  3. Planner WAKES (orchestrator injects notifications as system message)
+     │  Planner sees: "[SYSTEM] T-001 completed. T-003 failed: API timeout."
+     │
+  4. ASSESS:
+     │  ├── Completions? → tell_user(progress, "Task X done: <summary>")
+     │  ├── Failures? → tell_user(warning, "Task X failed: <reason>")
+     │  ├── Blocked tasks? → analyze root cause
+     │  └── Cost/time? → tell_user(warning, "Budget 70% spent")
+     │
+  5. DECIDE (does the plan need changing?):
+     │  ├── MINOR → update_task / reprioritize / reassign_task
+     │  ├── MEDIUM → add_tasks / remove_task
+     │  └── MAJOR → ask_user / replan
+     │
+  6. EXECUTE mutation → DAG re-resolves → dispatch continues
+     │
+  7. Still tasks running? → SUSPEND again (back to step 2)
+     All done? → proceed to completion
+```
+
+**Why suspend/resume, not polling:**
+
+| | Polling MONITOR loop | Suspend/Resume |
+|---|---|---|
+| **Token cost** | Every `get_status()` call costs tokens even when nothing changed | Zero tokens while suspended — only runs when woken |
+| **Latency** | Notification lag = poll interval (5-30s) | Instant — orchestrator wakes planner immediately |
+| **Implementation** | Planner needs a loop in its prompt (fragile — LLMs drift) | Orchestrator controls wake signal (reliable, code-level) |
+| **Scaling** | N plans = N polling loops burning tokens | N plans = N sleeping promises, near-zero resource cost |
+
+### User Interaction Patterns During MONITOR
+
+| Situation | Planner Action | Tool Used | Blocking? |
+|---|---|---|---|
+| Task completed successfully | Share summary with user | `tell_user(progress)` | No |
+| Task failed | Notify user, explain failure | `tell_user(warning)` | No |
+| Task failed + multiple recovery options | Ask user to choose: retry/skip/replan | `ask_user` | Yes |
+| Execution reveals new work needed | Inform user, add tasks | `tell_user(finding)` + `add_tasks` | No |
+| Scope creep detected | Ask user if extra work is in scope | `ask_user` | Yes |
+| Budget/cost threshold hit | Warn user, ask if should continue | `tell_user(warning)` + `ask_user` | Yes for ask |
+| Worker stalled (watchdog report) | Inform user, decide action | `tell_user(warning)` → `ask_user` if needed | Depends |
+| All tasks done | Share completion summary | `tell_user(status)` | No |
 
 ### How Domain Knowledge Gets Acquired
 
@@ -358,10 +492,89 @@ class Orchestrator {
     this.notifyPlanner({ type: 'task_complete', taskId, output });
   }
   
-  async reportFailure(taskId: string, error: string): Promise<void> {
-    await this.taskStore.fail(taskId, error);
-    this.notifyPlanner({ type: 'task_failed', taskId, error });
-    // Planner decides whether to replan — orchestrator just reports
+  async reportFailure(taskId: string, report: WorkerFailureReport): Promise<void> {
+    // See "Worker Failure Reporting" section for full implementation
+    // Includes: error classification, auto-retry for transients, structured 
+    // planner notification, downstream blocking, retry-from-scratch
+    await this.onTaskFailed(report);
+  }
+
+  // --- Plan Mutation Tools (called by planner mid-execution) ---
+  
+  async updateTask(taskId: string, patch: TaskPatch): Promise<void> {
+    const task = await this.taskStore.get(taskId);
+    if (task.status === 'in_progress' || task.status === 'completed')
+      throw new Error(`Cannot update ${task.status} task. Cancel first.`);
+    await this.taskStore.update(taskId, patch);
+    if (patch.dependencies) this.depResolver.resolveReady(); // deps changed → re-resolve
+    this.events.emit('plan:task_updated', { taskId, patch });
+  }
+
+  async addTasks(tasks: PlanTask[], newDepsOnExisting?: Map<string, string[]>): Promise<void> {
+    for (const task of tasks) {
+      await this.taskStore.create(task);
+    }
+    if (newDepsOnExisting) {
+      for (const [existingId, newDeps] of newDepsOnExisting) {
+        await this.taskStore.addDependencies(existingId, newDeps);
+      }
+    }
+    this.depResolver.validateDAG(); // throws on cycle
+    this.depResolver.resolveReady();
+    await this.dispatchReadyTasks();
+    this.events.emit('plan:tasks_added', { taskIds: tasks.map(t => t.id) });
+  }
+
+  async removeTask(taskId: string): Promise<void> {
+    const task = await this.taskStore.get(taskId);
+    if (task.status === 'in_progress')
+      throw new Error('Cannot remove in_progress task. Cancel first.');
+    // Cascade: drop from all downstream dependency lists
+    await this.taskStore.removeDependencyFromAll(taskId);
+    await this.taskStore.delete(taskId);
+    this.depResolver.resolveReady(); // may unblock downstream tasks
+    await this.dispatchReadyTasks();
+    this.events.emit('plan:task_removed', { taskId });
+  }
+
+  async reprioritize(taskId: string, priority: TaskPriority): Promise<void> {
+    await this.taskStore.update(taskId, { priority });
+    // PriorityQueue.updatePriority() re-heapifies in place — no separate resortOverflowQueue() needed
+    this.workerPool.overflowQueue.updatePriority(taskId, priority);
+    this.events.emit('plan:task_reprioritized', { taskId, priority });
+  }
+
+  // Design decision: NO PREEMPTION
+  // When a critical task becomes ready but all worker slots are full, it waits in the
+  // overflow queue (sorted by priority). We do NOT cancel a running lower-priority task
+  // to make room. Reasons:
+  // 1. Cancelling mid-execution wastes all work done so far (retry from scratch)
+  // 2. The running task may be close to completion
+  // 3. Preemption logic is complex and error-prone
+  // 4. maxConcurrentWorkers is configurable — increase it if bottlenecked
+  // If truly urgent: user/planner can cancel_task the low-priority work explicitly.
+
+  async reassignTask(taskId: string, newRole: string): Promise<void> {
+    if (!this.workerPool.hasRole(newRole))
+      throw new Error(`Role "${newRole}" not found. Available: ${this.workerPool.getRoles().join(', ')}`);
+    const task = await this.taskStore.get(taskId);
+    if (task.status === 'in_progress')
+      throw new Error('Cannot reassign in_progress task. Cancel first.');
+    await this.taskStore.update(taskId, { assignedRole: newRole });
+    this.events.emit('plan:task_reassigned', { taskId, newRole });
+  }
+
+  async replan(reason: string, newPlan: Plan): Promise<void> {
+    // Cancel all pending/ready tasks (in_progress continue unless cancelled separately)
+    const pending = await this.taskStore.query({ status: ['pending', 'ready'] });
+    for (const task of pending) {
+      await this.taskStore.cancel(task.id);
+    }
+    // Log replan decision to L2
+    await this.l2.write({ type: 'replan_decision', reason, oldTasksCancelled: pending.length });
+    // Submit new plan
+    await this.orchestrate(newPlan);
+    this.events.emit('plan:replanned', { reason, newPlanId: newPlan.id, cancelledCount: pending.length });
   }
 }
 ```
@@ -485,7 +698,7 @@ class Orchestrator {
       
       // Worker executes, orchestrator listens
       worker.on('complete', (output) => this.onTaskCompleted(task.id, output));
-      worker.on('failure', (error) => this.onTaskFailed(task.id, error));
+      worker.on('failure', (report: WorkerFailureReport) => this.onTaskFailed(report));
       
       worker.execute(task);
     }
@@ -502,11 +715,14 @@ class Orchestrator {
     }
   }
 
-  private async onTaskFailed(taskId: string, error: string): Promise<void> {
-    await this.taskStore.fail(taskId, error);
-    // Orchestrator doesn't decide what to do — it notifies the planner
-    // The planner's tool call will return this failure info
-    // Planner decides: replan, retry, escalate, or abort
+  private async onTaskFailed(report: WorkerFailureReport): Promise<void> {
+    // Full implementation in "Worker Failure Reporting" section:
+    // 1. Update TaskStore with structured failure report
+    // 2. Block downstream dependent tasks
+    // 3. Auto-retry transient errors (rate_limit, external_service)
+    // 4. Escalate non-transient errors to planner via NotificationQueue
+    // 5. Notify users via Socket.IO
+    // 6. Cleanup worker sandbox and pool slot
   }
 }
 ```
@@ -1125,6 +1341,1148 @@ Both feed into the same principle:
 
 ---
 
+## Notification System: How the Orchestrator Talks to Everyone
+
+### The Gap
+
+The architecture describes `notifyPlanner()`, `tell_user()`, worker events — but never defines the **notification system** that makes all of this work. How does the orchestrator actually notify the planner when a task completes? How does it notify workers when context changes? How does it notify users in real-time? And how do we avoid the 7-emitter spaghetti we already have (see [EVENT_ARCHITECTURE_ANALYSIS.md](../../architecture/EVENT_ARCHITECTURE_ANALYSIS.md))?
+
+### Research: How Other Multi-Agent Systems Handle This
+
+| System | Notification Mechanism | Strengths | Weaknesses |
+|---|---|---|---|
+| **AutoGen (Microsoft)** | Topic-based pub/sub. Agents subscribe to topics (type + source). Group chat manager publishes `RequestToSpeak` to direct agents. Uses `TypeSubscription` for routing by agent type. Multi-tenant via topic source. | Clean separation. Agents don't know each other. Extensible — add subscribers without modifying publishers. Multi-tenant ready. | Over-engineered for single-process use. Topic indirection adds complexity when you have 3-5 agents. |
+| **CrewAI** | Direct delegation + callbacks. Manager agent calls crew members directly. Callbacks for `on_task_start`, `on_task_complete`, `on_task_error`. Synchronous orchestration loop. | Simple. Easy to debug. Callbacks are typed. | No async fan-out. Manager blocks on each task. No way to broadcast to all agents simultaneously. |
+| **Mastra** | Supervisor pattern with tool calls. Supervisor agent has subagents registered as tools. Calls them directly via `generate()`/`stream()`. Workflow steps for fixed sequences. | Natural for LLM agents — tool calls are the communication primitive. Streaming built-in. | Supervisor is the bottleneck. No event-driven reactivity — everything is request/response through the supervisor. |
+| **LangGraph** | State graph with conditional edges. Shared state object passed between nodes. "Interrupts" for human-in-the-loop (pause graph, resume on input). Streaming via callbacks/events on graph execution. | State is first-class. Interrupts solve human notification neatly. Graph structure makes flow visible. | State graph is sequential by default. Parallel fan-out requires explicit design. No built-in pub/sub for agent-to-agent. |
+| **Temporal** | Activity heartbeats + signals + queries. Workflows send signals to each other. Activities heartbeat to the orchestrator. Queries return current state synchronously. 4 timeout types for liveness detection. | Battle-tested in production. Signals are typed. Heartbeats solve liveness detection. Durable execution survives crashes. | Heavy infrastructure (Temporal server). Overkill for in-process agent orchestration. |
+
+### Key Takeaways
+
+1. **Tool calls ARE the notification for LLM agents** (Mastra, LangGraph) — the planner calls `get_status()` and learns what happened. This is pull-based notification.
+2. **Events/pub-sub for fire-and-forget broadcasts** (AutoGen) — UI updates, logging, metrics. Multiple listeners, no response needed.
+3. **Callbacks for tightly-coupled 1:1 notifications** (CrewAI, Temporal signals) — orchestrator → planner when a specific thing happens.
+4. **Heartbeats for liveness** (Temporal) — already designed in our watchdog section.
+5. **No system uses ONLY one pattern** — they all combine 2-3 mechanisms.
+
+### Three Notification Channels
+
+Our orchestrator needs three different notification mechanisms for three different audiences. Using one mechanism for all three is the mistake the current codebase makes (EventEmitter for everything).
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                    NOTIFICATION SYSTEM                                   │
+│                                                                         │
+│  Channel 1: ORCHESTRATOR → PLANNER (Message Injection)                 │
+│  ─────────────────────────────────────────────────────                  │
+│  Mechanism: Inject system messages into planner's LLM message stream.  │
+│  Why: Planner is an LLM agent. The only way to "notify" it is to      │
+│       add a message to its conversation that it will see and reason    │
+│       about on its next turn.                                          │
+│  Pattern: Async message queue → planner processes on next iteration.   │
+│                                                                         │
+│  Channel 2: ORCHESTRATOR → USERS (NotificationTransport)               │
+│  ─────────────────────────────────────────────────────                  │
+│  Mechanism: Transport interface — V1: Socket.IO, future: OpenClaw      │
+│             Gateway (WhatsApp, Telegram, Slack, etc.)                  │
+│  Why: Users are on different channels. Transport abstraction lets us   │
+│       start with Socket.IO and extend to chat platforms later.         │
+│  Pattern: Fire-and-forget broadcast. ask/discuss for response.         │
+│                                                                         │
+│  Channel 3: ORCHESTRATOR → WORKERS (Context + CancellationToken)       │
+│  ─────────────────────────────────────────────────────                  │
+│  Mechanism: Workers get context when spawned. Ongoing notifications    │
+│             via L2 shared docs (workers read when they need to).       │
+│             ERRORS/CANCELLATION: CancellationToken checked between     │
+│             LLM turns. Orchestrator sets token → worker aborts on      │
+│             next tool boundary. No waiting for L2 poll.                │
+│  Why: Workers are spawned per-task. Normal notifications are pull.     │
+│       But errors + cancellation can't wait — token mechanism gives     │
+│       the orchestrator a kill switch without mid-LLM interruption.     │
+│  Pattern: Pull for context, CancellationToken for errors/abort.        │
+│                                                                         │
+│  Bonus: PLANNER → USER (already designed as user tools)               │
+│  ─────────────────────────────────────────────────────                  │
+│  Mechanism: tell_user(), ask_user(), discuss_approach()                │
+│  Why: These are planner tools, not orchestrator notifications.         │
+│       Planner decides when/what to tell the user.                      │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+### Channel 1: Orchestrator → Planner (Message Injection)
+
+This is the hardest channel because the planner is an LLM agent — it doesn't have an event listener. It processes messages in a conversation.
+
+**The problem:** When a worker completes a task, the orchestrator can't just `emit('task:complete')` and have the planner react. The planner is either (a) mid-LLM-call or (b) waiting for events via a monitoring tool.
+
+**Solution: Notification Queue + Suspend/Resume**
+
+The orchestrator maintains a per-planner notification queue. When the planner has no work to do (tasks dispatched, waiting for results), it **suspends** — the LLM is not running, zero tokens consumed. The orchestrator **wakes** the planner by resolving a wake signal and injecting queued notifications as system messages.
+
+```typescript
+interface PlannerNotification {
+  id: string;
+  type: 'task_completed' | 'task_failed' | 'worker_stalled' | 'worker_died'
+      | 'plan_blocked' | 'execution_complete' | 'sla_warning';
+  severity: 'info' | 'warning' | 'urgent';
+  timestamp: number;
+  payload: Record<string, any>;   // type-specific data
+  acknowledged: boolean;           // planner has seen this
+}
+
+class NotificationQueue {
+  private queue: PlannerNotification[] = [];
+
+  /** Orchestrator pushes notifications */
+  push(notification: Omit<PlannerNotification, 'id' | 'acknowledged'>): void {
+    this.queue.push({ ...notification, id: randomUUID(), acknowledged: false });
+  }
+
+  /** Planner pulls unacknowledged notifications (via tool call) */
+  drain(): PlannerNotification[] {
+    const pending = this.queue.filter(n => !n.acknowledged);
+    pending.forEach(n => n.acknowledged = true);
+    return pending;
+  }
+
+  /** Check if there are urgent unacknowledged notifications */
+  hasUrgent(): boolean {
+    return this.queue.some(n => !n.acknowledged && n.severity === 'urgent');
+  }
+}
+```
+
+**Delivery model: Push-only (no polling)**
+
+| Trigger | Orchestrator Action |
+|---|---|
+| Task completes | Queue notification → batch with others → wake planner |
+| Task fails | Queue notification → wake planner immediately |
+| Worker dies/stalls | Queue notification → wake planner immediately |
+| All tasks done | Queue notification → wake planner immediately |
+| SLA warning | Queue notification → wake planner (next batch) |
+
+Notifications are **batched** by default: the orchestrator waits a short debounce window (100ms) before waking the planner, so multiple near-simultaneous events (e.g., 3 tasks completing at once) arrive as one batch rather than 3 separate wake-ups.
+
+**User messages are NOT notifications.** They are conversation. See [User Message Handling](#user-message-handling) below.
+
+```typescript
+// Push mode: inject urgent notification into planner's message stream
+class Orchestrator {
+  private plannerNotifications = new NotificationQueue();
+  private plannerAgent: Agent | null = null;
+
+  private async notifyPlanner(notification: PlannerNotification): Promise<void> {
+    // Always queue the notification (planner will see it on next pull)
+    this.plannerNotifications.push(notification);
+
+    // Wake the planner — it's suspended, waiting for this signal
+    if (this.plannerAgent) {
+      // Debounce: wait 100ms to batch near-simultaneous notifications
+      this.scheduleWake();
+    }
+
+    // Always emit to Socket.IO as well (users see everything)
+    this.emitToUsers('orchestrator:notification', notification);
+  }
+
+  private wakeTimer: ReturnType<typeof setTimeout> | null = null;
+
+  private scheduleWake(): void {
+    // Batch: if multiple notifications arrive within 100ms, only wake once
+    if (this.wakeTimer) return;
+    this.wakeTimer = setTimeout(async () => {
+      this.wakeTimer = null;
+      const notifications = this.plannerNotifications.drain();
+      if (notifications.length === 0) return;
+      // Inject all pending notifications as a single system message
+      const message = notifications.map(n => this.formatNotificationAsMessage(n)).join('\n');
+      await this.plannerAgent!.addSystemMessage(message);
+      // Wake the planner — it's awaiting this promise
+      this.plannerWakeSignal?.resolve();
+    }, 100);
+  }
+
+  private formatNotificationAsMessage(n: PlannerNotification): string {
+    switch (n.type) {
+      case 'task_completed':
+        return `[SYSTEM] Task ${n.payload.taskId} completed by ${n.payload.role}. Summary: ${n.payload.summary}`;
+      case 'task_failed':
+        return `[SYSTEM] Task ${n.payload.taskId} FAILED. Error: ${n.payload.error}. Review and decide: retry, skip, or replan.`;
+      case 'worker_died':
+        return `[SYSTEM] URGENT: Worker for task ${n.payload.taskId} died (no heartbeat). Task marked failed. Decide next action.`;
+      case 'execution_complete':
+        return `[SYSTEM] All tasks complete. Review results and confirm goal is met.`;
+      default:
+        return `[SYSTEM] ${n.type}: ${JSON.stringify(n.payload)}`;
+    }
+  }
+}
+```
+
+### User Message Handling (Separate from Notifications)
+
+User messages are **conversation**, not system notifications. They go into the planner's message stream as human messages — not `[SYSTEM]` prefixed, not through NotificationQueue.
+
+**Why separate?**
+- Notifications are system events (task completed, worker died). The planner processes them and returns to its current phase.
+- User messages are **directives** — the human is changing or adding to the goal. They take priority over queued notifications.
+- Mixing them into the same queue means the planner can't distinguish "system tells me a task finished" from "human says change direction."
+
+**Behavior by planner state:**
+
+| Planner State | User Message Arrives | What Happens |
+|---|---|---|
+| **Suspended** (waiting for events) | User sends message | Wake planner immediately. Inject as human message (not system). Planner resumes, sees user message, responds. Pending notifications are blocked until planner finishes with user. |
+| **Mid-LLM-call** (generating response) | User sends message | Queue the message. When current LLM turn finishes, inject as human message on next turn. Do NOT interrupt mid-generation. |
+| **Processing notifications** (just woke from system events) | User sends message | **User takes priority.** Pause notification processing, inject user message as human message, let planner handle it first. Remaining notifications stay queued. |
+
+**Priority: User > Notifications**
+
+When the planner wakes from suspension, it checks for pending user messages first, then notifications. If both exist, user messages are injected as human messages and notifications wait. This prevents the planner from spending tokens on system bookkeeping while a human is trying to redirect.
+
+```typescript
+class Orchestrator {
+  private pendingUserMessages: Array<{ content: string; timestamp: number }> = [];
+
+  /** Called by SocketServerV2 when user sends a message */
+  async onUserMessage(content: string): Promise<void> {
+    this.pendingUserMessages.push({ content, timestamp: Date.now() });
+
+    if (this.plannerSuspended) {
+      // Wake planner with user message (NOT as notification)
+      this.plannerWakeSignal?.resolve('user_message');
+    }
+    // If planner is mid-LLM-call, message waits. Planner sees it on next turn.
+  }
+
+  /** Called when planner wakes up */
+  private async onPlannerWake(reason: 'notification' | 'user_message'): Promise<void> {
+    // User messages first — always
+    if (this.pendingUserMessages.length > 0) {
+      const messages = this.pendingUserMessages.splice(0);
+      for (const msg of messages) {
+        await this.plannerAgent!.addHumanMessage(msg.content);
+      }
+      // Let planner process user messages before notifications
+      return;
+    }
+
+    // Then notifications
+    const notifications = this.plannerNotifications.drain();
+    if (notifications.length > 0) {
+      const message = notifications.map(n => this.formatNotificationAsMessage(n)).join('\n');
+      await this.plannerAgent!.addSystemMessage(message);
+    }
+  }
+}
+```
+
+### Channel 2: Orchestrator → Users (Transport-Agnostic)
+
+The notification system must not hardcode Socket.IO. Today users are in a browser; tomorrow they're on WhatsApp, Telegram, or Slack via OpenClaw Gateway. The orchestrator emits **typed notification objects** to a `NotificationTransport` interface. Transports decide how to deliver.
+
+#### NotificationTransport Interface
+
+```typescript
+interface NotificationTransport {
+  /** Fire-and-forget: send a notification to all users in a team */
+  send(teamId: string, notification: UserNotification): void;
+  /** Request-response: ask a user a question, return their answer */
+  ask(teamId: string, question: UserQuestion): Promise<string>;
+  /** Bidirectional: present options, return selection */
+  discuss(teamId: string, choices: UserChoice): Promise<string>;
+}
+
+type UserNotification = {
+  type: string;      // 'task:started', 'plan:proposed', etc.
+  severity: 'info' | 'warning' | 'urgent';
+  payload: Record<string, any>;
+  timestamp: number;
+};
+```
+
+#### V1 Transport: Socket.IO (Browser)
+
+```typescript
+class SocketIOTransport implements NotificationTransport {
+  constructor(private io: Server) {}
+
+  send(teamId: string, notification: UserNotification): void {
+    this.io.to(teamId).emit(notification.type, notification);
+  }
+
+  async ask(teamId: string, question: UserQuestion): Promise<string> {
+    // Uses the Map<id, resolver> bridge pattern (see Step 2)
+    const { promise, resolve } = Promise.withResolvers<string>();
+    pendingQuestions.set(question.id, { resolve });
+    this.io.to(teamId).emit('planner:ask', question);
+    return promise;
+  }
+
+  async discuss(teamId: string, choices: UserChoice): Promise<string> {
+    const { promise, resolve } = Promise.withResolvers<string>();
+    pendingQuestions.set(choices.id, { resolve });
+    this.io.to(teamId).emit('planner:discuss', choices);
+    return promise;
+  }
+}
+```
+
+#### Future Transport: OpenClaw Gateway (Chat Channels)
+
+The OpenClaw Gateway already uses WebSocket EventFrames for push notifications. When we integrate it (see [OpenClaw feature](../../features/openclaw-integration/feature_architecture.md)), it becomes another transport:
+
+```typescript
+class OpenClawTransport implements NotificationTransport {
+  constructor(private gateway: OpenClawGatewayClient) {}
+
+  send(teamId: string, notification: UserNotification): void {
+    // Route to WhatsApp/Telegram/Slack via Gateway's `send` RPC
+    this.gateway.request('send', {
+      channel: this.resolveChannel(teamId),
+      message: this.formatForChat(notification),
+    });
+  }
+
+  async ask(teamId: string, question: UserQuestion): Promise<string> {
+    // Gateway's `agent` RPC supports streaming EventFrames
+    // Use the same Map<id, resolver> pattern — Gateway EventFrame
+    // carries the response back via the same WebSocket
+    return this.gateway.request('agent', {
+      message: question.text,
+      waitForResponse: true,
+    });
+  }
+  // ...
+}
+```
+
+#### Composite Transport (Fan-Out)
+
+In production, notifications go to ALL connected transports simultaneously:
+
+```typescript
+class CompositeTransport implements NotificationTransport {
+  constructor(private transports: NotificationTransport[]) {}
+
+  send(teamId: string, notification: UserNotification): void {
+    for (const t of this.transports) t.send(teamId, notification);
+  }
+
+  // ask/discuss: route to whichever transport the user is currently on
+  async ask(teamId: string, question: UserQuestion): Promise<string> {
+    // Race: first transport to get a user response wins
+    return Promise.any(
+      this.transports.map(t => t.ask(teamId, question))
+    );
+  }
+}
+```
+
+#### What Gets Notified
+
+| Event | When | Severity |
+|---|---|---|
+| `task:started` | Worker begins executing a task | info |
+| `task:completed` | Task finished successfully | info |
+| `task:failed` | Task failed (error or worker death) | warning |
+| `task:blocked` | Task waiting on unmet dependencies | info |
+| `plan:proposed` | Planner submits plan for approval | info |
+| `plan:approved` | Plan approved (by user or auto-approve) | info |
+| `plan:mutated` | Planner changed plan mid-flight | info |
+| `plan:replanned` | Planner replaced the entire plan | warning |
+| `worker:progress` | Worker reports progress | info |
+| `planner:tell` | Planner uses tell_user() | info |
+| `planner:ask` | Planner uses ask_user() — needs response | urgent |
+| `planner:discuss` | Planner uses discuss_approach() — needs choice | urgent |
+| `orchestrator:watchdog` | Watchdog detected issue | warning |
+
+### Channel 3: Orchestrator → Workers (Context + Error Notification)
+
+Workers are task-focused agents. For **normal context**, pull-based is fine:
+
+1. **Receive full context at spawn time** — task description, dependency outputs, research findings in `context.notes`
+2. **Query L2 when they need shared state** — via `collab` tool (read other agents' outputs, shared docs)
+3. **Report back to orchestrator** — via `report_status` and `complete_task` tools
+
+But **errors can't wait for the next L2 poll.** Several scenarios require the orchestrator to push information to a running worker:
+
+| Error Scenario | Why Pull Is Too Slow | Impact of Delay |
+|---|---|---|
+| **Upstream dependency failed** | Worker is building on output that's now invalid | Wasted tokens + wrong output |
+| **Planner cancelled/reassigned task** | Worker keeps executing a cancelled task | Wasted compute, output discarded anyway |
+| **Shared resource down** (DB, API) | Worker retries uselessly instead of stopping | Token burn + cascading timeouts |
+| **Budget exceeded** | Worker doesn't know to stop | Cost overrun |
+| **Planner replanned** | Worker's task is no longer in the plan | Entire effort wasted |
+
+**Solution: CancellationToken + Error Context**
+
+Borrowed from .NET/Go cancellation patterns. The orchestrator gives each worker a `CancellationToken` at spawn time. The token is checked **between LLM turns** (at every tool call boundary). This means:
+
+- No mid-LLM interruption (which would corrupt the conversation)
+- Worker aborts cleanly at the next tool boundary (~seconds, not minutes)
+- Error context is attached to the token so the worker can log/report why it stopped
+
+```typescript
+interface CancellationToken {
+  cancelled: boolean;
+  reason?: CancellationReason;
+}
+
+interface CancellationReason {
+  type: 'task_cancelled' | 'dependency_failed' | 'budget_exceeded'
+      | 'resource_down' | 'plan_replaced';
+  message: string;           // human-readable explanation
+  initiatedBy: 'planner' | 'orchestrator' | 'watchdog';
+  timestamp: number;
+}
+
+// Orchestrator side: cancel a running worker
+class Orchestrator {
+  private workerTokens = new Map<string, CancellationToken>();
+
+  async spawnWorker(task: PlanTask): Promise<void> {
+    const token: CancellationToken = { cancelled: false };
+    this.workerTokens.set(task.id, token);
+
+    const worker = await this.workerPool.spawn(task.assignedRole, {
+      task,
+      cancellationToken: token,  // shared reference
+      tools: [...this.coreWorkerTools, ...task.roleTools],
+    });
+
+    worker.on('complete', (output) => this.onTaskCompleted(task.id, output));
+    worker.on('failure', (error) => this.onTaskFailed(task.id, error));
+  }
+
+  // Called when planner cancels a task, upstream fails, etc.
+  cancelWorker(taskId: string, reason: CancellationReason): void {
+    const token = this.workerTokens.get(taskId);
+    if (token) {
+      token.cancelled = true;
+      token.reason = reason;
+      // Worker sees this on its next tool boundary — no event needed
+    }
+  }
+}
+
+// Worker side: check token between LLM turns
+class Worker {
+  private cancellationToken: CancellationToken;
+
+  // Called by the agent framework BEFORE each tool execution
+  private checkCancellation(): void {
+    if (this.cancellationToken.cancelled) {
+      const reason = this.cancellationToken.reason;
+      // Save partial work to L2 before aborting
+      this.savePartialProgress();
+      throw new TaskCancelledException(
+        `Task cancelled: ${reason?.type} — ${reason?.message}`
+      );
+    }
+  }
+
+  async execute(task: Task): Promise<TaskOutput> {
+    // LangGraph middleware: check cancellation at every tool boundary
+    const agent = createAgent({
+      tools: this.tools.map(tool => wrapWithCancellationCheck(tool, () => this.checkCancellation())),
+      // ... other config
+    });
+    return agent.generate(task.description);
+  }
+}
+
+// Tool wrapper: check cancellation before executing any tool
+function wrapWithCancellationCheck(
+  tool: Tool,
+  checkFn: () => void
+): Tool {
+  return {
+    ...tool,
+    async call(input: any) {
+      checkFn();  // throws TaskCancelledException if cancelled
+      return tool.call(input);
+    }
+  };
+}
+```
+
+**When the orchestrator cancels workers:**
+
+| Trigger | Orchestrator Action | CancellationReason.type |
+|---|---|---|
+| Planner calls `cancel_task(id)` | `cancelWorker(id, { type: 'task_cancelled' })` | `task_cancelled` |
+| Upstream task fails | `cancelWorker(downstreamId, { type: 'dependency_failed' })` | `dependency_failed` |
+| Planner calls `replan()` | Cancel all pending workers | `plan_replaced` |
+| Watchdog: budget exceeded | `cancelWorker(id, { type: 'budget_exceeded' })` | `budget_exceeded` |
+| Shared resource down (detected by watchdog) | Cancel affected workers | `resource_down` |
+
+**What the worker does on cancellation:**
+1. Stops executing (checks token at next tool boundary)
+2. Reports cancellation reason back to orchestrator
+3. Dies cleanly — orchestrator cleans up the sandbox
+4. Retry (if any) starts from scratch — no partial state to manage
+
+**Why CancellationToken and not EventEmitter?**
+- Workers are LLM agents — they can't subscribe to events mid-LLM-call
+- Token is a **shared reference** (same object in memory) — no IPC, no serialization, instant
+- Checked at natural boundaries (tool calls) — no risk of corrupting LLM state
+- Same pattern used by .NET (`CancellationToken`), Go (`context.Context`), and Python (`asyncio.CancelledError`) for cooperative cancellation
+- When we move to multi-process workers, token becomes a flag in shared memory or a lightweight HTTP poll
+
+### Notification Flow Diagram
+
+```
+                              ┌─────────────┐
+                              │   PLANNER    │
+                              │  (LLM Agent) │
+                              └──────┬───────┘
+                                     │
+              ┌──────────────────────┼──────────────────────┐
+              │                      │                      │
+              ▼                      ▼                      ▼
+    ┌─────────────────┐   ┌─────────────────┐   ┌─────────────────┐
+    │  tell_user()    │   │  get_status()   │   │  submit_plan()  │
+    │  ask_user()     │   │  (pulls         │   │  (orchestrator  │
+    │  (Socket.IO     │   │   notification  │   │   stores tasks) │
+    │   to frontend)  │   │   queue)        │   │                 │
+    └────────┬────────┘   └────────┬────────┘   └────────┬────────┘
+             │                     │                      │
+             ▼                     ▼                      ▼
+    ┌────────────────────────────────────────────────────────────────┐
+    │                    ORCHESTRATOR (Runtime)                       │
+    │                                                                │
+    │  ┌──────────────────┐  ┌──────────────────┐  ┌──────────────┐│
+    │  │ NotificationQueue│  │    TaskStore      │  │  WorkerPool  ││
+    │  │ (planner inbox)  │  │ (task state CRUD) │  │ (spawn/kill) ││
+    │  └────────┬─────────┘  └──────────────────┘  └──────┬───────┘│
+    │           │                                          │        │
+    │           │ push(notification)      spawn(role,ctx)  │        │
+    │           │                                          │        │
+    │  ┌────────┴─────────────────────────────────────────┘        │
+    │  │                                                            │
+    │  │  Event Sources:                                            │
+    │  │  ├── Worker completes/fails → push to NotificationQueue   │
+    │  │  ├── Watchdog detects stuck → push to NotificationQueue   │
+    │  │  ├── All tasks done → push urgent to NotificationQueue    │
+    │  │  └── Every event → also transport.send() (all channels)   │
+    │  │                                                            │
+    │  └── transport.send() ───────────────────────────────────┐   │
+    └────────────────────────────────────────────────────────── │ ──┘
+                                                               │
+                                        ┌──────────────────────┴────────────┐
+                                        │     NotificationTransport         │
+                                        │     (CompositeTransport)          │
+                                        │                                   │
+                                        │  ┌─────────┐  ┌───────────────┐  │
+                                        │  │Socket.IO │  │OpenClaw       │  │
+                                        │  │Transport │  │Transport (v2) │  │
+                                        │  └────┬─────┘  └──────┬────────┘  │
+                                        └───────┼───────────────┼───────────┘
+                                                │               │
+                                                ▼               ▼
+                                       ┌──────────────┐ ┌──────────────┐
+                                       │   BROWSER    │ │ WhatsApp /   │
+                                       │  (Socket.IO  │ │ Telegram /   │
+                                       │   listener)  │ │ Slack (v2)   │
+                                       └──────────────┘ └──────────────┘
+```
+
+### Why Not Just EventEmitter Everywhere?
+
+The [EVENT_ARCHITECTURE_ANALYSIS](../../architecture/EVENT_ARCHITECTURE_ANALYSIS.md) identified 7 event emitters creating a spaghetti web. The notification system replaces that with 3 clear channels:
+
+| Old Pattern (EventEmitter) | Problem | New Pattern |
+|---|---|---|
+| `events.emit('task:complete')` → planner reacts | Planner is LLM, can't subscribe to events | NotificationQueue → planner pulls via tool |
+| `events.emit('worker:event')` → AgentManager → SocketServer | 3-hop passthrough of the same event | `transport.send()` from orchestrator — one hop to any channel |
+| `events.emit('task:available')` → wake worker | Worker doesn't exist yet at emit time | Orchestrator spawns worker directly |
+| `events.emit('plan:proposed')` → ??? → somehow reaches user | Unclear routing through multiple emitters | Orchestrator calls `transport.send()` → reaches browser, WhatsApp, etc. |
+| `events.emit('task:cancelled')` → worker ignores | Worker is mid-LLM-call, can't listen to events | CancellationToken checked at tool boundaries |
+
+### Design Principles (from the research)
+
+1. **Match the mechanism to the consumer.** LLM agents → message injection. Browsers → WebSocket. Workers → context at spawn + CancellationToken for errors.
+2. **Pull for normal, push for urgent.** Planner polls in its MONITOR loop (pull). Worker death or execution complete interrupts the planner (push). Workers pull context from L2 normally, but errors/cancellation are pushed via CancellationToken.
+3. **Every notification goes to users.** Via `NotificationTransport` — V1 is Socket.IO, extends to OpenClaw Gateway (WhatsApp, Telegram, Slack) via `CompositeTransport`. Orchestrator doesn't know which channel the user is on.
+4. **No event chains.** Notification goes from source → NotificationQueue → consumer. Not source → EventEmitter A → EventEmitter B → EventEmitter C → consumer.
+5. **Typed notifications.** `PlannerNotification` is a discriminated union, not a string event name. TypeScript catches missing handlers at compile time.
+6. **Cooperative cancellation.** Workers check CancellationToken at tool boundaries — clean abort, no mid-LLM corruption. Retries start from scratch.
+7. **Transport-agnostic from day one.** `NotificationTransport` interface decouples the orchestrator from delivery. Adding a new channel (OpenClaw, email, webhook) = implementing one interface, registering with `CompositeTransport`. Zero orchestrator changes.
+8. **Workers talk to users directly — planner is informed, not a relay.** Workers get their own `ask_user` tool. Questions go straight to the user, not through the planner. Planner is notified (so it knows the worker is waiting), but doesn't mediate.
+
+---
+
+## Worker↔User Interaction
+
+### The Gap
+
+Workers can broadcast TO users (via `worker:event` → Socket.IO), but they cannot ask users anything. If a worker needs clarification, a file, or approval for a destructive action — it has no mechanism. It guesses or fails.
+
+### Three Interaction Types
+
+| Type | Direction | Current State | Solution |
+|---|---|---|---|
+| **Direct chat** | User ↔ Worker | ✅ Works — `handleWorkerMessage()` → `continueTask()` | Keep pattern, remove ad-hoc task creation |
+| **Worker asks question** | Worker → User → Worker | ❌ Missing | Reuse planner's `Map<id, resolver>` bridge |
+| **Approval gates** | Worker → User → Worker | ❌ Missing | `ask_user` + `needs_approval` tool config |
+
+### Layer 1: Direct Chat (Already Works — One Fix Needed)
+
+Current code: `handleWorkerMessage()` → `continueTask(taskId, content)` → `workerPool.runTask(taskId, role, message)` — reuses the same worker's LangGraph thread via `taskId`. This is the right pattern.
+
+**Fix during refactor:** Currently `startTask()` creates ad-hoc tasks (`task-${Date.now()}`). In the new system, tasks come from the planner's plan via TaskStore. `handleWorkerMessage()` should only allow `continueTask()` on existing planned tasks. Ad-hoc worker chats are a separate mode ("Chat Agent" lifecycle).
+
+```
+User types "@writer review this paragraph"
+  │
+  ▼
+SocketServerV2.handleWorkerMessage()
+  │
+  ├── taskId exists? → continueTask(taskId, content)  ← planned task conversation
+  │                     └── Worker continues LangGraph thread
+  │
+  └── No taskId?   → Start ad-hoc chat ("Chat Agent" lifecycle)
+                      └── Creates ephemeral task, separate from plan
+```
+
+### Layer 2: Worker Asks User (Reuse Planner's Bridge)
+
+Same `Map<questionId, resolver>` pattern as planner's `ask_user`, but scoped to a task thread.
+
+```typescript
+// Worker's ask_user tool — same bridge, different Socket.IO events
+const pendingQuestions = new Map<string, { resolve: (answer: string) => void }>();
+
+// Worker tool side: blocks until user responds
+const worker_ask_user = tool(async ({ question, taskId }) => {
+  const id = randomUUID();
+  const { promise, resolve } = Promise.withResolvers<string>();
+  pendingQuestions.set(id, { resolve });
+  
+  // Emit to task thread (not global chat)
+  socketIO.to(teamRoom).emit('worker:ask', { id, taskId, question, role: worker.role });
+  
+  // Notify planner: "worker is waiting for user" (so planner knows, but doesn't relay)
+  notificationQueue.push({ type: 'worker_waiting', taskId, question });
+  
+  // Worker heartbeat → WAITING mode (watchdog backs off)
+  worker.setMode('waiting', { type: 'human_input', questionId: id });
+  
+  const answer = await promise;  // blocks here
+  worker.setMode('autonomous');   // resume normal mode
+  pendingQuestions.delete(id);
+  return answer;
+});
+
+// Socket side: unblocks the worker
+socket.on('worker:respond', ({ id, answer }) => {
+  pendingQuestions.get(id)?.resolve(answer);
+});
+```
+
+**Key differences from planner's `ask_user`:**
+- Events are `worker:ask` / `worker:respond` (not `planner:ask` / `planner:respond`)
+- Scoped to task thread in UI (not global chat)
+- Notifies planner that worker is waiting (planner may decide to cancel if waiting too long)
+- Worker heartbeat switches to `WAITING` mode — watchdog backs off
+
+### Layer 3: Worker Communication Tools
+
+Workers get the same communication tools as the planner — `tell_user`, `discuss_approach`, and `ask_user` — scoped to their task thread. These are **the same bridge** (same `Map<id, resolver>`, same Socket.IO pattern), just with different event prefixes.
+
+| Tool | Worker Version | Socket.IO Event | Blocking? |
+|---|---|---|---|
+| `tell_user` | `worker_tell_user` | `worker:tell` (fire-and-forget) | No |
+| `discuss_approach` | `worker_discuss_approach` | `worker:ask` / `worker:respond` (with options) | Yes |
+| `ask_user` | `worker_ask_user` | `worker:ask` / `worker:respond` | Yes |
+
+**Why workers need `tell_user`:** Workers already stream tokens via `worker:event`, but that's raw LLM output. `tell_user` sends **structured messages** — findings, warnings, progress updates — that appear as distinct UI elements in the task thread, not buried in a stream.
+
+**Why workers need `discuss_approach`:** When a worker has two valid implementations ("Should I use REST or GraphQL for this API?"), it shouldn't guess. It presents options, user picks, worker proceeds. Same bridge, same pattern.
+
+### Layer 4: Approval System
+
+**Extracted to separate feature (Phase 2, post-Mastra):** See [A9 Approval System](../../features/approval-system/feature_architecture.md).
+
+A9 depends on A1 (Mastra Migration) to leverage `requireApproval`, `suspend()`, and state persistence natively. It adds our product layer on top: structured requests (4 types: plan, replan, tool, artifact), auto-approve rules per team, conditional approval functions, sticky decisions, and audit trail. Uses A5's `Map<id, resolver>` bridge for plan-level approval and Mastra's stream events for tool-level approval.
+
+### Why Not Planner-Mediated?
+
+Routing worker questions through the planner was considered and rejected:
+
+| | Direct (worker → user) | Planner-mediated (worker → planner → user → planner → worker) |
+|---|---|---|
+| **Latency** | 1 round-trip | 3 round-trips (+ 2 LLM calls to relay) |
+| **Token cost** | 0 extra LLM tokens | ~2000 tokens per relay (planner reasons about what to ask) |
+| **Fidelity** | User sees exact worker context | Planner may summarize/lose context |
+| **Complexity** | Reuses existing bridge | New planner tool + relay logic |
+
+The planner IS notified (via notification queue) so it can decide to cancel if the worker waits too long. But it doesn't sit in the communication path.
+
+### Worker Interaction by Agent Type
+
+| Agent Type | Direct Chat | `tell_user` | `ask_user` / `discuss_approach` | Approval Gates | Default |
+|---|---|---|---|---|---|
+| **Ping Team (auto)** | ❌ No | ✅ Findings/warnings stream to user | ❌ No — task spec should be clear | ✅ Destructive tools only (auto-approve rest) | Autonomous |
+| **User-controlled external** | ✅ Yes | ✅ Full structured messages | ✅ Yes — can ask/discuss | ✅ Yes — user controls execution | Interactive |
+| **Internal agent** | ✅ Yes | ✅ Full structured messages | ✅ Yes — user is present | ✅ Yes — especially for system changes | Interactive |
+
+Ping Team workers are autonomous by design. They get `tell_user` (for streaming findings to the UI) and approval gates (for destructive tools), but NOT `ask_user` or `discuss_approach`. If they need clarification, the task spec was inadequate — the planner should fix it.
+
+---
+
+## Worker Failure Reporting: The Reverse Channel
+
+### The Missing Design
+
+The notification system above covers orchestrator → planner and orchestrator → worker. But what happens when a **worker itself** fails a task? The current pseudocode has:
+
+```typescript
+// This is all we had:
+async reportFailure(taskId: string, error: string): Promise<void> {
+  await this.taskStore.fail(taskId, error);
+  this.notifyPlanner({ type: 'task_failed', taskId, error });
+}
+```
+
+A bare `error: string` is not enough. The planner needs structured information to decide what to do: Is this retriable? How far did the worker get? What exactly broke — the worker, the tool, the LLM, or the external system? Without this, the planner is guessing.
+
+### Worker Failure Report (Structured)
+
+```typescript
+interface WorkerFailureReport {
+  taskId: string;
+  workerId: string;
+  role: string;
+
+  // What happened?
+  error: {
+    category: ErrorCategory;
+    message: string;                      // human-readable
+    code?: string;                        // machine-readable (e.g., 'ECONNREFUSED', 'RATE_LIMIT')
+    stack?: string;                       // for debugging (not sent to planner LLM)
+    toolName?: string;                    // which tool failed, if applicable
+    llmStep?: number;                     // which LLM turn hit the error
+  };
+
+  // How far did the worker get? (informational — retries start from scratch)
+  progress?: {
+    completedSteps: number;               // how many tool calls succeeded
+    totalStepsAttempted: number;
+    lastStepDescription: string;          // what was the worker doing when it failed
+  };
+
+  // Should we retry?
+  retryGuidance: {
+    retriable: boolean;                   // worker's assessment: is retry likely to help?
+    suggestedAction: 'retry' | 'retry_different_approach' | 'skip' | 'escalate';
+    reason: string;                       // why this suggestion
+    attemptsExhausted?: boolean;          // if worker already retried internally
+    internalRetries?: number;             // how many times the worker retried before giving up
+  };
+
+  // Resource usage at time of failure
+  usage: {
+    tokensUsed: number;
+    wallClockMs: number;
+    toolCallsMade: number;
+  };
+
+  timestamp: number;
+}
+
+type ErrorCategory =
+  | 'llm_error'           // LLM refused, hallucinated, or returned garbage
+  | 'tool_error'          // A tool threw an error (file not found, API returned 500)
+  | 'external_service'    // External dependency unavailable (DB, API, MCP server)
+  | 'rate_limit'          // Hit rate limit on LLM or external API
+  | 'timeout'             // Worker's own operation timed out (not watchdog — self-detected)
+  | 'validation_error'    // Worker produced output that doesn't meet acceptance criteria
+  | 'context_exceeded'    // LLM context window full, can't continue
+  | 'permission_denied'   // Worker lacks access to required resource
+  | 'cancelled'           // CancellationToken was set (orchestrator-initiated — see Channel 3)
+  | 'unknown';            // Unclassified error
+```
+
+### Why Error Classification Matters
+
+The planner's decision depends entirely on the **error category**. A flat string forces the planner to parse natural language to figure out what happened. A structured `ErrorCategory` lets the planner (or even automated orchestrator logic) make the right call immediately:
+
+| Error Category | Retriable? | Planner's Likely Action | Orchestrator Auto-Action |
+|---|---|---|---|
+| `llm_error` | Usually yes | Retry with same or different model | None — planner decides |
+| `tool_error` | Depends | Retry or fix the tool input (update task description) | None |
+| `external_service` | Yes (transient) | Wait + retry, or skip if non-critical | Optionally auto-retry once after delay |
+| `rate_limit` | Yes (with backoff) | Retry after delay, or split work across workers | Auto-retry with exponential backoff (up to N times) |
+| `timeout` | Maybe | Retry with simpler scope, or split into subtasks | None |
+| `validation_error` | Yes (prompt issue) | Update task description with clearer criteria, retry | None |
+| `context_exceeded` | No (same input = same result) | Split task into smaller subtasks | None |
+| `permission_denied` | No (config issue) | Escalate to user (fix permissions) or reassign to role with access | None |
+| `cancelled` | N/A | Already handled by CancellationToken flow | Already handled |
+| `unknown` | Unknown | Escalate to user or retry once as best effort | None |
+
+### The Full Flow: Worker Fails → Planner Decides → Action
+
+```
+Worker encounters error during execution
+  │
+  ▼
+Worker catches error, classifies it
+  │
+  ├── Builds WorkerFailureReport (structured)
+  │     └── Includes: category, progress info, retry guidance, usage stats
+  │
+  └── Reports to Orchestrator (no partial state saved — retries start fresh)
+        │
+        ▼
+Orchestrator receives failure report
+  │
+  ├── 1. Update TaskStore: status → 'failed', attach failure report
+  │
+  ├── 2. AUTO-ACTIONS (orchestrator handles without planner):
+  │     ├── rate_limit + retries < maxAutoRetry → auto-retry after backoff
+  │     ├── external_service + retries < 1 → auto-retry once after 5s delay
+  │     └── All else → no auto-action, escalate to planner
+  │
+  ├── 3. Downstream dependency impact:
+  │     ├── Find all tasks with failed task in their dependencies
+  │     ├── Mark downstream tasks as 'blocked' (reason: 'upstream_failed')
+  │     ├── Do NOT cascade-fail them — planner may fix the upstream
+  │     └── Emit Socket.IO: 'task:blocked' for each affected task
+  │
+  ├── 4. Notify Planner via NotificationQueue:
+  │     └── push({
+  │           type: 'task_failed',
+  │           severity: category === 'cancelled' ? 'info' : 'warning',
+  │           payload: {
+  │             taskId,
+  │             role,
+  │             error: { category, message, code },
+  │             partialOutput: report.partialOutput,
+  │             retryGuidance: report.retryGuidance,
+  │             blockedDownstream: [...downstream task IDs],
+  │             usage: report.usage,
+  │           }
+  │         })
+  │     If severity is 'warning' or higher → also inject system message
+  │     (push mode — don't wait for planner's next MONITOR poll)
+  │
+  ├── 5. Notify Users via Socket.IO:
+  │     └── emit('task:failed', { taskId, role, error: message, hasPartialWork: true })
+  │
+  └── 6. Cleanup: kill worker sandbox, free worker pool slot
+        │
+        ▼
+Planner receives notification (via pull or push)
+  │
+  ├── Reads failure report + partial output
+  │
+  ├── DECISION (planner's LLM reasoning):
+  │     ├── RETRY: Same task, same approach
+  │     │    └── submit_plan({ tasks: [same task] }) or orchestrator retryTask(id)
+  │     │
+  │     ├── RETRY DIFFERENTLY: Same goal, different approach
+  │     │    └── update_task(id, { description: "Try using X instead of Y..." })
+  │     │        + re-submit
+  │     │
+  │     ├── SPLIT: Task was too big, break it down
+  │     │    └── remove_task(id) + add_tasks([subtask1, subtask2, ...])
+  │     │
+  │     ├── REASSIGN: Wrong role for this task
+  │     │    └── reassign_task(id, newRole)
+  │     │
+  │     ├── SKIP: Non-critical, downstream tasks can proceed without it
+  │     │    └── remove_task(id) (cascade removes dep from downstream)
+  │     │
+  │     ├── ESCALATE: Needs human decision
+  │     │    └── ask_user("Task X failed because Y. Options: retry/skip/replan. Your call?")
+  │     │
+  │     └── REPLAN: Failure invalidates the plan
+  │          └── replan(reason, newPlan)
+  │
+  └── Planner informs user of decision:
+       └── tell_user("Task X failed (rate limit). Retrying with backoff.")
+```
+
+### Worker-Side Failure Handling
+
+The worker doesn't just `throw` and die. It catches errors, classifies them, and reports structured information. **Retries start from scratch** — no partial state preservation. Tasks are already scoped small by the planner, so re-executing from the beginning is simpler and more reliable than trying to resume from an unknown intermediate state.
+
+```typescript
+class Worker {
+  async execute(task: Task): Promise<TaskOutput> {
+    let stepsCompleted = 0;
+
+    try {
+      const result = await this.agent.generate(task.description);
+      return this.extractOutput(result);
+    } catch (error) {
+      // Classify the error
+      const category = this.classifyError(error);
+
+      // Build structured failure report (no partial progress saved — retry from scratch)
+      const report: WorkerFailureReport = {
+        taskId: task.id,
+        workerId: this.id,
+        role: this.role,
+        error: {
+          category,
+          message: error.message,
+          code: error.code,
+          toolName: error.toolName,    // set by tool wrapper
+          llmStep: stepsCompleted,
+        },
+        progress: stepsCompleted > 0 ? {
+          completedSteps: stepsCompleted,
+          totalStepsAttempted: stepsCompleted + 1,
+          lastStepDescription: this.lastStepDescription,
+        } : undefined,
+        retryGuidance: this.assessRetriability(category, error),
+        usage: {
+          tokensUsed: this.tokenCounter,
+          wallClockMs: Date.now() - this.startTime,
+          toolCallsMade: this.toolCallCount,
+        },
+        timestamp: Date.now(),
+      };
+
+      // Emit structured failure (orchestrator receives this, NOT a raw string)
+      this.events.emit('failure', report);
+    }
+  }
+
+  private classifyError(error: any): ErrorCategory {
+    // Map known error patterns to categories
+    if (error.code === 'ECONNREFUSED' || error.code === 'ENOTFOUND')
+      return 'external_service';
+    if (error.status === 429 || error.message?.includes('rate limit'))
+      return 'rate_limit';
+    if (error.message?.includes('context length') || error.message?.includes('token limit'))
+      return 'context_exceeded';
+    if (error.message?.includes('permission') || error.status === 403)
+      return 'permission_denied';
+    if (error instanceof TaskCancelledException)
+      return 'cancelled';
+    if (error.toolName)
+      return 'tool_error';
+    if (error.source === 'llm')
+      return 'llm_error';
+    return 'unknown';
+  }
+
+  private assessRetriability(
+    category: ErrorCategory,
+    error: any
+  ): WorkerFailureReport['retryGuidance'] {
+    switch (category) {
+      case 'rate_limit':
+        return {
+          retriable: true,
+          suggestedAction: 'retry',
+          reason: 'Rate limit is transient. Retry after backoff.',
+        };
+      case 'external_service':
+        return {
+          retriable: true,
+          suggestedAction: 'retry',
+          reason: `Service ${error.code} — likely transient. Retry after delay.`,
+        };
+      case 'context_exceeded':
+        return {
+          retriable: false,
+          suggestedAction: 'retry_different_approach',
+          reason: 'Context window full. Task needs to be split or simplified.',
+        };
+      case 'permission_denied':
+        return {
+          retriable: false,
+          suggestedAction: 'escalate',
+          reason: 'Missing permissions. Needs human/admin intervention.',
+        };
+      case 'validation_error':
+        return {
+          retriable: true,
+          suggestedAction: 'retry_different_approach',
+          reason: 'Output didn\'t meet acceptance criteria. Refine task description.',
+        };
+      default:
+        return {
+          retriable: category !== 'cancelled',
+          suggestedAction: category === 'cancelled' ? 'skip' : 'retry',
+          reason: category === 'cancelled'
+            ? 'Task was cancelled by orchestrator.'
+            : 'Unknown error. One retry may help.',
+        };
+    }
+  }
+}
+```
+
+### Orchestrator Auto-Retry vs Planner Decision
+
+Not every failure needs the planner's attention. Transient errors (rate limits, brief network blips) waste the planner's LLM tokens if escalated every time. The orchestrator handles these automatically:
+
+```typescript
+class Orchestrator {
+  private retryCounters = new Map<string, number>();
+  private readonly MAX_AUTO_RETRIES = 2;
+
+  private async onTaskFailed(report: WorkerFailureReport): Promise<void> {
+    // 1. Update task store
+    await this.taskStore.fail(report.taskId, report);
+
+    // 2. Block downstream tasks
+    const downstream = await this.depResolver.getDependents(report.taskId);
+    for (const taskId of downstream) {
+      await this.taskStore.block(taskId, `upstream_failed:${report.taskId}`);
+      this.emitToUsers('task:blocked', { taskId, reason: 'upstream_failed' });
+    }
+
+    // 3. Auto-retry for transient errors (orchestrator handles, planner not involved)
+    const retryCount = this.retryCounters.get(report.taskId) || 0;
+
+    if (this.shouldAutoRetry(report, retryCount)) {
+      this.retryCounters.set(report.taskId, retryCount + 1);
+      const delay = this.getRetryDelay(report.error.category, retryCount);
+
+      // Notify user (but not planner) about auto-retry
+      this.emitToUsers('task:retrying', {
+        taskId: report.taskId,
+        attempt: retryCount + 2,    // +2 because first attempt was #1
+        reason: report.error.message,
+        retryAfterMs: delay,
+      });
+
+      setTimeout(async () => {
+        await this.taskStore.updateStatus(report.taskId, 'ready');
+        await this.dispatchReadyTasks();
+      }, delay);
+      return; // Don't bother the planner
+    }
+
+    // 4. Escalate to planner (structured notification, not a raw string)
+    this.notifyPlanner({
+      type: 'task_failed',
+      severity: report.error.category === 'cancelled' ? 'info' : 'warning',
+      timestamp: report.timestamp,
+      payload: {
+        taskId: report.taskId,
+        role: report.role,
+        error: {
+          category: report.error.category,
+          message: report.error.message,
+          code: report.error.code,
+          toolName: report.error.toolName,
+        },
+        partialOutput: report.partialOutput,
+        retryGuidance: report.retryGuidance,
+        blockedDownstream: downstream,
+        usage: report.usage,
+        autoRetriesExhausted: retryCount,
+      },
+    });
+
+    // 5. Notify users
+    this.emitToUsers('task:failed', {
+      taskId: report.taskId,
+      role: report.role,
+      error: report.error.message,
+      category: report.error.category,
+      hasPartialWork: !!report.partialOutput,
+      blockedTasks: downstream.length,
+    });
+
+    // 6. Cleanup worker
+    this.workerPool.release(report.workerId);
+    this.workerTokens.delete(report.taskId);
+  }
+
+  private shouldAutoRetry(report: WorkerFailureReport, retryCount: number): boolean {
+    if (retryCount >= this.MAX_AUTO_RETRIES) return false;
+    // Only auto-retry transient errors
+    return report.error.category === 'rate_limit'
+        || report.error.category === 'external_service';
+  }
+
+  private getRetryDelay(category: ErrorCategory, attempt: number): number {
+    const base = category === 'rate_limit' ? 10_000 : 5_000; // 10s for rate limit, 5s for others
+    return base * Math.pow(2, attempt);  // exponential backoff: 5s, 10s, 20s
+  }
+}
+```
+
+### Why Retry From Scratch (Not Resume)
+
+When a worker fails, retries start from scratch — a new worker gets the same task description and executes fresh. No partial state preservation, no "resume from step 3."
+
+**Why this is the right call:**
+
+1. **Tasks are already small.** The planner decomposes goals into scoped tasks. A well-scoped task takes minutes, not hours. Re-executing from scratch wastes little.
+2. **Resuming is fragile.** A new worker would need to understand the old worker's intermediate state — which files were half-written, which tool outputs were cached, what the LLM's reasoning chain looked like. Reconstructing this is harder than re-doing the work.
+3. **Partial state can be poisoned.** If the worker failed because of bad LLM reasoning (hallucination, wrong approach), resuming from that partial state propagates the problem. Starting fresh gives the new worker a clean shot.
+4. **Simplicity.** No `savePartialProgress()`, no `loadPartialState()`, no reconciliation logic, no "is this partial output still valid?" checks. The retry path is identical to the first-run path.
+
+**What the planner DOES get (for decision-making):**
+- `progress.completedSteps` / `totalStepsAttempted` — how far the worker got
+- `progress.lastStepDescription` — what it was doing when it broke
+- `error.category` — what class of error (retriable? config issue?)
+- `retryGuidance` — worker's self-assessment of whether retry will help
+
+This is enough for the planner to decide: retry same task, split it smaller, change the approach, or skip.
+
+```
+Task: "Research authentication patterns for the API"
+
+Worker fails at step 4 of 5 (MCP server down — ECONNREFUSED)
+
+Planner receives failure notification:
+  - Sees: progress.completedSteps = 3, error.category = 'external_service'
+  - Sees: retryGuidance = { retriable: true, suggestedAction: 'retry' }
+  - Decides: "Auto-retry exhausted (2 attempts). MCP server seems down.
+              Retry the whole task but exclude MCP-dependent steps —
+              update task description to skip codebase pattern search.
+              Add a follow-up task for when MCP is available."
+  - Actions: update_task('T-005', { description: 'Research auth patterns (skip codebase search)' })
+             + add_tasks([
+               { id: 'T-005b', description: 'Analyze codebase auth patterns (when MCP available)',
+                 dependencies: ['T-005'] },
+             ])
+```
+
+### Summary: The Complete Failure Path
+
+```
+┌────────────┐     ┌──────────────────┐     ┌────────────────┐     ┌──────────┐
+│   WORKER   │     │   ORCHESTRATOR   │     │    PLANNER     │     │   USER   │
+│            │     │                  │     │                │     │          │
+│ Error!     │     │                  │     │                │     │          │
+│ ├─classify │     │                  │     │                │     │          │
+│ └─report ──┼────►│ onTaskFailed()   │     │                │     │          │
+│            │     │ ├─update task DB  │     │                │     │          │
+│ (dies)     │     │ ├─block downstream│     │                │     │          │
+│            │     │ ├─auto-retry?────┼─No──┤                │     │          │
+│            │     │ │  Yes: spawn   │     │                │     │          │
+│            │     │ │  fresh worker ─┼────►│                │──►  │ retrying │
+│            │     │ │  (from scratch)│     │                │     │          │
+│            │     │ ├─notify planner─┼────►│ check_notifs() │     │          │
+│            │     │ │  (structured)  │     │ ├─read report  │     │          │
+│            │     │ │                │     │ ├─decide action │     │          │
+│            │     │ │                │     │ │  retry/split/ │     │          │
+│            │     │ │                │     │ │  skip/replan/ │     │          │
+│            │     │ │                │     │ │  escalate     │     │          │
+│            │     │ │                │     │ └─tell_user()──┼────►│ update   │
+│            │     │ │                │     │                │     │          │
+│            │     │ └─notify user───┼─────┼────────────────┼────►│ failed   │
+│            │     │   (Socket.IO)   │     │                │     │          │
+└────────────┘     └──────────────────┘     └────────────────┘     └──────────┘
+```
+
+This closes the loop. The worker failure path is no longer `reportFailure(id, string)` — it's a structured pipeline where the worker classifies, the orchestrator triages (auto-retry transients, escalate the rest), the planner decides strategy, and the user stays informed throughout.
+
+---
+
 ## Plan Schema (Planner → Orchestrator Contract)
 
 ```typescript
@@ -1367,8 +2725,8 @@ Worker completes task:
   L1-Workspace → git commit (A8)
   
 Worker dies/crashes:
-  L1-Memory lost (ephemeral). This is OK — task will be retried on fresh worker.
-  L1-Workspace persists if git committed (partial progress saved).
+  L1-Memory lost (ephemeral). This is OK — task will be retried from scratch on fresh worker.
+  L1-Workspace discarded. Retries start clean — no partial state to reconcile.
 ```
 
 ### Why Planner Doesn't Need L1-Workspace

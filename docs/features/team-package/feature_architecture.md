@@ -86,12 +86,24 @@ packages/
                     │   AI SDK     │
                     │  (ai, tools) │
                     └──────────────┘
-
-Consumers:
-  backend  → imports @ping/teams + @ping/agent-manager
-  cli      → imports @ping/teams + @ping/agent-manager (no HTTP needed)
-  external → imports @ping/agent-manager (standalone orchestration)
 ```
+
+### Consumption Model
+
+```
+Frontend → Backend API → @ping/teams → @ping/agent-manager
+           (frontend ONLY sees teams — never touches AgentManager directly)
+
+CLI → @ping/agent-manager directly (for single-agent sessions)
+CLI → @ping/teams (for team-based workflows)
+           (CLI bypasses HTTP — imports packages directly)
+
+External → @ping/agent-manager (standalone orchestration)
+```
+
+**Key rule:** Frontend never interacts with `@ping/agent-manager`. It only uses `@ping/teams` through the backend's HTTP/WebSocket API. Each team internally creates and owns one `AgentManager` instance — the frontend doesn't know or care about this.
+
+CLI is the opposite — it **directly** calls `AgentManager` to create sessions without needing a team or HTTP server. For team workflows, CLI imports `@ping/teams` directly (still no HTTP).
 
 ---
 
@@ -215,59 +227,74 @@ Each team = one AgentManager instance. Multiple teams = multiple independent Age
 
 ## How Each Consumer Uses the Packages
 
-### Backend (API layer)
+### Frontend → Backend API → @ping/teams (only path)
+
+Frontend **only** interacts with teams. It never sees `AgentManager` directly.
 
 ```typescript
 // packages/backend/api/HttpServer.ts
 import { TeamManager } from '@ping/teams';
 
+// Frontend calls these endpoints — all team-scoped
 app.post('/api/teams', async (req, res) => {
   const team = await TeamManager.create(req.body);
-  res.json(team);
+  res.json(team);  // team internally creates its own AgentManager
 });
 
 app.post('/api/teams/:id/goals', async (req, res) => {
   const team = await TeamManager.get(req.params.id);
-  const execution = await team.runGoal(req.body.goal);
+  const execution = await team.runGoal(req.body.goal);  // team's AgentManager handles this
   res.json(execution);
 });
+
+// Socket.IO: frontend subscribes to team events
+// team.on('stream', part => socket.emit('agent:message', part))
 ```
 
-Backend is a **thin HTTP/WebSocket layer** over `@ping/teams`. No orchestration logic in the API layer.
+Backend is a **thin HTTP/WebSocket layer** over `@ping/teams`. No orchestration logic in the API layer. Frontend never knows `AgentManager` exists.
 
-### CLI (direct import, no HTTP)
+### CLI → @ping/agent-manager directly (for sessions)
+
+CLI bypasses HTTP entirely and imports `@ping/agent-manager` for session creation.
 
 ```typescript
 // packages/cli/commands/run.ts
 import { AgentManager } from '@ping/agent-manager';
-import { TeamManager } from '@ping/teams';
 
-// Single agent mode — just AgentManager, no teams
-async function runSingleAgent(goal: string, role: string) {
-  const manager = new AgentManager({ model: 'azure/gpt-4o' });
-  await manager.execute(goal, {
-    roles: [role],
+// CLI creates sessions directly via AgentManager — no team, no HTTP
+async function createSession(goal: string, options: SessionOptions) {
+  const manager = new AgentManager({
+    model: options.model ?? 'azure/gpt-4o',
+  });
+  const session = await manager.createSession({
+    goal,
+    roles: options.roles ?? ['assistant'],
     onStream: (part) => renderToTerminal(part),
   });
+  return session;  // interactive REPL continues on this session
 }
 
-// Team mode — full team support
+// CLI can ALSO use teams for team-based workflows
+import { TeamManager } from '@ping/teams';
+
 async function runTeam(teamId: string, goal: string) {
   const team = await TeamManager.get(teamId);
-  await team.runGoal(goal);
+  await team.runGoal(goal);  // team's internal AgentManager handles it
 }
 ```
 
-CLI imports packages **directly** — no backend server needed for local execution.
+CLI imports packages **directly** — no backend server needed. For quick single-agent tasks, it calls `AgentManager` directly. For team workflows, it uses `TeamManager`.
 
 ### External Consumers (standalone)
 
 ```typescript
 // Any Node.js app can use @ping/agent-manager
-import { AgentManager, TaskStore } from '@ping/agent-manager';
+import { AgentManager } from '@ping/agent-manager';
 
+// Same pattern as CLI — direct session creation
 const manager = new AgentManager({ model: 'azure/gpt-4o' });
-await manager.execute('Analyze this dataset', {
+const session = await manager.createSession({
+  goal: 'Analyze this dataset',
   roles: ['analyst'],
   skills: { analyst: ['data-analysis', 'summarize'] },
 });

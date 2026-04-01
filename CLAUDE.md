@@ -83,6 +83,14 @@ Tasks use `status`: `ready | pending | in_progress | completed | failed`. The `a
 - **Event listener cleanup** - Remove listeners after completion when subscribing to `AgentWorker.events`.
 - **Do not create files unnecessarily** - Update existing files first.
 
+## Branching Strategy
+
+- **`dev`** is the default working branch. All development happens here.
+- **`main`** is production, auto-synced from `dev` via GitHub Actions.
+- **Never push directly to `main`.** Always branch from `dev`.
+- Feature/fix branches: `git checkout dev && git checkout -b feature/xyz`
+- Merge back into `dev` via PR. `main` syncs automatically.
+
 ## Environment Configuration
 
 Copy `packages/backend/.env.example` to `packages/backend/.env` and set:

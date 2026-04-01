@@ -193,6 +193,17 @@ Deprecated files (kept for compatibility):
 
 If anything feels ambiguous (e.g., exact responseFormat expected for builders, or desired concurrency model), flag it and propose a small code patch aligning prompts, schemas, and invoke configs.
 
+## Branching Strategy
+
+- **`dev`** is the default working branch. All development happens here.
+- **`main`** is the production branch. It is automatically synced from `dev` via GitHub Actions (`.github/workflows/sync-dev-to-main.yml`).
+- **Never push directly to `main`.** All changes flow through `dev` → `main`.
+- When creating feature or fix branches, **always branch from `dev`**:
+  - `git checkout dev && git checkout -b feature/my-feature`
+  - `git checkout dev && git checkout -b fix/my-bugfix`
+- Merge feature/fix branches back into `dev` via PR.
+- Do NOT create branches from `main` unless it's a production hotfix (merge hotfix into both `main` and `dev`).
+
 ## Development Workflow
 
 See specialized instruction files in `.github/instructions/`:

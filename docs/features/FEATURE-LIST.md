@@ -1,7 +1,7 @@
 # Ping — Master Feature List
 
-**Last Updated:** March 29, 2026  
-**Total Features:** 32 (18 existing + 14 new)
+**Last Updated:** April 1, 2026  
+**Total Features:** 33 (18 existing + 15 new)
 
 ---
 
@@ -32,6 +32,7 @@
 | A6 | **Task Orchestration Redesign** | 🆕 New | [task-orchestration](task-orchestration/) | Research & redesign task lifecycle: DAG-based deps, parallel execution, retry, replan, context passing. |
 | A7 | **External Agent Invocation** | 🆕 New | [external-agent-invocation](external-agent-invocation/) | Worker agents can call external agents (via MCP, HTTP, A2A protocol). Research best interop method. |
 | A8 | **Git-Based Task Context** | 🆕 New | [git-task-context](git-task-context/) | Preserve agent work as git commits. Branch-per-task. New sessions can pull branches. Branches persist until project completes. |
+| A9 | **Approval System** | 🆕 New | [approval-system](approval-system/) | Structured approval for plans, tools, artifacts. Leverages Mastra's `requireApproval` + `suspend()`. Depends on A1. Auto-approve rules per team. Audit trail. |
 
 ### B. Platform Architecture (Packaging & Deployment)
 
@@ -96,6 +97,7 @@ A1 Mastra/AI SDK Migration ─────────────────�
  ├── A3 Tools as MCP Servers (needs AI SDK tool() + @mastra/mcp)
  ├── A5 Planner as Agent (needs new agent primitives)
  ├── A7 External Agent Invocation (needs MCP interop)
+ ├── A9 Approval System (needs requireApproval + suspend())
  ├── C1 LLM Response Grading (needs @mastra/evals)
  └── C3 Skills Integration (needs AI SDK tool format)
 

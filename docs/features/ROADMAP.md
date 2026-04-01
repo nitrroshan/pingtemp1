@@ -6,6 +6,25 @@
 
 ---
 
+## Golden Path (Must Never Break)
+
+Every phase MUST pass this end-to-end flow before shipping:
+
+```
+1. User opens frontend (or CLI)
+2. User submits a goal
+3. Planner creates a plan (tasks + deps)
+4. User approves the plan
+5. Workers execute tasks (parallel when DAG allows)
+6. Each task produces output
+7. User sees results (approve/reject artifacts)
+8. Goal completes
+```
+
+**Rule:** If a phase requires swapping an internal system (agent runtime, tool loading, workspace model), the old path MUST work alongside the new until migration is complete. Feature flags, not big-bang swaps.
+
+---
+
 ## Current State (What Works Today)
 
 - AgentManagerV2 with OrchestratorService
@@ -59,6 +78,24 @@ App.tsx refactored → React Router → Goal input UI →
 Plan approval enhanced → Task dashboard live → Error toasts
 ```
 
+**Continuity Contract — Phase 1:**
+
+| What | Status | How Ensured |
+|---|---|---|
+| Golden path (goal → plan → execute → done) | ✅ **Established here** | This IS the golden path. All future phases layer on top. |
+| LangGraph agent runtime | ✅ Stays | InternalAgent + `agent.invoke()` unchanged. Phase 2 will replace. |
+| MemoryManager task state | ✅ Stays | Task lifecycle via MemoryManager. Phase 1 adds DAG on top, keeps MemoryManager for storage. |
+| Existing frontend chat | ⚠️ Refactored | App.tsx refactored but same Socket.IO events. Old message flow preserved through new hooks. |
+| WorkerPool execution | ✅ Stays | Same `runTask()` flow. Workers execute tasks, emit events. |
+
+**Smoke test after Phase 1:**
+```
+bun run dev:backend && bun run dev:frontend
+→ Open browser → Submit goal → See plan → Approve → Tasks execute → Results shown
+→ All tasks complete → Goal marked done
+→ ERROR? → Phase 1 is not done.
+```
+
 ---
 
 ## Phase 2: Real-Time Experience (3-4 weeks)
@@ -99,6 +136,46 @@ Skills configurable per agent
 ```
 The experience goes from "submit and wait" to "watch your team work in real-time."
 
+**Continuity Contract — Phase 2 (HIGHEST RISK PHASE):**
+
+| What | Status | How Ensured |
+|---|---|---|
+| Golden path | ⚠️ **At risk — agent runtime swap** | Feature flag: `AGENT_RUNTIME=langgraph\|ai-sdk`. Default stays `langgraph` during migration. Switch to `ai-sdk` only after all tests pass. |
+| Agent execution | ⚠️ Migrating | Migrate ONE agent type at a time (planner first, then workers). Both runtimes run side-by-side. Never rip out LangGraph until AI SDK is fully validated. |
+| Tool loading | ⚠️ Changing | AI SDK tools have different signature than LangGraph tools. Create adapter: `langchainTool → aiSdkTool` converter. Existing tool files don't change — adapter wraps them. |
+| Plan approval flow | ✅ Stays | Plan tools (`create_plan`, `approve_plan`) work the same — only the agent calling them changes internally. |
+| Task orchestration | ✅ Stays | OrchestratorService dispatches tasks identically. Only the agent inside the worker changes. |
+| Frontend messages | ⚠️ Enhanced | New streaming events (`text-delta`, `tool-input-*`, etc.) are ADDITIVE. Old `agent:message` events still work for non-streaming fallback. Frontend handles both. |
+| SocketServerV2 events | ✅ Stays + adds | Existing events unchanged. New `stream` event added. Frontend subscribes to both during transition. |
+
+**Migration strategy (prevents breakage):**
+```
+Week 1: AI SDK agents work alongside LangGraph. Both produce output.
+         Feature flag: AGENT_RUNTIME=langgraph (default)
+         Test: golden path still works with langgraph
+
+Week 2: Planner migrated to AI SDK. Workers still LangGraph.
+         Feature flag: PLANNER_RUNTIME=ai-sdk, WORKER_RUNTIME=langgraph
+         Test: golden path works with mixed runtimes
+
+Week 3: All workers migrated to AI SDK. LangGraph code kept but unused.
+         Feature flag: AGENT_RUNTIME=ai-sdk (new default)
+         Test: golden path works fully on AI SDK
+         Test: streaming works end-to-end
+
+Week 4: Remove LangGraph code paths (or keep behind flag for rollback).
+```
+
+**Smoke test after Phase 2:**
+```
+bun run dev:backend && bun run dev:frontend
+→ Submit goal → See plan (streamed token-by-token) → Approve
+→ Watch tasks execute (tool cards, reasoning, live text)
+→ Results shown → Goal done
+→ Toggle AGENT_RUNTIME=langgraph → SAME test passes (rollback works)
+→ ERROR? → Phase 2 is not done.
+```
+
 ---
 
 ## Phase 3: Teams & Packages (3-4 weeks)
@@ -108,8 +185,8 @@ The experience goes from "submit and wait" to "watch your team work in real-time
 
 | Feature | What | Effort | ID |
 |---|---|---|---|
-| **Team Package** | Extract `@ping/agent-manager` + `@ping/teams` as separate packages. Backend becomes thin API. | 2-3 weeks | B1 |
-| **Teams Integration** | Frontend team UI (create, select, manage agents). CLI team commands. | 1-2 weeks | E6 |
+| **Team Package** | Extract `@ping/agent-manager` + `@ping/teams`. Frontend only uses `@ping/teams` (via API). CLI directly calls `@ping/agent-manager` for sessions. Each team owns one AgentManager. | 2-3 weeks | B1 |
+| **Teams Integration** | Frontend team UI (create, select, manage agents). CLI team commands + direct session mode. | 1-2 weeks | E6 |
 | **Dev/Prod Setup** | Docker Compose, environment configs, MongoDB setup, `.env` templates. | 3-5 days | — |
 
 #### Frontend in Phase 3
@@ -128,7 +205,9 @@ The experience goes from "submit and wait" to "watch your team work in real-time
 **After Phase 3 (backend):**
 ```
 @ping/agent-manager + @ping/teams as packages →
-Backend is thin API layer → CLI imports packages directly →
+Frontend → Backend API → @ping/teams only (never sees AgentManager) →
+CLI → @ping/agent-manager directly for sessions (no HTTP needed) →
+Each team wraps one AgentManager instance →
 Docker Compose for one-command setup
 ```
 
@@ -138,6 +217,42 @@ Team switcher → Team management page → Agent settings →
 Chat persistence → Responsive layout → Dark mode
 ```
 Ping is a real multi-team product, not a single-instance demo.
+
+**Continuity Contract — Phase 3:**
+
+| What | Status | How Ensured |
+|---|---|---|
+| Golden path | ⚠️ **At risk — package extraction** | Extract one module at a time. After each extraction: run golden path smoke test. Old import paths re-export from new packages during transition. |
+| Agent execution | ✅ Stays | AI SDK runtime (from Phase 2) unchanged. Package extraction moves files, not behavior. |
+| Streaming | ✅ Stays | Same streaming pipeline. Just lives in `@ping/agent-manager` now. |
+| Tool loading | ✅ Stays | Tools still loaded same way. Package extraction is structural, not behavioral. |
+| Single-team mode | ✅ Preserved | Without team selection, uses default team. Frontend doesn't force team creation. |
+| API endpoints | ⚠️ Adding | New team endpoints (`/api/v2/teams/*`). Existing endpoints unchanged. Frontend uses new endpoints only when teams feature is active. |
+| Frontend | ⚠️ Enhanced | Team switcher is additive. Without teams, UI works exactly like Phase 2 (single team, single chat). |
+
+**Migration strategy (prevents breakage):**
+```
+Step 1: Extract @ping/agent-manager. Backend imports from package.
+        Test: golden path works.
+
+Step 2: Extract @ping/teams. Backend imports from package.
+        Test: golden path works (single-team, no teams UI yet).
+
+Step 3: Wire frontend team UI. Default team auto-selected.
+        Test: golden path works with default team.
+        Test: create second team, switch between them.
+```
+
+**Smoke test after Phase 3:**
+```
+bun run dev:backend && bun run dev:frontend
+→ Open browser → Default team loaded automatically
+→ Submit goal → Streamed plan → Approve → Tasks stream → Done
+→ Create new team → Switch to it → Submit goal → Same flow works
+→ Switch back to first team → Chat history preserved
+→ docker compose up → Same flow works in containers
+→ ERROR? → Phase 3 is not done.
+```
 
 ---
 
@@ -177,6 +292,45 @@ CRDT editor fixed → Presence indicators
 ```
 Agents have real workspaces, knowledge compounds, nothing is lost on restart.
 
+**Continuity Contract — Phase 4:**
+
+| What | Status | How Ensured |
+|---|---|---|
+| Golden path | ⚠️ **At risk — workspace model change** | Feature flag: `GIT_MODEL=dual\|single`. Default `single` during migration (current behavior). Switch to `dual` after validation. |
+| File operations | ⚠️ Changing | `workspace_read/write/list` tools still work — internally they now route through WorkspaceRepo (task branch). Same API, different backend. |
+| Task execution | ✅ Stays | WorkerPool calls same `runTask()`. Internally creates branch before, merges after. Worker doesn't know. |
+| Streaming | ✅ Stays | Unchanged from Phase 2. |
+| Teams | ✅ Stays | Unchanged from Phase 3. |
+| Agent output | ⚠️ Enhanced | `workspace_publish` now means "commit to task branch + mark ready for approval" instead of direct manifest write. Approval → merge to main. Without approval enabled, auto-merges (preserves current behavior). |
+| Knowledge Base | ✅ Additive | New L3 features don't touch existing L1/L2 paths. Knowledge injection is optional — workers work without it. |
+
+**Migration strategy (prevents breakage):**
+```
+Step 1: Add git abstractions (RepoManager, WorkspaceRepo). GIT_MODEL=single (default).
+        Test: golden path works identically to Phase 3.
+
+Step 2: Wire workspace branching behind GIT_MODEL=dual.
+        Test: GIT_MODEL=single → golden path unchanged.
+        Test: GIT_MODEL=dual → golden path with branches + merge.
+
+Step 3: Add memory repo + knowledge base. Purely additive.
+        Test: golden path unchanged (knowledge injection is bonus context).
+
+Step 4: Switch default to GIT_MODEL=dual.
+        Test: full golden path with workspace branches.
+```
+
+**Smoke test after Phase 4:**
+```
+bun run dev:backend && bun run dev:frontend
+→ Submit goal → Plan → Approve → Tasks execute on workspace branches
+→ Task completes → Artifacts shown for review → Approve → Merged to main
+→ Check /knowledge page → Knowledge wiki renders
+→ Submit similar goal → Agent gets prior knowledge injected
+→ Toggle GIT_MODEL=single → Old behavior still works (rollback)
+→ ERROR? → Phase 4 is not done.
+```
+
 ---
 
 ## Phase 5: Tools & MCP Ecosystem (3-4 weeks)
@@ -212,6 +366,43 @@ MCP server dashboard → Tool activity log → Admin settings page
 ```
 Ping is an ecosystem, not a monolith.
 
+**Continuity Contract — Phase 5:**
+
+| What | Status | How Ensured |
+|---|---|---|
+| Golden path | ⚠️ **At risk — tool extraction** | Extract tools into packages but keep re-exports from old paths. Workers load tools via `getToolsForRole()` — that function's internals change (loads from package), its API doesn't. |
+| Tool execution | ⚠️ Restructured | Tools move from `memory/L1/workspace/tools/` to `@ping/workspace-tools`. Internal function signatures stay identical. Import paths change, but WorkerPool's `getToolsForRole()` abstracts this. |
+| Streaming | ✅ Stays | Unchanged. |
+| Teams | ✅ Stays | Unchanged. |
+| Workspace | ✅ Stays | Unchanged. |
+| MCP servers | ✅ Additive | New MCP servers (`@ping/mcp-collab`, etc.) are separate processes. They don't change the main backend. External consumers use MCP; internal code unchanged. |
+| CLI | ✅ Additive | New CLI commands import `@ping/agent-manager` directly. Doesn't affect frontend or backend. |
+
+**Migration strategy (prevents breakage):**
+```
+Step 1: Extract @ping/workspace-tools. Re-export from old paths.
+        Test: golden path works (workers still find tools).
+
+Step 2: Extract @ping/lifecycle-tools. Re-export from old paths.
+        Test: golden path works.
+
+Step 3: Build MCP servers as separate processes.
+        Test: golden path works (MCP is additive, doesn't replace anything).
+
+Step 4: Remove old path re-exports. All imports from packages.
+        Test: golden path works via package imports.
+```
+
+**Smoke test after Phase 5:**
+```
+bun run dev:backend && bun run dev:frontend
+→ Submit goal → Full golden path works (streaming, teams, workspace)
+→ ping chat "Build a landing page" (CLI) → Same flow works
+→ Connect MCP client to @ping/mcp-knowledge → Search returns results
+→ /settings page → MCP servers listed with health status
+→ ERROR? → Phase 5 is not done.
+```
+
 ---
 
 ## Phase 6: Isolation & Security (2-3 weeks)
@@ -221,28 +412,72 @@ Ping is an ecosystem, not a monolith.
 
 | Feature | What | Effort | ID |
 |---|---|---|---|
-| **Worker Sandboxing** | Microsandbox (primary) / Docker (fallback) per worker. Resource limits, network isolation. Dev mode = no sandbox. | 2-3 weeks | A4 |
+| **Worker Sandboxing** | Microsandbox (primary — dev + prod) / Docker (fallback). Dev auto-starts Microsandbox server. Resource limits, network isolation. | 2-3 weeks | A4 |
 
 #### Frontend in Phase 6
 
 **Goal:** Sandbox visibility for ops/admin.
 
+**Note:** Worker health monitoring (heartbeat, stall detection, kill) already exists via Phase 1's Watchdog (A5). SwarmView + AgentCard already show worker status. Phase 6 frontend only **extends** existing components with sandbox-specific data.
+
 | What | Effort | Details |
 |---|---|---|
-| **Sandbox Status Panel** | 1-2 days | Per-worker: show container status (running/stopped), resource usage (memory/CPU), network policy. |
-| **Worker Health Dashboard** | 1-2 days | Overview: all active workers with heartbeat indicators, stall detection alerts, kill button. |
+| **Extend AgentCard** | 1 day | Add to existing AgentCard: sandbox provider badge (Microsandbox/Docker), container status (running/stopped), resource usage (memory/CPU bar), network policy tag. All data from backend `worker:status` events. |
+| **Extend SwarmView** | 0.5 days | Add summary row: total sandboxes running, aggregate resource usage, provider distribution. |
 
 **After Phase 6 (backend):**
 ```
 Microsandbox/Docker per worker → Resource limits →
-Network isolation → Dev mode = no sandbox
+Network isolation → Dev auto-starts Microsandbox server
 ```
 
 **After Phase 6 (frontend):**
 ```
-Sandbox status panel → Worker health dashboard → Kill button
+AgentCard shows sandbox status + resources → SwarmView shows aggregate
+(Worker health/heartbeat/kill already in Phase 1 Watchdog)
 ```
 Safe for untrusted user goals.
+
+**Continuity Contract — Phase 6 (HIGH RISK — tool routing change):**
+
+| What | Status | How Ensured |
+|---|---|---|
+| Golden path | ⚠️ **At risk — tool execution routing** | Feature flag: `SANDBOX_PROVIDER=microsandbox\|docker\|auto`. Auto-detection: try Microsandbox → Docker → **error** (no silent bare-metal). But during migration, existing `@ping/workspace-tools` functions still work without sandbox for testing. |
+| Tool execution | ⚠️ Changing | Tools route through `sandbox.exec()` / `sandbox.readFile()` / `sandbox.writeFile()` instead of direct FS. The tool API stays the same — `SandboxProvider` wraps execution transparently. Workers don't change. |
+| File operations | ⚠️ Proxied | `workspace_write()` → `sandbox.writeFile()` → file lands in mounted volume. Same result, different path. |
+| Streaming | ✅ Stays | Unchanged. Streaming is Socket.IO, not affected by sandbox. |
+| Teams | ✅ Stays | Unchanged. |
+| Workspace (git) | ✅ Stays | Git repos mounted as volumes into sandbox. WorkspaceRepo operates on mounted path. |
+| Knowledge | ✅ Stays | KnowledgeBase runs in main process (not sandboxed). Only worker tool execution is sandboxed. |
+
+**Migration strategy (prevents breakage):**
+```
+Step 1: SandboxProvider interface + MicrosandboxProvider.
+        Backend starts Microsandbox server automatically (dev mode).
+        SANDBOX_PROVIDER=auto but tools NOT YET routed through sandbox.
+        Test: golden path works identically to Phase 5.
+
+Step 2: Route workspace tools through sandbox.
+        Test: golden path works with tools executing in Microsandbox.
+        Test: workspace_write → file appears in workspace repo (mounted volume).
+
+Step 3: Add DockerProvider fallback.
+        Test: Kill Microsandbox → auto-falls back to Docker → golden path works.
+
+Step 4: Add resource limits + network isolation.
+        Test: golden path works under resource limits.
+        Test: isolated sandbox can't reach internet.
+```
+
+**Smoke test after Phase 6:**
+```
+bun run dev:backend && bun run dev:frontend
+→ Microsandbox server auto-started → Workers execute in microVMs
+→ Submit goal → Full golden path (streaming, teams, workspace, sandbox)
+→ AgentCard shows sandbox status + resource usage
+→ Kill Microsandbox → Docker fallback kicks in → Golden path still works
+→ ERROR? → Phase 6 is not done.
+```
 
 ---
 
@@ -277,6 +512,24 @@ Agent improvement over time → Model hot-swap
 ```
 Quality grades per output → Agent performance charts →
 LSP error display → Hallucination warnings
+```
+
+**Continuity Contract — Phase 7 (LOW RISK — additive features):**
+
+| What | Status | How Ensured |
+|---|---|---|
+| Golden path | ✅ Safe | All Phase 7 features are additive. Grading observes outputs, doesn't change them. LSP adds diagnostics, doesn't block execution. |
+| Agent execution | ✅ Stays | Same AI SDK runtime. Grading runs asynchronously AFTER output. |
+| All prior features | ✅ Stays | Streaming, teams, workspace, knowledge, sandbox — all unchanged. |
+
+**Smoke test after Phase 7:**
+```
+bun run dev:backend && bun run dev:frontend
+→ Full golden path (streaming, teams, workspace, sandbox)
+→ Task output shows quality grade badge
+→ Coding agent's workspace shows LSP errors inline
+→ Agent performance dashboard shows historical metrics
+→ ERROR? → Phase 7 is not done.
 ```
 
 ---

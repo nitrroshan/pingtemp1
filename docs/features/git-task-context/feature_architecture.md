@@ -19,9 +19,10 @@ Two git repositories per team: one for **L1 Memory** (per-role reasoning, notes,
 
 ### Target State
 - **Two repos per team:**
-  - **Memory Repo** (per-role) — the agent's private play area. Reasoning logs, drafts, experiments, scratch code, tool history, working notes. The agent works HERE freely — tries things, fails, iterates. Role's `main` = accumulated knowledge. Task branches for isolation, merged back on completion.
-  - **Workspace Repo** (shared) — deliverables only. Code, documents, artifacts that the agent **promotes** from its play area when ready. Task branches for isolation, merged to main on user approval.
-- Git commit history serves as **resumable context** — if the same task comes again, the role's memory repo has the history.
+  - **Workspace Repo** (shared) — where agents **actually do their work**. Code, documents, artifacts. Agents commit directly here, just like real developers working in a shared codebase. Task branches for isolation, merged to `main` on user approval. This is the primary working area.
+  - **Memory Repo** (per-role) — the agent's **personal knowledge store**, like how Copilot stores memories or how AI agents store context/preferences/learnings. NOT a working area. Contains: reasoning patterns, tool preferences, domain expertise notes, lessons learned, approach summaries. Role's `main` = accumulated knowledge. Updated after tasks complete (learnings extracted, not raw work).
+- Git commit history in workspace serves as **project history** — what was built, when, by whom.
+- Memory repo serves as **resumable context** — if the same role gets a similar task, its memory has learned patterns from prior work.
 - Workspace repo is the **single source of truth** for project deliverables.
 
 ---
@@ -31,45 +32,43 @@ Two git repositories per team: one for **L1 Memory** (per-role reasoning, notes,
 ```
 Team: "Marketing Campaign"
 │
-├── MEMORY REPOS (one per role — private play area + knowledge)
-│
-│   researcher-memory/          ← git repo, owned by researcher role
-│   ├── main                     ← accumulated knowledge across all tasks
-│   │   ├── findings/            ← research notes, analysis
-│   │   ├── drafts/              ← work-in-progress files
-│   │   ├── scratch/             ← experiments, test scripts, intermediate data
-│   │   ├── tool-history/        ← what tools were called, what worked
-│   │   └── reasoning-log.md     ← decision rationale
+├── WORKSPACE REPO (shared — where agents DO their work)
 │   │
-│   ├── task/T-001               ← branch for current task (agent's sandbox)
-│   │   ├── draft-report-v1.md   ← first attempt
-│   │   ├── draft-report-v2.md   ← revised after feedback
-│   │   ├── scraped-data.json    ← intermediate data
-│   │   ├── test-parser.py       ← scratch code to validate approach
-│   │   └── reasoning-log.md     ← task-specific reasoning
+│   workspace/                   ← git repo, shared by all roles
+│   ├── main                      ← approved work (merged after review)
+│   │   ├── src/                  ← code
+│   │   ├── docs/                 ← documents
+│   │   ├── assets/               ← design files
+│   │   └── output/               ← final artifacts
 │   │
-│   └── task/T-007               ← another concurrent task
+│   ├── task/T-001/researcher     ← researcher works HERE on T-001
+│   │   ├── research-report.md    ← created directly in workspace
+│   │   ├── competitor-matrix.csv ← committed as agent works
+│   │   └── test-parser.py        ← even scratch code lives here until cleanup
+│   │
+│   ├── task/T-004/writer         ← writer works HERE on T-004
+│   │   ├── marketing-copy.md     ← written directly in workspace branch
+│   │   └── taglines.md           ← all work happens here
+│   │
+│   └── task/T-005/designer       ← designer works HERE on T-005
 │
-│   writer-memory/              ← git repo, owned by writer role
-│   ├── main                     ← writer's accumulated knowledge
-│   ├── task/T-004               ← branch for current task
-│   └── ...
-│
-│   designer-memory/            ← git repo, owned by designer role
-│   └── ...
-│
-└── WORKSPACE REPO (shared — deliverables)
+└── MEMORY REPOS (one per role — personal knowledge store, like Copilot memory)
     │
-    workspace/                   ← git repo, shared by all roles
-    ├── main                      ← approved deliverables (merged after review)
-    │   ├── src/                  ← code
-    │   ├── docs/                 ← documents
-    │   ├── assets/               ← design files
-    │   └── output/               ← final artifacts
+    researcher-memory/          ← git repo, NOT a working area
+    ├── main                     ← accumulated knowledge across all tasks
+    │   ├── expertise/           ← domain knowledge summaries
+    │   ├── patterns/            ← "what works" for common task types
+    │   ├── tool-notes/          ← tool preferences, quirks, tips
+    │   ├── lessons-learned/     ← agent-saved + hook-extracted from tasks
+    │   └── profile.md           ← role preferences, style, approach patterns
     │
-    ├── task/T-001/researcher     ← researcher's deliverables for T-001
-    ├── task/T-004/writer         ← writer's deliverables for T-004
-    ├── task/T-005/designer       ← designer's deliverables for T-005
+    writer-memory/              ← writer's personal knowledge
+    ├── main
+    │   ├── expertise/           ← writing style notes, tone preferences
+    │   ├── patterns/            ← what structures work for different content types
+    │   └── lessons-learned/     ← agent-saved during execution + hook-extracted
+    │
+    designer-memory/            ← designer's personal knowledge
     └── ...
 ```
 
@@ -77,157 +76,181 @@ Team: "Marketing Campaign"
 
 ```
 ❌ One repo for everything:
-   Researcher's reasoning notes mixed with production code
-   Writer's draft iterations alongside API endpoints
-   Can't give a role access to its own history without exposing others
-   Merge conflicts between reasoning logs and code changes
-   Browsing commit history is noise — 80% is internal notes
+   Agent's accumulated knowledge mixed with project code
+   Tool preferences and lessons learned pollute commit history
+   Can't give a role access to its own learnings without exposing project
+   No separation between "what I know" and "what I built"
 
 ✅ Two repos:
-   Memory = private, per-role, never leaves the role
-   Workspace = shared, reviewed, merged to main on approval
-   Clean separation: thinking vs delivering
-   Role can browse its own memory history freely
-   Workspace history is meaningful — only deliverables
+   Workspace = where agents WORK. Shared, reviewed, merged on approval.
+   Memory = what agents KNOW. Private, per-role, accumulated over time.
+   Clean separation: working vs knowing.
+   Workspace history is meaningful — actual work committed by agents.
+   Memory is portable — role's knowledge survives team changes.
+   Like real devs: work in shared repo, keep personal notes separately.
 ```
 
 ---
 
-## Memory Repo: Per-Role Knowledge + Play Area
+## Memory Repo: Per-Role Knowledge Store
 
-Each role has its own git repo. This is **L1-Memory + the agent's sandbox** — a private space where the agent thinks, experiments, and works before promoting deliverables to the shared workspace.
+Each role has its own git repo. This is the agent's **personal knowledge base** — like how Copilot stores memories, or how experienced developers keep personal notes and cheatsheets.
 
-### It's Not Just Notes — It's the Agent's Play Area
+### What Memory Is (and Isn't)
 
 ```
-❌ Too narrow: "Memory repo = reasoning logs"
-   Just a diary. Agent writes notes and that's it.
+❌ Wrong: "Memory repo = the agent's workspace"
+   Agents work in the WORKSPACE repo, not here.
+   Memory is NOT for drafts, experiments, or scratch code.
 
-✅ Full picture: "Memory repo = the agent's private workspace"
-   Reasoning logs, yes — but also:
-   - Draft files the agent is experimenting with
-   - Code it's testing before committing to workspace
-   - Scratch analysis, intermediate data processing
-   - Failed attempts (kept as learnings)
-   - Prototypes, explorations, proof-of-concepts
+✅ Right: "Memory repo = the agent's personal memory — like Copilot memory"
+   Just like how GitHub Copilot remembers your preferences, or how Claude saves
+   memories during conversation, agents actively save knowledge as they work.
+
+   - Domain expertise ("competitors use freemium models")
+   - Approach patterns ("for data analysis tasks, start with pandas")
+   - Tool preferences ("web-search gives better results with quoted phrases")
+   - Lessons learned ("API X has 100/min rate limit, use batch endpoint")
+   - Style notes ("team prefers formal B2B tone, short paragraphs")
+   - In-progress notes ("found 3 promising leads, need to verify pricing")
    
-   Think of it as the agent's DESK — messy, private, productive.
-   Only the finished work goes to the shared workspace.
+   Think of it as the agent's BRAIN — what it knows, not what it's doing.
+   Agents do their actual work in the workspace repo.
 ```
 
-The memory repo is where an agent can **try things without consequences**. Write a draft, delete it, rewrite it. Run a script, see it fail, fix it. None of this noise reaches the shared workspace — only the polished deliverable does.
+### When Does Memory Get Written?
+
+Memory is written in **two ways** — exactly like how Copilot/Claude handle memory:
+
+**1. Agent saves actively during execution** (like Copilot's "remember this"):
+- Agent encounters something worth remembering → calls `memory_save` tool
+- "This API has a 100/min rate limit" → saved immediately to `lessons-learned/`
+- "User prefers formal tone" → saved immediately to `profile.md`
+- "Pandas + batch approach works best" → saved to `patterns/`
+- Agent decides what's worth saving — it's their personal notebook
+
+**2. Automated post-task extraction** (bonus, catches what agent missed):
+- After task completes/fails, a post-task hook runs
+- Analyzes workspace diff + task result → distills additional learnings
+- Especially valuable for failures: "tried X, didn't work because Y"
+- Supplements what agent saved manually — catches implicit knowledge
+
+```
+During task execution:
+  Agent calls memory_save("lesson", "api-rate-limit", "100/min, use batch")
+  Agent calls memory_save("expertise", "competitor-pricing", "freemium model")
+  Agent calls memory_save("tool-note", "web-search", "quoted phrases 3x better")
+  → Committed to memory repo immediately
+
+After task completes:
+  Post-task hook runs → analyzes workspace diff + output
+  → Extracts additional learnings agent didn't explicitly save
+  → Committed to memory repo as supplementary knowledge
+
+Both paths feed the same memory repo. Agent is always in control.
+```
 
 ### Branch Strategy
+
+Memory repos are simpler than workspace repos — no task branches needed. Knowledge is committed directly to `main` (it's not collaborative, no conflicts).
 
 ```
 researcher-memory/
 │
-├── main                          ← role's accumulated knowledge
-│   (merged from completed task branches)
-│
-├── task/T-001  ──────────────┐   ← created when task assigned
-│   Working notes, reasoning  │
-│   Tool call logs            │   Task completes → merge to main
-│   Discoveries, findings     │   Task fails → branch preserved (learnings kept)
-│   └──────────────────────────┘
-│
-├── task/T-007  (active)          ← another concurrent task
-│
-└── main now contains:
-    T-001 findings + T-007 findings + ...
-    Role gets SMARTER over time
+└── main                          ← all knowledge lives here
+    ├── expertise/
+    │   ├── competitor-pricing.md  ← saved by agent during T-001
+    │   └── market-trends.md      ← saved by agent during T-007
+    ├── patterns/
+    │   └── data-analysis.md      ← agent noted "pandas + batch works best"
+    ├── tool-notes/
+    │   └── web-search.md         ← agent noted "quoted phrases work better"
+    ├── lessons-learned/
+    │   ├── T-001-learnings.md    ← agent saved during + hook extracted after
+    │   └── T-003-learnings.md    ← hook extracted from failure
+    └── profile.md                ← agent saves preferences as it learns them
+
+Role gets SMARTER over time — knowledge accumulates from both:
+  - Agent actively saving (like you telling Copilot "remember this")
+  - Post-task hooks extracting implicit learnings
 ```
 
 ### What Gets Committed to Memory Repo
 
-| Content | When | Example |
-|---|---|---|
-| **Reasoning log** | During execution | "Tried approach A, failed due to rate limits. Switching to B." |
-| **Tool call history** | After each tool call | "Called web-search('competitor analysis'), got 12 results" |
-| **Working notes** | During execution | "Key finding: top competitor uses freemium model" |
-| **Discoveries** | On significant finding | "API has undocumented rate limit of 100/min" |
-| **Drafts & experiments** | During work | Draft v1 of marketing copy, test script for data parsing |
-| **Scratch code** | During prototyping | Quick script to validate API response format works |
-| **Intermediate data** | During analysis | Scraped data, transformed CSVs, partial results |
-| **Failed attempts** | On failure | "Tried scraping approach — blocked by CAPTCHA. Keeping for reference." |
-| **Task summary** | On task completion | "Completed market research. 3 direct threats identified." |
+Memory is written **both during execution and after task completion** — the agent saves actively (like Copilot remembering preferences) and the post-task hook catches anything the agent missed.
 
-### The Promotion Flow: Play Area → Workspace
+| Content | When Written | How | Example |
+|---|---|---|---|
+| **Domain expertise** | During execution | Agent calls `memory_save` | "Competitor X uses freemium model, 3-tier pricing" |
+| **Approach patterns** | During execution | Agent calls `memory_save` | "For data analysis: pandas + matplotlib + batch API" |
+| **Tool preferences** | During execution | Agent calls `memory_save` | "web-search: quoted phrases give 3x better results" |
+| **Lessons learned** | During + post-task | Agent saves + hook extracts | "API has undocumented 100/min rate limit" |
+| **Style preferences** | During execution | Agent calls `memory_save` after user feedback | "Team prefers formal B2B tone, short paragraphs" |
+| **Anti-patterns** | Post-task (failures) | Hook extracts from failure context | "Don't try scraping X.com — CAPTCHA blocks" |
+| **In-progress notes** | During execution | Agent calls `memory_save` | "3 leads found, need to verify pricing tier" |
+| **Supplementary knowledge** | Post-task | Hook distills from workspace diff | Implicit learnings agent didn't explicitly save |
 
-```
-Memory Repo (private play area)         Workspace Repo (shared deliverables)
-┌────────────────────────────┐         ┌─────────────────────────────┐
-│                            │         │                             │
-│  draft-v1.md  ← bad       │         │                             │
-│  draft-v2.md  ← better    │         │                             │
-│  draft-v3.md  ← good!     │ ──────▶ │  marketing-copy.md  ✓      │
-│  test-script.py            │         │                             │
-│  scraped-data.json         │         │                             │
-│  analysis-notes.md         │ ──────▶ │  competitor-matrix.csv  ✓  │
-│  reasoning-log.md          │         │                             │
-│  tool-history.md           │         │                             │
-│                            │         │                             │
-│  (everything stays here)   │         │  (only final deliverables)  │
-└────────────────────────────┘         └─────────────────────────────┘
+### How Memory Helps Future Tasks
 
-Agent decides what to promote:
-  "draft-v3.md is ready → copy to workspace as marketing-copy.md"
-  "analysis-notes.md → distill into competitor-matrix.csv for workspace"
-  "test-script.py → stays in memory, not a deliverable"
-```
-
-The agent explicitly promotes files from its play area to the workspace when they're ready. The workspace only receives polished output.
-
-### Resumable Context
-
-When the same role gets a similar task again, the memory repo provides history:
+When the same role gets a similar task, the memory repo provides context — knowledge the agent saved during prior tasks AND learnings extracted post-task:
 
 ```
 New task T-015: "Research pricing strategies"
 
-Researcher's memory repo (main branch) already has:
-  ├── task/T-001 findings (market research — includes competitor pricing)
-  ├── task/T-007 findings (industry analysis — includes pricing trends)
-  └── reasoning-log.md mentions pricing in 3 prior tasks
+Researcher's memory repo already has (accumulated from prior tasks):
+  ├── expertise/competitor-pricing.md   (agent saved during T-001 via memory_save)
+  ├── expertise/market-trends.md        (agent saved during T-007 via memory_save)
+  ├── patterns/data-analysis.md         (agent saved: "pandas + batch works best")
+  ├── tool-notes/web-search.md          (agent saved: "quoted phrases 3x better")
+  └── lessons-learned/T-001.md          (agent saved + hook extracted: "rate limit 100/min")
 
-Agent prompt includes: "Your prior research history is available in your memory.
-Relevant past work: [git log --grep='pricing' → 3 commits found]"
+Agent prompt includes:
+  "Your prior knowledge on this topic:
+   - Competitor X uses freemium model (from expertise/competitor-pricing.md)
+   - Rate limit on data API: use batch endpoint (from lessons-learned/T-001.md)
+   - Use pandas + batch approach for analysis (from patterns/data-analysis.md)"
 
-Result: Agent doesn't start from scratch. It builds on accumulated knowledge.
+Result: Agent doesn't start from scratch. It builds on knowledge it saved +
+knowledge extracted from prior work. Like an experienced developer who keeps notes.
 ```
 
 ### Memory Commit Convention
 
 ```
-[T-001] reasoning: Tried API approach, switching to scraping due to rate limits
+During execution (agent saves actively):
+  [T-001/researcher] expertise: Competitor X uses freemium, 3-tier pricing
+  [T-001/researcher] lesson: API rate limit at 100/min, use batch endpoint
+  [T-001/researcher] tool-note: web-search works better with quoted phrases
+  [T-004/writer] style: Team prefers formal B2B tone, short paragraphs
 
-Role: researcher
-Task: Market competitor analysis  
-Tools: web-search (3 calls), read-url (5 calls)
-Duration: 4m 23s
+Post-task extraction (automated hook):
+  [post-T-001] expertise: Market segmentation shows 3 pricing tiers common
+  [post-T-003] anti-pattern: CAPTCHA blocks scraping after 5 requests
+  [post-T-004] pattern: Short paragraphs + 3 CTAs drove highest engagement
 ```
 
 ---
 
-## Workspace Repo: Shared Deliverables
+## Workspace Repo: Where Agents Do Their Work
 
-One repo per team. All roles commit their deliverables here. This is the project's source of truth.
+One repo per team. All roles work directly here. This is the project's source of truth — **agents commit their actual work here, just like real developers.**
 
 ### Branch Strategy
 
 ```
 workspace/
 │
-├── main                              ← approved, merged deliverables
+├── main                              ← approved work (merged after review)
 │   (only gets commits after user approval)
 │
-├── task/T-001/researcher  ─────┐     ← researcher's deliverables for T-001
-│   research-report.md          │
+├── task/T-001/researcher  ─────────┐     ← researcher WORKS HERE on T-001
+│   research-report.md          │     created, edited, iterated directly
 │   competitor-matrix.csv       │     User approves → merge to main
+│   test-parser.py              │     (scratch files cleaned up before merge)
 │   └───────────────────────────┘
 │
-├── task/T-004/writer  ─────────┐     ← writer's deliverables for T-004
-│   marketing-copy.md           │
+├── task/T-004/writer  ────────────┐     ← writer WORKS HERE on T-004
+│   marketing-copy.md           │     drafts, rewrites, all happen here
 │   taglines.md                 │     User reviews → request changes → writer revises
 │   └───────────────────────────┘     User approves → merge to main
 │
@@ -306,40 +329,52 @@ This is rare in practice — tasks usually produce distinct files. When it happe
 ```
 Task assigned (Orchestrator dispatches):
   │
-  ├── Memory repo: create branch task/T-001
-  │   └── git checkout -b task/T-001 main
-  │
   ├── Workspace repo: create branch task/T-001/researcher
   │   └── git checkout -b task/T-001/researcher main
+  │   └── Agent's working directory points HERE
   │
-  └── Worker starts with both repos mounted
+  └── Worker starts with workspace repo mounted
 
 Worker executes:
   │
-  ├── Memory repo: worker writes reasoning, notes, tool history
-  │   └── auto-committed periodically (every N tool calls or every M minutes)
+  └── Workspace repo: agent creates/edits files directly
+      ├── Creates research-report.md (draft v1)
+      ├── Rewrites to v2, v3 (all on same branch)
+      ├── Creates test-parser.py (scratch work)
+      └── Committed periodically (auto-commit every N ops or M minutes)
+      └── Agent works like a real dev: edit, commit, iterate
+
+During execution:
   │
-  └── Workspace repo: worker writes deliverables (code, docs, assets)
-      └── committed on meaningful milestones
+  └── Memory repo: agent saves knowledge actively (via memory_save tool)
+      ├── "API has 100/min rate limit" → lessons-learned/
+      ├── "User wants formal tone" → profile.md
+      ├── "Pandas approach works best" → patterns/
+      └── Committed immediately — agent's personal notebook
 
 Task completes:
   │
-  ├── Memory repo: final commit + merge to main
-  │   └── git merge task/T-001 → main (always fast-forward or auto-merge)
-  │   └── Role's main now includes this task's learnings
+  ├── Workspace repo: final commit, awaits approval
+  │   └── User approves → merge to main (optional: squash commits)
+  │   └── User rejects → branch preserved, agent continues or replans
   │
-  └── Workspace repo: final commit, awaits approval
-      └── User approves → merge to main
-      └── User rejects → branch preserved
+  └── Memory repo: post-task hook extracts ADDITIONAL learnings
+      ├── Analyzes workspace diff for knowledge agent didn't explicitly save
+      ├── Supplements agent's active saves — catches implicit knowledge
+      ├── Especially valuable for failures ("tried X, failed because Y")
+      └── All committed directly to memory/main
 
 Task fails:
   │
-  ├── Memory repo: commit what was learned, merge to main anyway
-  │   └── Failure learnings are VALUABLE — "tried X, it broke because Y"
-  │   └── Next time this role gets a similar task, it knows what NOT to do
+  ├── Workspace repo: branch preserved (partial work may be salvageable)
+  │   └── Planner may retry with a new branch: task/T-001-retry/researcher
   │
-  └── Workspace repo: branch preserved (partial work may be salvageable)
-      └── Planner may retry with a new branch: task/T-001-retry/researcher
+  └── Memory repo: agent may have saved learnings during execution +
+      post-task hook extracts failure learnings (ESPECIALLY valuable)
+      ├── Agent already saved: "API rate limit hit at 100/min after 4 minutes"
+      ├── Hook adds: "Tried approach X, failed because Y — full context"
+      ├── Hook adds: "Anti-pattern: don't use endpoint Z for bulk queries"
+      └── Next time this role gets similar task, it knows what NOT to do
 ```
 
 ---
@@ -352,10 +387,10 @@ Task fails:
 T-001 failed. Planner retries with T-001-retry.
 
 researcher-memory/main now has:
-  commit: "[T-001] failed: API rate limit at 100/min, approach A doesn't scale"
+  lessons-learned/T-001-learnings.md:
+    "API rate limit at 100/min, approach A doesn't scale. Use batch endpoint."
 
-New worker for T-001-retry sees this history.
-Agent prompt: "Previous attempt failed due to rate limits. See memory for details."
+New worker for T-001-retry gets this injected into prompt.
 Result: Worker avoids the same mistake.
 ```
 
@@ -364,9 +399,13 @@ Result: Worker avoids the same mistake.
 ```
 6 months later, new team, new goal: "Research our competitors"
 
-researcher-memory/main has commit history from 20+ prior research tasks.
-Agent can search its own memory: git log --grep="competitor" --oneline
-Finds: 7 relevant prior tasks with findings, approaches, tools used.
+researcher-memory/main has:
+  expertise/competitor-pricing.md, expertise/market-trends.md, ...
+  patterns/data-analysis.md
+  20+ lessons-learned files from prior tasks
+
+Relevant files found via: search memory repo for "competitor" related content.
+Finds: 7 relevant knowledge files.
 
 Result: Agent is experienced, not naive. It knows what works.
 ```
@@ -376,8 +415,9 @@ Result: Agent is experienced, not naive. It knows what works.
 ```
 Researcher role reassigned from Agent A to Agent B (model upgrade, etc.)
 
-Memory repo is the same. New agent inherits the role's FULL history.
+Memory repo is the same. New agent inherits the role's FULL knowledge.
 Like onboarding a new employee — they read the predecessor's notes.
+Expertise, patterns, lessons learned — all preserved.
 ```
 
 ---
@@ -385,15 +425,15 @@ Like onboarding a new employee — they read the predecessor's notes.
 ## Storage & Cleanup
 
 ### Memory Repos
-- **Size:** Small (text only — reasoning logs, notes, tool history)
+- **Size:** Very small (structured knowledge summaries, not raw work)
 - **Retention:** Permanent per role. This IS the role's knowledge.
-- **Cleanup:** None needed — accumulated knowledge is the point
+- **Cleanup:** Prune stale/contradicted knowledge entries over time
 - **Location:** `data/teams/{teamId}/memory/{role}/` (local git repos)
 
 ### Workspace Repo
 - **Size:** Varies — code is small, binary assets can be large
 - **Retention:** Permanent per team. Main branch is the project output.
-- **Cleanup:** Delete merged task branches after approval (keep main)
+- **Cleanup:** Delete merged task branches after approval (keep main). Squash-merge to keep history clean.
 - **Large files:** Git LFS for images, binaries > 1MB
 - **Location:** `data/teams/{teamId}/workspace/` (local git repo)
 
@@ -403,14 +443,15 @@ Like onboarding a new employee — they read the predecessor's notes.
 
 | Component | Status | Action |
 |---|---|---|
-| `GitBranchManager` | ✅ Exists | Extend for two-repo model |
-| Memory repo creation | ❌ Missing | Create per-role repo on team/role creation |
+| `GitBranchManager` | ✅ Exists | Refactor into `RepoManager` pattern |
 | Workspace repo creation | ❌ Missing | Create per-team repo on team creation |
-| Task lifecycle hooks | ⚠️ Partial | Wire `onTaskStart`, `onTaskComplete`, `onTaskFail` |
-| Auto-commit during execution | ❌ Missing | Periodic commits in memory repo |
-| Merge-to-main on completion | ⚠️ Partial | Memory: auto-merge. Workspace: after approval. |
+| Memory repo creation | ❌ Missing | Create per-role knowledge store on role creation |
+| Task lifecycle hooks | ⚠️ Partial | Wire `onTaskStart` (create workspace branch), `onTaskComplete` (mark ready + extract learnings), `onTaskFail` (preserve branch + extract failure learnings) |
+| Auto-commit during execution | ❌ Missing | Periodic commits in workspace repo |
+| Merge-to-main on approval | ⚠️ Partial | Workspace: merge after user approval |
 | Conflict detection | ❌ Missing | Detect + create resolution task |
-| Memory search for context | ❌ Missing | `git log --grep` for relevant prior work |
+| Post-task learning extraction | ❌ Missing | LLM distills learnings from workspace diff → memory repo |
+| Memory search for context | ❌ Missing | Grep memory repo for relevant prior knowledge |
 | Git LFS for binaries | ❌ Missing | Configure for workspace repo |
 
 **Effort:** Medium (2-3 weeks)

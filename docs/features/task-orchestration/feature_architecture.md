@@ -28,7 +28,7 @@ A5 (Planner as Agent):           A6 (Task Orchestration):
 ### Current State
 - `MemoryManager` stores tasks with `status`, `assigned_role`, `prerequisites: Map<string, boolean>`
 - Tasks are ready when all prerequisites are true
-- `RoleTaskQueue` serializes per-role, no cross-role coordination
+- `RoleTaskQueue` serializes per-role — only `poll()` (one task at a time). No `pollN()` for parallel dispatch
 - No parallel execution tracking, no retry mechanism, no context inheritance
 - No DAG — just flat prerequisite maps
 
@@ -48,8 +48,8 @@ A5 (Planner as Agent):           A6 (Task Orchestration):
 |---|---|---|
 | **Creating tasks** | Calls `create_plan` tool with task list | Stores tasks in TaskStore, validates DAG |
 | **Dependencies** | Defines deps in plan (`T-003 depends on T-001, T-002`) | DependencyResolver enforces them — blocks dispatch until met |
-| **Dispatch** | Doesn't dispatch — submits a plan | Spawns workers for all ready tasks |
-| **Parallel execution** | Marks which tasks CAN be parallel | WorkerPool runs them concurrently, bounded by config |
+| **Dispatch** | Doesn't dispatch — submits a plan | `auto` mode: dispatches ready tasks immediately. `user-started` mode: shows ready tasks to user, dispatches on `task:start` |
+| **Parallel execution** | Marks which tasks CAN be parallel | WorkerPool runs them concurrently, bounded by config. Both modes support parallel workers |
 | **Progress tracking** | Queries via `get_status`, `get_blocked` tools | TaskStore tracks all state, serves queries |
 | **Failure response** | DECIDES: retry, replan, skip, or abort | DETECTS failure, reports to Planner |
 | **Context flow** | Specifies `contextFromTasks` in plan | Stores outputs, injects into downstream tasks |
@@ -177,6 +177,27 @@ async orchestrate(plan: Plan): Promise<void> {
 
 ## Parallel Execution
 
+### Dispatch Modes
+
+Not all teams want auto-dispatch. The Orchestrator supports two modes:
+
+| Mode | Default For | Behavior |
+|---|---|---|
+| **`auto`** | External agents (Ping Team) | Ready tasks dispatch immediately — orchestrator drives execution |
+| **`user-started`** | Internal agents, user-controlled external agents | Ready tasks wait for user to explicitly start them |
+
+**Why:** External Ping Team agents run on the platform — user approved the plan, let it flow. Internal agents run on user resources — user controls when compute is used. User-controlled external agents are for budget-conscious or review-between-tasks workflows.
+
+```typescript
+interface TeamDispatchConfig {
+  mode: 'auto' | 'user-started';
+  maxConcurrentWorkers: number;    // default: 5 per team
+  maxWorkersPerRole: number;       // default: 2 (prevent one role hogging)
+}
+```
+
+### `auto` mode (Ping Team default)
+
 The Orchestrator dispatches ALL ready tasks simultaneously. Parallelism is bounded by the WorkerPool:
 
 ```
@@ -214,6 +235,30 @@ When more tasks are ready than workers available, the Orchestrator queues by pri
 1. Tasks on the critical path first
 2. Tasks with more downstream dependents first
 3. FIFO for equal priority
+
+### `user-started` mode (internal agents default)
+
+Ready tasks are shown to the user — not dispatched. User picks which to run:
+
+```
+Plan approved:
+  T-001 (researcher)  → [Ready - Start]
+  T-002 (researcher)  → [Ready - Start]
+  T-003 (strategist)  → Waiting on T-001, T-002
+  T-004 (writer)      → Waiting on T-003
+
+User clicks "Start T-001" → T-001 dispatches
+User clicks "Start T-002" → T-002 dispatches (parallel)
+Both complete → T-003 becomes [Ready - Start]
+User clicks "Start T-003" → dispatches
+```
+
+**Socket.IO events:**
+- `tasks:ready` (server → client): list of ready tasks user can start
+- `task:start` / `task:start-all` (client → server): user picks task(s)
+- `dispatch:toggle-mode` (client → server): switch modes at runtime
+
+**Mode is switchable mid-execution.** If user toggles from `user-started` to `auto`, all currently ready tasks dispatch immediately. If toggling to `user-started`, in-progress tasks continue but new ready tasks wait.
 
 ---
 
@@ -474,4 +519,4 @@ Task Orchestration replaces MemoryManager for task state. MemoryManager was a fl
 | No parallel tracking | `WorkerPool` dispatches all ready tasks concurrently |
 | No retry mechanism | Failure detected → reported to Planner (A5) → Planner decides |
 | No context passing | `TaskStore.getUpstreamOutputs()` feeds downstream tasks |
-| `RoleTaskQueue` serializes per-role | Workers spawned per-task, bounded by pool config |
+| `RoleTaskQueue` serializes per-role | `RoleTaskQueue` with `pollN(role, n)` — parallel dispatch per role, bounded by pool config |
