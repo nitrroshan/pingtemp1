@@ -163,6 +163,7 @@ const App: React.FC = () => {
   const [activeAgentId, setActiveAgentId] = useState<string>(INITIAL_AGENTS[0].id);
   const activeAgentIdRef = useRef<string>(activeAgentId); // Ref for socket callbacks
   const selectedTeamIdRef = useRef<string | null>(null); // Ref for team scoping in callbacks
+  const connectedTeamRef = useRef<string | null>(null); // Track which team socket is connected to
   const [chatHistories, setChatHistories] = useState<Record<string, Message[]>>({});
   const [tasks, setTasks] = useState<Record<string, Task[]>>({});
 
@@ -282,18 +283,30 @@ const App: React.FC = () => {
   useEffect(() => {
     if (!selectedTeamId) {
       // No team selected, disconnect if connected
-      if (isSocketConnected) {
+      if (connectedTeamRef.current) {
         console.log('[App] No team selected, disconnecting V2 socket...');
         agentServiceV2.disconnect();
+        connectedTeamRef.current = null;
         setIsSocketConnected(false);
       }
+      return () => {};
+    }
+
+    // Skip if already connected to this team
+    if (connectedTeamRef.current === selectedTeamId) {
       return;
     }
 
     // Connect V2 socket for the selected team
     console.log('[App] Team selected, connecting V2 socket for team:', selectedTeamId);
-    agentServiceV2.connect(selectedTeamId);
-    setIsSocketConnected(true);
+    connectedTeamRef.current = selectedTeamId;
+
+    agentServiceV2.connect(selectedTeamId).then(() => {
+      setIsSocketConnected(true);
+    }).catch((err) => {
+      console.error('[App] V2 socket connection failed:', err);
+      connectedTeamRef.current = null;
+    });
 
     // Subscribe to V2 events
     const unsubMessage = agentServiceV2.onMessage((data) => {
@@ -462,8 +475,8 @@ const App: React.FC = () => {
       unsubState();
       unsubOutput();
       unsubError();
-      agentServiceV2.disconnect();
-      setIsSocketConnected(false);
+      // Don't disconnect here — AgentServiceV2.connect() handles cleanup of old sockets.
+      // React Strict Mode double-fires effects, so disconnecting here would kill active connections.
     };
   }, [selectedTeamId]);
 

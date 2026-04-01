@@ -98,7 +98,8 @@ export class L2CollaborationPlugin implements IL2CollaborationPlugin {
           `L2 CollabServer WebSocket listening on port ${this.config.collabPort}`,
         );
       } catch (err: any) {
-        if (err?.code === "EADDRINUSE") {
+        const msg = err?.message || String(err);
+        if (err?.code === "EADDRINUSE" || msg.includes("port") || msg.includes("in use") || msg.includes("EADDRINUSE")) {
           logger.warn(
             `L2 CollabServer port ${this.config.collabPort} already in use — skipping (another team may already be serving)`,
           );

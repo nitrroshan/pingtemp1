@@ -1,4 +1,4 @@
-import { Agent, AgentCapability } from "../../types/agent";
+import { Agent, AgentCapability } from "./types/agent";
 import { AzureOpenAIEmbeddings } from "@langchain/openai";
 import { Embeddings } from "@langchain/core/embeddings";
 
@@ -22,7 +22,7 @@ export class ServiceRegistry {
 
       deploymentName: "text-embedding-3-small",
       openAIApiVersion: "2023-05-15",
-    });
+    }) as unknown as Embeddings;
   }
 
   /**

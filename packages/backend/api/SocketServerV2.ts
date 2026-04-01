@@ -154,6 +154,8 @@ export class SocketServerV2 {
         origin: "*",
         methods: ["GET", "POST"],
       },
+      pingTimeout: 60000,
+      pingInterval: 25000,
     });
 
     this.setupSocketIO();

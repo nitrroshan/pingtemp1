@@ -151,18 +151,39 @@ export class AgentServiceV2 {
    * Connect to V2 Socket.IO server
    */
   async connect(teamId: string): Promise<void> {
+    // Already connected to this team — skip
+    if (this.socket?.connected && this.teamId === teamId) {
+      return;
+    }
+
+    // Disconnect existing socket before creating a new one
+    if (this.socket) {
+      this.socket.removeAllListeners();
+      this.socket.disconnect();
+      this.socket = null;
+      this.clientId = null;
+    }
+
     this.teamId = teamId;
 
     return new Promise((resolve, reject) => {
       // Connect to V2 path
       this.socket = io(this.baseUrl, {
         path: "/socket.io/v2",
-        transports: ["websocket", "polling"],
+        transports: ["polling"],
+        reconnection: true,
+        reconnectionAttempts: 3,
+        reconnectionDelay: 2000,
       });
 
       this.socket.on("connect", () => {
-        console.log("[AgentServiceV2] Connected");
+        console.log("[AgentServiceV2] Connected, registering...");
         this.socket!.emit("register", { userId: this.userId });
+      });
+
+      this.socket.on("disconnect", (reason) => {
+        console.warn("[AgentServiceV2] Disconnected:", reason);
+        this.clientId = null;
       });
 
       this.socket.on("registered", (data: { clientId: string }) => {
@@ -258,12 +279,18 @@ export class AgentServiceV2 {
    * Send message to manager agent (for planning)
    * Manager handles task planning and coordination
    */
+  private isReady(): boolean {
+    return !!(this.socket && this.clientId && this.teamId);
+  }
+
   sendToManager(content: string): void {
-    if (!this.socket || !this.teamId) {
+    if (!this.isReady()) {
+      console.error("[AgentServiceV2] Cannot send: socket =", !!this.socket, "clientId =", this.clientId, "teamId =", this.teamId);
       throw new Error("Not connected or no team selected");
     }
 
-    this.socket.emit("message", {
+    console.log("[AgentServiceV2] sendToManager:", content.substring(0, 50));
+    this.socket!.emit("message", {
       teamId: this.teamId,
       agentId: "manager",
       sessionId: this.sessionId,
@@ -275,7 +302,8 @@ export class AgentServiceV2 {
    * Send message to worker agent (for task execution)
    */
   sendToWorker(agentId: string, content: string, taskId?: string): void {
-    if (!this.socket || !this.teamId) {
+    if (!this.isReady()) {
+      console.error("[AgentServiceV2] Cannot send: socket =", !!this.socket, "clientId =", this.clientId, "teamId =", this.teamId);
       throw new Error("Not connected or no team selected");
     }
 
@@ -356,11 +384,12 @@ export class AgentServiceV2 {
       | "get-state",
     data?: { taskId?: string; output?: any; enabled?: boolean },
   ): void {
-    if (!this.socket || !this.teamId) {
-      throw new Error("Not connected or no team selected");
+    if (!this.isReady()) {
+      console.warn("[AgentServiceV2] emitAction skipped (not ready):", type);
+      return;
     }
 
-    this.socket.emit("action", {
+    this.socket!.emit("action", {
       teamId: this.teamId,
       type,
       sessionId: this.sessionId,

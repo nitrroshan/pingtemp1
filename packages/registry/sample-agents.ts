@@ -1,7 +1,7 @@
-import { Agent } from "../../types/agent";
+import type { IAgent } from "./types/agent";
 
 // Research Agent
-export const researchAgent: Agent = {
+export const researchAgent: IAgent = {
   id: "agent-research-001",
   name: "Web Research Specialist",
   description: "Performs in-depth web research on given topics",
@@ -26,7 +26,7 @@ export const researchAgent: Agent = {
 };
 
 // Coding Agent
-export const codingAgent: Agent = {
+export const codingAgent: IAgent = {
   id: "agent-coding-001",
   name: "Full-stack Developer",
   description: "Generates production-ready code for various languages",
@@ -43,7 +43,7 @@ export const codingAgent: Agent = {
 };
 
 // Data Analysis Agent
-export const dataAgent: Agent = {
+export const dataAgent: IAgent = {
   id: "agent-data-001",
   name: "Data Analyst",
   description: "Analyzes and visualizes datasets",

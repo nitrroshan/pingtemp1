@@ -1,20 +1,23 @@
 import type { AgentCapability } from "./agentCapability";
+export type { AgentCapability } from "./agentCapability";
 export interface IAgent {
+  id?: string;
   name: string;
   description: string;
   capabilities: AgentCapability[];
   status: "available" | "busy" | "offline";
-  embedding: Number[];
-  mcpEndpoint: string;
+  embedding?: Number[];
+  mcpEndpoint?: string;
 }
 
 export class Agent implements IAgent {
+  id?: string;
   name: string;
   description: string;
   capabilities: AgentCapability[];
   status: "available" | "busy" | "offline";
-  embedding: Number[];
-  mcpEndpoint: string;
+  embedding?: Number[];
+  mcpEndpoint?: string;
 
   constructor(params: {
     id?: string;
@@ -22,11 +25,12 @@ export class Agent implements IAgent {
     description: string;
     capabilities: AgentCapability[];
     status: "available" | "busy" | "offline";
-    embedding: Number[];
-    mcpEndpoint: string;
+    embedding?: Number[];
+    mcpEndpoint?: string;
   }) {
-    const { name, description, capabilities, status, embedding, mcpEndpoint } =
+    const { id, name, description, capabilities, status, embedding, mcpEndpoint } =
       params;
+    this.id = id;
     this.name = name;
     this.description = description;
     this.capabilities = capabilities;

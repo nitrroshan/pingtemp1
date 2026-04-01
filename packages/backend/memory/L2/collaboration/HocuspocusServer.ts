@@ -282,9 +282,35 @@ export class CollabServer implements ICollabProvider {
    * The Server handles HTTP upgrade + Hocuspocus protocol handshake.
    */
   async start(port = 1234): Promise<void> {
-    await this.server.listen(port);
-    this.started = true;
-    logger.info(`CollabServer WebSocket listening on port ${port}`);
+    return new Promise<void>((resolve) => {
+      // Access the underlying HTTP server to handle 'error' event before it crashes the process
+      const httpServer = (this.server as any).httpServer || (this.server as any).server;
+      if (httpServer && typeof httpServer.on === 'function') {
+        httpServer.on('error', (err: any) => {
+          const msg = err?.message || String(err);
+          if (err?.code === 'EADDRINUSE' || msg.includes('port') || msg.includes('in use')) {
+            logger.warn(`CollabServer port ${port} already in use — skipping`);
+          } else {
+            logger.error(`CollabServer error: ${msg}`);
+          }
+          resolve();
+        });
+      }
+
+      this.server.listen(port).then(() => {
+        this.started = true;
+        logger.info(`CollabServer WebSocket listening on port ${port}`);
+        resolve();
+      }).catch((err: any) => {
+        const msg = err?.message || String(err);
+        if (err?.code === 'EADDRINUSE' || msg.includes('port') || msg.includes('in use')) {
+          logger.warn(`CollabServer port ${port} already in use — skipping`);
+        } else {
+          logger.error(`CollabServer start failed: ${msg}`);
+        }
+        resolve();
+      });
+    });
   }
 
   /**
