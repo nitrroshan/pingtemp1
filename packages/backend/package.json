@@ -49,7 +49,9 @@
     "build": "tsc --noCheck && bun run copy:agents",
     "typecheck": "tsc --noEmit --incremental",
     "copy:agents": "mkdir -p dist/agent/agents && cp agent/agents/*.yaml dist/agent/agents/",
-    "seed:all": "bun run seed:skills"
+    "seed:all": "bun run seed:skills",
+    "seed": "SEED_ENABLED=true bun run scripts/seeds/index.ts",
+    "seed:teams": "SEED_ENABLED=true bun run scripts/seeds/teams.seed.ts"
   },
   "author": "",
   "license": "ISC",
