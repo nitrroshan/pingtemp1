@@ -1,45 +1,52 @@
 /**
- * GoalInput — dedicated goal submission UI
+ * GoalInput — goal submission UI
  *
  * "What do you want to build?" → submit → planner starts
+ * Redesigned with zinc/shadcn design system.
  */
 
-import React, { useState, useRef, useEffect } from 'react';
-import { Send, Sparkles, Target } from 'lucide-react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
+import { Send, Loader2, Target, Sparkles } from 'lucide-react';
+import { cn } from '../../lib/utils';
+import { Button } from '../ui/button';
 
 interface GoalInputProps {
-  /** Called when user submits a goal */
   onSubmit: (goal: string) => void;
-  /** Disabled while the planner is working */
   disabled?: boolean;
-  /** Placeholder text */
   placeholder?: string;
-  /** Current session state — used to show contextual hints */
   sessionState?: string | null;
 }
 
 const EXAMPLE_GOALS = [
-  "Build a REST API with authentication and user management",
-  "Create a marketing analysis report for Q2 2026",
-  "Design and implement a React dashboard with real-time charts",
+  "Build a REST API with authentication",
+  "Create a marketing analysis report for Q2",
+  "Design a React dashboard with real-time charts",
 ];
+
+const STATUS: Record<string, { label: string; color: string }> = {
+  planning:         { label: 'Planner is creating a plan…', color: 'text-yellow-400' },
+  executing:        { label: 'Tasks are executing…',       color: 'text-blue-400' },
+  awaiting_approval:{ label: 'Plan ready — check below',   color: 'text-orange-400' },
+  completed:        { label: 'Session completed',           color: 'text-emerald-400' },
+};
 
 export const GoalInput: React.FC<GoalInputProps> = ({
   onSubmit,
   disabled = false,
-  placeholder = "What do you want to build?",
+  placeholder = 'What do you want to build?',
   sessionState,
 }) => {
   const [goal, setGoal] = useState('');
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
-  // Auto-resize textarea
-  useEffect(() => {
+  const adjustHeight = useCallback(() => {
     const el = textareaRef.current;
     if (!el) return;
     el.style.height = 'auto';
     el.style.height = `${Math.min(el.scrollHeight, 160)}px`;
-  }, [goal]);
+  }, []);
+
+  useEffect(() => { adjustHeight(); }, [goal, adjustHeight]);
 
   const handleSubmit = (e?: React.FormEvent) => {
     e?.preventDefault();
@@ -50,108 +57,77 @@ export const GoalInput: React.FC<GoalInputProps> = ({
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault();
-      handleSubmit();
-    }
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSubmit(); }
   };
 
-  const isExecuting = sessionState === 'executing';
-  const isPlanning = sessionState === 'planning';
-  const isAwaiting = sessionState === 'awaiting_approval';
-
-  const statusMessage = isExecuting
-    ? '⚡ Tasks are executing...'
-    : isPlanning
-    ? '🤔 Planner is creating a plan...'
-    : isAwaiting
-    ? '📋 Plan ready for approval'
-    : null;
+  const status = sessionState ? STATUS[sessionState] : null;
+  const isWorking = sessionState === 'executing' || sessionState === 'planning';
+  const canSubmit = goal.trim().length > 0 && !disabled;
 
   return (
-    <div className="w-full max-w-3xl mx-auto">
-      {/* Header */}
-      <div className="flex items-center gap-2 mb-4">
-        <div className="p-2 bg-nexus-800 rounded-lg text-nexus-cyan">
-          <Target size={18} />
+    <div className="w-full max-w-2xl mx-auto">
+      {/* Header row */}
+      <div className="flex items-center gap-2 mb-3">
+        <div className="w-7 h-7 rounded-lg bg-primary/10 flex items-center justify-center">
+          <Target size={14} className="text-primary" />
         </div>
-        <div>
-          <h2 className="text-sm font-semibold text-slate-200">Set a Goal</h2>
-          <p className="text-xs text-slate-500">Describe what you want to accomplish</p>
+        <div className="flex-1 min-w-0">
+          <h2 className="text-sm font-semibold text-foreground">Set a Goal</h2>
         </div>
+        {status && (
+          <span className={cn('text-xs font-medium', status.color)}>
+            {status.label}
+          </span>
+        )}
       </div>
 
-      {/* Status banner */}
-      {statusMessage && (
-        <div className="mb-3 px-3 py-2 rounded-lg bg-blue-900/20 border border-blue-800/40 text-xs text-blue-300">
-          {statusMessage}
-        </div>
-      )}
-
-      {/* Input area */}
-      <form onSubmit={handleSubmit} className="relative">
-        <div className={`
-          rounded-xl border transition-colors bg-nexus-900
-          ${disabled
-            ? 'border-nexus-700 opacity-60'
-            : 'border-nexus-700 focus-within:border-nexus-cyan'}
-        `}>
+      {/* Input */}
+      <form onSubmit={handleSubmit}>
+        <div className={cn(
+          'rounded-xl border bg-card transition-colors',
+          canSubmit ? 'border-primary/40' : 'border-border',
+          disabled && 'opacity-60'
+        )}>
           <textarea
             ref={textareaRef}
             value={goal}
-            onChange={e => setGoal(e.target.value)}
+            onChange={e => { setGoal(e.target.value); adjustHeight(); }}
             onKeyDown={handleKeyDown}
-            placeholder={disabled ? 'Waiting for current task to complete...' : placeholder}
+            placeholder={disabled ? 'Waiting for current session…' : placeholder}
             disabled={disabled}
             rows={2}
-            className="
-              w-full bg-transparent px-4 pt-3 pb-2 text-sm text-slate-200
-              placeholder-slate-500 resize-none focus:outline-none
-              leading-relaxed min-h-[60px]
-            "
+            className="w-full bg-transparent px-3.5 pt-3 pb-2 text-sm text-foreground placeholder:text-muted-foreground resize-none focus:outline-none leading-relaxed min-h-[56px]"
           />
           <div className="flex items-center justify-between px-3 pb-2">
-            <div className="flex items-center gap-1">
-              <Sparkles size={12} className="text-slate-600" />
-              <span className="text-xs text-slate-600">Press Enter to submit</span>
+            <div className="flex items-center gap-1 text-muted-foreground">
+              <Sparkles size={11} />
+              <span className="text-[10px]">Enter to submit · Shift+Enter for newline</span>
             </div>
-            <button
+            <Button
               type="submit"
-              disabled={!goal.trim() || disabled}
-              className="
-                flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium
-                bg-nexus-cyan text-nexus-950
-                disabled:opacity-40 disabled:cursor-not-allowed
-                hover:bg-nexus-teal transition-colors
-              "
+              size="sm"
+              disabled={!canSubmit}
+              className="h-7 text-xs"
             >
-              <Send size={12} />
-              Submit Goal
-            </button>
+              {isWorking ? <Loader2 size={12} className="animate-spin" /> : <Send size={12} />}
+              Submit
+            </Button>
           </div>
         </div>
       </form>
 
-      {/* Example goals (only when empty and idle) */}
+      {/* Example goals */}
       {!goal && !sessionState && (
-        <div className="mt-4">
-          <p className="text-xs text-slate-600 mb-2 uppercase tracking-wider">Examples</p>
-          <div className="flex flex-col gap-1.5">
-            {EXAMPLE_GOALS.map((eg, i) => (
-              <button
-                key={i}
-                onClick={() => setGoal(eg)}
-                className="
-                  text-left text-xs px-3 py-2 rounded-lg
-                  bg-nexus-900/50 border border-nexus-800
-                  text-slate-400 hover:text-slate-200 hover:border-nexus-700
-                  transition-colors cursor-pointer
-                "
-              >
-                {eg}
-              </button>
-            ))}
-          </div>
+        <div className="mt-3 flex flex-col gap-1">
+          {EXAMPLE_GOALS.map((eg, i) => (
+            <button
+              key={i}
+              onClick={() => setGoal(eg)}
+              className="text-left text-xs px-3 py-1.5 rounded-lg bg-secondary/50 text-muted-foreground hover:text-foreground hover:bg-secondary transition-colors cursor-pointer border border-transparent hover:border-border"
+            >
+              {eg}
+            </button>
+          ))}
         </div>
       )}
     </div>

@@ -1,5 +1,6 @@
 import React from 'react';
 import { Check } from 'lucide-react';
+import { Button } from '../ui/button';
 
 interface ModalFooterProps {
   isSubAgentMode: boolean;
@@ -10,34 +11,22 @@ interface ModalFooterProps {
 const ModalFooter: React.FC<ModalFooterProps> = ({ isSubAgentMode, activeTab, onClose }) => {
   const showSubmitButton = !isSubAgentMode || activeTab === 'custom';
   const formId = isSubAgentMode ? 'agent-form' : 'workflow-form';
-  
+
   return (
-    <div className="p-4 border-t border-nexus-800 bg-nexus-950 flex justify-end gap-3 flex-shrink-0">
-      <button 
-        type="button"
-        onClick={onClose}
-        className="px-4 py-2 rounded-lg text-slate-400 hover:text-slate-200 hover:bg-nexus-800 transition-colors text-sm"
-      >
+    <div className="flex items-center justify-end gap-2 w-full">
+      <Button type="button" variant="ghost" size="sm" onClick={onClose}>
         Cancel
-      </button>
-      
+      </Button>
+
       {showSubmitButton ? (
-        <button 
-          type="submit"
-          form={formId}
-          className={`px-4 py-2 rounded-lg font-semibold shadow-lg transition-all flex items-center gap-2 text-sm ${
-            isSubAgentMode 
-              ? 'bg-nexus-cyan text-nexus-950 hover:bg-cyan-400 shadow-cyan-900/20' 
-              : 'bg-indigo-600 text-white hover:bg-indigo-500 shadow-indigo-900/20'
-          }`}
-        >
-          <Check size={16} />
-          {isSubAgentMode ? 'Add Agent' : 'Initialize Workflow'}
-        </button>
+        <Button type="submit" form={formId} size="sm" className="gap-1.5">
+          <Check size={14} />
+          {isSubAgentMode ? 'Add Agent' : 'Create Team'}
+        </Button>
       ) : (
-        <div className="text-xs text-slate-500 flex items-center">
-          Select an agent from the library to proceed.
-        </div>
+        <span className="text-xs text-muted-foreground">
+          Select an agent from the library to continue.
+        </span>
       )}
     </div>
   );

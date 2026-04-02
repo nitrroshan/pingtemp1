@@ -57,10 +57,10 @@ const ChatArea: React.FC<ChatAreaProps> = ({
   const [inputValue, setInputValue] = useState('');
   const [isStreaming, setIsStreaming] = useState(false);
 
-  // Find the currently active (in_progress/running) task for this agent
+  // Find the currently active (in_progress) task for this agent
   // This is used to send messages in the context of that task
-  const activeTask = tasks.find(t => 
-    t.status === 'in_progress' || t.status === 'running'
+  const activeTask = tasks.find(t =>
+    t.status === 'in_progress'
   );
 
   // When messages change and the last message is from the model, stop streaming

@@ -1,6 +1,7 @@
 import React from 'react';
 import { Bot, MessageSquare, ListTodo, PanelRight, Trash2 } from 'lucide-react';
-import { Agent, Task } from '../../types';
+import { cn } from '../../lib/utils';
+import type { Agent, Task } from '../../types';
 
 interface HeaderProps {
   agent: Agent;
@@ -25,87 +26,103 @@ const Header: React.FC<HeaderProps> = ({
   onViewModeChange,
   onTogglePanel,
   onToggleAutoExecute,
-  onClearHistory
+  onClearHistory,
 }) => {
+  const pendingCount = tasks.filter(t => !t.completed).length;
+
   return (
-    <div className="h-20 border-b border-nexus-800 flex items-center justify-between px-6 bg-nexus-950/80 backdrop-blur-sm z-10 sticky top-0">
-      <div className="flex items-center gap-3">
-        <div className="w-10 h-10 rounded-xl bg-nexus-800 flex items-center justify-center text-nexus-cyan border border-nexus-700 shadow-inner">
-          <Bot size={20} />
+    <div className="h-12 border-b border-border flex items-center justify-between px-4 bg-card/80 backdrop-blur-sm z-10 shrink-0">
+      {/* Agent info */}
+      <div className="flex items-center gap-2.5 min-w-0">
+        <div className="w-7 h-7 rounded-lg bg-secondary flex items-center justify-center flex-shrink-0">
+          <Bot size={14} className="text-muted-foreground" />
         </div>
-        <div>
-          <h2 className="font-semibold text-slate-100 text-lg">{agent.name}</h2>
-          <p className="text-xs text-slate-500 truncate max-w-md">{agent.description}</p>
+        <div className="min-w-0">
+          <h2 className="text-sm font-semibold text-foreground truncate">{agent.name}</h2>
+          {agent.description && (
+            <p className="text-[10px] text-muted-foreground truncate max-w-xs hidden sm:block">
+              {agent.description}
+            </p>
+          )}
         </div>
       </div>
-      
-      <div className="flex items-center gap-4">
-        {/* View Toggle */}
-        <div className="flex p-1 bg-nexus-900 rounded-lg border border-nexus-800">
-          <button 
-            onClick={() => onViewModeChange('chat')}
-            className={`flex items-center gap-2 px-3 py-1.5 rounded-md text-sm font-medium transition-all ${
-              viewMode === 'chat' ? 'bg-nexus-800 text-nexus-cyan shadow-sm' : 'text-slate-500 hover:text-slate-300'
-            }`}
-          >
-            <MessageSquare size={14} />
-            Chat
-          </button>
-          <button 
-            onClick={() => onViewModeChange('tasks')}
-            className={`flex items-center gap-2 px-3 py-1.5 rounded-md text-sm font-medium transition-all ${
-              viewMode === 'tasks' ? 'bg-nexus-800 text-nexus-cyan shadow-sm' : 'text-slate-500 hover:text-slate-300'
-            }`}
-          >
-            <ListTodo size={14} />
-            Tasks
-            {tasks.length > 0 && (
-              <span className="bg-nexus-950 text-nexus-cyan px-1.5 py-0.5 rounded text-[9px] border border-nexus-800/50">
-                {tasks.filter(t => !t.completed).length}
-              </span>
-            )}
-          </button>
+
+      {/* Actions */}
+      <div className="flex items-center gap-1.5 flex-shrink-0">
+        {/* View toggle */}
+        <div className="flex items-center bg-secondary rounded-lg p-0.5">
+          {(['chat', 'tasks'] as const).map(mode => (
+            <button
+              key={mode}
+              onClick={() => onViewModeChange(mode)}
+              className={cn(
+                'flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium transition-colors cursor-pointer',
+                viewMode === mode
+                  ? 'bg-card text-foreground shadow-sm'
+                  : 'text-muted-foreground hover:text-foreground'
+              )}
+            >
+              {mode === 'chat' ? <MessageSquare size={11} /> : <ListTodo size={11} />}
+              {mode === 'chat' ? 'Chat' : 'Tasks'}
+              {mode === 'tasks' && pendingCount > 0 && (
+                <span className="bg-primary/20 text-primary text-[9px] px-1 rounded">
+                  {pendingCount}
+                </span>
+              )}
+            </button>
+          ))}
         </div>
 
-        <div className="w-px h-6 bg-nexus-800" />
+        <div className="w-px h-5 bg-border mx-0.5" />
 
-        {/* Auto Execute Toggle */}
+        {/* Auto-execute toggle */}
         {onToggleAutoExecute && (
           <button
             onClick={onToggleAutoExecute}
-            className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm font-medium transition-all border ${
-              autoExecuteEnabled 
-                ? 'bg-nexus-800 text-green-400 border-green-700/50' 
-                : 'bg-nexus-900 text-slate-500 border-nexus-800 hover:text-slate-300'
-            }`}
-            title={autoExecuteEnabled ? 'Auto-execute enabled - tasks run automatically' : 'Auto-execute disabled - manual approval required'}
+            title={autoExecuteEnabled ? 'Auto-execute ON' : 'Auto-execute OFF'}
+            className={cn(
+              'flex items-center gap-1.5 px-2 py-1 rounded-md text-xs transition-colors cursor-pointer',
+              autoExecuteEnabled
+                ? 'text-emerald-400 bg-emerald-500/10 hover:bg-emerald-500/20'
+                : 'text-muted-foreground hover:bg-accent'
+            )}
           >
-            <div className={`w-8 h-4 rounded-full relative transition-colors ${autoExecuteEnabled ? 'bg-green-600' : 'bg-nexus-700'}`}>
-              <div className={`absolute w-3 h-3 rounded-full bg-white top-0.5 transition-all ${autoExecuteEnabled ? 'right-0.5' : 'left-0.5'}`} />
+            <div className={cn(
+              'w-7 h-3.5 rounded-full relative transition-colors',
+              autoExecuteEnabled ? 'bg-emerald-500' : 'bg-muted'
+            )}>
+              <div className={cn(
+                'absolute w-2.5 h-2.5 rounded-full bg-white top-0.5 transition-all',
+                autoExecuteEnabled ? 'left-[calc(100%-12px)]' : 'left-0.5'
+              )} />
             </div>
-            <span className="text-xs">Auto</span>
+            <span className="hidden sm:inline">Auto</span>
           </button>
         )}
 
-        {/* Panel Toggle */}
+        {/* Panel toggle */}
         {showPanelToggle && (
           <button
             onClick={onTogglePanel}
-            className={`p-2 rounded-lg transition-colors border ${
-              isPanelOpen ? 'bg-nexus-800 text-nexus-cyan border-nexus-700' : 'text-slate-500 border-transparent hover:text-slate-300 hover:bg-nexus-900'
-            }`}
-            title="Toggle Orchestration Panel"
+            className={cn(
+              'p-1.5 rounded-md text-xs transition-colors cursor-pointer',
+              isPanelOpen
+                ? 'bg-primary/10 text-primary'
+                : 'text-muted-foreground hover:bg-accent hover:text-foreground'
+            )}
+            title="Toggle logs panel"
           >
-            <PanelRight size={18} />
+            <PanelRight size={14} />
           </button>
         )}
 
-        <button 
+        {/* Clear history */}
+        <button
           onClick={onClearHistory}
-          className="p-2 text-slate-500 hover:text-red-400 hover:bg-nexus-900 rounded-lg transition-colors"
-          title="Clear History"
+          className="p-1.5 rounded-md text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors cursor-pointer"
+          title="Clear chat history"
         >
-          <Trash2 size={18} />
+          <Trash2 size={14} />
         </button>
       </div>
     </div>

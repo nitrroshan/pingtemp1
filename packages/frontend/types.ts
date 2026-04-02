@@ -57,6 +57,14 @@ export interface OrchestrationEvent {
   source: string;
 }
 
+export type SessionState =
+  | 'idle'
+  | 'planning'
+  | 'executing'
+  | 'completed'
+  | 'awaiting_approval'
+  | null;
+
 // Global declarations for Electron
 declare global {
   interface Window {
