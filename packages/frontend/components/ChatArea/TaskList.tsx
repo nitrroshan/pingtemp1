@@ -40,8 +40,20 @@ const TaskList: React.FC<TaskListProps> = ({
       {/* Task List */}
       <div className="flex-1 overflow-y-auto space-y-2 scrollbar-thin pb-4">
         {tasks.length === 0 ? (
-          <div className="flex flex-col items-center justify-center h-40 text-slate-600">
-            <ListTodo size={32} className="mb-2 opacity-50" />
+          <div className="flex flex-col items-center justify-center h-56 text-slate-500 gap-3">
+            <div className="w-44 h-28 rounded-2xl border border-border bg-card/50 p-3">
+              <svg viewBox="0 0 240 140" className="w-full h-full" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden>
+                <rect x="20" y="16" width="200" height="108" rx="14" className="fill-muted/20 stroke-border" />
+                <circle cx="48" cy="46" r="8" className="fill-primary/30 stroke-primary/60" />
+                <path d="M44 46l3 3 5-6" className="stroke-primary" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                <rect x="64" y="40" width="96" height="10" rx="5" className="fill-muted" />
+                <circle cx="48" cy="72" r="8" className="fill-muted/40 stroke-muted-foreground/50" />
+                <rect x="64" y="66" width="132" height="10" rx="5" className="fill-muted/70" />
+                <circle cx="48" cy="98" r="8" className="fill-muted/30 stroke-muted-foreground/40" />
+                <rect x="64" y="92" width="84" height="10" rx="5" className="fill-muted/60" />
+              </svg>
+            </div>
+            <ListTodo size={18} className="opacity-70" />
             <p className="text-sm">No tasks assigned to {agentName} yet.</p>
           </div>
         ) : (

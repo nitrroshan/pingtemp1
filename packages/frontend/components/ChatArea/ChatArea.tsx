@@ -3,6 +3,8 @@ import React, { useState, useEffect } from 'react';
 import { Agent, Message, Task } from '../../types';
 import { agentServiceV2 } from '../../services/AgentServiceV2';
 import { Header, MessageList, ChatInput, TaskList } from '.';
+import { AnimatePresence, motion } from 'framer-motion';
+import { Skeleton } from '../ui/skeleton';
 
 interface ChatAreaProps {
   agent: Agent;
@@ -30,6 +32,43 @@ interface ChatAreaProps {
   onStartTask?: (taskId: string) => void;
   onCompleteTask?: (taskId: string) => void;
   onCancelTask?: (taskId: string) => void;
+  isLoading?: boolean;
+}
+
+function ChatAreaSkeleton() {
+  return (
+    <div className="flex-1 flex flex-col h-full bg-nexus-950 relative overflow-hidden">
+      <div className="h-12 border-b border-border px-4 flex items-center justify-between">
+        <div className="flex items-center gap-2.5">
+          <Skeleton className="w-7 h-7 rounded-lg" />
+          <div className="space-y-1.5">
+            <Skeleton className="h-3 w-32" />
+            <Skeleton className="h-2.5 w-48" />
+          </div>
+        </div>
+        <Skeleton className="h-7 w-36 rounded-lg" />
+      </div>
+
+      <div className="flex-1 p-4 space-y-5 overflow-hidden">
+        {[1, 2, 3, 4].map((i) => (
+          <div key={i} className="flex gap-3 items-start">
+            <Skeleton className="w-8 h-8 rounded-lg" />
+            <div className="flex-1 space-y-2">
+              <Skeleton className="h-4 w-2/3 rounded-lg" />
+              <Skeleton className="h-4 w-5/6 rounded-lg" />
+              <Skeleton className="h-4 w-1/2 rounded-lg" />
+            </div>
+          </div>
+        ))}
+      </div>
+
+      <div className="border-t border-border bg-background/80 px-4 py-3">
+        <div className="max-w-3xl mx-auto">
+          <Skeleton className="h-12 w-full rounded-xl" />
+        </div>
+      </div>
+    </div>
+  );
 }
 
 const ChatArea: React.FC<ChatAreaProps> = ({ 
@@ -51,7 +90,8 @@ const ChatArea: React.FC<ChatAreaProps> = ({
   currentPlan,
   onStartTask,
   onCompleteTask,
-  onCancelTask
+  onCancelTask,
+  isLoading = false,
 }) => {
   const [viewMode, setViewMode] = useState<'chat' | 'tasks'>('chat');
   const [inputValue, setInputValue] = useState('');
@@ -141,6 +181,10 @@ const ChatArea: React.FC<ChatAreaProps> = ({
     }
   };
 
+  if (isLoading) {
+    return <ChatAreaSkeleton />;
+  }
+
   return (
     <div className="flex-1 flex flex-col h-full bg-nexus-950 relative overflow-hidden transition-all duration-300">
       {/* Background Gradient Effect */}
@@ -162,42 +206,55 @@ const ChatArea: React.FC<ChatAreaProps> = ({
 
       {/* Content Area */}
       <div className="flex-1 overflow-hidden relative flex flex-col">
-        
-        {/* Chat Mode */}
-        {viewMode === 'chat' && (
-          <>
-            <div className="flex-1 overflow-y-auto p-4 space-y-6 scrollbar-thin">
-              <MessageList
-                messages={messages}
+        <AnimatePresence mode="wait" initial={false}>
+          {viewMode === 'chat' ? (
+            <motion.div
+              key="chat"
+              className="flex-1 overflow-hidden relative flex flex-col"
+              initial={{ opacity: 0, y: 8 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -8 }}
+              transition={{ duration: 0.18, ease: 'easeOut' }}
+            >
+              <div className="flex-1 overflow-y-auto p-4 space-y-6 scrollbar-thin">
+                <MessageList
+                  messages={messages}
+                  isStreaming={isStreaming}
+                  agentName={agent.name}
+                />
+              </div>
+
+              <ChatInput
+                inputValue={inputValue}
                 isStreaming={isStreaming}
                 agentName={agent.name}
+                onInputChange={setInputValue}
+                onSubmit={handleSubmit}
+                onKeyDown={handleKeyDown}
               />
-            </div>
-
-            <ChatInput
-              inputValue={inputValue}
-              isStreaming={isStreaming}
-              agentName={agent.name}
-              onInputChange={setInputValue}
-              onSubmit={handleSubmit}
-              onKeyDown={handleKeyDown}
-            />
-          </>
-        )}
-
-        {/* Tasks Mode */}
-        {viewMode === 'tasks' && (
-          <TaskList
-            tasks={tasks}
-            agentId={agent.id}
-            agentName={agent.name}
-            onToggleTask={onToggleTask}
-            onDeleteTask={onDeleteTask}
-            onStartTask={onStartTask}
-            onCompleteTask={onCompleteTask}
-            onCancelTask={onCancelTask}
-          />
-        )}
+            </motion.div>
+          ) : (
+            <motion.div
+              key="tasks"
+              className="flex-1 overflow-hidden"
+              initial={{ opacity: 0, y: 8 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -8 }}
+              transition={{ duration: 0.18, ease: 'easeOut' }}
+            >
+              <TaskList
+                tasks={tasks}
+                agentId={agent.id}
+                agentName={agent.name}
+                onToggleTask={onToggleTask}
+                onDeleteTask={onDeleteTask}
+                onStartTask={onStartTask}
+                onCompleteTask={onCompleteTask}
+                onCancelTask={onCancelTask}
+              />
+            </motion.div>
+          )}
+        </AnimatePresence>
 
       </div>
     </div>

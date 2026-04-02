@@ -16,7 +16,7 @@ import {
   ChevronRight, ChevronDown, Plus,
   Cpu, Code, Bug, Palette, PenTool, Search, Bot,
   BarChart3, Workflow, PanelLeftClose, PanelLeft,
-  MessageSquare, LayoutDashboard, FileCode2, Zap,
+  MessageSquare, LayoutDashboard, FileCode2,
 } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from './ui/tooltip';
@@ -242,38 +242,6 @@ const Sidebar: React.FC<SidebarProps> = ({
           isExpanded ? 'w-60' : 'w-12'
         )}
       >
-        {/* ── Header: logo + team switcher placeholder ── */}
-        <div className={cn(
-          'flex items-center border-b border-border flex-shrink-0 h-12',
-          isExpanded ? 'px-3 justify-between' : 'justify-center'
-        )}>
-          {isExpanded ? (
-            <>
-              <div className="flex items-center gap-2 min-w-0">
-                <div className="w-6 h-6 rounded bg-primary flex items-center justify-center flex-shrink-0">
-                  <Zap size={13} className="text-primary-foreground" />
-                </div>
-                <span className="text-sm font-semibold text-foreground truncate">Ping</span>
-              </div>
-              <button
-                onClick={onToggleExpanded}
-                className="p-1 rounded text-muted-foreground hover:text-foreground hover:bg-accent transition-colors flex-shrink-0"
-                title="Collapse sidebar"
-              >
-                <PanelLeftClose size={15} />
-              </button>
-            </>
-          ) : (
-            <button
-              onClick={onToggleExpanded}
-              className="p-1.5 rounded text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
-              title="Expand sidebar"
-            >
-              <PanelLeft size={15} />
-            </button>
-          )}
-        </div>
-
         {/* ── Navigation ── */}
         <div className={cn('p-1.5 border-b border-border flex-shrink-0', !isExpanded && 'flex flex-col items-center gap-1')}>
           {NAV_ITEMS.map(item => (
@@ -316,31 +284,53 @@ const Sidebar: React.FC<SidebarProps> = ({
           )}
         </div>
 
-        {/* ── Footer: new team/agent action ── */}
+        {/* ── Footer: new team + collapse ── */}
         <div className={cn(
           'p-1.5 border-t border-border flex-shrink-0',
-          !isExpanded && 'flex justify-center'
+          isExpanded ? 'flex items-center gap-1' : 'flex flex-col items-center gap-1'
         )}>
           {isExpanded ? (
-            <button
-              onClick={() => onAddAgent()}
-              className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-md text-sm text-muted-foreground hover:text-foreground hover:bg-accent transition-colors cursor-pointer"
-            >
-              <Plus size={14} className="flex-shrink-0" />
-              <span>New Team</span>
-            </button>
+            <>
+              <button
+                onClick={() => onAddAgent()}
+                className="flex-1 flex items-center gap-2 px-2.5 py-1.5 rounded-md text-sm text-muted-foreground hover:text-foreground hover:bg-accent transition-colors cursor-pointer"
+              >
+                <Plus size={14} className="flex-shrink-0" />
+                <span>New Team</span>
+              </button>
+              <button
+                onClick={onToggleExpanded}
+                className="p-1.5 rounded text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
+                title="Collapse sidebar"
+              >
+                <PanelLeftClose size={14} />
+              </button>
+            </>
           ) : (
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <button
-                  onClick={() => onAddAgent()}
-                  className="p-2 rounded-md text-muted-foreground hover:text-foreground hover:bg-accent transition-colors cursor-pointer"
-                >
-                  <Plus size={14} />
-                </button>
-              </TooltipTrigger>
-              <TooltipContent side="right">New Team</TooltipContent>
-            </Tooltip>
+            <>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <button
+                    onClick={() => onAddAgent()}
+                    className="p-2 rounded-md text-muted-foreground hover:text-foreground hover:bg-accent transition-colors cursor-pointer"
+                  >
+                    <Plus size={14} />
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent side="right">New Team</TooltipContent>
+              </Tooltip>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <button
+                    onClick={onToggleExpanded}
+                    className="p-2 rounded-md text-muted-foreground hover:text-foreground hover:bg-accent transition-colors cursor-pointer"
+                  >
+                    <PanelLeft size={14} />
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent side="right">Expand sidebar</TooltipContent>
+              </Tooltip>
+            </>
           )}
         </div>
       </aside>

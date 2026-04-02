@@ -4,6 +4,7 @@ import { cn } from '../../lib/utils';
 import { Skeleton } from '../ui/skeleton';
 import StreamMessage from '../StreamMessage';
 import type { Message } from '../../types';
+import { AnimatePresence, motion } from 'framer-motion';
 
 interface MessageListProps {
   messages: Message[];
@@ -16,8 +17,16 @@ interface MessageListProps {
 function EmptyState({ agentName }: { agentName: string }) {
   return (
     <div className="flex-1 flex flex-col items-center justify-center gap-3 text-muted-foreground select-none py-16">
-      <div className="w-12 h-12 rounded-xl bg-muted flex items-center justify-center">
-        <Bot size={24} className="text-muted-foreground" />
+      <div className="w-40 h-32 rounded-2xl border border-border/70 bg-card/50 p-4">
+        <svg viewBox="0 0 220 140" className="w-full h-full" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden>
+          <rect x="16" y="20" width="188" height="98" rx="14" className="fill-muted/30 stroke-border" />
+          <rect x="34" y="38" width="72" height="10" rx="5" className="fill-muted" />
+          <rect x="34" y="56" width="132" height="8" rx="4" className="fill-muted/70" />
+          <rect x="34" y="70" width="104" height="8" rx="4" className="fill-muted/60" />
+          <circle cx="182" cy="46" r="14" className="fill-primary/20 stroke-primary/50" />
+          <path d="M175 46h14M182 39v14" className="stroke-primary" strokeWidth="2" strokeLinecap="round" />
+          <path d="M62 108c6-8 18-8 24 0" className="stroke-muted-foreground/60" strokeWidth="2" strokeLinecap="round" />
+        </svg>
       </div>
       <div className="text-center">
         <p className="text-sm font-medium text-foreground">Start a conversation</p>
@@ -130,13 +139,33 @@ const MessageList: React.FC<MessageListProps> = ({ messages, isStreaming, agentN
 
   return (
     <div className="flex flex-col gap-4">
-      {messages.map(msg => (
-        <MessageBubble key={msg.id} msg={msg} />
-      ))}
+      <AnimatePresence initial={false}>
+        {messages.map(msg => (
+          <motion.div
+            key={msg.id}
+            initial={{ opacity: 0, y: 10 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -10 }}
+            transition={{ duration: 0.16, ease: 'easeOut' }}
+          >
+            <MessageBubble msg={msg} />
+          </motion.div>
+        ))}
+      </AnimatePresence>
 
-      {isStreaming && messages[messages.length - 1]?.role === 'user' && (
-        <TypingIndicator />
-      )}
+      <AnimatePresence>
+        {isStreaming && messages[messages.length - 1]?.role === 'user' && (
+          <motion.div
+            key="typing"
+            initial={{ opacity: 0, y: 6 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -6 }}
+            transition={{ duration: 0.14, ease: 'easeOut' }}
+          >
+            <TypingIndicator />
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       <div ref={bottomRef} />
     </div>
