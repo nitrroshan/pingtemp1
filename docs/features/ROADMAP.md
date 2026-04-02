@@ -140,8 +140,8 @@ The experience goes from "submit and wait" to "watch your team work in real-time
 
 | What | Status | How Ensured |
 |---|---|---|
-| Golden path | ⚠️ **At risk — agent runtime swap** | Feature flag: `AGENT_RUNTIME=langgraph\|ai-sdk`. Default stays `langgraph` during migration. Switch to `ai-sdk` only after all tests pass. |
-| Agent execution | ⚠️ Migrating | Migrate ONE agent type at a time (planner first, then workers). Both runtimes run side-by-side. Never rip out LangGraph until AI SDK is fully validated. |
+| Golden path | ⚠️ **At risk — agent runtime swap** | Single flag: `AGENT_RUNTIME` (values: `langgraph\|ai-sdk`). Defaults `langgraph`. Both planner and workers use the same `InternalAgent` class, so they switch together. Set to `ai-sdk` only after tests pass. |
+| Agent execution | ⚠️ Migrating | Planner (OrchestratorService) and workers (WorkerPool) both use `InternalAgent` — same LangGraph `createAgent()` pipeline. Migration means replacing `InternalAgent` internals once, not per-component. Both runtimes available side-by-side until AI SDK is validated. |
 | Tool loading | ⚠️ Changing | AI SDK tools have different signature than LangGraph tools. Create adapter: `langchainTool → aiSdkTool` converter. Existing tool files don't change — adapter wraps them. |
 | Plan approval flow | ✅ Stays | Plan tools (`create_plan`, `approve_plan`) work the same — only the agent calling them changes internally. |
 | Task orchestration | ✅ Stays | OrchestratorService dispatches tasks identically. Only the agent inside the worker changes. |
@@ -149,19 +149,26 @@ The experience goes from "submit and wait" to "watch your team work in real-time
 | SocketServerV2 events | ✅ Stays + adds | Existing events unchanged. New `stream` event added. Frontend subscribes to both during transition. |
 
 **Migration strategy (prevents breakage):**
+
+Single flag: `AGENT_RUNTIME` (values: `langgraph` | `ai-sdk`). Defaults to `langgraph`.
+Both planner (OrchestratorService) and workers (WorkerPool) use the same `InternalAgent` class — there's no separate runtime per component. A single flag controls which backend `InternalAgent` uses internally.
+
 ```
-Week 1: AI SDK agents work alongside LangGraph. Both produce output.
-         Feature flag: AGENT_RUNTIME=langgraph (default)
+Week 1: Build AI SDK backend for InternalAgent alongside LangGraph.
+         Flag: AGENT_RUNTIME=langgraph (default)
+         InternalAgent uses LangGraph createAgent() as today.
          Test: golden path still works with langgraph
 
-Week 2: Planner migrated to AI SDK. Workers still LangGraph.
-         Feature flag: PLANNER_RUNTIME=ai-sdk, WORKER_RUNTIME=langgraph
-         Test: golden path works with mixed runtimes
-
-Week 3: All workers migrated to AI SDK. LangGraph code kept but unused.
-         Feature flag: AGENT_RUNTIME=ai-sdk (new default)
+Week 2: Switch InternalAgent to AI SDK. Both planner and workers switch together.
+         Flag: AGENT_RUNTIME=ai-sdk
+         InternalAgent uses AI SDK streamText() internally.
          Test: golden path works fully on AI SDK
          Test: streaming works end-to-end
+         Test: toggle back to AGENT_RUNTIME=langgraph → rollback works
+
+Week 3: Harden streaming, tool adapters, edge cases.
+         Flag: AGENT_RUNTIME=ai-sdk (new default)
+         Test: full golden path + streaming + tool calls
 
 Week 4: Remove LangGraph code paths (or keep behind flag for rollback).
 ```
