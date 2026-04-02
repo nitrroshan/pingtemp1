@@ -15,6 +15,7 @@ import {
 } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import type { Task, TaskStatus } from '../../types';
+import { Skeleton } from '../ui/skeleton';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Status config
@@ -113,6 +114,7 @@ const ProgressBar: React.FC<ProgressBarProps> = ({ completed, total }) => {
 interface TaskDashboardProps {
   /** Flat list of all tasks (from all agents) */
   allTasks: Task[];
+  isLoading?: boolean;
   onStartTask?: (taskId: string) => void;
   onCompleteTask?: (taskId: string) => void;
   onCancelTask?: (taskId: string) => void;
@@ -120,6 +122,7 @@ interface TaskDashboardProps {
 
 export const TaskDashboard: React.FC<TaskDashboardProps> = ({
   allTasks,
+  isLoading = false,
   onStartTask,
   onCompleteTask,
   onCancelTask,
@@ -154,10 +157,39 @@ export const TaskDashboard: React.FC<TaskDashboardProps> = ({
     return c;
   }, [allTasks]);
 
+  if (isLoading) {
+    return (
+      <div className="flex flex-col gap-4">
+        <div className="flex gap-2">
+          <Skeleton className="h-8 w-24 rounded-lg" />
+          <Skeleton className="h-8 w-20 rounded-lg" />
+          <Skeleton className="h-8 w-28 rounded-lg" />
+        </div>
+        <Skeleton className="h-2 w-full rounded-full" />
+        {[1, 2, 3].map((idx) => (
+          <div key={idx} className="rounded-xl border border-border bg-card p-4 space-y-3">
+            <div className="flex items-center justify-between">
+              <Skeleton className="h-4 w-32" />
+              <Skeleton className="h-4 w-14" />
+            </div>
+            <Skeleton className="h-10 w-full rounded-lg" />
+          </div>
+        ))}
+      </div>
+    );
+  }
+
   if (allTasks.length === 0) {
     return (
-      <div className="flex flex-col items-center justify-center h-32 text-muted-foreground gap-2">
-        <BarChart3 size={24} className="opacity-30" />
+      <div className="flex flex-col items-center justify-center h-56 text-muted-foreground gap-3">
+        <div className="w-44 h-28 rounded-2xl border border-border bg-card/40 p-3">
+          <svg viewBox="0 0 240 140" className="w-full h-full" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden>
+            <rect x="20" y="14" width="200" height="112" rx="14" className="fill-muted/20 stroke-border" />
+            <path d="M48 102V72m36 30V58m36 44V80m36 22V46" className="stroke-primary/70" strokeWidth="10" strokeLinecap="round" />
+            <path d="M36 38h168" className="stroke-muted-foreground/35" strokeWidth="6" strokeLinecap="round" />
+          </svg>
+        </div>
+        <BarChart3 size={18} className="opacity-50" />
         <p className="text-sm">No tasks yet. Submit a goal to get started.</p>
       </div>
     );

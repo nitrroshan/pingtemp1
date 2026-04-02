@@ -18,6 +18,7 @@ import type { Agent } from '../types';
 
 export function useAgentTree() {
   const [agents, setAgents] = useState<Agent[]>(INITIAL_AGENTS);
+  const [isLoadingTeams, setIsLoadingTeams] = useState(false);
   const agentsRef = useRef<Agent[]>(agents);
 
   // Keep ref in sync
@@ -60,6 +61,7 @@ export function useAgentTree() {
    * Load teams from backend and merge into agent tree
    */
   const loadTeams = useCallback(async () => {
+    setIsLoadingTeams(true);
     try {
       const response = await agentServiceV2.getTeams();
       const teams = response.teams;
@@ -107,6 +109,8 @@ export function useAgentTree() {
     } catch (err) {
       console.error('[useAgentTree] Failed to load teams:', err);
       return [];
+    } finally {
+      setIsLoadingTeams(false);
     }
   }, []);
 
@@ -180,6 +184,7 @@ export function useAgentTree() {
 
   return {
     agents,
+    isLoadingTeams,
     agentsRef,
     findAgentById,
     handleToggleCollapse,

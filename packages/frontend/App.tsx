@@ -1,29 +1,31 @@
 /**
- * App — main application entry point (Phase 1 core + Phase 2 redesign)
+ * App — main application entry point (Phase 1 refactor)
  *
  * Uses extracted hooks:
  *   useOrchestration — plan/task state, socket events
  *   useChat          — per-agent message histories
  *   useAgentTree     — agent hierarchy, team loading
  *
- * Layout: Sidebar (collapsible) + Main content + Detail panel (Sheet)
- *         + StatusBar + CommandPalette (Cmd+K)
+ * Routes (React Router):
+ *   /*  → InnerApp (handles all navigation internally)
  */
 
 import React, { useState, useEffect, useRef, lazy, Suspense, useCallback } from 'react';
 import { BrowserRouter, Routes, Route } from 'react-router-dom';
 import { v4 as uuidv4 } from 'uuid';
+import { Menu, PanelRight, Search, Zap } from 'lucide-react';
+import { AnimatePresence, motion } from 'framer-motion';
 
-import Sidebar, { type ViewMode } from './components/Sidebar';
+import Sidebar from './components/Sidebar';
 import ChatArea from './components/ChatArea/ChatArea';
 import AgentModal from './components/AgentModal/AgentModal';
-import AgentManagerPanel from './components/AgentManagerPanel/AgentManagerPanel';
+import { DetailPanel } from './components/DetailPanel/DetailPanel';
 import { PlanApproval } from './components/PlanApproval';
 import GoalInput from './components/GoalInput/GoalInput';
 import TaskDashboard from './components/TaskDashboard/TaskDashboard';
 import { ToastContainer, useToast } from './components/Toast/Toast';
-import { StatusBar } from './components/layout/StatusBar';
 import { CommandPalette } from './components/CommandPalette';
+import { StatusBar } from './components/layout/StatusBar';
 
 const CollaborativeEditor = lazy(() => import('./components/CollaborativeEditor').catch(() => ({
   default: () => (
@@ -39,7 +41,8 @@ import { useOrchestration } from './hooks/useOrchestration';
 import { useChat } from './hooks/useChat';
 import { useAgentTree } from './hooks/useAgentTree';
 import { agentServiceV2, type Task as BackendTask } from './services/AgentServiceV2';
-import type { Agent, Message, SessionState } from './types';
+import type { Agent, Message } from './types';
+import { Skeleton } from './components/ui/skeleton';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // CollabFileTree — lightweight CRDT doc browser
@@ -62,26 +65,26 @@ function CollabFileTree({ teamId, activeDoc, onSelectDoc }: {
   }, [teamId]);
 
   return (
-    <div className="w-56 border-r border-border bg-card flex flex-col shrink-0">
-      <div className="p-3 border-b border-border">
-        <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">CRDT Documents</span>
+    <div className="w-60 border-r border-nexus-800 bg-nexus-950 flex flex-col shrink-0">
+      <div className="p-3 border-b border-nexus-800">
+        <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider">CRDT Documents</span>
       </div>
       <div className="flex-1 overflow-auto p-2 text-sm">
         {docs.length === 0
-          ? <div className="text-muted-foreground text-xs p-2">No documents yet.</div>
+          ? <div className="text-slate-500 text-xs p-2">No documents yet.</div>
           : docs.map(doc => (
             <button key={doc} onClick={() => onSelectDoc(doc)}
-              className={`w-full text-left px-2.5 py-1.5 rounded text-xs truncate transition-colors cursor-pointer ${doc === activeDoc ? 'bg-primary/10 text-primary' : 'text-muted-foreground hover:bg-accent hover:text-foreground'}`}>
+              className={`w-full text-left px-3 py-1.5 rounded text-xs truncate transition-colors cursor-pointer ${doc === activeDoc ? 'bg-blue-600/20 text-blue-400' : 'text-slate-300 hover:bg-nexus-800'}`}>
               📄 {doc}
             </button>
           ))}
       </div>
-      <div className="p-2 border-t border-border flex gap-1">
+      <div className="p-2 border-t border-nexus-800 flex gap-1">
         <input value={newDocName} onChange={e => setNewDocName(e.target.value)} placeholder="new-doc"
           onKeyDown={e => { if (e.key === 'Enter' && newDocName.trim()) { onSelectDoc(newDocName.trim()); setNewDocName(''); } }}
-          className="flex-1 px-2 py-1 text-xs bg-secondary border border-border rounded text-foreground focus:outline-none focus:ring-1 focus:ring-ring" />
+          className="flex-1 px-2 py-1 text-xs bg-nexus-800 border border-nexus-700 rounded text-slate-200 focus:outline-none" />
         <button onClick={() => { if (newDocName.trim()) { onSelectDoc(newDocName.trim()); setNewDocName(''); } }}
-          className="px-2 py-1 text-xs bg-primary text-primary-foreground rounded hover:bg-primary/90 cursor-pointer">+</button>
+          className="px-2 py-1 text-xs bg-blue-600 text-white rounded hover:bg-blue-500 cursor-pointer">+</button>
       </div>
     </div>
   );
@@ -94,7 +97,7 @@ function CollabFileTree({ teamId, activeDoc, onSelectDoc }: {
 function InnerApp() {
   const { toasts, showToast, dismissToast } = useToast();
 
-  const { agents, agentsRef, findAgentById, handleToggleCollapse, loadTeams, createTeam, addLocalSubAgent } = useAgentTree();
+  const { agents, isLoadingTeams, agentsRef, findAgentById, handleToggleCollapse, loadTeams, createTeam, addLocalSubAgent } = useAgentTree();
   const { chatHistories, addMessage, updateMessages } = useChat();
   const {
     sessionState, currentPlan, tasks, autoExecuteEnabled, orchestrationLogs,
@@ -107,31 +110,106 @@ function InnerApp() {
   const [selectedTeamId, setSelectedTeamId] = useState<string | null>(null);
   const selectedTeamIdRef = useRef<string | null>(null);
   const connectedTeamRef = useRef<string | null>(null);
-  const [isConnected, setIsConnected] = useState(false);
 
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [modalParentId, setModalParentId] = useState<string | undefined>(undefined);
   const [isPanelOpen, setIsPanelOpen] = useState(false);
   const [isSidebarExpanded, setIsSidebarExpanded] = useState(true);
-  const [viewMode, setViewMode] = useState<ViewMode>('chat');
+  const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState(false);
+  const [isMobileViewport, setIsMobileViewport] = useState(() => window.innerWidth < 1024);
+  const [viewMode, setViewMode] = useState<'chat' | 'tasks' | 'collaborate'>('chat');
   const [collabDocId, setCollabDocId] = useState('doc-shared');
-  const [cmdPaletteOpen, setCmdPaletteOpen] = useState(false);
+  const [isCommandPaletteOpen, setIsCommandPaletteOpen] = useState(false);
+  const [currentPath, setCurrentPath] = useState(() => window.location.pathname);
+
+  const parseRouteState = useCallback((pathname: string) => {
+    const segments = pathname.split('/').filter(Boolean);
+    const validViews = new Set(['chat', 'tasks', 'collaborate']);
+
+    let nextView: 'chat' | 'tasks' | 'collaborate' = 'chat';
+    let nextTeamId: string | null = null;
+
+    if (segments[0] === 'teams') {
+      if (segments[1]) {
+        nextTeamId = decodeURIComponent(segments[1]);
+      }
+      if (segments[2] && validViews.has(segments[2])) {
+        nextView = segments[2] as 'chat' | 'tasks' | 'collaborate';
+      }
+    } else if (segments[0] && validViews.has(segments[0])) {
+      nextView = segments[0] as 'chat' | 'tasks' | 'collaborate';
+    }
+
+    return { nextView, nextTeamId };
+  }, []);
 
   useEffect(() => { activeAgentIdRef.current = activeAgentId; }, [activeAgentId]);
   useEffect(() => { selectedTeamIdRef.current = selectedTeamId; }, [selectedTeamId]);
 
   useEffect(() => { loadTeams(); }, [loadTeams]);
 
-  // Cmd+K shortcut for command palette
   useEffect(() => {
-    const handler = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
-        e.preventDefault();
-        setCmdPaletteOpen(v => !v);
+    const onResize = () => {
+      const mobile = window.innerWidth < 1024;
+      setIsMobileViewport(mobile);
+      if (!mobile) {
+        setIsMobileSidebarOpen(false);
       }
     };
-    window.addEventListener('keydown', handler);
-    return () => window.removeEventListener('keydown', handler);
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, []);
+
+  useEffect(() => {
+    const onPopState = () => setCurrentPath(window.location.pathname);
+    window.addEventListener('popstate', onPopState);
+    return () => window.removeEventListener('popstate', onPopState);
+  }, []);
+
+  const pushRoute = useCallback((path: string) => {
+    if (window.location.pathname === path) return;
+    window.history.pushState({}, '', path);
+    setCurrentPath(path);
+  }, []);
+
+  // Route is the source of truth for shell view and selected team (Option C foundation).
+  useEffect(() => {
+    if (currentPath === '/') {
+      pushRoute('/chat');
+      return;
+    }
+    const { nextView, nextTeamId } = parseRouteState(currentPath);
+    if (viewMode !== nextView) setViewMode(nextView);
+    if (selectedTeamId !== nextTeamId) setSelectedTeamId(nextTeamId);
+  }, [currentPath, parseRouteState, pushRoute, selectedTeamId, viewMode]);
+
+  // Keep active agent in scope for deep-linked team routes.
+  useEffect(() => {
+    if (!selectedTeamId) return;
+
+    const selectedTeam = agents.find(agent => agent.id === selectedTeamId);
+    if (!selectedTeam) return;
+
+    const inTeamScope =
+      activeAgentId === selectedTeam.id ||
+      (selectedTeam.subAgents?.some(subAgent => subAgent.id === activeAgentId) ?? false);
+
+    if (!inTeamScope) {
+      setActiveAgentId(selectedTeam.id);
+    }
+  }, [activeAgentId, agents, selectedTeamId]);
+
+  // Cmd/Ctrl+K global command palette shortcut.
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
+        event.preventDefault();
+        setIsCommandPaletteOpen(open => !open);
+      }
+    };
+
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
   }, []);
 
   // Socket connection + orchestration event subscriptions
@@ -140,7 +218,6 @@ function InnerApp() {
       if (connectedTeamRef.current) {
         agentServiceV2.disconnect();
         connectedTeamRef.current = null;
-        setIsConnected(false);
       }
       return;
     }
@@ -148,8 +225,7 @@ function InnerApp() {
     connectedTeamRef.current = selectedTeamId;
 
     agentServiceV2.connect(selectedTeamId)
-      .then(() => setIsConnected(true))
-      .catch(err => { connectedTeamRef.current = null; setIsConnected(false); showToast(`Connection failed: ${err.message}`, 'error'); });
+      .catch(err => { connectedTeamRef.current = null; showToast(`Connection failed: ${err.message}`, 'error'); });
 
     const unsub = subscribeToTeam(
       selectedTeamId, agentsRef, selectedTeamIdRef,
@@ -171,14 +247,33 @@ function InnerApp() {
 
   const handleSelectAgent = useCallback((agent: Agent) => {
     setActiveAgentId(agent.id);
+    if (isMobileViewport) {
+      setIsMobileSidebarOpen(false);
+    }
     const isTeam = agents.some(a => a.id === agent.id);
     if (isTeam) {
       setSelectedTeamId(agent.id);
+      pushRoute(`/teams/${encodeURIComponent(agent.id)}/${viewMode}`);
     } else {
       const parent = agents.find(a => a.subAgents?.some(s => s.id === agent.id));
-      if (parent) setSelectedTeamId(parent.id);
+      if (parent) {
+        setSelectedTeamId(parent.id);
+        pushRoute(`/teams/${encodeURIComponent(parent.id)}/${viewMode}`);
+      }
     }
-  }, [agents]);
+  }, [agents, isMobileViewport, pushRoute, viewMode]);
+
+  const handleSelectView = useCallback((mode: 'chat' | 'tasks' | 'collaborate') => {
+    setViewMode(mode);
+    if (isMobileViewport) {
+      setIsMobileSidebarOpen(false);
+    }
+    if (selectedTeamId) {
+      pushRoute(`/teams/${encodeURIComponent(selectedTeamId)}/${mode}`);
+    } else {
+      pushRoute(`/${mode}`);
+    }
+  }, [isMobileViewport, pushRoute, selectedTeamId]);
 
   const handleGoalSubmit = useCallback(async (goal: string) => {
     if (!selectedTeamId) { showToast('Please select a team first', 'warning'); return; }
@@ -217,151 +312,285 @@ function InnerApp() {
   const activeAgentTasks = tasks[activeAgentId] ?? [];
   const activeAgentMessages = chatHistories[activeAgentId] ?? [];
   const isGoalInputVisible = agents.some(a => a.id === activeAgentId) && !!selectedTeamId;
-  const activeAgentCount = agents.reduce((n, a) => n + (a.subAgents?.length ?? 0), 0);
-  const activeTeam = agents.find(a => a.id === selectedTeamId);
+  const showTaskSkeleton = (sessionState === 'planning' || sessionState === 'executing') && allTasks.length === 0;
+  const selectedTeam = selectedTeamId ? agents.find(a => a.id === selectedTeamId) : undefined;
+  const selectedTeamAgentCount = selectedTeam ? 1 + (selectedTeam.subAgents?.length ?? 0) : 0;
+
+  const sidebarNode = (
+    <Sidebar
+      agents={agents}
+      activeAgentId={activeAgentId}
+      viewMode={viewMode}
+      onSelectAgent={handleSelectAgent}
+      onSelectView={handleSelectView}
+      onToggleCollapse={handleToggleCollapse}
+      onAddAgent={(parentId) => { setModalParentId(parentId); setIsModalOpen(true); }}
+      isExpanded={isMobileViewport ? true : isSidebarExpanded}
+      onToggleExpanded={() => setIsSidebarExpanded(v => !v)}
+    />
+  );
+
+  const appShellLoading = isLoadingTeams && !selectedTeamId;
 
   return (
-    <div className="flex flex-col h-screen w-full bg-background text-foreground font-sans">
-      {/* Main layout */}
+    <div className="flex flex-col h-screen w-full bg-nexus-950 font-sans text-slate-200">
+      {/* ── Command Bar (top-level, full width) ── */}
+      <div className="flex items-center gap-3 px-3 h-11 border-b border-nexus-800/80 bg-gradient-to-r from-nexus-900 via-nexus-900/95 to-nexus-900 shrink-0 z-30">
+        {/* Left: hamburger (mobile) + brand */}
+        <button
+          onClick={() => setIsMobileSidebarOpen(v => !v)}
+          className="lg:hidden p-1.5 rounded-md text-slate-400 hover:text-white hover:bg-nexus-800 transition-colors cursor-pointer"
+          aria-label="Toggle sidebar"
+        >
+          <Menu size={16} />
+        </button>
+        <div className="flex items-center gap-2 select-none">
+          <div className="w-6 h-6 rounded-md bg-gradient-to-br from-blue-500 to-violet-600 flex items-center justify-center shadow-md shadow-blue-500/20">
+            <Zap size={13} className="text-white" />
+          </div>
+          <span className="text-sm font-bold tracking-tight text-white hidden sm:inline">Ping</span>
+        </div>
+
+        {/* Center: search / command palette trigger */}
+        <div className="flex-1 flex justify-center">
+          <button
+            onClick={() => setIsCommandPaletteOpen(true)}
+            className="flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs text-slate-500 hover:text-slate-300 bg-nexus-800/50 hover:bg-nexus-800 border border-nexus-700/40 hover:border-nexus-600/50 transition-all cursor-pointer w-full max-w-xs"
+            aria-label="Open command palette"
+          >
+            <Search size={13} className="shrink-0 text-slate-600" />
+            <span className="flex-1 text-left truncate">Search or jump to…</span>
+            <kbd className="text-[10px] text-slate-600 bg-nexus-900/80 px-1.5 py-0.5 rounded font-mono">⌘K</kbd>
+          </button>
+        </div>
+
+        {/* Right: spacer for balance */}
+        <div className="w-6 hidden sm:block" />
+      </div>
+
       <div className="flex flex-1 min-h-0">
-        {/* Sidebar */}
-        <Sidebar
-          agents={agents}
-          activeAgentId={activeAgentId}
-          viewMode={viewMode}
-          onSelectAgent={handleSelectAgent}
-          onSelectView={setViewMode}
-          onToggleCollapse={handleToggleCollapse}
-          onAddAgent={parentId => { setModalParentId(parentId); setIsModalOpen(true); }}
-          isExpanded={isSidebarExpanded}
-          onToggleExpanded={() => setIsSidebarExpanded(v => !v)}
-        />
+        {!isMobileViewport && sidebarNode}
 
-        {/* Main content */}
-        <div className="flex flex-col flex-1 min-h-0 min-w-0">
+        <AnimatePresence>
+          {isMobileViewport && isMobileSidebarOpen && (
+            <>
+              <motion.button
+                key="sidebar-backdrop"
+                className="fixed inset-0 bg-black/50 z-40"
+                onClick={() => setIsMobileSidebarOpen(false)}
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                transition={{ duration: 0.16 }}
+                aria-label="Close sidebar"
+              />
+              <motion.div
+                key="sidebar-drawer"
+                className="fixed left-0 top-0 h-full z-50"
+                initial={{ x: -320 }}
+                animate={{ x: 0 }}
+                exit={{ x: -320 }}
+                transition={{ duration: 0.2, ease: 'easeOut' }}
+              >
+                {sidebarNode}
+              </motion.div>
+            </>
+          )}
+        </AnimatePresence>
 
-          {viewMode === 'collaborate' ? (
-            <div className="flex-1 flex min-h-0">
-              <CollabFileTree teamId={selectedTeamId} activeDoc={collabDocId} onSelectDoc={setCollabDocId} />
-              <div className="flex-1 flex flex-col min-h-0 min-w-0">
-                <div className="flex items-center gap-3 p-3 border-b border-border bg-card shrink-0">
-                  <span className="text-xs text-muted-foreground">Document:</span>
-                  <span className="text-xs text-foreground font-mono truncate">{collabDocId || "none"}</span>
-                </div>
-                <div className="flex-1 bg-white overflow-auto min-h-0">
-                  {collabDocId ? (
-                    <Suspense fallback={<div className="flex items-center justify-center h-full text-muted-foreground text-sm">Loading editor…</div>}>
-                      <CollaborativeEditor key={collabDocId}
-                        docId={`${selectedTeamId || "default"}/${collabDocId}`}
-                        userName="User" userColor="#3b82f6"
-                        serverUrl={`ws://localhost:${"1234"}`} />
-                    </Suspense>
-                  ) : (
-                    <div className="flex items-center justify-center h-full text-muted-foreground text-sm">Select a document</div>
-                  )}
-                </div>
-              </div>
+        {/* ── Main content column ── */}
+        <div className="flex-1 flex flex-col min-h-0 min-w-0">
+          {/* Context Bar */}
+          <div className="flex items-center gap-3 px-4 py-2 border-b border-nexus-800 bg-nexus-900/50 shrink-0">
+            <div className="flex items-center gap-2 min-w-0">
+              <span className="text-sm font-medium text-slate-200 truncate">
+                {activeAgent?.name ?? 'Ping'}
+              </span>
+              {activeAgent?.role && (
+                <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-nexus-800 text-slate-400 uppercase tracking-wider shrink-0">
+                  {activeAgent.role}
+                </span>
+              )}
+              {sessionState && sessionState !== 'idle' && (
+                <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-blue-500/20 text-blue-400 shrink-0">
+                  {sessionState.replace('_', ' ')}
+                </span>
+              )}
             </div>
 
-          ) : viewMode === 'tasks' ? (
-            <div className="flex-1 overflow-y-auto p-6 min-h-0">
-              <div className="max-w-4xl mx-auto">
-                <div className="mb-5">
-                  <h1 className="text-lg font-semibold text-foreground mb-0.5">Task Dashboard</h1>
-                  <p className="text-xs text-muted-foreground">Real-time status of all tasks across all agents</p>
-                </div>
-                {selectedTeamId && (
-                  <div className="mb-5">
-                    <GoalInput onSubmit={handleGoalSubmit} sessionState={sessionState}
-                      disabled={sessionState === 'executing' || sessionState === 'planning'} />
-                  </div>
-                )}
-                <TaskDashboard allTasks={allTasks}
-                  onStartTask={handleStartTask} onCompleteTask={handleCompleteTask} onCancelTask={handleCancelTask} />
-              </div>
-            </div>
+            <div className="flex-1" />
 
-          ) : (
-            <div className="flex flex-1 min-h-0">
-              {activeAgent ? (
+            <button
+              onClick={() => setIsPanelOpen(v => !v)}
+              className={`p-1.5 rounded-md transition-colors cursor-pointer ${
+                isPanelOpen
+                  ? 'text-blue-400 bg-blue-500/10'
+                  : 'text-slate-500 hover:text-slate-300 hover:bg-nexus-800'
+              }`}
+              aria-label="Toggle detail panel"
+            >
+              <PanelRight size={16} />
+            </button>
+          </div>
+
+        {appShellLoading ? (
+          <div className="flex-1 p-6 space-y-4">
+            <Skeleton className="h-8 w-64" />
+            <Skeleton className="h-20 w-full rounded-xl" />
+            <Skeleton className="h-20 w-full rounded-xl" />
+            <Skeleton className="h-20 w-full rounded-xl" />
+            <Skeleton className="h-48 w-full rounded-xl" />
+          </div>
+        ) : (
+          <AnimatePresence mode="wait" initial={false}>
+            {viewMode === 'collaborate' ? (
+              <motion.div
+                key="collaborate-view"
+                className="flex-1 flex min-h-0"
+                initial={{ opacity: 0, y: 8 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -8 }}
+                transition={{ duration: 0.18, ease: 'easeOut' }}
+              >
+                <CollabFileTree teamId={selectedTeamId} activeDoc={collabDocId} onSelectDoc={setCollabDocId} />
                 <div className="flex-1 flex flex-col min-h-0 min-w-0">
-                  {isGoalInputVisible && (
-                    <div className="px-5 py-3 border-b border-border bg-card/30 shrink-0">
+                  <div className="flex items-center gap-3 p-3 border-b border-nexus-800 bg-nexus-900 shrink-0">
+                    <span className="text-sm text-slate-400">Document:</span>
+                    <span className="text-sm text-slate-200 font-mono truncate">{collabDocId || "none"}</span>
+                  </div>
+                  <div className="flex-1 bg-white overflow-auto min-h-0">
+                    {collabDocId ? (
+                      <Suspense fallback={<div className="flex items-center justify-center h-full text-slate-500">Loading editor...</div>}>
+                        <CollaborativeEditor key={collabDocId}
+                          docId={`${selectedTeamId || "default"}/${collabDocId}`}
+                          userName="User" userColor="#3b82f6"
+                          serverUrl={`ws://localhost:${"1234"}`} />
+                      </Suspense>
+                    ) : (
+                      <div className="flex items-center justify-center h-full text-slate-400">Select a document</div>
+                    )}
+                  </div>
+                </div>
+              </motion.div>
+            ) : viewMode === 'tasks' ? (
+              <motion.div
+                key="tasks-view"
+                className="flex-1 overflow-y-auto p-6"
+                initial={{ opacity: 0, y: 8 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -8 }}
+                transition={{ duration: 0.18, ease: 'easeOut' }}
+              >
+                <div className="max-w-4xl mx-auto">
+                  <div className="mb-6">
+                    <h1 className="text-xl font-semibold text-slate-100 mb-1">Task Dashboard</h1>
+                    <p className="text-sm text-slate-500">Real-time status of all tasks across all agents</p>
+                  </div>
+                  {selectedTeamId && (
+                    <div className="mb-6">
                       <GoalInput onSubmit={handleGoalSubmit} sessionState={sessionState}
                         disabled={sessionState === 'executing' || sessionState === 'planning'} />
                     </div>
                   )}
-                  <div className="flex-1 min-h-0">
-                    <ChatArea
-                      key={activeAgent.id}
-                      agent={activeAgent}
-                      messages={activeAgentMessages}
-                      tasks={activeAgentTasks}
-                      teamId={selectedTeamId}
-                      onUpdateMessages={(agentId, msg) => updateMessages(agentId, msg)}
-                      onAddTask={() => {}}
-                      onToggleTask={() => {}}
-                      onDeleteTask={() => {}}
-                      apiKey={process.env.API_KEY || process.env.GEMINI_API_KEY || ''}
-                      onTogglePanel={() => setIsPanelOpen(v => !v)}
-                      isPanelOpen={isPanelOpen}
-                      autoExecuteEnabled={autoExecuteEnabled}
-                      onToggleAutoExecute={handleToggleAutoExecute}
-                      currentPlan={currentPlan}
-                      onStartTask={handleStartTask}
-                      onCompleteTask={handleCompleteTask}
-                      onCancelTask={handleCancelTask}
-                    />
-                  </div>
+                  <TaskDashboard allTasks={allTasks}
+                    isLoading={showTaskSkeleton}
+                    onStartTask={handleStartTask} onCompleteTask={handleCompleteTask} onCancelTask={handleCancelTask} />
                 </div>
-              ) : (
-                <div className="flex-1 flex flex-col items-center justify-center gap-3 text-muted-foreground">
-                  <div className="w-12 h-12 rounded-xl bg-muted flex items-center justify-center text-2xl">🤝</div>
-                  <div className="text-center">
-                    <p className="text-sm font-medium text-foreground">Select a team to get started</p>
-                    <p className="text-xs text-muted-foreground mt-1">Choose from the sidebar or create a new team</p>
+              </motion.div>
+            ) : (
+              <motion.div
+                key="chat-view"
+                className="flex-1 flex min-h-0"
+                initial={{ opacity: 0, y: 8 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -8 }}
+                transition={{ duration: 0.18, ease: 'easeOut' }}
+              >
+                {activeAgent ? (
+                  <div className="flex-1 flex flex-col min-h-0 min-w-0">
+                    {isGoalInputVisible && (
+                      <div className="px-6 py-4 border-b border-nexus-800 bg-nexus-900/30">
+                        <GoalInput onSubmit={handleGoalSubmit} sessionState={sessionState}
+                          disabled={sessionState === 'executing' || sessionState === 'planning'} />
+                      </div>
+                    )}
+                    <div className="flex-1 min-h-0">
+                      <ChatArea
+                        key={activeAgent.id}
+                        agent={activeAgent}
+                        messages={activeAgentMessages}
+                        tasks={activeAgentTasks}
+                        teamId={selectedTeamId}
+                        onUpdateMessages={(agentId, msg) => updateMessages(agentId, msg)}
+                        onAddTask={() => { /* Phase 1: tasks come from backend plan only */ }}
+                        onToggleTask={() => { /* Phase 1: status managed by backend */ }}
+                        onDeleteTask={() => { /* Phase 1: deletion not yet supported */ }}
+                        apiKey={process.env.API_KEY || process.env.GEMINI_API_KEY || ''}
+                        onTogglePanel={() => setIsPanelOpen(v => !v)}
+                        isPanelOpen={isPanelOpen}
+                        autoExecuteEnabled={autoExecuteEnabled}
+                        onToggleAutoExecute={handleToggleAutoExecute}
+                        currentPlan={currentPlan}
+                        onStartTask={handleStartTask}
+                        onCompleteTask={handleCompleteTask}
+                        onCancelTask={handleCancelTask}
+                        isLoading={isLoadingTeams && activeAgentMessages.length === 0}
+                      />
+                    </div>
                   </div>
-                </div>
-              )}
-            </div>
-          )}
-        </div>
-
-        {/* Orchestration panel (Sheet) */}
-        {isPanelOpen && (
-          <AgentManagerPanel activeAgents={[]} logs={orchestrationLogs} onClose={() => setIsPanelOpen(false)} />
+                ) : (
+                  <div className="flex-1 flex items-center justify-center text-slate-500">
+                    Select a team to start.
+                  </div>
+                )}
+              </motion.div>
+            )}
+          </AnimatePresence>
         )}
+        </div>
+        {/* ── end main content column ── */}
+
+        {/* ── Detail Panel (320px, optional) ── */}
+        <AnimatePresence>
+          {isPanelOpen && (
+            <DetailPanel
+              logs={orchestrationLogs}
+              activeAgents={[]}
+              allTasks={allTasks}
+              agentName={activeAgent?.name}
+              onClose={() => setIsPanelOpen(false)}
+            />
+          )}
+        </AnimatePresence>
       </div>
 
-      {/* Status bar */}
-      <StatusBar
-        isConnected={isConnected}
-        activeAgentCount={activeAgentCount}
-        teamName={activeTeam?.name}
-        sessionState={sessionState as SessionState}
-      />
-
-      {/* Plan approval dialog */}
       {sessionState === 'awaiting_approval' && currentPlan && currentPlan.length > 0 && (
         <PlanApproval plan={currentPlan as BackendTask[]} onApprove={handleApprove} onDismiss={() => setSessionState(null)} />
       )}
 
-      {/* Legacy toasts (fallback) */}
       <ToastContainer toasts={toasts} onDismiss={dismissToast} />
 
-      {/* Agent creation modal */}
-      <AgentModal isOpen={isModalOpen} onClose={() => setIsModalOpen(false)} onSave={handleAddAgent}
-        parentAgents={agents} initialParentId={modalParentId} />
-
-      {/* Command palette */}
       <CommandPalette
-        open={cmdPaletteOpen}
-        onOpenChange={setCmdPaletteOpen}
+        open={isCommandPaletteOpen}
+        onOpenChange={setIsCommandPaletteOpen}
         agents={agents}
         onSelectAgent={handleSelectAgent}
-        onSelectView={setViewMode}
-        onNewTeam={() => { setModalParentId(undefined); setIsModalOpen(true); }}
+        onSelectView={handleSelectView}
+        onNewTeam={() => {
+          setModalParentId(undefined);
+          setIsModalOpen(true);
+        }}
       />
+
+      <StatusBar
+        isConnected={agentServiceV2.isConnected()}
+        activeAgentCount={selectedTeamAgentCount}
+        teamName={selectedTeam?.name}
+        sessionState={sessionState}
+      />
+
+      <AgentModal isOpen={isModalOpen} onClose={() => setIsModalOpen(false)} onSave={handleAddAgent}
+        parentAgents={agents} initialParentId={modalParentId} />
     </div>
   );
 }
