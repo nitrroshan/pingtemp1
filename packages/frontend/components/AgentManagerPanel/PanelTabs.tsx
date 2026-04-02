@@ -1,5 +1,6 @@
 import React from 'react';
 import { Server, Terminal } from 'lucide-react';
+import { cn } from '../../lib/utils';
 
 interface PanelTabsProps {
   activeTab: 'swarm' | 'events';
@@ -8,41 +9,36 @@ interface PanelTabsProps {
 }
 
 const PanelTabs: React.FC<PanelTabsProps> = ({ activeTab, activeAgentsCount, onTabChange }) => {
+  const tabs: { id: 'swarm' | 'events'; label: string; icon: React.ReactNode; badge?: number }[] = [
+    { id: 'swarm',  label: 'Active Swarm', icon: <Server size={13} />, badge: activeAgentsCount || undefined },
+    { id: 'events', label: 'System Logs',  icon: <Terminal size={13} /> },
+  ];
+
   return (
-    <div className="flex border-b border-nexus-800 bg-nexus-900/30 flex-shrink-0">
-      <button
-        onClick={() => onTabChange('swarm')}
-        className={`flex-1 flex items-center justify-center gap-2 py-3 text-xs font-medium transition-all relative ${
-          activeTab === 'swarm' 
-            ? 'text-nexus-cyan bg-nexus-800/20' 
-            : 'text-slate-500 hover:text-slate-300 hover:bg-white/5'
-        }`}
-      >
-        <Server size={14} />
-        <span>Active Swarm</span>
-        {activeTab === 'swarm' && (
-          <div className="absolute bottom-0 left-0 w-full h-0.5 bg-nexus-cyan shadow-[0_0_8px_rgba(6,182,212,0.8)]" />
-        )}
-        {activeAgentsCount > 0 && (
-          <span className="ml-1 bg-nexus-800 text-nexus-cyan px-1.5 rounded-full text-[9px] border border-nexus-700">
-            {activeAgentsCount}
-          </span>
-        )}
-      </button>
-      <button
-        onClick={() => onTabChange('events')}
-        className={`flex-1 flex items-center justify-center gap-2 py-3 text-xs font-medium transition-all relative ${
-          activeTab === 'events' 
-            ? 'text-nexus-cyan bg-nexus-800/20' 
-            : 'text-slate-500 hover:text-slate-300 hover:bg-white/5'
-        }`}
-      >
-        <Terminal size={14} />
-        <span>System Logs</span>
-        {activeTab === 'events' && (
-          <div className="absolute bottom-0 left-0 w-full h-0.5 bg-nexus-cyan shadow-[0_0_8px_rgba(6,182,212,0.8)]" />
-        )}
-      </button>
+    <div className="flex border-b border-border shrink-0">
+      {tabs.map(tab => (
+        <button
+          key={tab.id}
+          onClick={() => onTabChange(tab.id)}
+          className={cn(
+            'flex-1 flex items-center justify-center gap-1.5 py-2 text-xs font-medium transition-colors relative cursor-pointer',
+            activeTab === tab.id
+              ? 'text-foreground'
+              : 'text-muted-foreground hover:text-foreground hover:bg-accent/50'
+          )}
+        >
+          {tab.icon}
+          <span>{tab.label}</span>
+          {tab.badge !== undefined && (
+            <span className="ml-0.5 bg-primary/20 text-primary px-1 rounded text-[9px]">
+              {tab.badge}
+            </span>
+          )}
+          {activeTab === tab.id && (
+            <div className="absolute bottom-0 left-0 w-full h-px bg-primary" />
+          )}
+        </button>
+      ))}
     </div>
   );
 };

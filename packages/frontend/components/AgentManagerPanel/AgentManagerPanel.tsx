@@ -1,7 +1,9 @@
 
 import React, { useState } from 'react';
-import { ActiveAgentState, OrchestrationEvent } from '../../types';
-import { PanelHeader, PanelTabs, SwarmView, EventsView } from '.';
+import { Activity } from 'lucide-react';
+import { Sheet, SheetContent, SheetHeader, SheetTitle } from '../ui/sheet';
+import type { ActiveAgentState, OrchestrationEvent } from '../../types';
+import { PanelTabs, SwarmView, EventsView } from '.';
 
 interface AgentManagerPanelProps {
   activeAgents: ActiveAgentState[];
@@ -13,24 +15,27 @@ const AgentManagerPanel: React.FC<AgentManagerPanelProps> = ({ activeAgents, log
   const [activeTab, setActiveTab] = useState<'swarm' | 'events'>('swarm');
 
   return (
-    <div className="w-[380px] h-full bg-nexus-950 border-l border-nexus-800 flex flex-col flex-shrink-0 animate-in slide-in-from-right duration-300 shadow-2xl z-20">
-      
-      {/* Header */}
-      <PanelHeader onClose={onClose} />
+    <Sheet open onOpenChange={open => { if (!open) onClose(); }}>
+      <SheetContent side="right" className="w-96 p-0 flex flex-col">
+        <SheetHeader>
+          <div className="flex items-center gap-2">
+            <Activity size={15} className="text-primary animate-pulse" />
+            <SheetTitle className="text-sm">Orchestration</SheetTitle>
+          </div>
+        </SheetHeader>
 
-      {/* Tabs */}
-      <PanelTabs
-        activeTab={activeTab}
-        activeAgentsCount={activeAgents.length}
-        onTabChange={setActiveTab}
-      />
+        <PanelTabs
+          activeTab={activeTab}
+          activeAgentsCount={activeAgents.length}
+          onTabChange={setActiveTab}
+        />
 
-      {/* Main Content */}
-      <div className="flex-1 overflow-hidden relative bg-nexus-950/50">
-        {activeTab === 'swarm' && <SwarmView activeAgents={activeAgents} />}
-        {activeTab === 'events' && <EventsView logs={logs} />}
-      </div>
-    </div>
+        <div className="flex-1 overflow-hidden relative">
+          {activeTab === 'swarm' && <SwarmView activeAgents={activeAgents} />}
+          {activeTab === 'events' && <EventsView logs={logs} />}
+        </div>
+      </SheetContent>
+    </Sheet>
   );
 };
 

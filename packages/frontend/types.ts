@@ -145,6 +145,14 @@ export type StreamPart =
   | { type: "plan-proposed"; planId: string; taskCount: number }
   | { type: "plan-approved"; planId: string };
 
+export type SessionState =
+  | 'idle'
+  | 'planning'
+  | 'executing'
+  | 'completed'
+  | 'awaiting_approval'
+  | null;
+
 // Global declarations for Electron
 declare global {
   interface Window {

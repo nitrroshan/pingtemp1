@@ -1,5 +1,5 @@
 /**
- * TaskDashboard — real-time task status panel
+ * TaskDashboard — real-time task status panel (redesigned)
  *
  * Shows all tasks across all agents with:
  * - Colored status chips (ready / in-progress / completed / failed)
@@ -13,6 +13,7 @@ import {
   Play, Loader2, CheckCircle, AlertCircle, Clock, GitBranch,
   BarChart3, ChevronDown, ChevronRight
 } from 'lucide-react';
+import { cn } from '../../lib/utils';
 import type { Task, TaskStatus } from '../../types';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -29,33 +30,33 @@ const STATUS_CONFIG: Record<TaskStatus, {
   ready: {
     label: 'Ready',
     icon: Play,
-    chip: 'bg-green-900/40 border-green-700/60 text-green-400',
+    chip: 'bg-green-500/10 border-green-500/30 text-green-400',
     row: 'border-l-green-500',
   },
   pending: {
     label: 'Pending',
     icon: Clock,
-    chip: 'bg-yellow-900/30 border-yellow-700/50 text-yellow-400',
-    row: 'border-l-yellow-600',
+    chip: 'bg-yellow-500/10 border-yellow-500/30 text-yellow-400',
+    row: 'border-l-yellow-500',
   },
   in_progress: {
     label: 'Running',
     icon: Loader2,
-    chip: 'bg-blue-900/40 border-blue-700/60 text-blue-400',
+    chip: 'bg-blue-500/10 border-blue-500/30 text-blue-400',
     row: 'border-l-blue-500',
     animate: true,
   },
   completed: {
     label: 'Done',
     icon: CheckCircle,
-    chip: 'bg-teal-900/30 border-teal-700/50 text-teal-400',
-    row: 'border-l-teal-600',
+    chip: 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400',
+    row: 'border-l-emerald-500',
   },
   failed: {
     label: 'Failed',
     icon: AlertCircle,
-    chip: 'bg-red-900/30 border-red-700/50 text-red-400',
-    row: 'border-l-red-600',
+    chip: 'bg-destructive/10 border-destructive/30 text-red-400',
+    row: 'border-l-destructive',
   },
 };
 
@@ -74,11 +75,11 @@ const StatusChip: React.FC<StatusChipProps> = ({ status, hasDependencies }) => {
   const Icon = isBlocked ? GitBranch : cfg.icon;
   const label = isBlocked ? 'Blocked' : cfg.label;
   const chip = isBlocked
-    ? 'bg-orange-900/30 border-orange-700/50 text-orange-400'
+    ? 'bg-orange-500/10 border-orange-500/30 text-orange-400'
     : cfg.chip;
 
   return (
-    <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[11px] font-medium border ${chip}`}>
+    <span className={cn('inline-flex items-center gap-1 px-1.5 py-0.5 rounded border text-[10px] font-medium', chip)}>
       <Icon size={10} className={cfg.animate && !isBlocked ? 'animate-spin' : ''} />
       {label}
     </span>
@@ -94,13 +95,13 @@ const ProgressBar: React.FC<ProgressBarProps> = ({ completed, total }) => {
   const pct = total === 0 ? 0 : Math.round((completed / total) * 100);
   return (
     <div className="flex items-center gap-2">
-      <div className="flex-1 h-1.5 rounded-full bg-nexus-800 overflow-hidden">
+      <div className="flex-1 h-1 rounded-full bg-secondary overflow-hidden">
         <div
-          className="h-full rounded-full bg-nexus-cyan transition-all duration-500"
+          className="h-full rounded-full bg-primary transition-all duration-500"
           style={{ width: `${pct}%` }}
         />
       </div>
-      <span className="text-xs text-slate-500 w-8 text-right">{pct}%</span>
+      <span className="text-xs text-muted-foreground w-8 text-right">{pct}%</span>
     </div>
   );
 };
@@ -155,8 +156,8 @@ export const TaskDashboard: React.FC<TaskDashboardProps> = ({
 
   if (allTasks.length === 0) {
     return (
-      <div className="flex flex-col items-center justify-center h-32 text-slate-600 gap-2">
-        <BarChart3 size={28} className="opacity-40" />
+      <div className="flex flex-col items-center justify-center h-32 text-muted-foreground gap-2">
+        <BarChart3 size={24} className="opacity-30" />
         <p className="text-sm">No tasks yet. Submit a goal to get started.</p>
       </div>
     );
@@ -168,7 +169,7 @@ export const TaskDashboard: React.FC<TaskDashboardProps> = ({
       <div className="flex flex-wrap gap-2">
         {(Object.keys(STATUS_CONFIG) as TaskStatus[]).map(s => (
           counts[s] > 0 && (
-            <div key={s} className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-xs font-medium ${STATUS_CONFIG[s].chip}`}>
+            <div key={s} className={cn('flex items-center gap-1.5 px-2 py-1 rounded-lg border text-xs font-medium', STATUS_CONFIG[s].chip)}>
               {counts[s]} {STATUS_CONFIG[s].label}
             </div>
           )
@@ -179,38 +180,38 @@ export const TaskDashboard: React.FC<TaskDashboardProps> = ({
       <ProgressBar completed={counts.completed} total={allTasks.length} />
 
       {/* Per-role groups */}
-      <div className="flex flex-col gap-3">
+      <div className="flex flex-col gap-2">
         {Array.from(grouped.entries()).map(([role, roleTasks]) => {
           const isExpanded = expandedRoles.has(role);
           const roleCompleted = roleTasks.filter(t => t.status === 'completed').length;
           const roleInProgress = roleTasks.filter(t => t.status === 'in_progress').length;
 
           return (
-            <div key={role} className="rounded-xl border border-nexus-800 bg-nexus-900/50 overflow-hidden">
+            <div key={role} className="rounded-xl border border-border bg-card overflow-hidden">
               {/* Role header */}
               <button
                 onClick={() => toggleRole(role)}
-                className="w-full flex items-center gap-3 px-4 py-3 hover:bg-nexus-800/40 transition-colors text-left"
+                className="w-full flex items-center gap-2.5 px-4 py-2.5 hover:bg-accent transition-colors text-left cursor-pointer"
               >
                 {isExpanded
-                  ? <ChevronDown size={14} className="text-slate-500 flex-shrink-0" />
-                  : <ChevronRight size={14} className="text-slate-500 flex-shrink-0" />
+                  ? <ChevronDown size={13} className="text-muted-foreground flex-shrink-0" />
+                  : <ChevronRight size={13} className="text-muted-foreground flex-shrink-0" />
                 }
-                <span className="text-sm font-medium text-slate-200 capitalize flex-1">{role}</span>
+                <span className="text-sm font-medium text-foreground capitalize flex-1">{role}</span>
                 <div className="flex items-center gap-2">
                   {roleInProgress > 0 && (
-                    <span className="text-xs px-1.5 py-0.5 rounded bg-blue-900/40 border border-blue-700/50 text-blue-400 flex items-center gap-1">
+                    <span className="text-xs px-1.5 py-0.5 rounded bg-blue-500/10 border border-blue-500/30 text-blue-400 flex items-center gap-1">
                       <Loader2 size={9} className="animate-spin" />
                       {roleInProgress} running
                     </span>
                   )}
-                  <span className="text-xs text-slate-500">{roleCompleted}/{roleTasks.length}</span>
+                  <span className="text-xs text-muted-foreground">{roleCompleted}/{roleTasks.length}</span>
                 </div>
               </button>
 
               {/* Task rows */}
               {isExpanded && (
-                <div className="border-t border-nexus-800">
+                <div className="border-t border-border">
                   {roleTasks.map(task => {
                     const hasDeps = Boolean(task.dependencies?.length);
                     const rowCfg = STATUS_CONFIG[task.status] ?? STATUS_CONFIG.pending;
@@ -218,14 +219,17 @@ export const TaskDashboard: React.FC<TaskDashboardProps> = ({
                     return (
                       <div
                         key={task.id}
-                        className={`flex items-center gap-3 px-4 py-2.5 border-l-2 ${rowCfg.row} border-b border-nexus-800/60 last:border-b-0 hover:bg-nexus-800/20 transition-colors`}
+                        className={cn(
+                          'flex items-center gap-3 px-4 py-2 border-l-2 border-b border-border last:border-b-0 hover:bg-accent/30 transition-colors',
+                          rowCfg.row
+                        )}
                       >
                         <StatusChip status={task.status} hasDependencies={hasDeps} />
 
                         <div className="flex-1 min-w-0">
-                          <p className="text-xs font-medium text-slate-200 truncate">{task.title}</p>
+                          <p className="text-xs font-medium text-foreground truncate">{task.title}</p>
                           {task.description && (
-                            <p className="text-[11px] text-slate-500 truncate">{task.description}</p>
+                            <p className="text-[11px] text-muted-foreground truncate">{task.description}</p>
                           )}
                         </div>
 
@@ -234,7 +238,7 @@ export const TaskDashboard: React.FC<TaskDashboardProps> = ({
                           {task.status === 'ready' && onStartTask && (
                             <button
                               onClick={() => onStartTask(task.id)}
-                              className="px-2 py-1 text-[11px] font-medium text-green-400 bg-green-900/30 hover:bg-green-900/50 border border-green-800/50 rounded transition-colors"
+                              className="px-2 py-0.5 text-[11px] font-medium text-green-400 bg-green-500/10 hover:bg-green-500/20 border border-green-500/30 rounded transition-colors cursor-pointer"
                             >
                               Start
                             </button>
@@ -244,7 +248,7 @@ export const TaskDashboard: React.FC<TaskDashboardProps> = ({
                               {onCompleteTask && (
                                 <button
                                   onClick={() => onCompleteTask(task.id)}
-                                  className="px-2 py-1 text-[11px] font-medium text-teal-400 bg-teal-900/30 hover:bg-teal-900/50 border border-teal-800/50 rounded transition-colors"
+                                  className="px-2 py-0.5 text-[11px] font-medium text-emerald-400 bg-emerald-500/10 hover:bg-emerald-500/20 border border-emerald-500/30 rounded transition-colors cursor-pointer"
                                 >
                                   Done
                                 </button>
@@ -252,7 +256,7 @@ export const TaskDashboard: React.FC<TaskDashboardProps> = ({
                               {onCancelTask && (
                                 <button
                                   onClick={() => onCancelTask(task.id)}
-                                  className="px-2 py-1 text-[11px] font-medium text-red-400 bg-red-900/30 hover:bg-red-900/50 border border-red-800/50 rounded transition-colors"
+                                  className="px-2 py-0.5 text-[11px] font-medium text-red-400 bg-red-500/10 hover:bg-red-500/20 border border-red-500/30 rounded transition-colors cursor-pointer"
                                 >
                                   Cancel
                                 </button>
