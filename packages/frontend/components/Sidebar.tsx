@@ -1,186 +1,342 @@
 
-import React from 'react';
-import { Agent } from '../types';
-import { ChevronRight, ChevronDown, Plus, Cpu, Code, Bug, Palette, PenTool, Search, Bot, MoreHorizontal, Layers, Workflow, BarChart3, PanelLeftClose, PanelLeft } from 'lucide-react';
+/**
+ * Sidebar — Linear/Vercel-style navigation sidebar
+ *
+ * Sections:
+ *   1. Logo + Team Switcher (placeholder, Phase 3 will add full switcher)
+ *   2. Primary navigation (Chat / Tasks / Collaborate)
+ *   3. Agents tree (team hierarchy)
+ *   4. Footer quick actions
+ *
+ * Collapsible to icon-only rail (48px) via isWorkflowsExpanded.
+ */
 
-// Icon mapping helper
-const getIcon = (iconName: string) => {
+import React from 'react';
+import {
+  ChevronRight, ChevronDown, Plus,
+  Cpu, Code, Bug, Palette, PenTool, Search, Bot,
+  BarChart3, Workflow, PanelLeftClose, PanelLeft,
+  MessageSquare, LayoutDashboard, FileCode2,
+} from 'lucide-react';
+import { cn } from '../lib/utils';
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from './ui/tooltip';
+import type { Agent } from '../types';
+
+// ─── icon helper ─────────────────────────────────────────────────────────────
+
+const getIcon = (iconName: string, size = 15) => {
   switch (iconName) {
-    case 'Cpu': return <Cpu size={18} />;
-    case 'Code': return <Code size={18} />;
-    case 'Bug': return <Bug size={18} />;
-    case 'Palette': return <Palette size={18} />;
-    case 'PenTool': return <PenTool size={18} />;
-    case 'Search': return <Search size={18} />;
-    case 'BarChart': return <BarChart3 size={18} />;
-    case 'Workflow': return <Workflow size={18} />;
-    default: return <Bot size={18} />;
+    case 'Cpu':      return <Cpu size={size} />;
+    case 'Code':     return <Code size={size} />;
+    case 'Bug':      return <Bug size={size} />;
+    case 'Palette':  return <Palette size={size} />;
+    case 'PenTool':  return <PenTool size={size} />;
+    case 'Search':   return <Search size={size} />;
+    case 'BarChart': return <BarChart3 size={size} />;
+    case 'Workflow': return <Workflow size={size} />;
+    default:         return <Bot size={size} />;
   }
 };
+
+// ─── types ────────────────────────────────────────────────────────────────────
+
+export type ViewMode = 'chat' | 'tasks' | 'collaborate';
+
+interface NavItem {
+  id: ViewMode;
+  label: string;
+  icon: React.ReactNode;
+}
+
+const NAV_ITEMS: NavItem[] = [
+  { id: 'chat',        label: 'Chat',       icon: <MessageSquare size={15} /> },
+  { id: 'tasks',       label: 'Tasks',      icon: <LayoutDashboard size={15} /> },
+  { id: 'collaborate', label: 'Collaborate', icon: <FileCode2 size={15} /> },
+];
 
 interface SidebarProps {
   agents: Agent[];
   activeAgentId: string;
+  viewMode: ViewMode;
   onSelectAgent: (agent: Agent) => void;
+  onSelectView: (view: ViewMode) => void;
   onToggleCollapse: (agentId: string) => void;
   onAddAgent: (parentId?: string) => void;
-  isWorkflowsExpanded: boolean;
-  onToggleWorkflows: () => void;
+  isExpanded: boolean;
+  onToggleExpanded: () => void;
 }
 
-const Sidebar: React.FC<SidebarProps> = ({ 
-  agents, 
-  activeAgentId, 
-  onSelectAgent, 
-  onToggleCollapse, 
-  onAddAgent,
-  isWorkflowsExpanded,
-  onToggleWorkflows
-}) => {
-  
-  const renderAgent = (agent: Agent, depth: number = 0) => {
-    const isActive = activeAgentId === agent.id;
-    const hasChildren = agent.subAgents && agent.subAgents.length > 0;
-    const isCollapsed = agent.collapsed;
-    const isMainAgent = depth === 0;
+// ─── NavButton ────────────────────────────────────────────────────────────────
 
+function NavButton({
+  item,
+  isActive,
+  isExpanded,
+  onClick,
+}: {
+  item: NavItem;
+  isActive: boolean;
+  isExpanded: boolean;
+  onClick: () => void;
+}) {
+  const btn = (
+    <button
+      onClick={onClick}
+      className={cn(
+        'flex items-center gap-2.5 w-full rounded-md transition-colors text-sm cursor-pointer select-none',
+        isExpanded ? 'px-2.5 py-1.5' : 'justify-center p-2',
+        isActive
+          ? 'bg-primary/10 text-primary font-medium'
+          : 'text-muted-foreground hover:text-foreground hover:bg-accent'
+      )}
+    >
+      <span className="flex-shrink-0">{item.icon}</span>
+      {isExpanded && <span className="truncate">{item.label}</span>}
+    </button>
+  );
+
+  if (!isExpanded) {
     return (
-      <div key={agent.id} className="flex flex-col select-none">
-        <div 
-          className={`
-            group flex items-center gap-2 px-3 py-2 my-0.5 rounded-lg cursor-pointer transition-all duration-200 relative pr-8
-            ${isActive 
-              ? 'bg-nexus-800 text-nexus-cyan shadow-[inset_3px_0_0_0_#06b6d4]' 
-              : 'text-slate-400 hover:bg-nexus-800/50 hover:text-slate-200'}
-          `}
-          style={{ paddingLeft: `${depth * 16 + 12}px` }}
-          onClick={() => onSelectAgent(agent)}
+      <Tooltip>
+        <TooltipTrigger asChild>{btn}</TooltipTrigger>
+        <TooltipContent side="right">{item.label}</TooltipContent>
+      </Tooltip>
+    );
+  }
+
+  return btn;
+}
+
+// ─── AgentRow ─────────────────────────────────────────────────────────────────
+
+function AgentRow({
+  agent,
+  depth,
+  activeAgentId,
+  isExpanded,
+  onSelectAgent,
+  onToggleCollapse,
+  onAddAgent,
+}: {
+  agent: Agent;
+  depth: number;
+  activeAgentId: string;
+  isExpanded: boolean;
+  onSelectAgent: (a: Agent) => void;
+  onToggleCollapse: (id: string) => void;
+  onAddAgent: (parentId?: string) => void;
+}) {
+  const isActive = activeAgentId === agent.id;
+  const hasChildren = !!agent.subAgents?.length;
+  const isCollapsed = agent.collapsed;
+  const isTeam = depth === 0;
+
+  const row = (
+    <div
+      key={agent.id}
+      className={cn(
+        'group flex items-center gap-1.5 rounded-md cursor-pointer transition-colors relative select-none',
+        isExpanded ? 'px-2 py-1.5' : 'justify-center p-2',
+        isActive
+          ? 'bg-primary/10 text-primary'
+          : 'text-muted-foreground hover:text-foreground hover:bg-accent'
+      )}
+      style={isExpanded ? { paddingLeft: `${depth * 12 + 8}px` } : undefined}
+      onClick={() => onSelectAgent(agent)}
+    >
+      {/* Expand/collapse toggle */}
+      {isExpanded && (
+        <span
+          className={cn('p-0.5 rounded flex-shrink-0', hasChildren ? 'visible' : 'invisible')}
+          onClick={e => { e.stopPropagation(); onToggleCollapse(agent.id); }}
         >
-          {/* Collapse/Expand Toggle */}
-          <div 
-            className={`p-0.5 rounded hover:bg-white/10 ${hasChildren ? 'visible' : 'invisible'}`}
-            onClick={(e) => {
-              e.stopPropagation();
-              onToggleCollapse(agent.id);
-            }}
-          >
-            {isCollapsed ? <ChevronRight size={14} /> : <ChevronDown size={14} />}
-          </div>
+          {isCollapsed
+            ? <ChevronRight size={12} className="text-muted-foreground" />
+            : <ChevronDown size={12} className="text-muted-foreground" />}
+        </span>
+      )}
 
-          {/* Icon */}
-          <span className={`${isActive ? 'text-nexus-cyan' : 'text-slate-500 group-hover:text-slate-300'}`}>
-            {getIcon(agent.icon)}
-          </span>
+      {/* Agent icon */}
+      <span className="flex-shrink-0">{getIcon(agent.icon, 14)}</span>
 
-          {/* Name */}
-          <span className="text-sm font-medium truncate">
-            {agent.name}
-          </span>
+      {isExpanded && (
+        <>
+          <span className="text-xs font-medium truncate flex-1">{agent.name}</span>
 
-          {/* Role Badge */}
+          {/* Role chip */}
           {agent.role && (
-            <span className={`
-              text-[9px] px-1.5 py-0.5 rounded ml-auto font-semibold tracking-wide uppercase border
-              ${isActive 
-                ? 'bg-nexus-cyan/10 text-nexus-cyan border-nexus-cyan/20' 
-                : 'bg-nexus-950 text-slate-500 border-nexus-800 group-hover:border-slate-600 group-hover:text-slate-400'}
-            `}>
-              {agent.role}
+            <span className="text-[9px] px-1 py-0.5 rounded border border-border text-muted-foreground uppercase tracking-wide flex-shrink-0">
+              {agent.role.slice(0, 6)}
             </span>
           )}
 
-          {/* Inline Add Button (Only for Main Agents) */}
-          {isMainAgent && (
+          {/* Add sub-agent button (teams only) */}
+          {isTeam && (
             <button
-              onClick={(e) => {
-                e.stopPropagation();
-                onAddAgent(agent.id);
-              }}
-              className="absolute right-1 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 p-1 rounded hover:bg-nexus-700 text-slate-400 hover:text-nexus-cyan transition-all"
-              title="Add Sub-Agent"
+              onClick={e => { e.stopPropagation(); onAddAgent(agent.id); }}
+              className="opacity-0 group-hover:opacity-100 p-0.5 rounded hover:bg-accent transition-all flex-shrink-0"
+              title="Add sub-agent"
             >
-              <Plus size={14} />
+              <Plus size={11} />
             </button>
+          )}
+        </>
+      )}
+    </div>
+  );
+
+  if (!isExpanded) {
+    return (
+      <Tooltip key={agent.id}>
+        <TooltipTrigger asChild>
+          <div>
+            {row}
+          </div>
+        </TooltipTrigger>
+        <TooltipContent side="right">{agent.name}</TooltipContent>
+      </Tooltip>
+    );
+  }
+
+  return (
+    <div key={agent.id}>
+      {row}
+      {!isCollapsed && hasChildren && (
+        <div>
+          {agent.subAgents!.map(sub => (
+            <AgentRow
+              key={sub.id}
+              agent={sub}
+              depth={depth + 1}
+              activeAgentId={activeAgentId}
+              isExpanded={isExpanded}
+              onSelectAgent={onSelectAgent}
+              onToggleCollapse={onToggleCollapse}
+              onAddAgent={onAddAgent}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Sidebar ──────────────────────────────────────────────────────────────────
+
+const Sidebar: React.FC<SidebarProps> = ({
+  agents,
+  activeAgentId,
+  viewMode,
+  onSelectAgent,
+  onSelectView,
+  onToggleCollapse,
+  onAddAgent,
+  isExpanded,
+  onToggleExpanded,
+}) => {
+  return (
+    <TooltipProvider delayDuration={300}>
+      <aside
+        className={cn(
+          'h-full bg-card border-r border-border flex flex-col flex-shrink-0 transition-all duration-200 ease-in-out',
+          isExpanded ? 'w-60' : 'w-12'
+        )}
+      >
+        {/* ── Navigation ── */}
+        <div className={cn('p-1.5 border-b border-border flex-shrink-0', !isExpanded && 'flex flex-col items-center gap-1')}>
+          {NAV_ITEMS.map(item => (
+            <NavButton
+              key={item.id}
+              item={item}
+              isActive={viewMode === item.id}
+              isExpanded={isExpanded}
+              onClick={() => onSelectView(item.id)}
+            />
+          ))}
+        </div>
+
+        {/* ── Agents / Teams section ── */}
+        <div className="flex-1 overflow-y-auto p-1.5 min-h-0">
+          {isExpanded && (
+            <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider px-2 py-1.5 select-none">
+              Teams
+            </p>
+          )}
+          {agents.length === 0 ? (
+            isExpanded ? (
+              <div className="text-xs text-muted-foreground text-center py-4 px-2">
+                No teams yet.
+              </div>
+            ) : null
+          ) : (
+            agents.map(agent => (
+              <AgentRow
+                key={agent.id}
+                agent={agent}
+                depth={0}
+                activeAgentId={activeAgentId}
+                isExpanded={isExpanded}
+                onSelectAgent={onSelectAgent}
+                onToggleCollapse={onToggleCollapse}
+                onAddAgent={onAddAgent}
+              />
+            ))
           )}
         </div>
 
-        {/* Children */}
-        {!isCollapsed && hasChildren && (
-          <div className="flex flex-col">
-            {agent.subAgents!.map(sub => renderAgent(sub, depth + 1))}
-          </div>
-        )}
-      </div>
-    );
-  };
-
-  return (
-    <div 
-        className={`
-            h-full bg-nexus-900 flex flex-col flex-shrink-0 transition-all duration-300 ease-in-out border-r border-nexus-800
-            ${isWorkflowsExpanded ? 'w-64' : 'w-12'}
-        `}
-    >
-      <div className={`flex flex-col h-full ${isWorkflowsExpanded ? 'w-64' : 'w-12'} overflow-hidden`}>
-        {/* Header */}
-        <div className={`flex items-center ${isWorkflowsExpanded ? 'justify-between px-4' : 'justify-center'} border-b border-nexus-800/50 flex-shrink-0 h-14`}>
-            {isWorkflowsExpanded ? (
-                <>
-                    <div className="flex items-center gap-2">
-                        <div className="w-6 h-6 rounded bg-gradient-to-tr from-nexus-cyan to-blue-600 flex items-center justify-center">
-                            <span className="font-bold text-white text-xs">N</span>
-                        </div>
-                        <span className="font-bold text-slate-200 tracking-tight">Nexus Browser</span>
-                    </div>
-                    {/* Collapse Button inside Sidebar when Expanded */}
-                    <button 
-                        onClick={onToggleWorkflows}
-                        className="text-slate-500 hover:text-slate-300 p-1 rounded hover:bg-nexus-800 transition-colors"
-                        title="Collapse Sidebar"
-                    >
-                        <PanelLeftClose size={16} />
-                    </button>
-                </>
-            ) : (
-                /* Expand Button when Collapsed */
-                <button 
-                    onClick={onToggleWorkflows}
-                    className="text-slate-500 hover:text-nexus-cyan p-2 rounded hover:bg-nexus-800 transition-colors"
-                    title="Expand Sidebar"
-                >
-                    <PanelLeft size={20} />
-                </button>
-            )}
-        </div>
-
-        {/* Scrollable List - Only Visible when Expanded */}
-        {isWorkflowsExpanded && (
+        {/* ── Footer: new team + collapse ── */}
+        <div className={cn(
+          'p-1.5 border-t border-border flex-shrink-0',
+          isExpanded ? 'flex items-center gap-1' : 'flex flex-col items-center gap-1'
+        )}>
+          {isExpanded ? (
             <>
-                <div className="flex-1 overflow-y-auto p-2 scrollbar-thin">
-                    <div className="flex items-center justify-between text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2 px-4 mt-2 select-none">
-                        <span>Active Workflows</span>
-                    </div>
-                    
-                    <div className="animate-in slide-in-from-left-2 duration-300 fade-in">
-                        {agents.map(agent => renderAgent(agent))}
-                    </div>
-                </div>
-
-                {/* Footer */}
-                <div className="p-4 border-t border-nexus-800 bg-nexus-900 flex-shrink-0">
-                    <button 
-                    onClick={() => onAddAgent()}
-                    className="w-full flex items-center justify-center gap-2 px-4 py-2 bg-nexus-800 hover:bg-nexus-700 text-slate-300 text-sm font-medium rounded-lg transition-colors border border-nexus-700 hover:border-nexus-600 group"
-                    >
-                    <Plus size={16} className="text-nexus-cyan group-hover:scale-110 transition-transform" />
-                    <span>New Workflow</span>
-                    </button>
-                </div>
+              <button
+                onClick={() => onAddAgent()}
+                className="flex-1 flex items-center gap-2 px-2.5 py-1.5 rounded-md text-sm text-muted-foreground hover:text-foreground hover:bg-accent transition-colors cursor-pointer"
+              >
+                <Plus size={14} className="flex-shrink-0" />
+                <span>New Team</span>
+              </button>
+              <button
+                onClick={onToggleExpanded}
+                className="p-1.5 rounded text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
+                title="Collapse sidebar"
+              >
+                <PanelLeftClose size={14} />
+              </button>
             </>
-        )}
-      </div>
-    </div>
+          ) : (
+            <>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <button
+                    onClick={() => onAddAgent()}
+                    className="p-2 rounded-md text-muted-foreground hover:text-foreground hover:bg-accent transition-colors cursor-pointer"
+                  >
+                    <Plus size={14} />
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent side="right">New Team</TooltipContent>
+              </Tooltip>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <button
+                    onClick={onToggleExpanded}
+                    className="p-2 rounded-md text-muted-foreground hover:text-foreground hover:bg-accent transition-colors cursor-pointer"
+                  >
+                    <PanelLeft size={14} />
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent side="right">Expand sidebar</TooltipContent>
+              </Tooltip>
+            </>
+          )}
+        </div>
+      </aside>
+    </TooltipProvider>
   );
 };
 
 export default Sidebar;
+export type { SidebarProps };
