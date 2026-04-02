@@ -4,11 +4,13 @@
  * Replaces AgentBuilderFactory with a unified factory for all agent types.
  *
  * Agent Type Resolution:
- * - 'internal' → InternalAgent (unified agent)
+ * - 'internal' → InternalAgent (LangGraph, default) or AiSdkAgent (AGENT_RUNTIME=aisdk)
  *   - Without responseFormat: Tool mode (workers, orchestrator)
  *   - With responseFormat: Structured output mode (builders)
  * - 'external' → ExternalAgent
  * - 'agentic-ui' → AgenticUIAgent
+ *
+ * Feature flag: AGENT_RUNTIME=langgraph (default) | aisdk
  */
 
 import { AgentLoader } from "./AgentLoader.js";
@@ -17,6 +19,7 @@ import type { AgentDefinition, AgentType, IAgent } from "./types.js";
 
 // Import concrete implementations
 import { InternalAgent } from "./internal/InternalAgent.js";
+import { AiSdkAgent } from "./internal/AiSdkAgent.js";
 // import { ExternalAgent } from './external/ExternalAgent.js';
 // import { AgenticUIAgent } from './agentic-ui/AgenticUIAgent.js';
 
@@ -28,8 +31,16 @@ type AgentConstructor = new (definition: AgentDefinition) => BaseAgent;
 
 const agentConstructors: Map<AgentType, AgentConstructor> = new Map();
 
-// Register InternalAgent for 'internal' type (handles both modes)
-agentConstructors.set("internal", InternalAgent);
+/**
+ * Choose agent implementation based on AGENT_RUNTIME feature flag.
+ *   AGENT_RUNTIME=langgraph  → InternalAgent (default, LangGraph-based)
+ *   AGENT_RUNTIME=aisdk      → AiSdkAgent (AI SDK streamText-based)
+ */
+const agentRuntime = (process.env.AGENT_RUNTIME || "langgraph").toLowerCase();
+const InternalAgentImpl: AgentConstructor =
+  agentRuntime === "aisdk" ? AiSdkAgent : InternalAgent;
+
+agentConstructors.set("internal", InternalAgentImpl);
 
 /**
  * Register an agent implementation for a type

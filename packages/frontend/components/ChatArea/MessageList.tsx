@@ -1,6 +1,7 @@
 import React, { useRef, useEffect } from 'react';
 import { Bot, User } from 'lucide-react';
 import { Message } from '../../types';
+import StreamMessage from '../StreamMessage';
 
 interface MessageListProps {
   messages: Message[];
@@ -50,7 +51,16 @@ const MessageList: React.FC<MessageListProps> = ({ messages, isStreaming, agentN
                 ? 'bg-red-900/20 text-red-200 border border-red-800 rounded-tl-sm'
                 : 'bg-slate-900 text-slate-300 rounded-tl-sm border border-nexus-800'}
           `}>
-            <div className="whitespace-pre-wrap font-mono text-[13px]">{msg.content}</div>
+            {/* Use StreamMessage for model messages with stream parts, otherwise plain text */}
+            {msg.role === 'model' && msg.streamParts && msg.streamParts.length > 0 ? (
+              <StreamMessage
+                parts={msg.streamParts!}
+                isStreaming={msg.isStreaming ?? false}
+                fallbackContent={msg.content}
+              />
+            ) : (
+              <div className="whitespace-pre-wrap font-mono text-[13px]">{msg.content}</div>
+            )}
             <div className="opacity-0 group-hover:opacity-100 absolute -bottom-5 right-0 text-[10px] text-slate-600 transition-opacity">
               {new Date(msg.timestamp).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}
             </div>
@@ -77,3 +87,4 @@ const MessageList: React.FC<MessageListProps> = ({ messages, isStreaming, agentN
 };
 
 export default MessageList;
+

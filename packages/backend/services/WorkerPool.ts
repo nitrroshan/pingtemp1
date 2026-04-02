@@ -11,10 +11,12 @@
 import { EventEmitter } from "events";
 import { Logger } from "tslog";
 import { InternalAgent } from "../agent/internal/InternalAgent.js";
+import { AiSdkAgent } from "../agent/internal/AiSdkAgent.js";
 import {
   createReportStatusTool,
   createCompleteTaskTool,
 } from "../agent/internal/tools/index.js";
+import { skillResolver } from "../skills/SkillResolver.js";
 import { WorkspaceManager } from "../memory/L1/workspace/WorkspaceManager.js";
 import { AgentWorkspace } from "../memory/L1/workspace/AgentWorkspace.js";
 import { createWorkspaceTools } from "../memory/L1/workspace/tools/workspace-tools.js";
@@ -32,6 +34,13 @@ import dotenv from "dotenv";
 dotenv.config();
 
 const logger = new Logger({ name: "WorkerPool" });
+
+/**
+ * Active agent runtime — controlled by AGENT_RUNTIME env var.
+ *   langgraph → InternalAgent (default)
+ *   aisdk     → AiSdkAgent
+ */
+const agentRuntime = (process.env.AGENT_RUNTIME || "langgraph").toLowerCase();
 
 /**
  * Default model config - uses environment variables
@@ -58,7 +67,7 @@ export class WorkerPool {
   private definitions = new Map<string, AgentDefinition>();
 
   /** Active workers by task ID */
-  private workers = new Map<string, InternalAgent>();
+  private workers = new Map<string, InternalAgent | AiSdkAgent>();
 
   /** Workspaces by task ID (for git branch isolation) */
   private workspaces = new Map<string, AgentWorkspace>();
@@ -215,7 +224,7 @@ export class WorkerPool {
     }
 
     // Get or create worker
-    let agent = this.workers.get(taskId);
+    let agent: InternalAgent | AiSdkAgent | undefined = this.workers.get(taskId);
 
     if (!agent) {
       const definition = this.definitions.get(roleKey);
@@ -241,7 +250,7 @@ export class WorkerPool {
         `Creating worker for ${roleKey} with deployment: ${DEFAULT_MODEL_CONFIG.deployment}`,
       );
 
-      agent = new InternalAgent(fixedDefinition);
+      agent = new (agentRuntime === "aisdk" ? AiSdkAgent : InternalAgent)(fixedDefinition);
       await agent.initialize();
 
       // Collect additional tools
@@ -305,6 +314,35 @@ export class WorkerPool {
         }
       }
 
+      // Resolve and inject skills declared in agent YAML
+      const skillIds: string[] = (config.skills as string[] | undefined) || [];
+      if (skillIds.length > 0) {
+        try {
+          const { tools: skillTools, systemPromptAdditions } =
+            await skillResolver.resolve(skillIds);
+          const skillToolArray = Object.values(skillTools);
+          if (skillToolArray.length > 0) {
+            additionalTools.push(...skillToolArray);
+            logger.info(
+              `Added ${skillToolArray.length} skill tools for task ${taskId} (${roleKey})`,
+            );
+          }
+          if (systemPromptAdditions.length > 0) {
+            // Append instruction skills to system prompt via agent definition
+            const additions = systemPromptAdditions.join("\n\n");
+            const existingPrompt = fixedDefinition.systemPrompt || "";
+            (fixedDefinition as any).systemPrompt = existingPrompt
+              ? `${existingPrompt}\n\n${additions}`
+              : additions;
+            logger.debug(
+              `Appended ${systemPromptAdditions.length} instruction skills to system prompt`,
+            );
+          }
+        } catch (error: any) {
+          logger.warn(`Skill resolution failed for ${roleKey}: ${error.message}`);
+        }
+      }
+
       // Inject all additional tools
       const currentTools = (agent as any).loadedTools || [];
       await agent.setTools([...currentTools, ...additionalTools]);
@@ -318,6 +356,10 @@ export class WorkerPool {
 
     // Execute and stream events
     let output: any = null;
+
+    if (!agent) {
+      throw new Error(`Worker for task ${taskId} was not created`);
+    }
 
     // Auto-update agent status: working
     await this.updateAgentStatus(roleKey, "working", { taskId });

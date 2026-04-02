@@ -21,6 +21,12 @@
  * - SSE fallback for environments where WebSocket is unreliable
  * - Backpressure handling for very high-frequency events
  * - Progress event batching/throttling to reduce network overhead
+ *
+ * Streaming Enhancement (Phase 2):
+ * - AI SDK `streamText` streams are forwarded via the `stream` channel
+ * - The `stream` channel uses AI SDK Data Stream Protocol typed parts
+ * - Both `progress` (legacy) and `stream` (new) events are emitted simultaneously
+ *   for backward compatibility during the AGENT_RUNTIME=langgraph→aisdk migration
  */
 
 import { Server as SocketIOServer, Socket } from "socket.io";
@@ -33,6 +39,7 @@ import {
 } from "./SocketConnectionManager.js";
 import { userManager } from "./UserManager.js";
 import type { AgentManager } from "../agentManager/AgentManagerV2.js";
+import type { StreamPayload } from "./types/streamTypes.js";
 
 const logger = new Logger({ name: "SocketServerV2" });
 
@@ -243,7 +250,7 @@ export class SocketServerV2 {
 
     const room = `team:${teamId}`;
 
-    // Progress: Real-time streaming updates (thinking, tool usage)
+    // Progress: Real-time streaming updates (thinking, tool usage) — legacy channel
     manager.events.on("worker:event", ({ taskId, event }) => {
       if (
         event.type === "thinking" ||
@@ -260,6 +267,88 @@ export class SocketServerV2 {
           timestamp: Date.now(),
         } satisfies ProgressResponse);
       }
+
+      // AI SDK stream delta → forward on `stream` channel
+      if (event.type === "message_delta") {
+        const deltaEvent = event as { type: "message_delta"; delta: string };
+        const payload: StreamPayload = {
+          sessionId: "default",
+          taskId,
+          agentId: "worker",
+          part: { type: "text-delta", id: `${taskId}-txt`, delta: deltaEvent.delta },
+          timestamp: Date.now(),
+        };
+        this.io.to(room).emit("stream", payload);
+      }
+    });
+
+    // AI SDK stream parts forwarded directly from WorkerPool
+    manager.events.on("worker:stream", ({ taskId, agentId, part }) => {
+      const payload: StreamPayload = {
+        sessionId: "default",
+        taskId,
+        agentId: agentId || "worker",
+        part,
+        timestamp: Date.now(),
+      };
+      this.io.to(room).emit("stream", payload);
+    });
+
+    // Task lifecycle notifications on the `stream` channel
+    manager.events.on("task:update", ({ taskId, status, role }) => {
+      const stateResponse = this.buildStateResponse(manager);
+      this.io.to(room).emit("state", stateResponse);
+      logger.debug(
+        `[SocketServerV2] Task ${taskId} → ${status}, broadcast to ${room}`,
+      );
+
+      // Also emit notification on stream channel
+      if (status === "in_progress") {
+        const payload: StreamPayload = {
+          sessionId: "default",
+          taskId,
+          agentId: role || "worker",
+          part: { type: "task-started", taskId, role: role || "worker" },
+          timestamp: Date.now(),
+        };
+        this.io.to(room).emit("stream", payload);
+      } else if (status === "completed") {
+        const payload: StreamPayload = {
+          sessionId: "default",
+          taskId,
+          agentId: role || "worker",
+          part: { type: "task-completed", taskId, role: role || "worker" },
+          timestamp: Date.now(),
+        };
+        this.io.to(room).emit("stream", payload);
+      } else if (status === "failed") {
+        const payload: StreamPayload = {
+          sessionId: "default",
+          taskId,
+          agentId: role || "worker",
+          part: { type: "task-failed", taskId, role: role || "worker", error: "Task failed" },
+          timestamp: Date.now(),
+        };
+        this.io.to(room).emit("stream", payload);
+      }
+    });
+
+    // Plan Update: Broadcast state when plan is approved or modified
+    manager.events.on("plan:update", ({ action }) => {
+      const stateResponse = this.buildStateResponse(manager);
+      this.io.to(room).emit("state", stateResponse);
+      logger.debug(`[SocketServerV2] Plan ${action}, broadcast to ${room}`);
+
+      // Emit plan notifications on stream channel
+      const payload: StreamPayload = {
+        sessionId: "default",
+        agentId: "orchestrator",
+        part: action === "approved"
+          ? { type: "plan-approved", planId: "current" }
+          : { type: "plan-proposed", planId: "current", taskCount: 0 },
+        timestamp: Date.now(),
+      };
+      this.io.to(room).emit("stream", payload);
     });
 
     // Message: Task output as chat message
@@ -280,22 +369,6 @@ export class SocketServerV2 {
         error,
         timestamp: Date.now(),
       } satisfies ErrorResponse);
-    });
-
-    // Task Update: Broadcast state when task status changes (started, completed, failed)
-    manager.events.on("task:update", ({ taskId, status }) => {
-      const stateResponse = this.buildStateResponse(manager);
-      this.io.to(room).emit("state", stateResponse);
-      logger.debug(
-        `[SocketServerV2] Task ${taskId} → ${status}, broadcast to ${room}`,
-      );
-    });
-
-    // Plan Update: Broadcast state when plan is approved or modified
-    manager.events.on("plan:update", ({ action }) => {
-      const stateResponse = this.buildStateResponse(manager);
-      this.io.to(room).emit("state", stateResponse);
-      logger.debug(`[SocketServerV2] Plan ${action}, broadcast to ${room}`);
     });
 
     logger.info(`[SocketServerV2] Event listeners attached for team ${teamId}`);

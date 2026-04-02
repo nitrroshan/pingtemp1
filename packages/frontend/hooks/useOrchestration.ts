@@ -11,6 +11,7 @@
  */
 
 import { useState, useCallback, useRef, useEffect } from 'react';
+import type { MutableRefObject } from 'react';
 import { v4 as uuidv4 } from 'uuid';
 import { agentServiceV2, type Task as BackendTask } from '../services/AgentServiceV2';
 import type { Task, TaskStatus, OrchestrationEvent } from '../types';
@@ -24,6 +25,14 @@ export interface OrchestrationState {
   orchestrationLogs: OrchestrationEvent[];
 }
 
+/** Callback fired when an agent message arrives */
+export type OnMessageCallback = (
+  agentId: string,
+  content: string,
+  taskId?: string,
+  timestamp?: number,
+) => void;
+
 export interface OrchestrationActions {
   handleApprovePlan: () => void;
   handleStartTask: (taskId: string) => void;
@@ -32,7 +41,12 @@ export interface OrchestrationActions {
   handleToggleAutoExecute: () => void;
   addOrchestrationLog: (source: string, message: string, type: OrchestrationEvent['type']) => void;
   setSessionState: (state: string | null) => void;
-  subscribeToTeam: (teamId: string, agentsRef: React.MutableRefObject<Agent[]>, selectedTeamIdRef: React.MutableRefObject<string | null>, onMessage: (agentId: string, content: string, taskId?: string, timestamp?: number) => void) => () => void;
+  subscribeToTeam: (
+    teamId: string,
+    agentsRef: MutableRefObject<Agent[]>,
+    selectedTeamIdRef: MutableRefObject<string | null>,
+    onMessage: OnMessageCallback,
+  ) => () => void;
 }
 
 export function useOrchestration(): OrchestrationState & OrchestrationActions {
@@ -92,9 +106,9 @@ export function useOrchestration(): OrchestrationState & OrchestrationActions {
    */
   const subscribeToTeam = useCallback((
     teamId: string,
-    agentsRef: React.MutableRefObject<Agent[]>,
-    selectedTeamIdRef: React.MutableRefObject<string | null>,
-    onMessage: (agentId: string, content: string, taskId?: string, timestamp?: number) => void,
+    agentsRef: MutableRefObject<Agent[]>,
+    selectedTeamIdRef: MutableRefObject<string | null>,
+    onMessage: OnMessageCallback,
   ) => {
     const findAgentByRole = (roleName: string, searchTeamId: string | null): Agent | undefined => {
       const normalized = roleName.toLowerCase();
@@ -189,11 +203,30 @@ export function useOrchestration(): OrchestrationState & OrchestrationActions {
       addOrchestrationLog('ERROR', data.error, 'error');
     });
 
+    // Stream events (Phase 2 — AI SDK streaming)
+    // onStreamPart is optional — only provided when caller wants streaming rendering
+    const unsubStream = agentServiceV2.onStream((payload: any) => {
+      if (!payload?.part) return;
+      const { part, agentId: streamAgentId, taskId } = payload;
+
+      // Route to the correct agent's chat via onMessage for text deltas
+      if (part.type === 'text-delta' && part.delta) {
+        const targetAgentId = streamAgentId === 'manager' || streamAgentId === 'orchestrator'
+          ? teamId
+          : (findAgentByRole(streamAgentId, selectedTeamIdRef.current)?.id ?? streamAgentId);
+
+        // Accumulate text deltas into a streaming message
+        // The onMessage callback handles stream accumulation
+        onMessage(targetAgentId, `__stream_delta__:${part.delta}`, taskId, Date.now());
+      }
+    });
+
     return () => {
       unsubMessage();
       unsubState();
       unsubOutput();
       unsubError();
+      unsubStream();
     };
   }, [addOrchestrationLog]);
 
