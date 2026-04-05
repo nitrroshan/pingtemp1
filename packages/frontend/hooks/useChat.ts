@@ -4,7 +4,7 @@
 
 import { useState, useCallback, useRef } from 'react';
 import { v4 as uuidv4 } from 'uuid';
-import type { Message, RenderedPart, ToolCardState, StreamPart } from '../types';
+import type { Message, RenderedPart, ToolCardState, StreamPart, NotificationChipState } from '../types';
 
 export function useChat() {
   const [chatHistories, setChatHistories] = useState<Record<string, Message[]>>({});
@@ -272,23 +272,39 @@ export function useChat() {
         break;
       }
 
-      // Notification parts
+      // Notification parts — may arrive outside a streaming message
       case 'task-started':
       case 'task-completed':
       case 'task-failed':
       case 'plan-proposed':
       case 'plan-approved': {
-        updateStreamingMessage(agentId, (parts) => {
-          return [...parts, {
-            type: 'notification' as const,
-            chip: {
-              type: part.type,
-              ...('taskId' in part ? { taskId: (part as any).taskId } : {}),
-              ...('role' in part ? { role: (part as any).role } : {}),
-              ...('error' in part ? { error: (part as any).error } : {}),
-            },
-          }];
-        });
+        const chip = {
+          type: part.type as NotificationChipState['type'],
+          ...('taskId' in part ? { taskId: (part as any).taskId } : {}),
+          ...('role' in part ? { role: (part as any).role } : {}),
+          ...('error' in part ? { error: (part as any).error } : {}),
+        };
+        const notifPart: RenderedPart = { type: 'notification' as const, chip };
+
+        const streamId = streamingMessageIds.current[agentId];
+        if (streamId) {
+          // Active stream — append inline
+          updateStreamingMessage(agentId, (parts) => [...parts, notifPart]);
+        } else {
+          // No active stream — create a standalone notification message
+          const notifMsg: Message = {
+            id: `notif-${agentId}-${Date.now()}`,
+            role: 'model',
+            content: '',
+            timestamp: Date.now(),
+            isStreaming: false,
+            streamParts: [notifPart],
+          };
+          setChatHistories(prev => ({
+            ...prev,
+            [agentId]: [...(prev[agentId] ?? []), notifMsg],
+          }));
+        }
         break;
       }
 

@@ -13,6 +13,7 @@ import { z } from "zod";
 import { Logger } from "tslog";
 import { BaseAgent } from "../BaseAgent.js";
 import { getModel } from "../providers/ModelProvider.js";
+import { SmoothStream } from "../streaming/smoothStream.js";
 import type {
   AgentDefinition,
   AgentInput,
@@ -266,6 +267,7 @@ export class AiSdkAgent extends BaseAgent {
     let textPartId = "";
     let reasoningPartId = "";
     const messageId = `msg-${this.id}-${Date.now()}`;
+    const smoothStream = new SmoothStream();
 
     // Emit stream start
     yield { type: "stream_part", part: { type: "start", messageId } } as AgentEvent;
@@ -283,7 +285,11 @@ export class AiSdkAgent extends BaseAgent {
             textPartId = `text-${messageId}-${partCount}`;
           }
           fullText += delta;
-          yield { type: "stream_part", part: { type: "text-delta", id: textPartId, delta } } as AgentEvent;
+          // Buffer at word boundaries for smooth UX
+          const smoothed = smoothStream.push(delta);
+          if (smoothed) {
+            yield { type: "stream_part", part: { type: "text-delta", id: textPartId, delta: smoothed } } as AgentEvent;
+          }
           break;
         }
 
@@ -385,6 +391,12 @@ export class AiSdkAgent extends BaseAgent {
         default:
           break;
       }
+    }
+
+    // Flush remaining buffered text from SmoothStream
+    const remaining = smoothStream.forceFlush();
+    if (remaining && textPartId) {
+      yield { type: "stream_part", part: { type: "text-delta", id: textPartId, delta: remaining } } as AgentEvent;
     }
 
     // Close any open reasoning part (text is finalized by the finish event)
