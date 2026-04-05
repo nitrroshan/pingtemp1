@@ -4,13 +4,11 @@
  * Replaces AgentBuilderFactory with a unified factory for all agent types.
  *
  * Agent Type Resolution:
- * - 'internal' → InternalAgent (LangGraph, default) or AiSdkAgent (AGENT_RUNTIME=aisdk)
+ * - 'internal' → AiSdkAgent (AI SDK streamText-based)
  *   - Without responseFormat: Tool mode (workers, orchestrator)
  *   - With responseFormat: Structured output mode (builders)
  * - 'external' → ExternalAgent
  * - 'agentic-ui' → AgenticUIAgent
- *
- * Feature flag: AGENT_RUNTIME=langgraph (default) | aisdk
  */
 
 import { AgentLoader } from "./AgentLoader.js";
@@ -18,29 +16,19 @@ import { BaseAgent } from "./BaseAgent.js";
 import type { AgentDefinition, AgentType, IAgent } from "./types.js";
 
 // Import concrete implementations
-import { InternalAgent } from "./internal/InternalAgent.js";
 import { AiSdkAgent } from "./internal/AiSdkAgent.js";
 // import { ExternalAgent } from './external/ExternalAgent.js';
 // import { AgenticUIAgent } from './agentic-ui/AgenticUIAgent.js';
 
 /**
  * Registry of agent implementations by type
- * InternalAgent handles both tool mode and structured output mode internally
+ * AiSdkAgent handles both tool mode and structured output mode internally
  */
 type AgentConstructor = new (definition: AgentDefinition) => BaseAgent;
 
 const agentConstructors: Map<AgentType, AgentConstructor> = new Map();
 
-/**
- * Choose agent implementation based on AGENT_RUNTIME feature flag.
- *   AGENT_RUNTIME=langgraph  → InternalAgent (default, LangGraph-based)
- *   AGENT_RUNTIME=aisdk      → AiSdkAgent (AI SDK streamText-based)
- */
-const agentRuntime = (process.env.AGENT_RUNTIME || "langgraph").toLowerCase();
-const InternalAgentImpl: AgentConstructor =
-  agentRuntime === "aisdk" ? AiSdkAgent : InternalAgent;
-
-agentConstructors.set("internal", InternalAgentImpl);
+agentConstructors.set("internal", AiSdkAgent);
 
 /**
  * Register an agent implementation for a type
@@ -58,7 +46,7 @@ export function registerAgentType(
 function selectConstructor(
   definition: AgentDefinition,
 ): AgentConstructor | undefined {
-  // InternalAgent handles responseFormat internally, no special selection needed
+  // AiSdkAgent handles responseFormat internally, no special selection needed
   return agentConstructors.get(definition.type);
 }
 

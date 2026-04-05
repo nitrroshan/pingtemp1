@@ -20,7 +20,7 @@ import { Logger } from "tslog";
 import { getAgentFactory } from "../agent/AgentFactory.js";
 import { WorkerPool } from "../services/WorkerPool.js";
 import { RoleTaskQueue } from "../util/RoleTaskQueue.js";
-import { InternalAgent } from "../agent/internal/InternalAgent.js";
+import { AiSdkAgent } from "../agent/internal/AiSdkAgent.js";
 import type { AgentDefinition } from "../agent/types.js";
 import type { TaskWithContext } from "../util/RoleTaskQueue.types.js";
 import { OrchestratorService } from "../orchestrator/OrchestratorService.js";
@@ -128,6 +128,7 @@ export class AgentManager {
   async initializeOrchestrator(
     teamId: string,
     teamRoles: string[],
+    roleAgentIdMap?: Record<string, string>,
   ): Promise<void> {
     if (!USE_ORCHESTRATOR) {
       logger.warn(
@@ -296,6 +297,9 @@ Do NOT invent tools you don't have. If unsure, use \`my_tools\` to check.
 
     // Register worker definitions with WorkerPool
     this.workerPool.registerDefinitions(workerDefinitions);
+    if (roleAgentIdMap) {
+      this.workerPool.setRoleAgentIdMap(roleAgentIdMap);
+    }
     logger.info(
       `[AgentManager] Registered ${workerDefinitions.length} worker definitions`,
     );
@@ -931,7 +935,7 @@ Do NOT invent tools you don't have. If unsure, use \`my_tools\` to check.
     logger.info(`Discovering roles for: "${taskDescription.slice(0, 80)}..."`);
 
     const factory = getAgentFactory();
-    const builder = factory.getDefinitionBuilder() as InternalAgent;
+    const builder = factory.getDefinitionBuilder() as AiSdkAgent;
     await builder.initialize();
 
     const result = await builder.run(
@@ -1250,7 +1254,7 @@ Do NOT invent tools you don't have. If unsure, use \`my_tools\` to check.
     logger.info(`Configuring workflow: "${taskDescription.slice(0, 80)}..."`);
 
     const factory = getAgentFactory();
-    const builder = factory.getDefinitionBuilder() as InternalAgent;
+    const builder = factory.getDefinitionBuilder() as AiSdkAgent;
     await builder.initialize();
 
     const result = await builder.run(
@@ -1294,7 +1298,7 @@ Do NOT invent tools you don't have. If unsure, use \`my_tools\` to check.
     logger.info("Creating execution plan...");
 
     const factory = getAgentFactory();
-    const planBuilder = factory.getPlanBuilder() as InternalAgent;
+    const planBuilder = factory.getPlanBuilder() as AiSdkAgent;
     await planBuilder.initialize();
 
     const rolesList = this.definitions.map((d) => d.role).join(", ");

@@ -1,18 +1,14 @@
 /**
  * AiSdkAgent — AI SDK-based agent implementation
  *
- * Replaces InternalAgent's LangGraph layer with Vercel AI SDK `streamText()`.
- * Supports the same interface as InternalAgent, enabling hot-swap via
- * the AGENT_RUNTIME feature flag.
+ * Uses Vercel AI SDK `streamText()` for agent execution.
  *
  * Modes:
  *   1. Tool Mode (default) — streamText() with tools, streams AgentEvents
- *   2. Structured Output Mode — generateObject() with Zod schema
- *
- * Feature flag: AGENT_RUNTIME=aisdk (set to use this agent)
+ *   2. Structured Output Mode — generateText() with Output.object() schema
  */
 
-import { streamText, generateObject, tool } from "ai";
+import { streamText, generateText, Output, tool, stepCountIs } from "ai";
 import { z } from "zod";
 import { Logger } from "tslog";
 import { BaseAgent } from "../BaseAgent.js";
@@ -31,10 +27,6 @@ import {
   AgentPlanSchema,
   AgentDefinitionListSchema,
 } from "./schemas/index.js";
-import dotenv from "dotenv";
-
-dotenv.config();
-
 const logger = new Logger({ name: "AiSdkAgent" });
 
 /** Map of schema names to Zod schemas for structured output mode */
@@ -52,11 +44,15 @@ export class AiSdkAgent extends BaseAgent {
   private isStructuredMode = false;
   private outputSchema: z.ZodSchema | null = null;
 
-  /** Conversation messages for this thread (replaces LangGraph MemorySaver) */
+  /** Conversation messages for this thread */
   private messages: Array<{ role: "user" | "assistant"; content: string }> = [];
 
   /** Max steps for multi-step tool calls */
   private maxSteps = 10;
+
+  /** Model parameters from config */
+  private temperature?: number;
+  private maxTokens?: number;
 
   constructor(definition: AgentDefinition) {
     super(definition);
@@ -67,6 +63,11 @@ export class AiSdkAgent extends BaseAgent {
       this.isStructuredMode = true;
       this.outputSchema = SCHEMAS[schemaName];
     }
+
+    // Read model parameters from config
+    if (config.model?.temperature !== undefined) this.temperature = config.model.temperature;
+    if (config.model?.maxTokens !== undefined) this.maxTokens = config.model.maxTokens;
+    if ((config as any).maxSteps) this.maxSteps = (config as any).maxSteps;
   }
 
   // ─────────────────────────────────────────────────────────────────────────
@@ -106,14 +107,53 @@ export class AiSdkAgent extends BaseAgent {
    * Set tools — can be called before or after initialization.
    * Tools passed here override any previously loaded tools.
    * AI SDK passes tools per-call, so no graph rebuild needed.
+   *
+   * Accepts both AI SDK tools and LangChain tools (StructuredTool / DynamicStructuredTool).
+   * LangChain tools are auto-converted to AI SDK format.
    */
   async setTools(tools: any[]): Promise<void> {
     this.loadedTools = {};
     for (const t of tools) {
-      const name = t.name || t._name || "unknown";
-      this.loadedTools[name] = t;
+      const name: string = t.name || t._name || "unknown";
+      this.loadedTools[name] = this.toAiSdkTool(t);
     }
     logger.info(`AiSdkAgent ${this.id} tools updated: ${Object.keys(this.loadedTools).join(", ")}`);
+  }
+
+  /**
+   * Convert a tool to AI SDK format if it's a LangChain tool.
+   * LangChain tools (StructuredTool / DynamicStructuredTool from @langchain/core/tools)
+   * expose `.schema` (Zod), `.description`, and `.invoke()`.
+   * AI SDK's `tool()` helper handles Zod→JSON Schema conversion.
+   */
+  private toAiSdkTool(t: any): any {
+    // Already an AI SDK tool (has `execute` and `inputSchema` — v4+ property name)
+    if (typeof t?.execute === "function" && (t?.inputSchema || t?.parameters)) {
+      return t;
+    }
+
+    // LangChain StructuredTool / DynamicStructuredTool
+    // They have `.schema` (Zod), `.description`, and `.invoke(input)`
+    // AI SDK v6 uses `inputSchema` (not `parameters`) for the Zod schema
+    if (t?.schema && (typeof t.invoke === "function" || typeof t._call === "function")) {
+      return tool({
+        description: t.description || `Tool: ${t.name}`,
+        inputSchema: t.schema as z.ZodObject<any>,
+        execute: async (args: any) => {
+          try {
+            const result = await t.invoke(args);
+            return typeof result === "string" ? result : JSON.stringify(result);
+          } catch (err: any) {
+            logger.warn(`Tool ${t.name} failed: ${err.message}`);
+            return `Error: ${err.message}`;
+          }
+        },
+      });
+    }
+
+    // Unknown format — pass through and hope for the best
+    logger.warn(`Tool "${t?.name || "unknown"}" has unknown format, passing through`);
+    return t;
   }
 
   // ─────────────────────────────────────────────────────────────────────────
@@ -164,24 +204,27 @@ export class AiSdkAgent extends BaseAgent {
   private async *executeStructured(
     input: AgentInput,
   ): AsyncGenerator<AgentEvent> {
-    const result = await generateObject({
+    const result = await generateText({
       model: this.model,
-      schema: this.outputSchema!,
-      messages: this.buildMessages(input.message),
+      output: Output.object({ schema: this.outputSchema! }),
+      messages: this.buildMessages(),
       ...(this.definition.systemPrompt
         ? { system: this.definition.systemPrompt }
         : {}),
     });
 
-    const output = result.object;
+    const structuredOutput = result.output;
     const responseStr =
-      typeof output === "string" ? output : JSON.stringify(output, null, 2);
+      typeof structuredOutput === "string" ? structuredOutput : JSON.stringify(structuredOutput, null, 2);
+
+    logger.info(`AiSdkAgent ${this.id} structured response (${responseStr.length} chars)`);
+    logger.debug(`AiSdkAgent ${this.id} response: ${responseStr.slice(0, 500)}${responseStr.length > 500 ? '...' : ''}`);
 
     this.messages.push({ role: "assistant", content: responseStr });
     this.addToHistory("assistant", responseStr);
 
     yield this.messageEvent(responseStr);
-    yield this.doneEvent(output, `${this.name} completed successfully`);
+    yield this.doneEvent(structuredOutput, `${this.name} completed successfully`);
 
     this.setStatus("idle");
 
@@ -189,7 +232,7 @@ export class AiSdkAgent extends BaseAgent {
       this._emitter.emit("task:complete", {
         agentId: this.id,
         taskId: input.taskId,
-        output,
+        output: structuredOutput,
       });
     }
   }
@@ -205,40 +248,136 @@ export class AiSdkAgent extends BaseAgent {
 
     const result = await streamText({
       model: this.model,
-      messages: this.buildMessages(input.message),
+      messages: this.buildMessages(),
       ...(this.definition.systemPrompt
         ? { system: this.definition.systemPrompt }
         : {}),
-      ...(hasTools ? { tools: this.loadedTools, maxSteps: this.maxSteps } : {}),
+      ...(hasTools ? { tools: this.loadedTools, stopWhen: stepCountIs(this.maxSteps) } : {}),
+      ...(this.temperature !== undefined ? { temperature: this.temperature } : {}),
+      ...(this.maxTokens !== undefined ? { maxTokens: this.maxTokens } : {}),
       onStepFinish: ({ finishReason }) => {
         logger.debug(`AiSdkAgent step finished: ${finishReason}`);
       },
     });
 
     let fullText = "";
+    let partCount = 0;
+    let stepIndex = 0;
+    let textPartId = "";
+    let reasoningPartId = "";
+    const messageId = `msg-${this.id}-${Date.now()}`;
 
-    // Iterate fullStream and yield AgentEvents
+    // Emit stream start
+    yield { type: "stream_part", part: { type: "start", messageId } } as AgentEvent;
+
+    // Iterate fullStream and yield AgentEvents + stream_part events
     for await (const part of result.fullStream) {
-      switch (part.type) {
-        case "text-delta":
-          fullText += (part as any).text ?? (part as any).textDelta ?? "";
-          yield { type: "message_delta", delta: (part as any).text ?? (part as any).textDelta ?? "" };
+      partCount++;
+      if (partCount <= 3 || partCount % 50 === 0) {
+        logger.debug(`AiSdkAgent ${this.id} stream part #${partCount}: ${part.type}`);
+      }
+      switch (part.type as string) {
+        case "text-delta": {
+          const delta = (part as any).text ?? (part as any).textDelta ?? "";
+          if (!textPartId) {
+            textPartId = `text-${messageId}-${partCount}`;
+          }
+          fullText += delta;
+          yield { type: "stream_part", part: { type: "text-delta", id: textPartId, delta } } as AgentEvent;
           break;
+        }
 
-        case "tool-call":
-          yield this.toolStartEvent((part as any).toolName, ((part as any).input ?? (part as any).args ?? {}) as Record<string, any>);
+        case "step-start": {
+          // Close any open text part from previous step
+          if (textPartId) {
+            yield { type: "stream_part", part: { type: "text-end", id: textPartId } } as AgentEvent;
+            textPartId = "";
+          }
+          if (reasoningPartId) {
+            yield { type: "stream_part", part: { type: "reasoning-end", id: reasoningPartId } } as AgentEvent;
+            reasoningPartId = "";
+          }
+          yield { type: "stream_part", part: { type: "start-step", stepIndex } } as AgentEvent;
           break;
+        }
 
-        case "tool-result":
-          yield this.toolResultEvent((part as any).toolName, (part as any).output ?? (part as any).result);
+        case "step-finish": {
+          if (textPartId) {
+            yield { type: "stream_part", part: { type: "text-end", id: textPartId } } as AgentEvent;
+            textPartId = "";
+          }
+          if (reasoningPartId) {
+            yield { type: "stream_part", part: { type: "reasoning-end", id: reasoningPartId } } as AgentEvent;
+            reasoningPartId = "";
+          }
+          yield { type: "stream_part", part: {
+            type: "finish-step",
+            stepIndex,
+            finishReason: (part as any).finishReason || "unknown",
+          } } as AgentEvent;
+          stepIndex++;
           break;
+        }
 
-        case "reasoning-delta":
-          // Emit as thinking event if reasoning is present
-          yield { type: "thinking", content: (part as any).textDelta ?? (part as any).delta ?? "" };
+        case "tool-call-streaming-start": {
+          const toolCallId = (part as any).toolCallId || `tc-${partCount}`;
+          const toolName = (part as any).toolName || "unknown";
+          yield { type: "stream_part", part: {
+            type: "tool-input-start", toolCallId, toolName,
+          } } as AgentEvent;
           break;
+        }
+
+        case "tool-call-delta": {
+          const tcId = (part as any).toolCallId || "";
+          const argsDelta = (part as any).argsTextDelta || "";
+          yield { type: "stream_part", part: {
+            type: "tool-input-delta", toolCallId: tcId, delta: argsDelta,
+          } } as AgentEvent;
+          break;
+        }
+
+        case "tool-call": {
+          const toolName = (part as any).toolName;
+          const toolArgs = (part as any).input ?? (part as any).args ?? {};
+          const toolCallId = (part as any).toolCallId || `tc-${toolName}-${partCount}`;
+          logger.info(`AiSdkAgent ${this.id} tool call: ${toolName}(${JSON.stringify(toolArgs).slice(0, 200)})`);
+          yield { type: "stream_part", part: {
+            type: "tool-input-available", toolCallId, toolName, input: toolArgs,
+          } } as AgentEvent;
+          // Also emit legacy tool_start for progress channel
+          yield this.toolStartEvent(toolName, toolArgs as Record<string, any>);
+          break;
+        }
+
+        case "tool-result": {
+          const resultToolName = (part as any).toolName;
+          const toolOutput = (part as any).output ?? (part as any).result;
+          const resultCallId = (part as any).toolCallId || `tc-${resultToolName}`;
+          const outputStr = typeof toolOutput === 'string' ? toolOutput : JSON.stringify(toolOutput);
+          logger.info(`AiSdkAgent ${this.id} tool result: ${resultToolName} → ${outputStr.slice(0, 200)}${outputStr.length > 200 ? '...' : ''}`);
+          yield { type: "stream_part", part: {
+            type: "tool-output-available", toolCallId: resultCallId, toolName: resultToolName, output: toolOutput,
+          } } as AgentEvent;
+          // Also emit legacy tool_result for progress channel
+          yield this.toolResultEvent(resultToolName, toolOutput);
+          break;
+        }
+
+        case "reasoning": {
+          const reasoningDelta = (part as any).textDelta ?? (part as any).delta ?? (part as any).text ?? "";
+          if (!reasoningPartId) {
+            reasoningPartId = `reasoning-${messageId}-${partCount}`;
+            yield { type: "stream_part", part: { type: "reasoning-start", id: reasoningPartId } } as AgentEvent;
+          }
+          yield { type: "stream_part", part: { type: "reasoning-delta", id: reasoningPartId, delta: reasoningDelta } } as AgentEvent;
+          // Also emit legacy thinking for progress channel
+          yield { type: "thinking", content: reasoningDelta };
+          break;
+        }
 
         case "error":
+          yield { type: "stream_part", part: { type: "error", error: (part as any).error?.message || String((part as any).error) } } as AgentEvent;
           throw new Error(
             (part as any).error?.message || String((part as any).error) || "Stream error",
           );
@@ -248,11 +387,29 @@ export class AiSdkAgent extends BaseAgent {
       }
     }
 
+    // Close any open reasoning part (text is finalized by the finish event)
+    if (reasoningPartId) {
+      yield { type: "stream_part", part: { type: "reasoning-end", id: reasoningPartId } } as AgentEvent;
+    }
+
+    // Log token usage if available
+    try {
+      const usage = await result.usage;
+      if (usage) {
+        logger.info(`AiSdkAgent ${this.id} tokens: prompt=${usage.promptTokens}, completion=${usage.completionTokens}, total=${usage.totalTokens}`);
+      }
+    } catch { /* usage not available */ }
+
     // Store final response in conversation
+    logger.info(`AiSdkAgent ${this.id} stream complete: ${partCount} parts, ${fullText.length} chars`);
     if (fullText) {
+      logger.debug(`AiSdkAgent ${this.id} response: ${fullText.slice(0, 500)}${fullText.length > 500 ? '...' : ''}`);
       this.messages.push({ role: "assistant", content: fullText });
       this.addToHistory("assistant", fullText);
     }
+
+    // Emit stream finish
+    yield { type: "stream_part", part: { type: "finish", finishReason: "stop" } } as AgentEvent;
 
     // Emit final message and done
     yield { type: "message", content: fullText, streaming: false };
@@ -263,31 +420,6 @@ export class AiSdkAgent extends BaseAgent {
     };
 
     this.setStatus("idle");
-  }
-
-  // ─────────────────────────────────────────────────────────────────────────
-  // Streaming with bridge support (for SocketServerV2)
-  // ─────────────────────────────────────────────────────────────────────────
-
-  /**
-   * Execute and return the raw streamText result for StreamBridge.
-   * Used when the caller wants to pipe fullStream directly to Socket.IO.
-   */
-  async executeWithStream(input: AgentInput): Promise<any> {
-    if (!this.model) await this.initialize();
-
-    this.messages.push({ role: "user", content: input.message });
-
-    const hasTools = Object.keys(this.loadedTools).length > 0;
-
-    return streamText({
-      model: this.model,
-      messages: this.buildMessages(input.message),
-      ...(this.definition.systemPrompt
-        ? { system: this.definition.systemPrompt }
-        : {}),
-      ...(hasTools ? { tools: this.loadedTools, maxSteps: this.maxSteps } : {}),
-    });
   }
 
   // ─────────────────────────────────────────────────────────────────────────
@@ -347,10 +479,8 @@ export class AiSdkAgent extends BaseAgent {
    * Build the messages array for this call (conversation history + new message).
    * The new user message is already appended to this.messages before this runs.
    */
-  private buildMessages(
-    _newMessage: string,
-  ): Array<{ role: "user" | "assistant"; content: string }> {
-    // Return all messages including the one just appended
+  private buildMessages(): Array<{ role: "user" | "assistant"; content: string }> {
+    // Return all messages (user message already appended by execute())
     return [...this.messages];
   }
 

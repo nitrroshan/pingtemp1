@@ -27,19 +27,6 @@ async function connectDB(): Promise<void> {
 
 async function disconnectDB(): Promise<void> {
   try {
-    // Clear all collections before disconnecting
-    const collections = mongoose.connection.collections;
-
-    for (const key in collections) {
-      const collection = collections[key];
-      try {
-        await collection?.deleteMany({});
-        logger.info(`Cleared collection: ${key}`);
-      } catch (err) {
-        logger.warn(`Failed to clear collection ${key}:`, err);
-      }
-    }
-
     await mongoose.connection.close();
     logger.info("MongoDB connection closed");
   } catch (err) {
@@ -48,5 +35,19 @@ async function disconnectDB(): Promise<void> {
   }
 }
 
+/** Drop all data from all collections (for dev reset only) */
+async function resetDB(): Promise<void> {
+  const collections = mongoose.connection.collections;
+  for (const key in collections) {
+    try {
+      await collections[key]?.deleteMany({});
+      logger.info(`Cleared collection: ${key}`);
+    } catch (err) {
+      logger.warn(`Failed to clear collection ${key}:`, err);
+    }
+  }
+  logger.info("All collections cleared");
+}
+
 export default connectDB;
-export { disconnectDB };
+export { disconnectDB, resetDB };

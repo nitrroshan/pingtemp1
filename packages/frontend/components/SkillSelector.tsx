@@ -49,16 +49,16 @@ const SkillSelector: React.FC<SkillSelectorProps> = ({ agentId, teamId, onClose 
         ]);
 
         const allData = await allRes.json();
-        const assignedData = assignedRes.ok ? await assignedRes.json() : { data: { skills: [] } };
+        const assignedData = assignedRes.ok ? await assignedRes.json() : { skills: [] };
 
-        const all: Skill[] = (allData.data || []).map((s: any) => ({
+        const all: Skill[] = (allData.data || allData.skills || []).map((s: any) => ({
           skillId: s.skillId,
           name: s.name,
           description: s.description || '',
           tags: s.tags || [],
         }));
 
-        const assigned: string[] = (assignedData.data?.skills || []).map((s: any) =>
+        const assigned: string[] = (assignedData.data?.skills || assignedData.skills || []).map((s: any) =>
           s.skillId || s
         );
 

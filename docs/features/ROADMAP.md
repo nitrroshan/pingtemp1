@@ -25,33 +25,34 @@ Every phase MUST pass this end-to-end flow before shipping:
 
 ---
 
-## Current State (What Works Today)
+## Current State (Updated April 6, 2026)
 
-- AgentManagerV2 with OrchestratorService
-- MemoryManager with task dependencies
-- WorkerPool with InternalAgent (LangGraph)
-- L1 Workspace (git, scratchpad, search, symbol index, 21 tools)
+- AgentManagerV2 with OrchestratorService (4 tools: create_plan, approve_plan, get_status, get_context)
+- MemoryManager with task DAG dependencies + RoleTaskQueue
+- WorkerPool with AiSdkAgent (`AGENT_RUNTIME=aisdk`, AI SDK v6 `streamText()` + `stopWhen`)
+- LangChain→AI SDK tool converter (`toAiSdkTool()` with `inputSchema`)
+- Full streaming pipeline: `stream_part` events → `worker:stream` → Socket.IO → frontend `processStreamPart()`
+- L1 Workspace (git, scratchpad, search, symbol index, 31 tools per agent)
 - L2 Collaboration (Hocuspocus CRDT, PlanStore, GroupChatManager, collab tool)
-- TeamService (CRUD, agents, members — backend 95% done)
-- SkillRegistry + SkillTools (5 tools, never wired)
-- SocketServerV2 + HttpServer (basic events)
-- Frontend (basic chat UI, agent listing)
+- TeamService + MongoDB (CRUD, agents, members, skill assignments)
+- SkillRegistry + SkillResolver (10 seeded skills, per-request DB loading, SkillSelector UI)
+- SocketServerV2 with declarative `WORKER_EVENT_ROUTES` map
+- Frontend: React Router, useOrchestration/useChat hooks, StreamMessage/ToolCard/ReasoningSection rendering
+- Dev tooling: `bun run seed` (3 teams, 10 agents, 10 skills), `bun run db:reset`, `start.ps1` dev options
 
-**What's broken:** No streaming, no plan approval UI, skills not wired, teams not in UI, no sandboxing, no L3 knowledge, CLI is basic, no Docker setup.
+**What's remaining:** Plan approval UI end-to-end test, NotificationChip wiring, word-boundary streaming, LangGraph cleanup, Docker setup, CLI.
 
 ---
 
-## Phase 1: Core Loop (4-5 weeks)
+## Phase 1: Core Loop ✅ COMPLETE
 ### "User gives a goal → Planner plans → Workers execute → User approves → Done"
 
-**Why first:** This is the minimum viable product. Nothing else matters if the core loop doesn't work. Everything built after layers on top of this.
-
-| Feature | What | Effort | ID |
-|---|---|---|---|
-| **Planner as Agent** | Planner = top-level brain. Calls `create_plan`, `replan`, `get_status`. Orchestrator = reactive runtime. | 2-3 weeks | A5 |
-| **Task Orchestration** | DAG deps, parallel dispatch, failure detection, context flow. Replaces MemoryManager for task state. | (included in A5 — same work) | A6 |
-| **Frontend Orchestrator Integration** | Plan approval UI, task list, status dashboard. Wire `SocketServerV2` events to React. | 3-4 days | — |
-| **Seed Data** | Sample teams, agents, skills for demo/testing. | 2-3 days | — |
+| Feature | What | Status |
+|---|---|---|
+| **Planner as Agent** | OrchestratorService with 4 tools (create_plan, approve_plan, get_status, get_context) | ✅ Done |
+| **Task Orchestration** | MemoryManager with prerequisite Map, DAG ready-task detection, RoleTaskQueue | ✅ Done |
+| **Frontend Orchestrator Integration** | PlanApproval, TaskDashboard, GoalInput components, useOrchestration hook | ✅ Done |
+| **Seed Data** | `bun run seed` — 3 teams, 10 agents, 10 skills. `bun run db:reset`. `start.ps1` options 20-22 | ✅ Done |
 
 #### Frontend in Phase 1
 
@@ -98,16 +99,19 @@ bun run dev:backend && bun run dev:frontend
 
 ---
 
-## Phase 2: Real-Time Experience (3-4 weeks)
+## Phase 2: Real-Time Experience ✅ ~90% COMPLETE
 ### "See everything happening in real-time, like watching a team work"
 
-**Why second:** The core loop works but feels dead — user submits goal and waits for a blob. Phase 2 makes it feel alive.
-
-| Feature | What | Effort | ID |
-|---|---|---|---|
-| **Agentic Streaming** | AI SDK `streamText` over Socket.IO. Token-by-token text, tool call cards, reasoning. Uses AI SDK Data Stream Protocol format. | 2-3 weeks | A2 |
-| **Mastra/AI SDK Migration** | Replace LangGraph `agent.invoke()` with AI SDK `streamText()`. Hot-swappable tools. Required for streaming. | (included in A2 — same migration) | A1 |
-| **Skills Integration** | Wire existing SkillRegistry into agent tool loading. Agent YAML declares skills. User selects skills in UI. | 1 week | C3 |
+| Feature | What | Status |
+|---|---|---|
+| **AI SDK Migration (A1)** | `AGENT_RUNTIME=aisdk`, AiSdkAgent with `streamText()`, `azure.chat()`, `useDeploymentBasedUrls`, `stopWhen: stepCountIs()`, `Output.object()` | ✅ Done |
+| **Agentic Streaming (A2)** | Full lifecycle `stream_part` events via `worker:stream` → Socket.IO → `processStreamPart` → StreamMessage/ToolCard/ReasoningSection | ✅ Done |
+| **Skills Integration (C3)** | SkillResolver, 10 seeded skills, SkillSelector UI in DetailPanel, per-request DB skill loading | ✅ Done |
+| **LangChain→AI SDK Tool Converter** | `toAiSdkTool()` wraps LangChain StructuredTool → AI SDK tool format with `inputSchema` | ✅ Done |
+| **Immutable Stream Rendering** | React 18 StrictMode-safe with `.map()` patterns, no mutations | ✅ Done |
+| **NotificationChip wiring** | Task-started/completed inline chips in chat | ⬜ Not started |
+| **Smooth streaming (word-boundary)** | smoothStream transform for word-boundary chunking | ⬜ Not started |
+| **StreamBridge** | Deprecated — replaced by AgentEvent pipeline via executeToolMode() | ❌ Archived |
 
 #### Frontend in Phase 2
 

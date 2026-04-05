@@ -3,7 +3,7 @@
  *
  * Core exports for working with agents in the system.
  *
- * InternalAgent is the unified agent class that handles:
+ * AiSdkAgent is the agent class that handles:
  * - Tool mode: Workers, orchestrator (no responseFormat)
  * - Structured output mode: Builders (with responseFormat)
  */
@@ -28,5 +28,5 @@ export { AgentLoader } from "./AgentLoader.js";
 // Includes schemas for structured output: AgentRoleSchema, AgentConfigSchema, AgentPlanSchema
 export * from "./internal/index.js";
 
-// Note: BuilderAgent is deprecated. Use InternalAgent with config.responseFormat instead.
+// Note: BuilderAgent is deprecated. Use AiSdkAgent with config.responseFormat instead.
 // Legacy BuilderAgent kept for reference but not exported to avoid conflicts.

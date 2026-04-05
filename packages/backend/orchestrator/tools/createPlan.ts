@@ -33,14 +33,28 @@ Available Roles: ${requirements.roles.join(", ")}
 Create a detailed task plan to accomplish this goal. Break it down into specific, executable tasks with proper dependencies.
         `.trim();
 
-        // Invoke PlanBuilder agent
+        // Invoke PlanBuilder agent (returns raw text — structured JSON from plan-builder)
         const result = await context.planBuilder.invoke({
           messages: [{ role: "user", content: planPrompt }],
         });
 
-        // Extract the plan from the response
-        // PlanBuilder uses structured output, so result should have the plan
-        const plan = result.structuredResponse || result;
+        // Parse the plan from the response (executeAgent returns text, not parsed object)
+        let plan: any;
+        if (typeof result === "string") {
+          try {
+            plan = JSON.parse(result);
+          } catch {
+            // Try extracting JSON from markdown code fence
+            const jsonMatch = result.match(/```(?:json)?\s*([\s\S]*?)```/);
+            if (jsonMatch) {
+              plan = JSON.parse(jsonMatch[1].trim());
+            } else {
+              throw new Error(`PlanBuilder returned non-JSON: ${result.slice(0, 200)}`);
+            }
+          }
+        } else {
+          plan = result?.structuredResponse || result;
+        }
 
         // Store pending plan in orchestrator service
         context.setPendingPlan(plan);

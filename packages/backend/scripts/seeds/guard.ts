@@ -11,12 +11,4 @@ export function assertSeedAllowed(): void {
       "FATAL: Cannot seed in production environment (NODE_ENV=production)",
     );
   }
-
-  if (process.env.SEED_ENABLED !== "true") {
-    console.log(
-      "[seed] Seeding disabled. Set SEED_ENABLED=true to enable.\n" +
-        "       e.g. SEED_ENABLED=true bun run seed",
-    );
-    process.exit(0);
-  }
 }

@@ -26,7 +26,7 @@
  * - AI SDK `streamText` streams are forwarded via the `stream` channel
  * - The `stream` channel uses AI SDK Data Stream Protocol typed parts
  * - Both `progress` (legacy) and `stream` (new) events are emitted simultaneously
- *   for backward compatibility during the AGENT_RUNTIME=langgraph→aisdk migration
+ *   for backward compatibility with legacy event listeners
  */
 
 import { Server as SocketIOServer, Socket } from "socket.io";
@@ -129,11 +129,56 @@ interface ProgressResponse {
   sessionId: string;
   taskId: string;
   agentId: string;
-  type: "thinking" | "tool_start" | "tool_result" | "step";
+  type: WorkerEventType;
   content: string;
   tool?: string;
   timestamp: number;
 }
+
+// ============================================================================
+// Worker Event Routing
+// ============================================================================
+
+/**
+ * All known worker event types emitted by agents (see AgentEvent in agent/types.ts).
+ * Each type maps to zero or more socket channels via WORKER_EVENT_ROUTES.
+ */
+type WorkerEventType =
+  | "thinking"
+  | "planning"
+  | "tool_start"
+  | "tool_result"
+  | "message"
+  | "message_delta"
+  | "artifact"
+  | "frame"
+  | "hotspots"
+  | "error"
+  | "done";
+
+/** Which socket channels a worker event should be forwarded to */
+type SocketChannel = "progress" | "stream";
+
+/**
+ * Routing table: worker event type → socket channels.
+ * Add new event types here instead of scattering if-checks across the file.
+ */
+const WORKER_EVENT_ROUTES: Record<WorkerEventType, SocketChannel[]> = {
+  // Legacy events → progress panel only (stream_part handles the stream channel)
+  thinking:      ["progress"],
+  planning:      ["progress"],
+  tool_start:    ["progress"],
+  tool_result:   ["progress"],
+  // Dead routes — handled by dedicated handlers, not the generic event router
+  message:       [],                    // worker:done handler
+  message_delta: [],                    // no longer emitted (stream_part replaced it)
+  error:         [],                    // worker:error handler
+  done:          [],                    // worker:done handler
+  // Non-agent events that still use the legacy stream path
+  artifact:      ["stream"],
+  frame:         ["stream"],
+  hotspots:      ["stream"],
+};
 
 /** Server → Client: error payload */
 interface ErrorResponse {
@@ -250,40 +295,47 @@ export class SocketServerV2 {
 
     const room = `team:${teamId}`;
 
-    // Progress: Real-time streaming updates (thinking, tool usage) — legacy channel
+    // Route worker events to appropriate socket channels via WORKER_EVENT_ROUTES
     manager.events.on("worker:event", ({ taskId, event }) => {
-      if (
-        event.type === "thinking" ||
-        event.type === "tool_start" ||
-        event.type === "tool_result"
-      ) {
+      const eventType = event.type as WorkerEventType;
+      const routes = WORKER_EVENT_ROUTES[eventType];
+
+      if (!routes) return; // Unknown event type — skip silently
+
+      const agentId = event.role || "worker";
+
+      if (routes.includes("progress")) {
         this.io.to(room).emit("progress", {
           sessionId: "default",
           taskId,
-          agentId: event.role || "worker",
-          type: event.type,
+          agentId,
+          type: eventType,
           content: this.formatProgressContent(event),
           tool: event.tool,
           timestamp: Date.now(),
         } satisfies ProgressResponse);
       }
 
-      // AI SDK stream delta → forward on `stream` channel
-      if (event.type === "message_delta") {
-        const deltaEvent = event as { type: "message_delta"; delta: string };
-        const payload: StreamPayload = {
-          sessionId: "default",
-          taskId,
-          agentId: "worker",
-          part: { type: "text-delta", id: `${taskId}-txt`, delta: deltaEvent.delta },
-          timestamp: Date.now(),
-        };
-        this.io.to(room).emit("stream", payload);
+      if (routes.includes("stream")) {
+        const streamPart = this.toStreamPart(eventType, event, taskId);
+        if (streamPart) {
+          const payload: StreamPayload = {
+            sessionId: "default",
+            taskId,
+            agentId,
+            part: streamPart,
+            timestamp: Date.now(),
+          };
+          this.io.to(room).emit("stream", payload);
+        }
       }
     });
 
     // AI SDK stream parts forwarded directly from WorkerPool
+    // Track which tasks have had stream parts sent (to skip duplicate worker:done message)
+    const streamedTasks = new Set<string>();
     manager.events.on("worker:stream", ({ taskId, agentId, part }) => {
+      if (taskId) streamedTasks.add(taskId);
       const payload: StreamPayload = {
         sessionId: "default",
         taskId,
@@ -351,15 +403,22 @@ export class SocketServerV2 {
       this.io.to(room).emit("stream", payload);
     });
 
-    // Message: Task output as chat message
-    manager.events.on("worker:done", ({ taskId, role, output }) => {
-      this.io.to(room).emit("message", {
+    // Worker done: stream_parts deliver all content, so worker:done
+    // only needs to clean up tracking and emit a finish signal if
+    // the stream didn't already send one.
+    manager.events.on("worker:done", ({ taskId, role }) => {
+      if (taskId && streamedTasks.has(taskId)) {
+        streamedTasks.delete(taskId);
+        return; // stream finish part already sent
+      }
+      // No stream_parts were sent (shouldn't happen, but safety net)
+      this.io.to(room).emit("stream", {
         sessionId: "default",
-        taskId,
         agentId: role,
-        content: typeof output === "string" ? output : JSON.stringify(output),
+        taskId,
+        part: { type: "finish", finishReason: "stop" },
         timestamp: Date.now(),
-      } satisfies MessageResponse);
+      } as StreamPayload);
     });
 
     // Error: Task failure notification
@@ -471,6 +530,31 @@ export class SocketServerV2 {
     }
   }
 
+  /**
+   * Convert a worker event to an AI SDK stream part for the `stream` channel.
+   * Returns null for event types that don't map to a stream part.
+   */
+  private toStreamPart(eventType: WorkerEventType, event: any, taskId: string): StreamPayload["part"] | null {
+    switch (eventType) {
+      case "message_delta":
+        return { type: "text-delta", id: `${taskId}-txt`, delta: event.delta ?? "" };
+      case "thinking":
+        return { type: "reasoning-delta", id: `${taskId}-reason`, delta: event.content ?? "" };
+      case "tool_start":
+        return { type: "tool-input-start", toolCallId: `${taskId}-${event.tool}`, toolName: event.tool ?? "unknown" };
+      case "tool_result":
+        return { type: "tool-output-available", toolCallId: `${taskId}-${event.tool}`, toolName: event.tool ?? "unknown", output: event.result ?? "" };
+      case "artifact":
+        return { type: "artifact-state", artifactId: event.artifactId ?? taskId, state: event.state ?? "ready" };
+      case "frame":
+        return null; // frame events have no stream-protocol equivalent yet
+      case "hotspots":
+        return null; // hotspot events have no stream-protocol equivalent yet
+      default:
+        return null;
+    }
+  }
+
   // ============================================================================
   // Message Handler (Bidirectional)
   // ============================================================================
@@ -543,14 +627,12 @@ export class SocketServerV2 {
     const state = manager.getOrchestratorState();
     const pendingPlan = manager.getOrchestratorPendingPlan();
 
-    // Emit message response (use "manager" for frontend)
-    const msgResponse: MessageResponse = {
-      sessionId: sessionId || "default",
-      agentId: "manager",
-      content: response,
-      timestamp: Date.now(),
-    };
-    socket.emit("message", msgResponse);
+    // Orchestrator response is delivered via stream parts (worker:stream events).
+    // Only emit a 'message' if the response is non-empty AND no stream parts were sent
+    // (e.g., structured mode with no streaming). The stream finish part already
+    // finalizes the frontend message, so emitting 'message' here would duplicate it.
+    // For now, always skip — stream parts are the sole delivery path.
+    logger.info(`[SocketServerV2] Orchestrator responded (${response?.length ?? 0} chars)`);
 
     // If plan was proposed, emit state with pending plan
     if (pendingPlan) {

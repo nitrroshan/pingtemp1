@@ -7,22 +7,30 @@ function Show-Menu {
     Write-Host ""
     Write-Host "  ========= Ping Monorepo =========" -ForegroundColor Cyan
     Write-Host ""
+    Write-Host "  --- Start ---" -ForegroundColor DarkCyan
     Write-Host "  [1] Start All (Backend + Frontend)" -ForegroundColor White
     Write-Host "  [2] Start Backend" -ForegroundColor White
     Write-Host "  [3] Start Frontend" -ForegroundColor White
     Write-Host "  [4] Start Registry" -ForegroundColor White
     Write-Host "  [5] Start MongoDB" -ForegroundColor White
     Write-Host ""
+    Write-Host "  --- Stop ---" -ForegroundColor DarkCyan
     Write-Host "  [6] Stop All" -ForegroundColor Red
     Write-Host "  [7] Stop Backend" -ForegroundColor Red
     Write-Host "  [8] Stop Frontend" -ForegroundColor Red
     Write-Host "  [9] Stop Registry" -ForegroundColor Red
     Write-Host "  [10] Stop MongoDB" -ForegroundColor Red
     Write-Host ""
+    Write-Host "  --- Build ---" -ForegroundColor DarkCyan
     Write-Host "  [11] Build All" -ForegroundColor Yellow
     Write-Host "  [12] Build Backend" -ForegroundColor Yellow
     Write-Host "  [13] Install Dependencies" -ForegroundColor Yellow
     Write-Host "  [14] Status" -ForegroundColor Magenta
+    Write-Host ""
+    Write-Host "  --- Dev ---" -ForegroundColor DarkCyan
+    Write-Host "  [20] Dev Start (Reset DB + Seed + Start All)" -ForegroundColor Green
+    Write-Host "  [21] Seed DB (teams + agents)" -ForegroundColor Green
+    Write-Host "  [22] Reset DB (drop all data)" -ForegroundColor Red
     Write-Host ""
     Write-Host "  [0] Exit" -ForegroundColor DarkGray
     Write-Host ""
@@ -162,6 +170,22 @@ function Show-Status {
     Write-Host ""
 }
 
+function Reset-Database {
+    Write-Host "  Resetting database..." -ForegroundColor Yellow
+    Push-Location "$root\packages\backend"
+    bun run db:reset
+    Pop-Location
+    Write-Host "  Database reset complete" -ForegroundColor Green
+}
+
+function Seed-Database {
+    Write-Host "  Seeding database..." -ForegroundColor Yellow
+    Push-Location "$root\packages\backend"
+    bun run seed
+    Pop-Location
+    Write-Host "  Database seeded" -ForegroundColor Green
+}
+
 # Main loop
 while ($true) {
     Show-Menu
@@ -208,6 +232,36 @@ while ($true) {
         "12" { Build-Package "Backend" "$root\packages\backend" "bun run build" }
         "13" { Set-Location $root; bun install }
         "14" { Show-Status }
+        "20" {
+            Write-Host ""
+            Write-Host "  === Dev Start ===" -ForegroundColor Green
+            Set-Location $root; bun install 2>$null
+            Start-MongoDB
+            Start-Sleep -Seconds 2
+            Reset-Database
+            Seed-Database
+            Build-Package "Backend" "$root\packages\backend" "bun run build"
+            Start-Service "Backend"  "$root\packages\backend"  "bun dist/server.js" "Ping - Backend"
+            Start-Sleep -Seconds 2
+            Start-Service "Frontend" "$root\packages\frontend" "bun run dev"       "Ping - Frontend"
+            Write-Host ""
+            Write-Host "  Dev environment ready with seed data!" -ForegroundColor Green
+        }
+        "21" {
+            Start-MongoDB
+            Start-Sleep -Seconds 2
+            Seed-Database
+        }
+        "22" {
+            $confirm = Read-Host "  This will DELETE all data. Continue? [y/N]"
+            if ($confirm -eq "y") {
+                Start-MongoDB
+                Start-Sleep -Seconds 2
+                Reset-Database
+            } else {
+                Write-Host "  Cancelled" -ForegroundColor DarkGray
+            }
+        }
         "0"  { Write-Host "  Bye!" -ForegroundColor DarkGray; break }
         default { Write-Host "  Invalid option" -ForegroundColor Red }
     }

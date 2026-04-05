@@ -10,7 +10,6 @@
     "@hocuspocus/server": "^3.4.4",
     "@langchain/anthropic": "^1.3.13",
     "@langchain/core": "^1.1.0",
-    "@langchain/langgraph": "^1.0.0",
     "@langchain/mcp-adapters": "^1.0.1",
     "@langchain/openai": "^1.1.3",
     "@vscode/ripgrep": "^1.17.1",
@@ -54,8 +53,9 @@
     "typecheck": "tsc --noEmit --incremental",
     "copy:agents": "mkdir -p dist/agent/agents && cp agent/agents/*.yaml dist/agent/agents/",
     "seed:all": "bun run seed:skills",
-    "seed": "SEED_ENABLED=true bun run scripts/seeds/index.ts",
-    "seed:teams": "SEED_ENABLED=true bun run scripts/seeds/teams.seed.ts"
+    "seed": "bun run scripts/seeds/index.ts",
+    "seed:teams": "bun run scripts/seeds/teams.seed.ts",
+    "db:reset": "bun run scripts/seeds/reset.ts"
   },
   "author": "",
   "license": "ISC",

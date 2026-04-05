@@ -43,9 +43,15 @@ export function getModel(config: ModelConfig): any {
         resourceName: extractResourceName(endpoint!),
         apiKey: apiKey!,
         apiVersion: "2025-01-01-preview",
+        // Azure OpenAI requires deployment-based URLs:
+        // /openai/deployments/{model}/chat/completions
+        // Without this flag, the SDK uses /openai/v1/chat/completions which Azure rejects.
+        useDeploymentBasedUrls: true,
       });
 
-      return azure(deployment);
+      // azure(deployment) defaults to Responses API (/responses) which Azure doesn't support.
+      // azure.chat(deployment) explicitly uses Chat Completions (/chat/completions).
+      return azure.chat(deployment);
     }
 
     case "anthropic": {

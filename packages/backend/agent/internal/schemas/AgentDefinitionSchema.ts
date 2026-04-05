@@ -56,7 +56,7 @@ const InternalConfigSchema = z.object({
 
 /**
  * Schema for a single agent definition
- * This is the complete definition needed to create an InternalAgent
+ * This is the complete definition needed to create an AiSdkAgent
  */
 export const AgentDefinitionItemSchema = z.object({
   // Identity
