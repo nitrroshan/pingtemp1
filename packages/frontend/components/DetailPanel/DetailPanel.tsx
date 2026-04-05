@@ -13,6 +13,7 @@ import { X, Activity, ListTodo, Users, Settings } from 'lucide-react';
 import { AnimatePresence, motion } from 'framer-motion';
 import EventsView from '../AgentManagerPanel/EventsView';
 import SwarmView from '../AgentManagerPanel/SwarmView';
+import SkillSelector from '../SkillSelector';
 import type { OrchestrationEvent, ActiveAgentState, Task } from '../../types';
 
 type DetailTab = 'events' | 'agents' | 'tasks' | 'settings';
@@ -22,6 +23,8 @@ interface DetailPanelProps {
   activeAgents: ActiveAgentState[];
   allTasks: Task[];
   agentName?: string;
+  agentId?: string;
+  teamId?: string;
   onClose: () => void;
 }
 
@@ -79,7 +82,7 @@ function SettingsTab({ agentName }: { agentName?: string }) {
   );
 }
 
-export function DetailPanel({ logs, activeAgents, allTasks, agentName, onClose }: DetailPanelProps) {
+export function DetailPanel({ logs, activeAgents, allTasks, agentName, agentId, teamId, onClose }: DetailPanelProps) {
   const [activeTab, setActiveTab] = useState<DetailTab>('events');
 
   return (
@@ -145,10 +148,14 @@ export function DetailPanel({ logs, activeAgents, allTasks, agentName, onClose }
             </motion.div>
           )}
           {activeTab === 'settings' && (
-            <motion.div key="settings" className="absolute inset-0"
+            <motion.div key="settings" className="absolute inset-0 overflow-y-auto"
               initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
               transition={{ duration: 0.12 }}>
-              <SettingsTab agentName={agentName} />
+              {agentId && teamId ? (
+                <SkillSelector agentId={agentId} teamId={teamId} onClose={() => setActiveTab('events')} />
+              ) : (
+                <SettingsTab agentName={agentName} />
+              )}
             </motion.div>
           )}
         </AnimatePresence>

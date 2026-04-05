@@ -2600,7 +2600,7 @@ L1 has two distinct concerns that should not be conflated:
 
 ```
 L1-Memory:    What an agent remembers (conversation, reasoning, working notes)
-L1-Workspace: What an agent works on (files, code, search, git, sandbox)
+L1-Workspace: What an agent works on (31 tools: file CRUD, grep/glob, scratchpad/todo, keyword search, identity, code intel, git, sandbox)
 ```
 
 But not every agent needs the same memory model.
@@ -2633,10 +2633,14 @@ But not every agent needs the same memory model.
 │  │    ├── Tool call history                                      │
 │  │    └── Summarized → L2 on task completion                    │
 │  │                                                               │
-│  └── L1-Workspace (files, code, per-task):                      │
-│       ├── Files and code artifacts                               │
-│       ├── Local search index (MiniSearch)                        │
-│       ├── Git branch (per-task)                                  │
+│  └── L1-Workspace (31 tools, per-task):                         │
+│       ├── File CRUD (create, read, write, delete, exists, list) │
+│       ├── Search (grep, glob, keyword_search, search_and_replace)│
+│       ├── Scratchpad (scratch_note, scratch_todo, scratch_remember, scratch_file, promote_to_workspace) │
+│       ├── Identity (whoami, my_progress, my_tools, my_context)  │
+│       ├── Code intel (get_repo_map, get_symbols, find_symbol, get_dependencies, get_file_summary) │
+│       ├── Git branch (per-task), commit, history                │
+│       ├── Lifecycle (publish, reactivate, discard)              │
 │       └── Sandbox (command execution)                            │
 │                                                                  │
 │  L2 (Shared Team Memory — always alive)                         │
@@ -2749,7 +2753,7 @@ If the planner needs to know "what files exist" or "what was built":
 |---|---|---|---|
 | **Task State** | ✅ Query via orchestrator tools | ✅ Read own task + report completion | ✅ **Owns it** (single writer) |
 | **L1-Memory** | ❌ Doesn't need — uses L2 directly | ✅ Local memory (conversation, reasoning, working notes) | ❌ Not an agent |
-| **L1-Workspace** | ❌ None | ✅ Full (files, code, search, git, sandbox) | ❌ None |
+| **L1-Workspace** | ❌ None | ✅ Full (31 tools: file CRUD, grep/glob, scratchpad/todo, keyword search, identity, code intel, git, sandbox) | ❌ None |
 | **L2** (shared) | ✅ **IS its memory** (plans, decisions, reasoning — all written directly) | ✅ Read/write (outputs, summaries on completion) | ✅ Direct (execution logs) |
 | **L3** (knowledge) | 🔮 Future (read-only) | 🔮 Future (read-only) | ❌ None |
 
@@ -2761,7 +2765,7 @@ If the planner needs to know "what files exist" or "what was built":
 | **Planner** | Strategic brain. Decides WHAT. Plans, risk, replanning. Memory lives in L2 (shared). | Spawned by Orchestrator per goal. Dies when goal completes. | Architect — thinking on the whiteboard, visible to everyone |
 | **Workers** | Executors. Do the work. Report back. L1-Memory (local) + L1-Workspace (files/code). | Spawned by Orchestrator per task. Ephemeral. | Tradespeople with their own notepad and toolbench |
 | **L1-Memory** | Per-worker local memory. Conversation, reasoning, tool history. Workers only. | Task duration. Summarized to L2 on completion. | Worker's personal notepad |
-| **L1-Workspace** | Per-worker workspace. Files, code, search, git, sandbox. Workers only. | Created per task, persisted as git branch (A8). | Worker's toolbench |
+| **L1-Workspace** | Per-worker workspace. 31 tools: file CRUD, grep/glob, scratchpad/todo, keyword search, identity, code intel, git, sandbox. Workers only. | Created per task, persisted as git branch (A8). | Worker's toolbench |
 | **L2** | Shared team memory. Plans (planner's memory), outputs, docs, search. | Always alive. | Project wiki + whiteboard |
 | **MemoryManager** | **REMOVED** — task state → Orchestrator's TaskStore. Planner memory → L2. Worker memory → L1-Memory. | N/A | N/A |
 

@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Multi-agent orchestration platform ("Ping") that coordinates AI agents to collaborate on tasks. The backend runtime orchestrates LangGraph-based agents via Azure OpenAI, while the frontend provides a React chat UI with real-time WebSocket communication.
+Multi-agent orchestration platform ("Ping") that coordinates AI agents to collaborate on tasks. The backend runtime orchestrates AI SDK-based agents via Azure OpenAI, while the frontend provides a React chat UI with real-time streaming via WebSocket.
 
 ## Build & Development Commands
 
@@ -34,6 +34,10 @@ bun run test:workspace                # workspace E2E tests
 # MongoDB via Docker
 bun run mongo:start                   # start container on port 27017
 bun run mongo:stop / bun run mongo:rm # stop/remove container
+
+# Dev seeding & reset
+bun run seed                          # seed 3 teams, 10 agents, 10 skills
+bun run db:reset                      # drop all collections (with confirmation)
 ```
 
 ## Architecture
@@ -60,7 +64,8 @@ Each has its own `package.json` and `tsconfig.json`. The root `tsconfig.json` pr
 ```
 User goal -> AgentManager -> RoleManager discovers roles -> Workers initialized
 -> Plan generated -> Tasks added to MemoryManager -> Ready tasks assigned to workers
--> Workers execute via LangGraph agents -> Events emitted via Socket.IO -> UI updates
+-> Workers execute via AiSdkAgent (streamText) -> stream_part events via worker:stream
+-> SocketServerV2 broadcasts to Socket.IO stream channel -> Frontend processStreamPart()
 -> MemoryManager marks complete -> Dependent tasks become ready -> Loop
 ```
 
@@ -75,12 +80,14 @@ Tasks use `status`: `ready | pending | in_progress | completed | failed`. The `a
 
 ## Key Conventions
 
+- **Agent runtime is AI SDK** - AiSdkAgent uses `streamText()` with `stopWhen: stepCountIs(10)` for multi-step tool execution.
 - **Role/worker keys must be lowercase** - Critical for worker registry lookups. `assigned_role: "researcher"`, not `"Researcher"`.
-- **Always pass `thread_id` to LangGraph agents** - Required for checkpointing: `agent.invoke(messages, { configurable: { thread_id } })`.
+- **Tools use AI SDK format** - LangChain tools are converted via `toAiSdkTool()` with `inputSchema` property. Use `tool()` from `ai` package for new tools.
+- **Streaming via stream_part events** - `AiSdkAgent.executeToolMode()` yields `{ type: "stream_part", part }` events. WorkerPool/OrchestratorService forward via `worker:stream`. SocketServerV2 broadcasts to `stream` Socket.IO channel.
+- **No internal EventEmitters for new code** - Use AsyncGenerator (streaming) or direct callbacks (task lifecycle). Socket.IO is the only event bus (for frontend delivery).
 - **Types live in `types/` folders** with barrel exports. Import from: `import type { AgentConfig } from './types/index.js'`.
 - **Agent workers serialize execution** per worker via `TaskQueue`. Parallelism comes from multiple workers running concurrently.
-- **Builder response formats** - DeepAgents enforce `responseFormat`; prompts must return exact JSON or you'll get "Invalid response format" errors.
-- **Event listener cleanup** - Remove listeners after completion when subscribing to `AgentWorker.events`.
+- **Skills loaded per-request** - WorkerPool fetches DB-assigned skills via `teamService.getAgentSkills()` on each `runTask()`. SkillSelector UI saves to DB.
 - **Do not create files unnecessarily** - Update existing files first.
 
 ## Branching Strategy

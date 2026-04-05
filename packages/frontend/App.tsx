@@ -98,7 +98,7 @@ function InnerApp() {
   const { toasts, showToast, dismissToast } = useToast();
 
   const { agents, isLoadingTeams, agentsRef, findAgentById, handleToggleCollapse, loadTeams, createTeam, addLocalSubAgent } = useAgentTree();
-  const { chatHistories, addMessage, updateMessages } = useChat();
+  const { chatHistories, addMessage, updateMessages, processStreamPart } = useChat();
   const {
     sessionState, currentPlan, tasks, autoExecuteEnabled, orchestrationLogs,
     handleApprovePlan, handleStartTask, handleCompleteTask, handleCancelTask,
@@ -233,9 +233,13 @@ function InnerApp() {
         addMessage(agentId, { id: uuidv4(), role: 'model', content, timestamp: timestamp ?? Date.now() });
         if (taskId && activeAgentIdRef.current !== agentId) setActiveAgentId(agentId);
       },
+      // Rich stream part processor — builds streamParts on Message objects
+      (agentId, part) => {
+        processStreamPart(agentId, part);
+      },
     );
     return unsub;
-  }, [selectedTeamId, subscribeToTeam, agentsRef, addMessage, showToast]);
+  }, [selectedTeamId, subscribeToTeam, agentsRef, addMessage, processStreamPart, showToast]);
 
   // Error toasts from orchestration logs
   const prevLogsLen = useRef(0);
@@ -558,6 +562,8 @@ function InnerApp() {
               activeAgents={[]}
               allTasks={allTasks}
               agentName={activeAgent?.name}
+              agentId={activeAgent?.id}
+              teamId={selectedTeamId ?? undefined}
               onClose={() => setIsPanelOpen(false)}
             />
           )}

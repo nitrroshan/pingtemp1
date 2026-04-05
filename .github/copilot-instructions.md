@@ -3,16 +3,19 @@
 These rules orient AI coding agents to be productive in this multi-agent orchestration codebase.
 
 ## Big picture
-- Runtime lives under `src/worker/` and orchestrates AI agents to collaborate on tasks.
-- Frontend lives under `src/AgentChat/` - React+TypeScript UI for interacting with agents.
+- **Monorepo** with 3 packages: `packages/backend/`, `packages/frontend/`, `packages/registry/`
+- Backend orchestrates AI SDK-based agents to collaborate on tasks via Azure OpenAI.
+- Frontend is React 19 + TypeScript + Vite with real-time streaming via Socket.IO.
 - Key backend components:
-  - `agentManager/AgentManager.ts`: top-level orchestrator. Plans tasks, adds them to memory, assigns to workers, and coordinates events.
-  - `roleManager/RoleManager.ts`: discovers roles via a builder agent and spins up role-specific workers.
-  - `agentManager/agentBuilder/*`: builder agents (ROLE, CONFIG, PLAN) that prompt LLMs to produce roles/configs/plans.
-  - `AgentWorker/AgentWorker.ts`: executes tasks against a LangGraph-based agent, emits events via EventEmitter.
-  - `memoryManager/MemoryManager.ts`: stores tasks, prerequisites, status, and outputs; provides ready tasks per role.
-  - `agentManager/Agent.ts`: initializes a LangGraph agent using Azure OpenAI and optional MCP tools.
-  - `api/`: HTTP and WebSocket servers for frontend communication.
+  - `agentManager/AgentManagerV2.ts`: top-level orchestrator. Creates plans, assigns tasks to workers, coordinates lifecycle.
+  - `orchestrator/OrchestratorService.ts`: LLM-powered planning engine with 4 tools (create_plan, approve_plan, get_status, get_context).
+  - `services/WorkerPool.ts`: manages agent workers per task. Creates AiSdkAgent instances, injects tools (workspace, collab, skills), iterates execute() generator.
+  - `agent/internal/AiSdkAgent.ts`: AI SDK `streamText()` agent. Yields `AgentEvent` stream (stream_part, message, done). Multi-step tool execution via `stopWhen: stepCountIs(10)`.
+  - `agent/AgentFactory.ts`: creates agent instances from YAML definitions.
+  - `memoryManager/MemoryManager.ts`: stores tasks, prerequisites, status, outputs. DAG-based ready-task detection.
+  - `api/SocketServerV2.ts`: Socket.IO server. Broadcasts `stream` events to frontend. Declarative `WORKER_EVENT_ROUTES` map.
+  - `api/HttpServer.ts`: Express REST API. V2 endpoints at `/api/v2/*`.
+  - `skills/SkillResolver.ts`: resolves skill IDs to AI SDK tool objects. Per-request DB loading.
 
 ## Type Organization
 All modules now have centralized type definitions in dedicated `types/` folders:
@@ -28,60 +31,64 @@ Deprecated files (kept for compatibility):
 - `AgentConfig.ts`, `AgentRole.ts`, `IAgentWorker.ts`, `WorkspaceConfig.ts` now re-export from types folders.
 
 ## Data flow and conventions
-- Workflow: Role discovery → Config generation → Worker initialization → Plan generation → Tasks -> MemoryManager → Assignment to workers.
+- Workflow: Team created → Roles discovered → Workers registered in WorkerPool → OrchestratorService handles user messages → Plan generated → Tasks added to MemoryManager → Ready tasks assigned to workers → Workers stream results.
 - Tasks in `MemoryManager` use:
   - `status`: one of `ready | pending | in_progress | completed | failed`
   - `assigned_role`: lowercase role key to match worker registry keys
   - `prerequisites`: `Map<string, boolean>`; tasks are ready when all are true or empty.
-- Agent outputs are normalized to strings (AgentWorker returns content string via extraction logic) and stored as `output_data`.
-- Threading/checkpointing: LangGraph with `MemorySaver` requires a `configurable.thread_id` on `agent.invoke`. Builders and workers must supply it.
+- Agent runtime uses AI SDK `streamText()` with `stopWhen: stepCountIs(10)` for multi-step tool execution.
+- Tools are converted from LangChain format via `toAiSdkTool()` which uses `inputSchema` (AI SDK v6 property).
+- Structured output uses `generateText({ output: Output.object({ schema }) })` — `generateObject` is deprecated.
+- Azure OpenAI configured via `ModelProvider.ts` with `useDeploymentBasedUrls: true` and `azure.chat()` for Chat Completions API.
 
-## AgentWorker Details
-- Implements `IAgentWorker<TInput, TOutput>` interface.
-- Uses `TaskQueue` to serialize task execution per worker.
-- Emits events via `EventEmitter`:
-  - `message`: Real-time updates during task execution with `{ thread_id, role, content, timestamp }`.
-  - `taskUpdate`: Task completion events (currently commented out).
-- `execute(input)`: Main entry point for task execution. Initializes agent, enqueues task.
-- `callAgent(input, thread_id)`: Invokes LangGraph agent with messages, handles errors.
-- Messages are stored in `this.messages` array for conversation continuity.
-- Workspace support (currently commented out) for git-based agent workflows.
+## Streaming Pipeline
+- `AiSdkAgent.executeToolMode()` yields `AgentEvent` objects including `{ type: "stream_part", part }` events.
+- WorkerPool/OrchestratorService detect `stream_part` events → emit on `worker:stream` channel.
+- SocketServerV2 `worker:stream` handler → broadcasts to Socket.IO `stream` channel.
+- Frontend `useOrchestration` → routes stream payloads to `processStreamPart()`.
+- `useChat.processStreamPart()` builds `streamParts: RenderedPart[]` on Message objects (immutable updates for React 18 StrictMode).
+- MessageList renders `<StreamMessage>` → `ToolCard`, `ReasoningSection`, `NotificationChip`.
+- Legacy `worker:event` events still emit for `progress` channel (AgentManager panel). Events route through `WORKER_EVENT_ROUTES` map.
+- **No internal EventEmitters for new code** — use AsyncGenerator for streaming, direct callbacks for task lifecycle. Socket.IO is the only event bus.
 
-## Frontend (AgentChat)
-- **Location**: `src/AgentChat/`
-- **Framework**: React 18 + TypeScript + Vite
+## Frontend
+- **Location**: `packages/frontend/`
+- **Framework**: React 19 + TypeScript + Vite
 - **Key Services**:
-  - `AgentManagerService`: Unified service combining Socket.IO and HTTP communication
-  - `SocketService`: Real-time agent message streaming
-  - `HttpService`: REST API calls for teams, roles, workflows
-- **State Management**: React hooks (useState, useEffect)
+  - `AgentServiceV2`: Unified service combining Socket.IO and HTTP communication
+- **State Management**: React hooks (useState, useEffect, useCallback)
+- **Key Hooks**:
+  - `useOrchestration`: Subscribes to Socket.IO events, routes stream/message/error to callbacks
+  - `useChat`: Manages chat histories, `addMessage()`, `processStreamPart()` (immutable updates)
+  - `useAgentTree`: Builds sidebar tree from teams/agents
 - **Key Components**:
-  - `App.tsx`: Main orchestration, connects to backend, manages agents/teams
-  - `Sidebar`: Agent/team navigation
-  - `ChatArea`: Message display and input
-  - `AgentManagerPanel`: Shows active orchestration agents and logs
-  - `AgentModal`: Create agents/workflows
+  - `App.tsx`: Main orchestration, connects to backend, wires hooks
+  - `Sidebar`: Agent/team navigation tree
+  - `ChatArea`: Message display and input, typing indicator
+  - `MessageList`: Renders messages, uses `StreamMessage` for streaming
+  - `StreamMessage / ToolCard / ReasoningSection`: Rich stream rendering
+  - `DetailPanel`: Agent info + SkillSelector in Settings tab
 - **Types** (`types.ts`):
-  - `Agent`, `Message`, `Task`, `ChatSession`
-  - `ActiveAgentState`: For orchestration panel
-  - `OrchestrationEvent`: Logs for agent activities
+  - `Agent`, `Message`, `Task`, `ChatSession`, `RenderedPart`, `ToolCardState`
+  - `StreamPart` types for all AI SDK Data Stream Protocol events
 - **Communication**:
-  - WebSocket for real-time agent responses
-  - HTTP for CRUD operations (teams, roles, workflows)
-  - Subscribes to specific agents via `subscribeToAgent(agentRole)`
+  - Socket.IO `stream` channel for real-time streaming
+  - Socket.IO `progress` channel for tool/thinking notifications
+  - Socket.IO `state` channel for plan/task state updates
+  - HTTP for CRUD operations (teams, roles, agents, skills)
 
 ## Builders and response formats
-- Builders use createAgent/createDeepAgent behind `Agent.ts`. DeepAgents enforce `responseFormat`; if the model deviates, middleware errors arise ("Invalid response format").
-- When strict schemas are set, prompts must instruct the model to return ONLY the exact JSON. If not, relax `responseFormat` or add fallback parsing.
+- Builders use `AgentFactory.getBuilder()` which creates AiSdkAgent instances from YAML definitions.
+- Structured output uses `generateText({ output: Output.object({ schema }) })` — `generateObject` is deprecated in AI SDK v6.
 - `AgentBuilder.runAgent` prefers `structuredResponse` and falls back to raw response; RoleManager accepts either `{ roles: [...] }` or `[...]`.
 
-## Event-driven execution
-- `AgentWorker` exposes `events: EventEmitter` and emits:
-  - `message` events for real-time updates during execution.
-  - `taskUpdate` events (currently commented) for task completion.
-- `AgentManager.assignTasksToWorkers` can subscribe to worker events, updates `MemoryManager`.
-- Workers are keyed by lowercase role names.
-- Frontend listens to Socket.IO events: `agent:message`, `agent:error`, `orchestration:*`.
+## Event architecture
+- **Socket.IO is the ONLY event bus** — for frontend delivery.
+- Internal backend communication uses **AsyncGenerator** (streaming) and **direct callbacks** (task lifecycle).
+- `AiSdkAgent.execute()` → `AsyncGenerator<AgentEvent>` — yields stream_part, message, done events.
+- WorkerPool iterates the generator, forwards stream_part to SocketServerV2 via `worker:stream`.
+- SocketServerV2 `WORKER_EVENT_ROUTES` map controls which legacy events go to which channels.
+- **Do NOT add new EventEmitters** — see `docs/features/task-orchestration/event-refactor/` for the refactoring plan.
 
 ## API Layer
 - **HTTP Server** (`api/HttpServer.ts`): Express server for REST endpoints
@@ -96,23 +103,23 @@ Deprecated files (kept for compatibility):
 - All API types centralized in `api/types/`
 
 ## Debugging and run targets
-- VS Code debug configs are in `.vscode/launch.json`.
-  - "Debug AgentManager" runs TypeScript using `tsx` or `ts-node/esm` depending on setup.
-- To build worker code:
-  - From `src/worker/`: `npm run build` (tsc)
-- To run frontend:
-  - From `src/AgentChat/`: `npm run dev` (Vite dev server)
+- Build: `bun run build:backend` (tsc + copy agents)
+- Dev backend: `bun run dev:backend`
+- Dev frontend: `bun run dev:frontend` (Vite HMR on port 3000)
+- Seed: `bun run seed` (3 teams, 10 agents, 10 skills)
+- Reset: `bun run db:reset` (drops all collections)
+- Use `start.ps1` for Windows PowerShell menu (options 20-22 for dev)
 - Common pitfalls:
-  - Missing `thread_id` in invoke ⇒ checkpoint errors. Always pass `{ configurable: { thread_id } }`.
-  - Role/worker key mismatch ⇒ use lowercase for `assigned_role` and worker registry.
-  - Strict response schemas ⇒ either tighten prompts or relax `responseFormat`.
-  - WebSocket not connected ⇒ check `agentManagerService.connect()` in frontend.
+  - Role/worker key mismatch → use lowercase for `assigned_role` and worker registry.
+  - Azure API version ⇒ must match deployment. `useDeploymentBasedUrls: true` required.
+  - `maxSteps` ignored in AI SDK v6 ⇒ use `stopWhen: stepCountIs(N)` instead.
+  - React double-render in StrictMode ⇒ all state updates must be immutable (no `.push()` or `obj.prop = val`).
 
 ## External integrations
-- Azure OpenAI via `@langchain/openai` with env vars:
-  - `AZURE_OPENAI_ENDPOINT_URL`, `AZURE_OPENAI_API_KEY`, `azureOpenAIApiDeploymentName`, `azureOpenAIApiVersion`.
-- MCP tools via `@langchain/mcp-adapters` (MultiServerMCPClient). Tools are appended to agent config.
-- LangGraph checkpointing via `@langchain/langgraph` `MemorySaver`.
+- Azure OpenAI via `@ai-sdk/azure` with env vars:
+  - `AZURE_OPENAI_ENDPOINT_URL`, `AZURE_OPENAI_API_KEY`, `AZURE_OPENAI_INSTANCE_NAME`.
+  - Model provider configured in `agent/providers/ModelProvider.ts` with `azure.chat()` + `useDeploymentBasedUrls`.
+- LangChain tools converted to AI SDK via `toAiSdkTool()` in `AiSdkAgent.ts`.
 - Socket.IO for real-time frontend-backend communication.
 
 ## File Management Rules
@@ -160,38 +167,42 @@ Deprecated files (kept for compatibility):
 ## Patterns to follow when adding features
 - **New role/task flows**:
   - Add tasks to `MemoryManager` with lowercase `assigned_role`; wire prerequisites if needed.
-  - Subscribe to `AgentWorker.events` for non-blocking updates; remove listeners after completion.
+  - Use direct callbacks for task lifecycle events — no EventEmitters.
+- **New agent tools**:
+  - Use AI SDK `tool()` from `ai` package with `inputSchema` (Zod schema).
+  - For LangChain tools, wrap with `toAiSdkTool()` in AiSdkAgent.
 - **Builder changes**:
-  - If adding/adjusting schemas, ensure prompts return strict JSON and keep `runAgent` tolerant (structuredResponse or raw).
+  - Use `generateText({ output: Output.object({ schema }) })` for structured output.
 - **Type definitions**:
   - Add new types to appropriate `types/` folder
   - Export from `index.ts` barrel file
-  - Update documentation in type file's README.md
 - **Frontend changes**:
-  - Update types in `src/AgentChat/types.ts`
-  - Use `AgentManagerService` for all backend communication
-  - Subscribe/unsubscribe from Socket.IO events properly in useEffect cleanup
+  - Update types in `packages/frontend/types.ts`
+  - Use `AgentServiceV2` for all backend communication
+  - All state updates must be **immutable** (React 18 StrictMode)
+  - Stream events flow through `processStreamPart()` in useChat
 - **Concurrency**:
-  - Per-worker concurrency is serialized via `TaskQueue`. For parallelism, spawn multiple workers or ensure unique `thread_id`s and safe agent state.
+  - Per-worker concurrency is serialized via `TaskQueue`. For parallelism, spawn multiple workers.
 
 ## Key files
 **Backend:**
-- `src/worker/agentManager/agentManager.ts`: orchestrator (planning, assignment, event subscribers).
-- `src/worker/roleManager/RoleManager.ts`: role discovery and worker registry.
-- `src/worker/AgentWorker/AgentWorker.ts`: invocation, event emission, message handling.
-- `src/worker/memoryManager/MemoryManager.ts`: task lifecycle and readiness checks.
-- `src/worker/agentManager/agentBuilder/AgentBuilder.ts`: unified builder interface with `runAgent`.
-- `src/worker/api/SocketServer.ts`: WebSocket server for real-time communication.
-- `src/worker/api/HttpServer.ts`: REST API endpoints.
-- All type files: `*/types/index.ts` for centralized type exports.
+- `packages/backend/agentManager/AgentManagerV2.ts`: orchestrator (planning, assignment, lifecycle).
+- `packages/backend/orchestrator/OrchestratorService.ts`: LLM-powered planner with tools.
+- `packages/backend/services/WorkerPool.ts`: agent worker management, skill loading, event forwarding.
+- `packages/backend/agent/internal/AiSdkAgent.ts`: AI SDK streamText agent, stream_part lifecycle.
+- `packages/backend/agent/AgentFactory.ts`: creates agents from YAML definitions.
+- `packages/backend/memoryManager/MemoryManager.ts`: task lifecycle and readiness checks.
+- `packages/backend/api/SocketServerV2.ts`: Socket.IO server, WORKER_EVENT_ROUTES, stream broadcasting.
+- `packages/backend/api/HttpServer.ts`: REST API endpoints.
+- `packages/backend/skills/SkillResolver.ts`: skill ID → AI SDK tool resolution.
 
 **Frontend:**
-- `src/AgentChat/App.tsx`: main application component.
-- `src/AgentChat/services/AgentManagerService.ts`: unified backend communication.
-- `src/AgentChat/types.ts`: frontend type definitions.
-- `src/AgentChat/components/`: UI components for chat, sidebar, panels.
-
-If anything feels ambiguous (e.g., exact responseFormat expected for builders, or desired concurrency model), flag it and propose a small code patch aligning prompts, schemas, and invoke configs.
+- `packages/frontend/App.tsx`: main application, hook wiring.
+- `packages/frontend/services/AgentServiceV2.ts`: Socket.IO + HTTP communication.
+- `packages/frontend/hooks/useChat.ts`: chat histories, processStreamPart(), addMessage().
+- `packages/frontend/hooks/useOrchestration.ts`: Socket.IO event routing, subscribeToTeam().
+- `packages/frontend/types.ts`: all frontend type definitions.
+- `packages/frontend/components/StreamMessage.tsx`: rich stream rendering (text, tool cards, reasoning).
 
 ## Branching Strategy
 

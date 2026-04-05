@@ -4,7 +4,7 @@
  * Replaces AgentBuilderFactory with a unified factory for all agent types.
  *
  * Agent Type Resolution:
- * - 'internal' → InternalAgent (unified agent)
+ * - 'internal' → AiSdkAgent (AI SDK streamText-based)
  *   - Without responseFormat: Tool mode (workers, orchestrator)
  *   - With responseFormat: Structured output mode (builders)
  * - 'external' → ExternalAgent
@@ -16,20 +16,19 @@ import { BaseAgent } from "./BaseAgent.js";
 import type { AgentDefinition, AgentType, IAgent } from "./types.js";
 
 // Import concrete implementations
-import { InternalAgent } from "./internal/InternalAgent.js";
+import { AiSdkAgent } from "./internal/AiSdkAgent.js";
 // import { ExternalAgent } from './external/ExternalAgent.js';
 // import { AgenticUIAgent } from './agentic-ui/AgenticUIAgent.js';
 
 /**
  * Registry of agent implementations by type
- * InternalAgent handles both tool mode and structured output mode internally
+ * AiSdkAgent handles both tool mode and structured output mode internally
  */
 type AgentConstructor = new (definition: AgentDefinition) => BaseAgent;
 
 const agentConstructors: Map<AgentType, AgentConstructor> = new Map();
 
-// Register InternalAgent for 'internal' type (handles both modes)
-agentConstructors.set("internal", InternalAgent);
+agentConstructors.set("internal", AiSdkAgent);
 
 /**
  * Register an agent implementation for a type
@@ -47,7 +46,7 @@ export function registerAgentType(
 function selectConstructor(
   definition: AgentDefinition,
 ): AgentConstructor | undefined {
-  // InternalAgent handles responseFormat internally, no special selection needed
+  // AiSdkAgent handles responseFormat internally, no special selection needed
   return agentConstructors.get(definition.type);
 }
 

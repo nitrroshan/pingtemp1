@@ -178,3 +178,52 @@ interface ExternalAgentConfig extends ExternalConfig {
 - [Team Package](../team-package/feature_architecture.md) — `@ping/teams` provides team lifecycle management
 - [Tools as MCP](../tools-as-mcp/feature_architecture.md) — MCP server patterns, FastMCP usage
 - [Teams Integration](../teams-integration/feature_architecture.md) — frontend/CLI wiring for teams
+
+---
+
+## A10 Alignment — Persistent Agents & Three-Layer Hierarchy
+
+> **Important:** This section aligns B3 with [A10 — Persistent Agents](../persistent-agents/feature_architecture.md) and the [Sub-Agent Protocol](../persistent-agents/sub-agent-protocol.md). Decisions made April 6, 2026.
+
+### Key Decisions
+
+| # | Decision | Choice |
+|---|---|---|
+| 1 | **Child team visibility** | **Black box.** Parent sees only planner-level status updates. No drill-in to child agents. |
+| 2 | **ask_user routing** | **Configurable — child planner decides.** Per-team policy: `handle_locally \| bubble_up \| auto`. |
+| 3 | **Redirect propagation** | **Only to child planner.** Parent can't kill another person's running agents. Child planner decides how to cascade. |
+| 4 | **Child team agents** | **Full persistent agents.** Each child team has its own complete three-layer hierarchy (Planner → Chat Agents → Task Sub-Agents). |
+
+### What Changes from Original B3
+
+The `ExternalAgent` class described in v1.0 above is replaced by a **`TeamSubAgent` adapter** that implements the universal `SubAgentAdapter` interface from A10:
+
+| B3 Original | Updated for A10 |
+|---|---|
+| `ExternalAgent` extends `BaseAgent` | `TeamSubAgent` implements `SubAgentAdapter` |
+| Orchestrator assigns to ExternalAgent worker | Chat Agent's `execute_task` tool creates TeamSubAgent |
+| `ExternalAgent.execute()` → `AgentEvent` | `TeamSubAgent.start()` → `AsyncGenerator<SubAgentEvent>` |
+| No ask_user across teams | ask_user bubbles up via MCP SSE (configurable) |
+| No pinging child teams | Ping/redirect via MCP notifications to child planner |
+| No chat with child agents | Child team is black box; parent only sees planner updates |
+
+### Distributed Multi-User Model
+
+Child teams can run on **different servers, operated by different people**:
+
+- Person A operates the parent team (Product), Person B operates the child team (Engineering)
+- Communication is entirely over MCP Streamable HTTP
+- Person A sees the child team as a black box — status updates and summary only
+- Person B sees their team's full three-layer hierarchy with complete control
+- Auth via bearer token (Person B generates, shares with Person A); OAuth for production
+
+See [Sub-Agent Protocol — Team Stacking Integration](../persistent-agents/sub-agent-protocol.md#12-team-stacking-integration-b3-alignment) for the full `TeamSubAgent` adapter code, cross-team ask_user/ping flows, and MCP server interface.
+
+### Updated Phases
+
+| Phase | B3 Original | Updated for A10 |
+|---|---|---|
+| **v1.0** | ExternalAgent class + registry | `TeamSubAgent` adapter (implements SubAgentAdapter) + registry |
+| **v1.1** | Team-as-MCP-server | Team MCP server exposes `submit_goal`, `answer_question`, `send_message`, `cancel` + SSE streaming (incl. ask_user events) |
+| **v2.0** | Recursive composition | Three-layer hierarchy at each level. Child planner handles pings/redirects. Delegation chain prevents cycles. |
+| **v2.1** | Cross-team shared docs | Child team's L2 collab accessible to parent via read-only MCP tools |

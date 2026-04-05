@@ -1,7 +1,7 @@
 # Ping — Master Feature List
 
 **Last Updated:** April 1, 2026  
-**Total Features:** 33 (18 existing + 15 new)
+**Total Features:** 34 (18 existing + 16 new)
 
 ---
 
@@ -33,6 +33,7 @@
 | A7 | **External Agent Invocation** | 🆕 New | [external-agent-invocation](external-agent-invocation/) | Worker agents can call external agents (via MCP, HTTP, A2A protocol). Research best interop method. |
 | A8 | **Git-Based Task Context** | 🆕 New | [git-task-context](git-task-context/) | Preserve agent work as git commits. Branch-per-task. New sessions can pull branches. Branches persist until project completes. |
 | A9 | **Approval System** | 🆕 New | [approval-system](approval-system/) | Structured approval for plans, tools, artifacts. Leverages Mastra's `requireApproval` + `suspend()`. Depends on A1. Auto-approve rules per team. Audit trail. |
+| A10 | **Persistent Agents & Three-Layer Hierarchy** | 🆕 New | [persistent-agents](persistent-agents/) | Three-layer agent hierarchy: persistent Planner (team leader) → persistent Chat Agents (role employees) → transient Task Sub-Agents (workers). Always-on chat, parallel plans, AI SDK sub-agents. Extends A5. |
 
 ### B. Platform Architecture (Packaging & Deployment)
 
@@ -117,7 +118,8 @@ D2 L2 Search & Indexing ──────────────────�
  └── D3 L2 as Deployed Service (deploy search separately)
 
 E1 Orchestrator Agent + A5 Planner as Agent ───────────────────
- └── A6 Task Orchestration Redesign (better task lifecycle)
+ ├── A6 Task Orchestration Redesign (better task lifecycle)
+ └── A10 Persistent Agents (extends A5, needs 3B Event Refactor)
 ```
 
 ## Execution Phases

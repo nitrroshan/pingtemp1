@@ -25,33 +25,34 @@ Every phase MUST pass this end-to-end flow before shipping:
 
 ---
 
-## Current State (What Works Today)
+## Current State (Updated April 6, 2026)
 
-- AgentManagerV2 with OrchestratorService
-- MemoryManager with task dependencies
-- WorkerPool with InternalAgent (LangGraph)
-- L1 Workspace (git, scratchpad, search, symbol index, 21 tools)
+- AgentManagerV2 with OrchestratorService (4 tools: create_plan, approve_plan, get_status, get_context)
+- MemoryManager with task DAG dependencies + RoleTaskQueue
+- WorkerPool with AiSdkAgent (AI SDK v6 `streamText()` + `stopWhen`)
+- LangChain→AI SDK tool converter (`toAiSdkTool()` with `inputSchema`)
+- Full streaming pipeline: `stream_part` events → `worker:stream` → Socket.IO → frontend `processStreamPart()`
+- L1 Workspace (git, scratchpad/todo, file CRUD, grep/glob, keyword search, identity, code intel, 31 tools per agent)
 - L2 Collaboration (Hocuspocus CRDT, PlanStore, GroupChatManager, collab tool)
-- TeamService (CRUD, agents, members — backend 95% done)
-- SkillRegistry + SkillTools (5 tools, never wired)
-- SocketServerV2 + HttpServer (basic events)
-- Frontend (basic chat UI, agent listing)
+- TeamService + MongoDB (CRUD, agents, members, skill assignments)
+- SkillRegistry + SkillResolver (10 seeded skills, per-request DB loading, SkillSelector UI)
+- SocketServerV2 with declarative `WORKER_EVENT_ROUTES` map
+- Frontend: React Router, useOrchestration/useChat hooks, StreamMessage/ToolCard/ReasoningSection rendering
+- Dev tooling: `bun run seed` (3 teams, 10 agents, 10 skills), `bun run db:reset`, `start.ps1` dev options
 
-**What's broken:** No streaming, no plan approval UI, skills not wired, teams not in UI, no sandboxing, no L3 knowledge, CLI is basic, no Docker setup.
+**What's remaining:** Plan approval UI end-to-end test, Docker setup, CLI.
 
 ---
 
-## Phase 1: Core Loop (4-5 weeks)
+## Phase 1: Core Loop ✅ COMPLETE
 ### "User gives a goal → Planner plans → Workers execute → User approves → Done"
 
-**Why first:** This is the minimum viable product. Nothing else matters if the core loop doesn't work. Everything built after layers on top of this.
-
-| Feature | What | Effort | ID |
-|---|---|---|---|
-| **Planner as Agent** | Planner = top-level brain. Calls `create_plan`, `replan`, `get_status`. Orchestrator = reactive runtime. | 2-3 weeks | A5 |
-| **Task Orchestration** | DAG deps, parallel dispatch, failure detection, context flow. Replaces MemoryManager for task state. | (included in A5 — same work) | A6 |
-| **Frontend Orchestrator Integration** | Plan approval UI, task list, status dashboard. Wire `SocketServerV2` events to React. | 3-4 days | — |
-| **Seed Data** | Sample teams, agents, skills for demo/testing. | 2-3 days | — |
+| Feature | What | Status |
+|---|---|---|
+| **Planner as Agent** | OrchestratorService with 4 tools (create_plan, approve_plan, get_status, get_context) | ✅ Done |
+| **Task Orchestration** | MemoryManager with prerequisite Map, DAG ready-task detection, RoleTaskQueue | ✅ Done |
+| **Frontend Orchestrator Integration** | PlanApproval, TaskDashboard, GoalInput components, useOrchestration hook | ✅ Done |
+| **Seed Data** | `bun run seed` — 3 teams, 10 agents, 10 skills. `bun run db:reset`. `start.ps1` options 20-22 | ✅ Done |
 
 #### Frontend in Phase 1
 
@@ -83,7 +84,7 @@ Plan approval enhanced → Task dashboard live → Error toasts
 | What | Status | How Ensured |
 |---|---|---|
 | Golden path (goal → plan → execute → done) | ✅ **Established here** | This IS the golden path. All future phases layer on top. |
-| LangGraph agent runtime | ✅ Stays | InternalAgent + `agent.invoke()` unchanged. Phase 2 will replace. |
+| Agent runtime | ✅ Migrated → Phase 2 | AiSdkAgent with `streamText()`. LangGraph fully removed. |
 | MemoryManager task state | ✅ Stays | Task lifecycle via MemoryManager. Phase 1 adds DAG on top, keeps MemoryManager for storage. |
 | Existing frontend chat | ⚠️ Refactored | App.tsx refactored but same Socket.IO events. Old message flow preserved through new hooks. |
 | WorkerPool execution | ✅ Stays | Same `runTask()` flow. Workers execute tasks, emit events. |
@@ -98,16 +99,19 @@ bun run dev:backend && bun run dev:frontend
 
 ---
 
-## Phase 2: Real-Time Experience (3-4 weeks)
+## Phase 2: Real-Time Experience ✅ COMPLETE
 ### "See everything happening in real-time, like watching a team work"
 
-**Why second:** The core loop works but feels dead — user submits goal and waits for a blob. Phase 2 makes it feel alive.
-
-| Feature | What | Effort | ID |
-|---|---|---|---|
-| **Agentic Streaming** | AI SDK `streamText` over Socket.IO. Token-by-token text, tool call cards, reasoning. Uses AI SDK Data Stream Protocol format. | 2-3 weeks | A2 |
-| **Mastra/AI SDK Migration** | Replace LangGraph `agent.invoke()` with AI SDK `streamText()`. Hot-swappable tools. Required for streaming. | (included in A2 — same migration) | A1 |
-| **Skills Integration** | Wire existing SkillRegistry into agent tool loading. Agent YAML declares skills. User selects skills in UI. | 1 week | C3 |
+| Feature | What | Status |
+|---|---|---|
+| **AI SDK Migration (A1)** | AiSdkAgent with `streamText()`, `azure.chat()`, `useDeploymentBasedUrls`, `stopWhen: stepCountIs()`, `Output.object()`. LangGraph fully removed. | ✅ Done |
+| **Agentic Streaming (A2)** | Full lifecycle `stream_part` events via `worker:stream` → Socket.IO → `processStreamPart` → StreamMessage/ToolCard/ReasoningSection | ✅ Done |
+| **Skills Integration (C3)** | SkillResolver, 10 seeded skills, SkillSelector UI in DetailPanel, per-request DB skill loading | ✅ Done |
+| **LangChain→AI SDK Tool Converter** | `toAiSdkTool()` wraps LangChain StructuredTool → AI SDK tool format with `inputSchema` | ✅ Done |
+| **Immutable Stream Rendering** | React 18 StrictMode-safe with `.map()` patterns, no mutations | ✅ Done |
+| **NotificationChip wiring** | Backend emits task lifecycle on `stream` channel; frontend creates standalone notification messages when outside active stream | ✅ Done |
+| **Smooth streaming (word-boundary)** | SmoothStream buffers text-delta at word boundaries in AiSdkAgent.executeToolMode() | ✅ Done |
+| **StreamBridge** | Deprecated — replaced by AgentEvent pipeline via executeToolMode() | ❌ Archived |
 
 #### Frontend in Phase 2
 
@@ -123,7 +127,7 @@ bun run dev:backend && bun run dev:frontend
 
 **After Phase 2 (backend):**
 ```
-LangGraph replaced with AI SDK → streamText() with fullStream →
+AI SDK streamText() with fullStream + SmoothStream word-boundary buffering →
 Tools hot-swappable per call → Skills wired into agents →
 Streaming events flow to frontend via Socket.IO
 ```
@@ -136,52 +140,83 @@ Skills configurable per agent
 ```
 The experience goes from "submit and wait" to "watch your team work in real-time."
 
-**Continuity Contract — Phase 2 (HIGHEST RISK PHASE):**
+**Continuity Contract — Phase 2 (COMPLETE):**
 
 | What | Status | How Ensured |
 |---|---|---|
-| Golden path | ⚠️ **At risk — agent runtime swap** | Feature flag: `AGENT_RUNTIME=langgraph\|ai-sdk`. Default stays `langgraph` during migration. Switch to `ai-sdk` only after all tests pass. |
-| Agent execution | ⚠️ Migrating | Migrate ONE agent type at a time (planner first, then workers). Both runtimes run side-by-side. Never rip out LangGraph until AI SDK is fully validated. |
-| Tool loading | ⚠️ Changing | AI SDK tools have different signature than LangGraph tools. Create adapter: `langchainTool → aiSdkTool` converter. Existing tool files don't change — adapter wraps them. |
-| Plan approval flow | ✅ Stays | Plan tools (`create_plan`, `approve_plan`) work the same — only the agent calling them changes internally. |
-| Task orchestration | ✅ Stays | OrchestratorService dispatches tasks identically. Only the agent inside the worker changes. |
-| Frontend messages | ⚠️ Enhanced | New streaming events (`text-delta`, `tool-input-*`, etc.) are ADDITIVE. Old `agent:message` events still work for non-streaming fallback. Frontend handles both. |
-| SocketServerV2 events | ✅ Stays + adds | Existing events unchanged. New `stream` event added. Frontend subscribes to both during transition. |
-
-**Migration strategy (prevents breakage):**
-```
-Week 1: AI SDK agents work alongside LangGraph. Both produce output.
-         Feature flag: AGENT_RUNTIME=langgraph (default)
-         Test: golden path still works with langgraph
-
-Week 2: Planner migrated to AI SDK. Workers still LangGraph.
-         Feature flag: PLANNER_RUNTIME=ai-sdk, WORKER_RUNTIME=langgraph
-         Test: golden path works with mixed runtimes
-
-Week 3: All workers migrated to AI SDK. LangGraph code kept but unused.
-         Feature flag: AGENT_RUNTIME=ai-sdk (new default)
-         Test: golden path works fully on AI SDK
-         Test: streaming works end-to-end
-
-Week 4: Remove LangGraph code paths (or keep behind flag for rollback).
-```
+| Golden path | ✅ **Preserved** | AI SDK migration complete. AiSdkAgent is the only runtime. LangGraph fully removed. |
+| Agent execution | ✅ Done | Planner (OrchestratorService) and workers (WorkerPool) both use `AiSdkAgent` with `streamText()`. No dual-runtime flag needed. |
+| Tool loading | ✅ Done | `toAiSdkTool()` adapter wraps LangChain tools to AI SDK format. Existing tools unchanged. |
+| Plan approval flow | ✅ Stays | Plan tools (`create_plan`, `approve_plan`) work the same. |
+| Task orchestration | ✅ Stays | OrchestratorService dispatches tasks identically. |
+| Frontend messages | ✅ Enhanced | `stream` channel delivers all content. Legacy `progress` channel still works for backward compat. |
+| SocketServerV2 events | ✅ Done | `stream` channel with typed parts. Task lifecycle events (`task-started`, `task-completed`, `task-failed`) emit as both `state` and `stream` events. |
+| NotificationChip | ✅ Done | Backend emits task lifecycle on `stream` channel. Frontend handles inline (during stream) and standalone (outside stream) notification messages. |
+| SmoothStream | ✅ Done | Word-boundary text buffering in `AiSdkAgent.executeToolMode()` prevents single-character jitter. |
 
 **Smoke test after Phase 2:**
 ```
 bun run dev:backend && bun run dev:frontend
 → Submit goal → See plan (streamed token-by-token) → Approve
 → Watch tasks execute (tool cards, reasoning, live text)
+→ Task chips appear inline in chat (started, completed, failed)
 → Results shown → Goal done
-→ Toggle AGENT_RUNTIME=langgraph → SAME test passes (rollback works)
 → ERROR? → Phase 2 is not done.
 ```
 
 ---
 
-## Phase 3: Teams & Packages (3-4 weeks)
-### "Multiple teams, reusable packages, production-ready structure"
+## Phase 3: Service Audit, Event Refactor & Teams (4-5 weeks)
+### "Verify services fit the product, clean event architecture, multi-team structure"
 
-**Why third:** Core loop works (Phase 1), looks great (Phase 2). Now structure it for real use — teams, packages, proper frontend.
+**Why third:** Core loop works (Phase 1), looks great (Phase 2). Before adding more layers, **verify what we built actually fits the product vision**, clean up the internal event architecture (7 EventEmitters → 0), then structure for real multi-team use.
+
+### 3A: TeamService & SkillService Audit (1 week)
+
+**Goal:** Verify that TeamService and SkillRegistryService are implemented according to the product's actual needs. If they don't fit → plan and execute modifications. Check against the product vision in `docs/ping/architecture.md`.
+
+**Why now:** These services were built for Phase 1/2 scaffolding. Before Phase 3 layers teams/packages on top, we need to confirm the foundation is right. Fixing after package extraction is 10x harder.
+
+| Task | What | Details |
+|---|---|---|
+| **TeamService Audit** | Review every method against product needs | **Current API (19 methods):** `createTeam`, `getTeam`, `listTeams`, `updateTeam`, `deleteTeam`, `addAgent`, `getTeamAgents`, `removeAgent`, `updateAgentStatus`, `delegateAgent`, `reclaimAgent`, `assignSkillToAgent`, `removeSkillFromAgent`, `getAgentSkills`, `setSkillEnabled`, `addMember`, `removeMember`, `getTeamMembers`, `getWorkspace`. **Check:** Does the Team model support everything the product needs? Is the `ownerId` / manager model correct? Does `delegateAgent`/`reclaimAgent` make sense for our execution model? Are `TeamSettings` sufficient (`executionMode`, `maxConcurrency`)? Does `getWorkspace()` integrate properly with the workspace layer? |
+| **SkillRegistryService Audit** | Review every method against product needs | **Current API (15 methods):** `createSkill`, `getSkill`, `getAllSkills`, `updateSkill`, `deleteSkill`, `incrementInstallCount`, `searchSkills`, `findSimilarSkills`, `assignSkillToAgent`, `removeSkillFromAgent`, `getAgentSkills`, `getAgentsWithSkill`, `findSkillForTask`, `getStats`. **Check:** Is the skill model complete? Does semantic search (vector embeddings) work properly? Is `findSkillForTask()` used by the planner? Does the skill→tool resolution pipeline (`SkillResolver`) handle all tool types? |
+| **Product Alignment Check** | Cross-reference with product architecture | Check `docs/ping/architecture.md` — does TeamService support both Design Mode (Team Builder) and Execution Mode (Runtime)? Does RoleManager→AgentManager→Worker flow use TeamService correctly? Are there missing concepts (team templates, team cloning, team versioning)? |
+| **Gap Analysis & Plan** | Document gaps, plan modifications | If services don't fit: write a focused modification plan (which methods to add/change/remove, schema migrations needed). If they fit: document verification and move on. | Remove unecesary code that does not align with goal.
+| **Execute Modifications** | Implement changes if needed | Apply the modification plan. Update tests. Verify golden path still works. |
+
+**Exit criteria:** Written confirmation that TeamService and SkillRegistryService match product needs, OR modifications completed and tested.
+
+### 3B: AgentEvent Refactor (1 week)
+
+**Goal:** Replace 7 internal EventEmitter chains with typed alternatives. 0 EventEmitters in backend code afterward. Socket.IO remains the only event system (appropriate for network I/O to frontend).
+
+**Why now:** Current architecture has 3 critical problems documented in `docs/architecture/EVENT_ARCHITECTURE_ANALYSIS.md`:
+1. 7 EventEmitters with overlapping event names (`task:complete` on 3 emitters)
+2. Fire-and-forget streaming (no backpressure — 787+ stream events lost if consumer is slow)
+3. `.bind(this)` listeners never cleaned up (memory leak risk)
+
+Detailed architecture: [`docs/features/task-orchestration/event-refactor/feature_architecture.md`](docs/features/task-orchestration/event-refactor/feature_architecture.md)
+
+| Step | What | Files | Details |
+|---|---|---|---|
+| **WorkerPool → AsyncGenerator** | Replace `events.emit("worker:stream")` with `yield` | `WorkerPool.ts`, `SocketServerV2.ts` | `runTask()` becomes `AsyncGenerator<AgentEvent>` — consumer controls pace, backpressure preserved. Remove `WorkerPool.events` EventEmitter entirely. |
+| **OrchestratorService → AsyncGenerator** | Replace `events.emit("worker:stream")` with `yield*` | `OrchestratorService.ts`, `SocketServerV2.ts` | `handleMessage()` returns `AsyncGenerator<AgentEvent>`. SocketServerV2 iterates directly. |
+| **RoleTaskQueue → Direct Callbacks** | Replace `events.emit("task:available")` with callbacks | `RoleTaskQueue.ts`, `MemoryManager.ts`, `AgentManagerV2.ts` | `TaskCallbacks` interface: `onTaskReady`, `onTaskComplete`, `onTaskFailed`. Only 1 consumer (OrchestratorService) — events are overkill. Direct calls give full stack traces. |
+| **OrchestratorService Wiring** | Wire direct callback injection | `OrchestratorService.ts`, `AgentManagerV2.ts` | Arrow functions in constructor — no runtime `.bind(this)`. Remove all `memoryManager.on(...)` registrations. |
+| **Cleanup Dead Code** | Remove EventEmitters, aliases, route maps | Multiple files | Remove `AgentManager.events` alias, `ensureTeamEventsBroadcast()`, `attachedTeams` Set, `WORKER_EVENT_ROUTES` map, `AiSdkAgent._emitter`. |
+
+**End state:**
+```
+Agent → Consumer (streaming):    AsyncGenerator pass-through (backpressure ✅)
+Task DAG lifecycle:              Direct callbacks (1 consumer, type-safe ✅)
+Internal coordination:           Constructor injection (traceable ✅)
+→ Socket.IO (network boundary):  socket.emit() (appropriate for N browsers)
+```
+
+**Exit criteria:** 0 EventEmitters in backend. Golden path works. Streaming has backpressure. Task lifecycle is direct calls.
+
+### 3C: Team Package & Multi-Team (2-3 weeks)
 
 | Feature | What | Effort | ID |
 |---|---|---|---|
@@ -204,7 +239,9 @@ bun run dev:backend && bun run dev:frontend
 
 **After Phase 3 (backend):**
 ```
-@ping/agent-manager + @ping/teams as packages →
+3A: TeamService + SkillService verified/modified for product fit →
+3B: 0 EventEmitters, AsyncGenerator streaming, direct callbacks →
+3C: @ping/agent-manager + @ping/teams as packages →
 Frontend → Backend API → @ping/teams only (never sees AgentManager) →
 CLI → @ping/agent-manager directly for sessions (no HTTP needed) →
 Each team wraps one AgentManager instance →
@@ -216,31 +253,46 @@ Docker Compose for one-command setup
 Team switcher → Team management page → Agent settings →
 Chat persistence → Responsive layout → Dark mode
 ```
-Ping is a real multi-team product, not a single-instance demo.
+Ping is a real multi-team product with clean internals, not a brittle single-instance demo.
 
 **Continuity Contract — Phase 3:**
 
 | What | Status | How Ensured |
 |---|---|---|
-| Golden path | ⚠️ **At risk — package extraction** | Extract one module at a time. After each extraction: run golden path smoke test. Old import paths re-export from new packages during transition. |
-| Agent execution | ✅ Stays | AI SDK runtime (from Phase 2) unchanged. Package extraction moves files, not behavior. |
-| Streaming | ✅ Stays | Same streaming pipeline. Just lives in `@ping/agent-manager` now. |
+| Golden path | ⚠️ **At risk — service audit + event refactor + package extraction** | 3A: Service audit before structural changes. 3B: Event refactor is incremental — each step independently shippable, golden path tested after each. 3C: Extract one module at a time. Old import paths re-export from new packages during transition. |
+| Agent execution | ✅ Stays | AI SDK runtime (from Phase 2) unchanged. Event refactor changes delivery mechanism, not agent behavior. Package extraction moves files, not behavior. |
+| Streaming | ⚠️ Improved | 3B replaces fire-and-forget `events.emit()` with backpressure-preserving AsyncGenerator. Same data, better delivery. Frontend receives identical stream events. |
 | Tool loading | ✅ Stays | Tools still loaded same way. Package extraction is structural, not behavioral. |
 | Single-team mode | ✅ Preserved | Without team selection, uses default team. Frontend doesn't force team creation. |
 | API endpoints | ⚠️ Adding | New team endpoints (`/api/v2/teams/*`). Existing endpoints unchanged. Frontend uses new endpoints only when teams feature is active. |
 | Frontend | ⚠️ Enhanced | Team switcher is additive. Without teams, UI works exactly like Phase 2 (single team, single chat). |
+| EventEmitters | ✅ Removed | 3B removes all 7 internal EventEmitters. Socket.IO stays (network boundary). Future services hook into SocketServerV2 direct callbacks or Socket.IO client connections — zero new event infrastructure. |
 
 **Migration strategy (prevents breakage):**
 ```
-Step 1: Extract @ping/agent-manager. Backend imports from package.
-        Test: golden path works.
+Phase 3A: Audit TeamService + SkillRegistryService. Modify if needed.
+          Test: golden path works. Services match product vision.
 
-Step 2: Extract @ping/teams. Backend imports from package.
-        Test: golden path works (single-team, no teams UI yet).
+Phase 3B: Event refactor (incremental — each step is independently shippable):
+  Step 1: WorkerPool → AsyncGenerator. Remove WorkerPool.events.
+          Test: streaming works, golden path works.
+  Step 2: OrchestratorService → AsyncGenerator. 
+          Test: orchestrator streaming works.
+  Step 3: RoleTaskQueue → Direct callbacks. Remove RoleTaskQueue.events.
+          Test: task lifecycle works (DAG, dependencies, completion).
+  Step 4: Wire OrchestratorService callbacks. Remove .bind(this).
+          Test: full golden path end-to-end.
+  Step 5: Cleanup dead code (aliases, route maps, unused emitters).
+          Test: golden path works. 0 EventEmitters in codebase.
 
-Step 3: Wire frontend team UI. Default team auto-selected.
-        Test: golden path works with default team.
-        Test: create second team, switch between them.
+Phase 3C: Package extraction (incremental):
+  Step 1: Extract @ping/agent-manager. Backend imports from package.
+          Test: golden path works.
+  Step 2: Extract @ping/teams. Backend imports from package.
+          Test: golden path works (single-team, no teams UI yet).
+  Step 3: Wire frontend team UI. Default team auto-selected.
+          Test: golden path works with default team.
+          Test: create second team, switch between them.
 ```
 
 **Smoke test after Phase 3:**
@@ -248,6 +300,8 @@ Step 3: Wire frontend team UI. Default team auto-selected.
 bun run dev:backend && bun run dev:frontend
 → Open browser → Default team loaded automatically
 → Submit goal → Streamed plan → Approve → Tasks stream → Done
+→ Verify: 0 EventEmitters in backend (grep confirms)
+→ Verify: streaming uses AsyncGenerator chain (backpressure preserved)
 → Create new team → Switch to it → Submit goal → Same flow works
 → Switch back to first team → Chat history preserved
 → docker compose up → Same flow works in containers

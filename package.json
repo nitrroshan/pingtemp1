@@ -12,6 +12,8 @@
     "typecheck": "bun run --filter '*' typecheck",
     "mongo:start": "docker run -d --name ping-mongo -p 27017:27017 -v ping-mongo-data:/data/db mongo:7",
     "mongo:stop": "docker stop ping-mongo",
-    "mongo:rm": "docker rm ping-mongo"
+    "mongo:rm": "docker rm ping-mongo",
+    "seed": "bun run --filter @ping/backend seed",
+    "db:reset": "bun run --filter @ping/backend db:reset"
   }
 }

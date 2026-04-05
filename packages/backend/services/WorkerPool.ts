@@ -3,18 +3,19 @@
  *
  * Core responsibilities:
  * - Cache AgentDefinitions by role
- * - Create InternalAgent instances for tasks
+ * - Create AiSdkAgent instances for tasks
  * - Bridge AsyncGenerator → EventEmitter for Socket.IO
  * - Clean up workers when done
  */
 
 import { EventEmitter } from "events";
 import { Logger } from "tslog";
-import { InternalAgent } from "../agent/internal/InternalAgent.js";
+import { AiSdkAgent } from "../agent/internal/AiSdkAgent.js";
 import {
   createReportStatusTool,
   createCompleteTaskTool,
 } from "../agent/internal/tools/index.js";
+import { skillResolver } from "../skills/SkillResolver.js";
 import { WorkspaceManager } from "../memory/L1/workspace/WorkspaceManager.js";
 import { AgentWorkspace } from "../memory/L1/workspace/AgentWorkspace.js";
 import { createWorkspaceTools } from "../memory/L1/workspace/tools/workspace-tools.js";
@@ -32,6 +33,8 @@ import dotenv from "dotenv";
 dotenv.config();
 
 const logger = new Logger({ name: "WorkerPool" });
+
+
 
 /**
  * Default model config - uses environment variables
@@ -58,7 +61,7 @@ export class WorkerPool {
   private definitions = new Map<string, AgentDefinition>();
 
   /** Active workers by task ID */
-  private workers = new Map<string, InternalAgent>();
+  private workers = new Map<string, AiSdkAgent>();
 
   /** Workspaces by task ID (for git branch isolation) */
   private workspaces = new Map<string, AgentWorkspace>();
@@ -78,6 +81,12 @@ export class WorkerPool {
   /** Current goal ID for collab context */
   private goalId: string | null = null;
 
+  /** Maps role → agent MongoDB _id (for DB skill lookup) */
+  private roleAgentIdMap = new Map<string, string>();
+
+  /** Base (non-skill) tools per worker — skills are refreshed per request */
+  private workerBaseTools = new Map<string, any[]>();
+
   /** Event emitter for Socket.IO to subscribe */
   public readonly events = new EventEmitter();
 
@@ -91,6 +100,17 @@ export class WorkerPool {
   setMemoryCoordinator(coordinator: MemoryCoordinator): void {
     this.memoryCoordinator = coordinator;
     logger.info("MemoryCoordinator set for WorkerPool");
+  }
+
+  /**
+   * Set role → MongoDB agent ID map (for DB skill lookup)
+   */
+  setRoleAgentIdMap(map: Record<string, string>): void {
+    this.roleAgentIdMap.clear();
+    for (const [role, id] of Object.entries(map)) {
+      this.roleAgentIdMap.set(role.toLowerCase(), id);
+    }
+    logger.debug(`RoleAgentIdMap set: ${Object.keys(map).join(", ")}`);
   }
 
   /**
@@ -174,7 +194,7 @@ export class WorkerPool {
    * Run a task: creates worker if needed, executes, emits events
    *
    * Overload 1: Chat mode - simple params
-   * @param taskId - Unique task identifier (also used as LangGraph thread_id)
+   * @param taskId - Unique task identifier
    * @param role - Role to use for this task
    * @param message - Message to send to the agent
    */
@@ -215,7 +235,7 @@ export class WorkerPool {
     }
 
     // Get or create worker
-    let agent = this.workers.get(taskId);
+    let agent: AiSdkAgent | undefined = this.workers.get(taskId);
 
     if (!agent) {
       const definition = this.definitions.get(roleKey);
@@ -241,7 +261,7 @@ export class WorkerPool {
         `Creating worker for ${roleKey} with deployment: ${DEFAULT_MODEL_CONFIG.deployment}`,
       );
 
-      agent = new InternalAgent(fixedDefinition);
+      agent = new AiSdkAgent(fixedDefinition);
       await agent.initialize();
 
       // Collect additional tools
@@ -305,10 +325,14 @@ export class WorkerPool {
         }
       }
 
-      // Inject all additional tools
-      const currentTools = (agent as any).loadedTools || [];
-      await agent.setTools([...currentTools, ...additionalTools]);
+      // Inject base (non-skill) tools
+      const currentTools = (agent as any).loadedTools || {};
+      const currentToolsArray = Array.isArray(currentTools) ? currentTools : Object.values(currentTools);
+      const baseTools = [...currentToolsArray, ...additionalTools];
+      await agent.setTools(baseTools);
 
+      // Store base tools for per-request skill refresh
+      this.workerBaseTools.set(taskId, baseTools);
       this.workers.set(taskId, agent);
       this.workerRoles.set(taskId, roleKey);
       logger.info(
@@ -316,8 +340,15 @@ export class WorkerPool {
       );
     }
 
+    // Refresh skills from DB on EVERY request (hot-reload)
+    await this.refreshSkillTools(taskId, roleKey, agent!);
+
     // Execute and stream events
     let output: any = null;
+
+    if (!agent) {
+      throw new Error(`Worker for task ${taskId} was not created`);
+    }
 
     // Auto-update agent status: working
     await this.updateAgentStatus(roleKey, "working", { taskId });
@@ -329,7 +360,17 @@ export class WorkerPool {
       };
 
       for await (const event of agent.execute(input)) {
-        // Emit all events for Socket.IO
+        // Forward stream_part events directly on worker:stream channel
+        if (event.type === "stream_part") {
+          this.events.emit("worker:stream", {
+            taskId,
+            agentId: roleKey,
+            part: event.part,
+          });
+          continue; // Don't emit stream_parts on worker:event (legacy channel)
+        }
+
+        // Emit all other events for Socket.IO (legacy progress channel)
         this.events.emit("worker:event", { taskId, event });
 
         // Capture output
@@ -440,6 +481,68 @@ export class WorkerPool {
    * Update agent status in the L2 CRDT (agent-statuses doc).
    * Called automatically on task start, completion, and failure.
    */
+
+  /**
+   * Refresh skill tools for a worker from DB + YAML config.
+   * Called on EVERY runTask() so skill assignments are picked up immediately.
+   *
+   * TODO(live-skill-refresh): Replace per-request DB query with event-driven cache.
+   * Blocked on: TeamService integration (TeamService should be injected, not created per-call).
+   * See: docs/features/skills-integration/live-skill-refresh/feature_implementation_planning.md
+   */
+  private async refreshSkillTools(
+    taskId: string,
+    roleKey: string,
+    agent: AiSdkAgent,
+  ): Promise<void> {
+    const definition = this.definitions.get(roleKey);
+    const config = definition?.config as InternalConfig | undefined;
+    const yamlSkillIds: string[] = (config?.skills as string[] | undefined) || [];
+
+    // Fetch skills assigned via SkillSelector (stored in DB)
+    let dbSkillIds: string[] = [];
+    const agentMongoId = this.roleAgentIdMap.get(roleKey);
+    if (agentMongoId) {
+      try {
+        const { TeamService } = await import("../team/TeamService.js");
+        const teamService = new TeamService();
+        const dbSkills = await teamService.getAgentSkills(agentMongoId);
+        dbSkillIds = dbSkills
+          .filter(s => s.enabled !== false)
+          .map(s => s.skillId);
+      } catch (error: any) {
+        logger.warn(`DB skill lookup failed for ${roleKey}: ${error.message}`);
+      }
+    }
+
+    // Merge YAML + DB skills (deduplicate)
+    const skillIds = [...new Set([...yamlSkillIds, ...dbSkillIds])];
+
+    // Get base tools (non-skill tools set at worker creation)
+    const baseTools = this.workerBaseTools.get(taskId) || [];
+
+    if (skillIds.length === 0) {
+      // No skills assigned — ensure agent has only base tools
+      await agent.setTools(baseTools);
+      return;
+    }
+
+    try {
+      const { tools: skillTools } = await skillResolver.resolve(skillIds);
+      const skillToolArray = Object.values(skillTools);
+      if (skillToolArray.length > 0) {
+        logger.info(
+          `Refreshed ${skillToolArray.length} skill tools for ${roleKey} (task ${taskId})`,
+        );
+      }
+      await agent.setTools([...baseTools, ...skillToolArray]);
+    } catch (error: any) {
+      logger.warn(`Skill refresh failed for ${roleKey}: ${error.message}`);
+      // Fall back to base tools only
+      await agent.setTools(baseTools);
+    }
+  }
+
   private async updateAgentStatus(
     roleKey: string,
     status: "working" | "idle" | "error",

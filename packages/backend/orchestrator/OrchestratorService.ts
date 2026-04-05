@@ -77,7 +77,7 @@ export class OrchestratorService {
   // Current goal context for plan scoping
   private currentGoalId: string | null = null;
 
-  // Message history for LangGraph
+  // Message history
   private messages: OrchestratorMessage[] = [];
 
   constructor(config: OrchestratorConfig) {
@@ -164,8 +164,18 @@ DO NOT invent new roles. Only use roles from the list above.
   }
 
   /**
-   * Helper to execute an agent and collect final output
+   * Helper to execute an agent and collect final output.
+   * Emits streaming events (message_delta, thinking, tool_start, tool_result)
+   * via this.events so SocketServerV2 can forward them to the frontend.
    */
+  /** Event types that should be forwarded to the frontend via worker:event */
+  private static readonly STREAMING_EVENT_TYPES = new Set([
+    "message_delta",
+    "thinking",
+    "tool_start",
+    "tool_result",
+  ]);
+
   private async executeAgent(
     agent: IAgent,
     message: string,
@@ -173,15 +183,40 @@ DO NOT invent new roles. Only use roles from the list above.
   ): Promise<any> {
     let result: any = null;
 
+    let eventCount = 0;
+    let deltaCount = 0;
+
     for await (const event of agent.execute({ message, threadId })) {
+      eventCount++;
+
+      // Forward stream_part events directly on worker:stream channel
+      if (event.type === "stream_part") {
+        this.events.emit("worker:stream", {
+          taskId: threadId,
+          agentId: "orchestrator",
+          part: event.part,
+        });
+        continue;
+      }
+
+      // Forward legacy streaming events to SocketServerV2 via worker:event channel
+      if (OrchestratorService.STREAMING_EVENT_TYPES.has(event.type)) {
+        if (event.type === "message_delta") deltaCount++;
+        this.events.emit("worker:event", {
+          taskId: threadId,
+          event: { ...event, role: "orchestrator" },
+        });
+      }
+
       switch (event.type) {
         case "message":
-          // Accumulate message content
+          // Capture the final text response (preferred over done.output for display)
           result = event.content;
           break;
         case "done":
-          // Final output takes precedence
-          if (event.output !== undefined) {
+          // Use done.output only if no message event was received
+          // (e.g., structured mode where there's no text stream)
+          if (result === null && event.output !== undefined) {
             result = event.output;
           }
           break;
@@ -190,6 +225,7 @@ DO NOT invent new roles. Only use roles from the list above.
       }
     }
 
+    console.log(`[OrchestratorService] executeAgent finished: ${eventCount} events, ${deltaCount} text deltas`);
     return result;
   }
 
@@ -446,6 +482,11 @@ DO NOT invent new roles. Only use roles from the list above.
     // Handle various response formats
     if (typeof result === "string") {
       return result;
+    }
+
+    // AiSdkAgent done event returns { response: "text" }
+    if (result?.response && typeof result.response === "string") {
+      return result.response;
     }
 
     if (result?.content) {

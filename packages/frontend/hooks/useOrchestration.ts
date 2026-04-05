@@ -11,6 +11,7 @@
  */
 
 import { useState, useCallback, useRef, useEffect } from 'react';
+import type { MutableRefObject } from 'react';
 import { v4 as uuidv4 } from 'uuid';
 import { agentServiceV2, type Task as BackendTask } from '../services/AgentServiceV2';
 import type { Task, TaskStatus, OrchestrationEvent } from '../types';
@@ -24,6 +25,20 @@ export interface OrchestrationState {
   orchestrationLogs: OrchestrationEvent[];
 }
 
+/** Callback fired when an agent message arrives */
+export type OnMessageCallback = (
+  agentId: string,
+  content: string,
+  taskId?: string,
+  timestamp?: number,
+) => void;
+
+/** Callback fired for stream parts */
+export type OnStreamPartCallback = (
+  agentId: string,
+  part: any, // StreamPart
+) => void;
+
 export interface OrchestrationActions {
   handleApprovePlan: () => void;
   handleStartTask: (taskId: string) => void;
@@ -32,7 +47,13 @@ export interface OrchestrationActions {
   handleToggleAutoExecute: () => void;
   addOrchestrationLog: (source: string, message: string, type: OrchestrationEvent['type']) => void;
   setSessionState: (state: string | null) => void;
-  subscribeToTeam: (teamId: string, agentsRef: React.MutableRefObject<Agent[]>, selectedTeamIdRef: React.MutableRefObject<string | null>, onMessage: (agentId: string, content: string, taskId?: string, timestamp?: number) => void) => () => void;
+  subscribeToTeam: (
+    teamId: string,
+    agentsRef: MutableRefObject<Agent[]>,
+    selectedTeamIdRef: MutableRefObject<string | null>,
+    onMessage: OnMessageCallback,
+    onStreamPart?: OnStreamPartCallback,
+  ) => () => void;
 }
 
 export function useOrchestration(): OrchestrationState & OrchestrationActions {
@@ -92,9 +113,10 @@ export function useOrchestration(): OrchestrationState & OrchestrationActions {
    */
   const subscribeToTeam = useCallback((
     teamId: string,
-    agentsRef: React.MutableRefObject<Agent[]>,
-    selectedTeamIdRef: React.MutableRefObject<string | null>,
-    onMessage: (agentId: string, content: string, taskId?: string, timestamp?: number) => void,
+    agentsRef: MutableRefObject<Agent[]>,
+    selectedTeamIdRef: MutableRefObject<string | null>,
+    onMessage: OnMessageCallback,
+    onStreamPart?: OnStreamPartCallback,
   ) => {
     const findAgentByRole = (roleName: string, searchTeamId: string | null): Agent | undefined => {
       const normalized = roleName.toLowerCase();
@@ -117,8 +139,11 @@ export function useOrchestration(): OrchestrationState & OrchestrationActions {
       let content = data.content;
       try {
         const parsed = JSON.parse(data.content);
-        if (parsed.response) content = parsed.response;
+        if (typeof parsed.response === 'string') content = parsed.response;
       } catch { /* not JSON */ }
+
+      // Skip empty messages (agent made tool calls with no text output)
+      if (!content) return;
 
       addOrchestrationLog(data.agentId, content.length > 100 ? content.substring(0, 100) + '...' : content, 'info');
 
@@ -189,11 +214,33 @@ export function useOrchestration(): OrchestrationState & OrchestrationActions {
       addOrchestrationLog('ERROR', data.error, 'error');
     });
 
+    // Stream events (Phase 2 — AI SDK streaming)
+    // Routes ALL stream parts through onStreamPart for rich rendering
+    const unsubStream = agentServiceV2.onStream((payload: any) => {
+      if (!payload?.part) return;
+      const { part, agentId: streamAgentId } = payload;
+
+      // Map role-based agentId to MongoDB agent ID
+      const isOrchestrator = streamAgentId === 'manager' || streamAgentId === 'orchestrator';
+      const resolved = isOrchestrator ? null : findAgentByRole(streamAgentId, selectedTeamIdRef.current);
+
+      // Skip events from unknown agent roles (e.g. legacy "worker" fallback)
+      if (!isOrchestrator && !resolved) return;
+
+      const targetAgentId = isOrchestrator ? teamId : resolved!.id;
+
+      // Route through rich stream part processor
+      if (onStreamPart) {
+        onStreamPart(targetAgentId, part);
+      }
+    });
+
     return () => {
       unsubMessage();
       unsubState();
       unsubOutput();
       unsubError();
+      unsubStream();
     };
   }, [addOrchestrationLog]);
 

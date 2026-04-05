@@ -11,6 +11,7 @@
  *   await manager.chatWithWorker(agentId, content)
  */
 
+import mongoose from "mongoose";
 import { Logger } from "tslog";
 import { AgentManager } from "./AgentManagerV2.js";
 import { TeamModel } from "./team/schema/teamSchema.js";
@@ -70,6 +71,10 @@ export class AgentManagerRegistry {
   private async loadTeam(teamId: string): Promise<AgentManager> {
     logger.info(`[Registry] Loading team ${teamId} from database`);
 
+    if (!mongoose.Types.ObjectId.isValid(teamId)) {
+      throw new Error(`Invalid team ID "${teamId}" — not a valid ObjectId. Use a real team ID from the database.`);
+    }
+
     // Find team with populated members
     const team = await TeamModel.findById(teamId).lean();
     if (!team) {
@@ -94,10 +99,11 @@ export class AgentManagerRegistry {
     // Create AgentManager
     const manager = new AgentManager();
 
-    // Initialize orchestrator with team data
+    // Initialize orchestrator with team data (include MongoDB agent IDs for skill resolution)
     await manager.initializeOrchestrator(
       teamId,
       teamRoles.map((r) => r.role),
+      Object.fromEntries(teamRoles.map((r) => [r.role, r.id])),
     );
 
     // Cache it

@@ -9,20 +9,40 @@
 
 ## Overview
 
-Two git repositories per team: one for **L1 Memory** (per-role reasoning, notes, tool history) and one for **L1 Workspace** (shared deliverables — code, documents, artifacts). Each role owns its memory repo; all roles share the workspace repo.
+Two git repositories per team: one for **L1 Memory** (per-role personal desk — identity, scratchpad, experiments, drafts, activity log) and one for **L1 Workspace** (shared deliverables — code, documents, artifacts). Each role owns its memory repo; all roles share the workspace repo. **Team-wide knowledge goes to L2** (CRDT docs via `collab` tool) so all agents can access it. **Memory repos are initialized with the agent's identity** on creation.
 
 ### Current State
 - `GitBranchManager` exists — creates branch per task, commits, merges
 - Part of `AgentWorkspace` in memory system
 - Not fully wired into task lifecycle
-- Single repo model — no separation between memory and deliverables
+- Single repo model — no separation between scratchpad and deliverables
+- **31 tools currently in `workspace-tools.ts`** — but 10 are agent-personal tools that belong in memory, not workspace:
+  - **Workspace-native (21 tools, stay in workspace-tools.ts):**
+    - **File CRUD:** `workspace_create_file`, `workspace_read_file`, `workspace_write_file`, `workspace_delete_file`, `workspace_file_exists`, `workspace_list_files`
+    - **Status & Info:** `workspace_status`, `workspace_info`
+    - **Version control:** `workspace_commit`, `workspace_get_history`
+    - **Lifecycle:** `workspace_publish`, `workspace_reactivate`, `workspace_discard`
+    - **Search & navigation:** `workspace_grep`, `workspace_glob`, `workspace_search_and_replace`, `workspace_file_stats`, `keyword_search`
+    - **Code intelligence (optional, tree-sitter):** `get_repo_map`, `get_symbols`, `find_symbol`, `get_dependencies`, `get_file_summary`
+  - **Moving to memory-tools.ts (10 tools — agent-personal, not workspace-related):**
+    - **Scratchpad:** `scratch_note`, `scratch_todo`, `scratch_remember`, `scratch_file`, `promote_to_workspace` → become memory tools
+    - **Identity:** `whoami`, `my_progress`, `my_tools`, `my_context` → backed by memory repo identity
+    - **Activity:** `workspace_log_activity` → becomes `memory_log_activity`
+- **L2 collaboration tool:** `collab` — unified progressive-discovery tool for CRDT docs, plans, and output manifests. **This is where team-wide knowledge lives** — any agent can read/write via `collab({ action: "write", docName: "expertise-pricing", ... })`
 
 ### Target State
 - **Two repos per team:**
-  - **Workspace Repo** (shared) — where agents **actually do their work**. Code, documents, artifacts. Agents commit directly here, just like real developers working in a shared codebase. Task branches for isolation, merged to `main` on user approval. This is the primary working area.
-  - **Memory Repo** (per-role) — the agent's **personal knowledge store**, like how Copilot stores memories or how AI agents store context/preferences/learnings. NOT a working area. Contains: reasoning patterns, tool preferences, domain expertise notes, lessons learned, approach summaries. Role's `main` = accumulated knowledge. Updated after tasks complete (learnings extracted, not raw work).
+  - **Workspace Repo** (shared) — where agents **actually do their work**. Code, documents, artifacts. Agents commit directly here, just like real developers working in a shared codebase. Task branches for isolation, merged to `main` on user approval. This is the primary working area. Workspace tools handle file CRUD, search, version control, lifecycle, code intelligence — purely about the shared deliverables.
+  - **Memory Repo** (per-role) — the agent's **personal desk**. Scratchpad, experiments, drafts, todos, identity, activity log — everything personal to the agent lives here. Initialized with the agent's **identity** (role name, capabilities, assigned tools). Also stores **backlinks to L2** (doc IDs/references). NOT the main working area (that's workspace) and NOT the team knowledge base (that's L2).
+- **Three tool layers:**
+  - **Workspace tools** (21, in `workspace-tools.ts`) → operate on workspace repo. File CRUD, search, version control, lifecycle, code intelligence. Purely about shared deliverables.
+  - **Memory tools** (~25, in `memory-tools.ts`) → operate on memory repo. Scratchpad (note, todo, remember, file), identity (whoami, my_progress, my_tools, my_context), activity logging, CRUD, search, experiments, drafts, profile, L2 backlinks. Everything personal to the agent.
+  - **L2 collab tool** (1, existing) → team-wide knowledge. When an agent discovers something valuable for the whole team (domain expertise, patterns, lessons learned), it writes to L2 via `collab`. Any agent can read it.
+- Agents get **all three tool layers injected** — workspace for deliverables, memory for agent-personal tools, L2 for shared team knowledge.
+- **Memory repo initialized with identity** — on role creation, memory repo is seeded with the agent's identity (role, description, capabilities, assigned tools). Identity tools (`whoami`, etc.) read from this.
 - Git commit history in workspace serves as **project history** — what was built, when, by whom.
-- Memory repo serves as **resumable context** — if the same role gets a similar task, its memory has learned patterns from prior work.
+- Memory repo serves as **resumable personal context** — experiments, drafts, approach notes from prior tasks.
+- **L2 serves as team knowledge base** — expertise, patterns, lessons learned that benefit all agents.
 - Workspace repo is the **single source of truth** for project deliverables.
 
 ---
@@ -52,181 +72,275 @@ Team: "Marketing Campaign"
 │   │
 │   └── task/T-005/designer       ← designer works HERE on T-005
 │
-└── MEMORY REPOS (one per role — personal knowledge store, like Copilot memory)
+├── MEMORY REPOS (one per role — agent's personal desk)
+│   │
+│   researcher-memory/          ← git repo, agent's personal desk
+│   ├── main                     ← identity (seeded) + accumulated notes, experiments, activity
+│   │   ├── identity/            ← seeded on creation: role, capabilities, tools
+│   │   ├── experiments/         ← trial-and-error, prototype approaches
+│   │   ├── drafts/              ← work-in-progress that isn't ready for workspace
+│   │   ├── tool-notes/          ← personal tool preferences, quirks, tips
+│   │   ├── scratch/             ← quick notes, ideas, temporary thoughts
+│   │   ├── todos/               ← things to investigate, learn, try later
+│   │   ├── activity/            ← activity log (moved from workspace)
+│   │   ├── refs/                ← backlinks to L2 docs this agent contributed to
+│   │   └── profile.md           ← personal preferences, style, approach
+│   │
+│   writer-memory/              ← writer's personal desk
+│   ├── main
+│   │   ├── experiments/         ← tone experiments, draft variations
+│   │   ├── drafts/              ← copy drafts not ready for workspace
+│   │   ├── refs/                ← backlinks to L2 team knowledge
+│   │   └── profile.md           ← writing style preferences
+│   │
+│   designer-memory/            ← designer's personal area
+│   └── ...
+│
+└── L2 COLLABORATION (team-wide knowledge — ALL agents can access)
     │
-    researcher-memory/          ← git repo, NOT a working area
-    ├── main                     ← accumulated knowledge across all tasks
-    │   ├── expertise/           ← domain knowledge summaries
-    │   ├── patterns/            ← "what works" for common task types
-    │   ├── tool-notes/          ← tool preferences, quirks, tips
-    │   ├── lessons-learned/     ← agent-saved + hook-extracted from tasks
-    │   └── profile.md           ← role preferences, style, approach patterns
-    │
-    writer-memory/              ← writer's personal knowledge
-    ├── main
-    │   ├── expertise/           ← writing style notes, tone preferences
-    │   ├── patterns/            ← what structures work for different content types
-    │   └── lessons-learned/     ← agent-saved during execution + hook-extracted
-    │
-    designer-memory/            ← designer's personal knowledge
-    └── ...
+    └── collab tool → CRDT docs, plans, output manifests
+        ├── "expertise-pricing"    ← team knowledge: competitor pricing research
+        ├── "patterns-data"        ← team knowledge: what analysis approaches work
+        ├── "lessons-api-limits"   ← team knowledge: API rate limits, gotchas
+        └── "style-guide"          ← team knowledge: tone, format preferences
 ```
 
-### Why Two Repos, Not One
+### Why Two Repos (+ L2), Not One
 
 ```
 ❌ One repo for everything:
-   Agent's accumulated knowledge mixed with project code
-   Tool preferences and lessons learned pollute commit history
-   Can't give a role access to its own learnings without exposing project
-   No separation between "what I know" and "what I built"
+   Agent's experiments and scratch work mixed with project deliverables
+   Personal drafts and notes pollute commit history
+   No separation between "what I'm trying" and "what I ship"
 
-✅ Two repos:
+✅ Two repos + L2:
    Workspace = where agents WORK. Shared, reviewed, merged on approval.
-   Memory = what agents KNOW. Private, per-role, accumulated over time.
-   Clean separation: working vs knowing.
-   Workspace history is meaningful — actual work committed by agents.
-   Memory is portable — role's knowledge survives team changes.
-   Like real devs: work in shared repo, keep personal notes separately.
+   Memory = agent's PERSONAL DESK. Experiments, drafts, scratchpad, identity, activity log.
+   L2 = what the TEAM KNOWS. Domain expertise, patterns, lessons learned.
+   
+   Clean three-way separation:
+   - Working (workspace) → shared deliverables
+   - Experimenting (memory) → personal desk (identity, scratchpad, activity), private
+   - Knowing (L2) → team knowledge, accessible to all agents
+   
+   Agent discovers something valuable? Write to L2 so everyone benefits.
+   Agent wants to try something? Use memory repo — no one else sees it.
+   Agent has a final deliverable? Commit to workspace for team review.
 ```
 
 ---
 
-## Memory Repo: Per-Role Knowledge Store
+## Memory Repo: Per-Role Scratchpad & Experiment Area
 
-Each role has its own git repo. This is the agent's **personal knowledge base** — like how Copilot stores memories, or how experienced developers keep personal notes and cheatsheets.
+Each role has its own git repo. This is the agent's **personal desk** — scratchpad, experiments, drafts, identity, activity log, and personal notes. Initialized with the agent's **identity** on creation. Team-wide knowledge goes to L2 (via `collab` tool), not here.
 
 ### What Memory Is (and Isn't)
 
 ```
+❌ Wrong: "Memory repo = the team's knowledge base"
+   Team knowledge goes to L2 — all agents can access it via collab tool.
+   Memory is NOT for things the whole team should know.
+
 ❌ Wrong: "Memory repo = the agent's workspace"
    Agents work in the WORKSPACE repo, not here.
-   Memory is NOT for drafts, experiments, or scratch code.
+   Memory is NOT for deliverables or final artifacts.
 
-✅ Right: "Memory repo = the agent's personal memory — like Copilot memory"
-   Just like how GitHub Copilot remembers your preferences, or how Claude saves
-   memories during conversation, agents actively save knowledge as they work.
-
-   - Domain expertise ("competitors use freemium models")
-   - Approach patterns ("for data analysis tasks, start with pandas")
-   - Tool preferences ("web-search gives better results with quoted phrases")
-   - Lessons learned ("API X has 100/min rate limit, use batch endpoint")
-   - Style notes ("team prefers formal B2B tone, short paragraphs")
-   - In-progress notes ("found 3 promising leads, need to verify pricing")
+✅ Right: "Memory repo = the agent's personal desk / scratchpad"
+   Like a developer's scratch directory, experiment folder, or personal notes:
    
-   Think of it as the agent's BRAIN — what it knows, not what it's doing.
-   Agents do their actual work in the workspace repo.
+   - Identity ("I am the researcher role, my tools are..., my capabilities are...")
+   - Activity log ("worked on T-001, called 5 tools, produced 2 files")
+   - Experiments ("tried approach X with batch API — results inconclusive")
+   - Drafts ("rough outline of report, not ready for workspace yet")
+   - Personal notes ("this API is quirky, auth header must be lowercase")
+   - Tool preferences ("grep with -C3 context works best for this codebase")
+   - Todos ("investigate batch API limits — might be higher than standard")
+   - Scratch code & prototypes (code the agent is experimenting with)
+   - Backlinks to L2 ("contributed expertise-pricing doc, see ref/L2-pricing-doc-id")
+   
+   Think of it as the agent's DESK — initialized with who they are, enriched as they work.
+   When something is good enough for the team → write to L2 via collab tool.
+   When something is a final deliverable → commit to workspace.
+
+✅ Also right: "Agent can keep personal knowledge here too"
+   Some things are personal, not worth sharing team-wide:
+   - "I prefer starting with pandas for data tasks" (personal approach)
+   - "Last time I tried X it was slow" (personal lesson)
+   But if it's useful to ALL agents → put it in L2 instead.
+```
+
+### Knowledge Flow: Memory → L2
+
+```
+Agent working on task T-001:
+  │
+  ├── Tries an experiment in memory repo (personal)
+  │   memory_write("experiments", "batch-api-test", "tried batch, 10x faster")
+  │
+  ├── Discovers something team-valuable
+  │   collab({ action: "write", docName: "lessons-api-limits", 
+  │            key: "batch-api", value: "Batch endpoint is 10x faster..." })
+  │
+  └── Stores backlink in memory repo
+      memory_write("refs", "L2-api-limits", "doc: lessons-api-limits, key: batch-api")
+
+Result: Team knowledge is in L2 (all agents can find it).
+        Agent's personal notes/experiments stay in memory repo.
+        Backlink connects the two.
 ```
 
 ### When Does Memory Get Written?
 
-Memory is written in **two ways** — exactly like how Copilot/Claude handle memory:
+Memory is the agent's personal scratch area. The agent uses it **during execution** — freely, like a developer using their scratch directory:
 
-**1. Agent saves actively during execution** (like Copilot's "remember this"):
-- Agent encounters something worth remembering → calls `memory_save` tool
-- "This API has a 100/min rate limit" → saved immediately to `lessons-learned/`
-- "User prefers formal tone" → saved immediately to `profile.md`
-- "Pandas + batch approach works best" → saved to `patterns/`
-- Agent decides what's worth saving — it's their personal notebook
+**1. Agent uses memory tools during execution** (identity, scratchpad, activity, CRUD):
+- Agent checks its identity → `whoami()` reads from `identity/role.md`
+- Agent logs what it's doing → `log_activity("searched 5 competitor sites")`
+- Agent makes a quick note → `scratch_note("API requires lowercase auth header")`
+- Agent tracks a todo → `scratch_todo("test batch rate limits")`
+- Agent wants to try something → writes experiment to memory
+- Agent has a rough draft → saves to memory drafts, later `promote_to_workspace`
+- Agent discovers team-valuable knowledge → writes to **L2** via `collab`, stores **backlink** in memory
+- Agent checks what it tried before → searches memory for prior experiments
 
-**2. Automated post-task extraction** (bonus, catches what agent missed):
+**2. Automated post-task extraction** (bonus, catches implicit learnings):
 - After task completes/fails, a post-task hook runs
-- Analyzes workspace diff + task result → distills additional learnings
+- Analyzes workspace diff + task result → distills learnings
+- **Team-relevant learnings** → written to L2 (via collab) + backlink stored in memory
+- **Personal notes** (approach, tool quirks) → written to memory directly
 - Especially valuable for failures: "tried X, didn't work because Y"
-- Supplements what agent saved manually — catches implicit knowledge
 
 ```
-During task execution:
-  Agent calls memory_save("lesson", "api-rate-limit", "100/min, use batch")
-  Agent calls memory_save("expertise", "competitor-pricing", "freemium model")
-  Agent calls memory_save("tool-note", "web-search", "quoted phrases 3x better")
-  → Committed to memory repo immediately
+During task execution (agent uses identity + scratchpad + collab actively):
+  Agent calls whoami()                                                        ← identity
+  Agent calls log_activity("searched 5 competitor sites")                     ← activity
+  Agent calls scratch_note("this API requires lowercase auth header")         ← scratchpad
+  Agent calls scratch_todo("test if batch endpoint has higher rate limit")    ← scratchpad
+  Agent calls memory_experiment("approach-a", "batch API test results...")    ← experiment
+  Agent calls memory_draft("report-outline", "rough structure...")            ← draft
+  Agent calls collab({ action: "write", docName: "expertise-pricing", ... }) ← L2
+  Agent calls memory_ref("expertise-pricing")                                 ← backlink
+  → Memory commits are immediate (agent's personal desk, no review needed)
 
 After task completes:
   Post-task hook runs → analyzes workspace diff + output
-  → Extracts additional learnings agent didn't explicitly save
-  → Committed to memory repo as supplementary knowledge
-
-Both paths feed the same memory repo. Agent is always in control.
+  → Team learnings → L2 (via collab)
+  → Personal notes → memory repo
+  → Backlinks stored in memory for cross-reference
 ```
 
 ### Branch Strategy
 
-Memory repos are simpler than workspace repos — no task branches needed. Knowledge is committed directly to `main` (it's not collaborative, no conflicts).
+Memory repos are simpler than workspace repos — no task branches needed. Personal scratch notes committed directly to `main` (it's not collaborative, no conflicts).
 
 ```
 researcher-memory/
 │
-└── main                          ← all knowledge lives here
-    ├── expertise/
-    │   ├── competitor-pricing.md  ← saved by agent during T-001
-    │   └── market-trends.md      ← saved by agent during T-007
-    ├── patterns/
-    │   └── data-analysis.md      ← agent noted "pandas + batch works best"
+└── main                          ← all personal notes/experiments live here
+    ├── identity/
+    │   ├── role.md               ← "researcher" — description, capabilities
+    │   └── tools.md              ← assigned tools, skills, permissions
+    ├── experiments/
+    │   ├── batch-api-test.md     ← tried batch API during T-001
+    │   └── pandas-vs-polars.md   ← compared approaches during T-007
+    ├── drafts/
+    │   └── report-outline.md     ← rough draft, not ready for workspace
     ├── tool-notes/
-    │   └── web-search.md         ← agent noted "quoted phrases work better"
-    ├── lessons-learned/
-    │   ├── T-001-learnings.md    ← agent saved during + hook extracted after
-    │   └── T-003-learnings.md    ← hook extracted from failure
-    └── profile.md                ← agent saves preferences as it learns them
+    │   └── web-search.md         ← "quoted phrases work 3x better"
+    ├── scratch/
+    │   └── quick-notes.md        ← random ideas, temporary thoughts
+    ├── todos/
+    │   └── investigate.md        ← "test batch rate limits", "try polars"
+    ├── activity/
+    │   └── T-001.md              ← activity log for task T-001
+    ├── refs/
+    │   ├── L2-expertise-pricing  ← backlink: contributed to L2 pricing doc
+    │   └── L2-lessons-api        ← backlink: contributed to L2 API lessons
+    └── profile.md                ← personal preferences (approach, style)
 
-Role gets SMARTER over time — knowledge accumulates from both:
-  - Agent actively saving (like you telling Copilot "remember this")
-  - Post-task hooks extracting implicit learnings
+Agent's personal desk gets richer over time. Experiments accumulate,
+drafts evolve, todos get checked off, tool notes grow.
+Team-valuable discoveries live in L2 — backlinks in refs/ connect them.
 ```
 
 ### What Gets Committed to Memory Repo
 
-Memory is written **both during execution and after task completion** — the agent saves actively (like Copilot remembering preferences) and the post-task hook catches anything the agent missed.
+Memory is the agent's **personal desk** — identity, scratchpad, activity log, experiments, drafts, notes. Team knowledge goes to L2.
 
-| Content | When Written | How | Example |
+| Content | When Written | Where | Example |
 |---|---|---|---|
-| **Domain expertise** | During execution | Agent calls `memory_save` | "Competitor X uses freemium model, 3-tier pricing" |
-| **Approach patterns** | During execution | Agent calls `memory_save` | "For data analysis: pandas + matplotlib + batch API" |
-| **Tool preferences** | During execution | Agent calls `memory_save` | "web-search: quoted phrases give 3x better results" |
-| **Lessons learned** | During + post-task | Agent saves + hook extracts | "API has undocumented 100/min rate limit" |
-| **Style preferences** | During execution | Agent calls `memory_save` after user feedback | "Team prefers formal B2B tone, short paragraphs" |
-| **Anti-patterns** | Post-task (failures) | Hook extracts from failure context | "Don't try scraping X.com — CAPTCHA blocks" |
-| **In-progress notes** | During execution | Agent calls `memory_save` | "3 leads found, need to verify pricing tier" |
-| **Supplementary knowledge** | Post-task | Hook distills from workspace diff | Implicit learnings agent didn't explicitly save |
+| **Identity** | On role creation | `identity/` | "Role: researcher. Capabilities: web search, data analysis" |
+| **Activity log** | During execution | `activity/` | "T-001: called 5 tools, produced research-report.md" |
+| **Experiments** | During execution | `experiments/` | "Tried batch API — 10x faster than individual calls" |
+| **Drafts** | During execution | `drafts/` | "Rough report outline, needs competitor data" |
+| **Tool notes** | During execution | `tool-notes/` | "web-search: quoted phrases give 3x better results" |
+| **Quick notes** | During execution | `scratch/` | "Found 3 promising leads, need to verify pricing" |
+| **Personal todos** | During execution | `todos/` | "Test batch API rate limits", "Try polars vs pandas" |
+| **Profile/preferences** | During execution | `profile.md` | "I prefer starting with data exploration first" |
+| **L2 backlinks** | After L2 write | `refs/` | "doc: expertise-pricing, key: competitor-x" |
+| **Post-task notes** | Post-task hook | `scratch/` or `tool-notes/` | Personal learnings from workspace diff |
+| **Domain expertise** | During execution | **L2** (via `collab`) | "Competitor X uses freemium, 3-tier pricing" (team knowledge) |
+| **Patterns** | During execution | **L2** (via `collab`) | "For data analysis: pandas + batch API works best" (team knowledge) |
+| **Lessons learned** | During + post-task | **L2** (via `collab`) | "API has 100/min rate limit" (team should know) |
+| **Anti-patterns** | Post-task (failures) | **L2** (via `collab`) | "Don't scrape X.com — CAPTCHA blocks" (team should know) |
 
-### How Memory Helps Future Tasks
+### How Memory + L2 Help Future Tasks
 
-When the same role gets a similar task, the memory repo provides context — knowledge the agent saved during prior tasks AND learnings extracted post-task:
+When the same role gets a similar task, it draws from **both** sources — personal memory (identity, scratchpad, activity) AND team knowledge (L2):
 
 ```
 New task T-015: "Research pricing strategies"
 
-Researcher's memory repo already has (accumulated from prior tasks):
-  ├── expertise/competitor-pricing.md   (agent saved during T-001 via memory_save)
-  ├── expertise/market-trends.md        (agent saved during T-007 via memory_save)
-  ├── patterns/data-analysis.md         (agent saved: "pandas + batch works best")
-  ├── tool-notes/web-search.md          (agent saved: "quoted phrases 3x better")
-  └── lessons-learned/T-001.md          (agent saved + hook extracted: "rate limit 100/min")
+L2 team knowledge (accessible to ALL agents):
+  ├── expertise-pricing         (researcher contributed via collab during T-001)
+  ├── lessons-api-limits        (extracted post-T-003, shared to L2)
+  └── patterns-data-analysis    (researcher contributed during T-007)
+
+Researcher's personal memory repo (private to this role):
+  ├── identity/role.md                  (seeded on creation: "researcher, web search + data analysis")
+  ├── experiments/batch-api-test.md   (tried batch approach during T-001)
+  ├── tool-notes/web-search.md       (personal tip: "quoted phrases 3x better")
+  ├── todos/investigate.md            ("test batch rate limits" — still open)
+  ├── activity/T-001.md              (activity log from T-001)
+  └── refs/L2-expertise-pricing       (backlink: "I wrote the pricing doc")
 
 Agent prompt includes:
-  "Your prior knowledge on this topic:
-   - Competitor X uses freemium model (from expertise/competitor-pricing.md)
-   - Rate limit on data API: use batch endpoint (from lessons-learned/T-001.md)
-   - Use pandas + batch approach for analysis (from patterns/data-analysis.md)"
+  "Team knowledge on this topic:
+   - Competitor X uses freemium model (from L2: expertise-pricing)
+   - API rate limit: use batch endpoint (from L2: lessons-api-limits)
+  Your identity: researcher role, web search + data analysis
+  Your personal notes:
+   - You previously experimented with batch API (experiments/batch-api-test)
+   - You noted: quoted phrases 3x better for web-search (tool-notes/web-search)
+   - Open todo: test batch rate limits
+   - Activity: you worked on T-001 (searched 3 sources, produced report)"
 
-Result: Agent doesn't start from scratch. It builds on knowledge it saved +
-knowledge extracted from prior work. Like an experienced developer who keeps notes.
+Result: Agent has team knowledge (L2) + personal experience (memory).
+Team knowledge benefits ALL agents. Personal experiments benefit THIS agent.
 ```
 
 ### Memory Commit Convention
 
 ```
-During execution (agent saves actively):
-  [T-001/researcher] expertise: Competitor X uses freemium, 3-tier pricing
-  [T-001/researcher] lesson: API rate limit at 100/min, use batch endpoint
+On role creation (identity seed):
+  [system] identity: Initialize researcher role — capabilities, tools, description
+
+During execution (agent saves to personal desk):
+  [T-001/researcher] activity: Searched 5 sources, found 3 leads
+  [T-001/researcher] scratch-note: this API requires lowercase auth header
+  [T-001/researcher] scratch-todo: test if batch endpoint has higher rate limit
+  [T-001/researcher] experiment: Tried batch API — 10x faster than sequential
+  [T-001/researcher] draft: Rough report outline for competitor analysis
   [T-001/researcher] tool-note: web-search works better with quoted phrases
-  [T-004/writer] style: Team prefers formal B2B tone, short paragraphs
+  [T-001/researcher] todo: Test batch API rate limits
+  [T-001/researcher] ref: Contributed to L2 expertise-pricing doc
+  [T-004/writer] draft: Initial copy variations for product X
+  [T-004/writer] profile: Prefer short paragraphs, formal B2B tone
 
 Post-task extraction (automated hook):
-  [post-T-001] expertise: Market segmentation shows 3 pricing tiers common
-  [post-T-003] anti-pattern: CAPTCHA blocks scraping after 5 requests
-  [post-T-004] pattern: Short paragraphs + 3 CTAs drove highest engagement
+  [post-T-001] scratch: API auth header must be lowercase (personal quirk)
+  [post-T-003] → L2 lesson: CAPTCHA blocks scraping after 5 requests (team knowledge)
+  [post-T-003] ref: Contributed to L2 lessons-scraping doc
 ```
 
 ---
@@ -346,11 +460,20 @@ Worker executes:
 
 During execution:
   │
-  └── Memory repo: agent saves knowledge actively (via memory_save tool)
-      ├── "API has 100/min rate limit" → lessons-learned/
-      ├── "User wants formal tone" → profile.md
-      ├── "Pandas approach works best" → patterns/
-      └── Committed immediately — agent's personal notebook
+  ├── Memory repo: agent uses as personal desk (identity, scratchpad, activity)
+  │   ├── whoami() → reads identity/ (role name, capabilities, tools)
+  │   ├── my_progress() → reads activity/ + task context
+  │   ├── log_activity("searched 5 sources, found 3 leads")
+  │   ├── scratch_note("this API requires lowercase auth header")
+  │   ├── scratch_todo("test if batch endpoint has higher rate limit")
+  │   ├── memory_write("experiments", "approach-a", "batch API test — results...")
+  │   ├── memory_write("drafts", "rough-outline", "report structure draft...")
+  │   └── All committed immediately — agent's personal desk
+  │
+  └── L2 collaboration: agent shares team-valuable knowledge
+      ├── collab({ action: "write", docName: "expertise-pricing", ... })
+      ├── memory_write("refs", "L2-pricing", "doc: expertise-pricing") ← backlink
+      └── All agents on the team can now access this knowledge
 
 Task completes:
   │
@@ -358,40 +481,47 @@ Task completes:
   │   └── User approves → merge to main (optional: squash commits)
   │   └── User rejects → branch preserved, agent continues or replans
   │
-  └── Memory repo: post-task hook extracts ADDITIONAL learnings
-      ├── Analyzes workspace diff for knowledge agent didn't explicitly save
-      ├── Supplements agent's active saves — catches implicit knowledge
-      ├── Especially valuable for failures ("tried X, failed because Y")
-      └── All committed directly to memory/main
+  └── Memory repo: post-task hook extracts learnings
+      ├── Analyzes workspace diff for insights
+      ├── Team-relevant → writes to L2 (via collab) + backlink in memory refs/
+      ├── Personal notes → writes to memory scratch/ or tool-notes/
+      └── All committed — agent's scratchpad enriched, team knowledge updated
 
 Task fails:
   │
   ├── Workspace repo: branch preserved (partial work may be salvageable)
   │   └── Planner may retry with a new branch: task/T-001-retry/researcher
   │
-  └── Memory repo: agent may have saved learnings during execution +
+  └── Memory repo: agent may have saved experiments during execution +
       post-task hook extracts failure learnings (ESPECIALLY valuable)
-      ├── Agent already saved: "API rate limit hit at 100/min after 4 minutes"
-      ├── Hook adds: "Tried approach X, failed because Y — full context"
-      ├── Hook adds: "Anti-pattern: don't use endpoint Z for bulk queries"
-      └── Next time this role gets similar task, it knows what NOT to do
+      ├── Agent already saved: "Tried approach X, didn't scale past 100/min"
+      ├── Hook adds personal note: "API auth header must be lowercase"
+      ├── Hook adds team lesson → L2: "Don't use endpoint Z for bulk queries"
+      ├── Backlink stored: refs/L2-bulk-query-lesson
+      └── Next time: agent has personal experiments + team knows the anti-pattern
 ```
 
 ---
 
-## How Memory History Helps
+## How Memory + L2 History Helps
 
 ### Same Task Retried
 
 ```
 T-001 failed. Planner retries with T-001-retry.
 
-researcher-memory/main now has:
-  lessons-learned/T-001-learnings.md:
-    "API rate limit at 100/min, approach A doesn't scale. Use batch endpoint."
+L2 now has (team knowledge):
+  "lessons-api-limits" doc: "API rate limit at 100/min, use batch endpoint"
+  (written by post-task hook after T-001 failure)
 
-New worker for T-001-retry gets this injected into prompt.
-Result: Worker avoids the same mistake.
+researcher-memory/main has (personal notes):
+  experiments/batch-api-test.md: "Tried sequential calls, hit rate limit at 4 min"
+  refs/L2-api-limits: backlink to the L2 lesson doc
+
+New worker for T-001-retry gets BOTH injected:
+  - Team knowledge: "batch endpoint is faster" (from L2)
+  - Personal notes: "I tried sequential, it failed at 4 min" (from memory)
+Result: Worker avoids the same mistake + knows exactly what was tried.
 ```
 
 ### Similar Future Task
@@ -399,15 +529,19 @@ Result: Worker avoids the same mistake.
 ```
 6 months later, new team, new goal: "Research our competitors"
 
-researcher-memory/main has:
-  expertise/competitor-pricing.md, expertise/market-trends.md, ...
-  patterns/data-analysis.md
-  20+ lessons-learned files from prior tasks
+L2 team knowledge (accessible to ALL agents):
+  expertise-pricing, patterns-data, lessons-api-limits, ...
+  10+ CRDT docs with team knowledge from prior tasks
 
-Relevant files found via: search memory repo for "competitor" related content.
-Finds: 7 relevant knowledge files.
+researcher-memory/main (personal desk — identity, scratchpad, activity):
+  experiments/ — 5 experiment logs from prior tasks
+  tool-notes/ — personal tool preferences
+  todos/ — open items to investigate
 
-Result: Agent is experienced, not naive. It knows what works.
+Both sources searched. Team knowledge benefits everyone.
+Personal experiments benefit this specific role.
+
+Result: Agent is experienced, not naive. Team knowledge + personal history.
 ```
 
 ### Role Transfer
@@ -415,9 +549,9 @@ Result: Agent is experienced, not naive. It knows what works.
 ```
 Researcher role reassigned from Agent A to Agent B (model upgrade, etc.)
 
-Memory repo is the same. New agent inherits the role's FULL knowledge.
-Like onboarding a new employee — they read the predecessor's notes.
-Expertise, patterns, lessons learned — all preserved.
+Memory repo transfers — new agent gets the role's identity, activity history, and personal notes.
+L2 team knowledge is already accessible to everyone — no transfer needed.
+Like onboarding: new employee reads predecessor's desk notes + identity + has access to team wiki.
 ```
 
 ---
@@ -425,9 +559,9 @@ Expertise, patterns, lessons learned — all preserved.
 ## Storage & Cleanup
 
 ### Memory Repos
-- **Size:** Very small (structured knowledge summaries, not raw work)
-- **Retention:** Permanent per role. This IS the role's knowledge.
-- **Cleanup:** Prune stale/contradicted knowledge entries over time
+- **Size:** Small (experiments, drafts, notes — not final deliverables)
+- **Retention:** Permanent per role. This IS the role's personal history.
+- **Cleanup:** Agent can delete stale experiments/drafts. Todos get resolved.
 - **Location:** `data/teams/{teamId}/memory/{role}/` (local git repos)
 
 ### Workspace Repo
@@ -444,14 +578,19 @@ Expertise, patterns, lessons learned — all preserved.
 | Component | Status | Action |
 |---|---|---|
 | `GitBranchManager` | ✅ Exists | Refactor into `RepoManager` pattern |
+| Workspace tools (21 tools in `workspace-tools.ts`) | ✅ Exists → REFACTOR | File CRUD, grep/glob, search & replace, keyword search, code intel (repo map, symbols, find, deps, summary), commit, history, publish, lifecycle, status, info. Operate on **workspace repo** only. **Remove** scratchpad, identity, and log_activity tools (moving to memory). |
+| L2 collaboration tool | ✅ Done | `collab` — progressive-discovery over CRDT docs, plans, and output manifests |
 | Workspace repo creation | ❌ Missing | Create per-team repo on team creation |
-| Memory repo creation | ❌ Missing | Create per-role knowledge store on role creation |
+| Memory repo creation + identity seed | ❌ Missing | Create per-role repo on role creation. **Initialize with identity:** seed `identity/role.md` (role name, description, capabilities) + `identity/tools.md` (assigned tools, skills) + `profile.md`. Identity tools (`whoami`, `my_progress`, etc.) read from this. |
+| Memory tools (~25 tools in `memory-tools.ts`) | ❌ Missing | **Separate toolset** for memory repo (agent's personal desk). Includes: **Moved from workspace:** scratchpad (`scratch_note`, `scratch_todo`, `scratch_remember`, `scratch_file`, `promote_to_workspace`), identity (`whoami`, `my_progress`, `my_tools`, `my_context`), activity (`log_activity`). **New:** CRUD (`memory_read`, `memory_write`, `memory_delete`, `memory_exists`, `memory_list`), search (`memory_search`, `memory_search_by_task`), scratchpad-specific (`memory_experiment`, `memory_draft`), profile (`memory_profile`), status (`memory_status`, `memory_history`), L2 backlinks (`memory_ref`). Operate on **memory repo** only. |
+| L2 knowledge integration | ⚠️ Partial | `collab` tool exists but post-task hook doesn't write team learnings to L2 yet. Hook should route team-relevant learnings → L2 (via collab), personal notes → memory repo, and store backlinks in `refs/`. |
+| Tool injection (all three layers) | ❌ Missing | WorkerPool injects workspace tools (21) + memory tools (~25) + L2 collab (1) per agent |
 | Task lifecycle hooks | ⚠️ Partial | Wire `onTaskStart` (create workspace branch), `onTaskComplete` (mark ready + extract learnings), `onTaskFail` (preserve branch + extract failure learnings) |
 | Auto-commit during execution | ❌ Missing | Periodic commits in workspace repo |
 | Merge-to-main on approval | ⚠️ Partial | Workspace: merge after user approval |
 | Conflict detection | ❌ Missing | Detect + create resolution task |
-| Post-task learning extraction | ❌ Missing | LLM distills learnings from workspace diff → memory repo |
-| Memory search for context | ❌ Missing | Grep memory repo for relevant prior knowledge |
+| Post-task learning extraction | ❌ Missing | LLM distills learnings from workspace diff → team learnings to L2 (via collab) + personal notes to memory repo + backlinks |
+| Memory search for context | ❌ Missing | Grep memory repo for personal experiments/notes + search L2 for team knowledge |
 | Git LFS for binaries | ❌ Missing | Configure for workspace repo |
 
 **Effort:** Medium (2-3 weeks)

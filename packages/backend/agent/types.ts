@@ -6,7 +6,7 @@
  *
  * Architecture Decision (Jan 21, 2026):
  * - Removed 'builder' type - merged into 'internal' with responseFormat
- * - InternalAgent now handles both tools (workers) and structured output (builders)
+ * - AiSdkAgent handles both tools (workers) and structured output (builders)
  */
 
 import { EventEmitter } from "events";
@@ -173,6 +173,9 @@ export type AgentEvent =
   // AgenticUI specific
   | { type: "frame"; frame: AgenticFrame }
   | { type: "hotspots"; hotspots: Hotspot[] }
+
+  // Stream protocol — raw stream part for direct forwarding to frontend
+  | { type: "stream_part"; part: any }
 
   // Lifecycle
   | { type: "error"; error: string; recoverable: boolean }

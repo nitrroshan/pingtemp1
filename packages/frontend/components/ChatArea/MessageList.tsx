@@ -2,6 +2,7 @@ import React, { useRef, useEffect } from 'react';
 import { Bot, User, AlertTriangle } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import { Skeleton } from '../ui/skeleton';
+import StreamMessage from '../StreamMessage';
 import type { Message } from '../../types';
 import { AnimatePresence, motion } from 'framer-motion';
 
@@ -69,7 +70,15 @@ function MessageBubble({ msg }: { msg: Message }) {
               : 'bg-card text-foreground border border-border rounded-tl-sm'
         )}>
           <div className="whitespace-pre-wrap font-mono text-[13px] leading-relaxed break-words">
-            {msg.content}
+            {msg.role === 'model' && msg.streamParts && msg.streamParts.length > 0 ? (
+              <StreamMessage
+                parts={msg.streamParts!}
+                isStreaming={msg.isStreaming ?? false}
+                fallbackContent={msg.content}
+              />
+            ) : (
+              msg.content
+            )}
           </div>
         </div>
         <span className={cn('text-[10px] text-muted-foreground', isUser && 'text-right')}>

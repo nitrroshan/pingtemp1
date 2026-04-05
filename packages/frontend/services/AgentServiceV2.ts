@@ -137,6 +137,7 @@ export class AgentServiceV2 {
   private outputCallbacks: Set<(output: AgentOutput) => void> = new Set();
   private progressCallbacks: Set<(progress: Progress) => void> = new Set();
   private errorCallbacks: Set<(error: ErrorInfo) => void> = new Set();
+  private streamCallbacks: Set<(payload: any) => void> = new Set();
 
   constructor(baseUrl: string = "http://localhost:3002") {
     this.baseUrl = baseUrl;
@@ -255,6 +256,11 @@ export class AgentServiceV2 {
     this.socket.on("error", (data: ErrorInfo) => {
       console.error(`[AgentServiceV2] Error:`, data.error);
       this.errorCallbacks.forEach((cb) => cb(data));
+    });
+
+    // Stream event (Phase 2 — AI SDK streaming)
+    this.socket.on("stream", (data: any) => {
+      this.streamCallbacks.forEach((cb) => cb(data));
     });
   }
 
@@ -444,6 +450,15 @@ export class AgentServiceV2 {
   onError(callback: (error: ErrorInfo) => void): () => void {
     this.errorCallbacks.add(callback);
     return () => this.errorCallbacks.delete(callback);
+  }
+
+  /**
+   * Subscribe to AI SDK stream events (Phase 2)
+   * @returns Unsubscribe function
+   */
+  onStream(callback: (payload: any) => void): () => void {
+    this.streamCallbacks.add(callback);
+    return () => this.streamCallbacks.delete(callback);
   }
 
   // ============================================================================
