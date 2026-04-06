@@ -28,7 +28,7 @@ const StreamMessage: React.FC<StreamMessageProps> = ({ parts, isStreaming, fallb
     return (
       <div className="whitespace-pre-wrap font-mono text-[13px]">
         {fallbackContent || ''}
-        {isStreaming && <span className="animate-pulse text-nexus-cyan">▍</span>}
+        {isStreaming && <span className="animate-pulse text-primary">▍</span>}
       </div>
     );
   }
@@ -42,7 +42,7 @@ const StreamMessage: React.FC<StreamMessageProps> = ({ parts, isStreaming, fallb
               <div key={`text-${part.id}-${idx}`} className="whitespace-pre-wrap font-mono text-[13px]">
                 {part.text}
                 {!part.done && isStreaming && (
-                  <span className="animate-pulse text-nexus-cyan">▍</span>
+                  <span className="animate-pulse text-primary">▍</span>
                 )}
               </div>
             );

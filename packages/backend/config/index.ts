@@ -1,71 +1,129 @@
 /**
- * Environment configuration loader.
+ * Environment configuration system.
  *
- * Merges default config with environment-specific overrides and env vars.
- * Call getConfig() anywhere to get the current resolved config.
- * Call validateConfig() at startup to fail fast on missing required vars.
+ * Merges: default → environment-specific → process.env overrides.
+ * Returns a frozen singleton via getConfig().
  */
 
-import { defaultConfig, type AppConfig } from "./default.js";
+import defaultConfig from "./default.js";
+import developmentConfig from "./development.js";
+import productionConfig from "./production.js";
 
-// Lazy-loaded singleton
-let _config: AppConfig | null = null;
+// ── Types ────────────────────────────────────────────────────
 
-/**
- * Build config from defaults, env-specific overrides, and process.env.
- */
-function buildConfig(): AppConfig {
-  const nodeEnv = process.env["NODE_ENV"] ?? "development";
+export interface AppConfig {
+  port: number;
+  nodeEnv: string;
 
-  // Start from defaults
-  const config: AppConfig = {
-    ...defaultConfig,
-    nodeEnv,
+  mongodbUri: string;
+
+  azureOpenAi: {
+    apiKey: string;
+    endpointUrl: string;
+    instanceName: string;
+    deployment: string;
   };
 
-  // Apply environment-specific overrides (dynamic import not needed — we read env var)
-  if (nodeEnv === "production") {
-    config.logLevel = "info";
-    config.seedEnabled = false;
-  } else {
-    config.logLevel = "debug";
-  }
+  anthropicApiKey: string | undefined;
+  openaiApiKey: string | undefined;
 
-  // Apply env var overrides (always take precedence)
-  if (process.env["API_PORT"]) config.port = parseInt(process.env["API_PORT"]);
-  if (process.env["MONGODB_URI"]) config.mongodbUri = process.env["MONGODB_URI"];
+  useOrchestrator: boolean;
+  useApiV2: boolean;
 
-  if (process.env["AZURE_OPENAI_ENDPOINT_URL"])
-    config.azureOpenAI.endpointUrl = process.env["AZURE_OPENAI_ENDPOINT_URL"];
-  if (process.env["AZURE_OPENAI_API_KEY"])
-    config.azureOpenAI.apiKey = process.env["AZURE_OPENAI_API_KEY"];
-  if (process.env["AZURE_OPENAI_INSTANCE_NAME"])
-    config.azureOpenAI.instanceName = process.env["AZURE_OPENAI_INSTANCE_NAME"];
-  if (process.env["AZURE_OPENAI_DEPLOYMENT"])
-    config.azureOpenAI.deployment = process.env["AZURE_OPENAI_DEPLOYMENT"];
-  if (process.env["AZURE_OPENAI_API_VERSION"])
-    config.azureOpenAI.apiVersion = process.env["AZURE_OPENAI_API_VERSION"];
-
-  if (process.env["WORKSPACE_BASE_DIR"])
-    config.workspaceBaseDir = process.env["WORKSPACE_BASE_DIR"];
-
-  if (process.env["AGENT_RUNTIME"]) {
-    const rt = process.env["AGENT_RUNTIME"];
-    if (rt === "aisdk" || rt === "langgraph") config.agentRuntime = rt;
-  }
-
-  if (process.env["USE_ORCHESTRATOR"])
-    config.useOrchestrator = process.env["USE_ORCHESTRATOR"] !== "false";
-
-  if (process.env["SEED_ENABLED"])
-    config.seedEnabled = process.env["SEED_ENABLED"] === "true";
-
-  return config;
+  workspaceBaseDir: string;
+  collabPort: number;
+  agentsDir: string | undefined;
 }
 
-/**
- * Get the resolved application config (singleton — built once per process).
- */
+/** Utility: all fields optional, recursively. */
+export type DeepPartial<T> = {
+  [P in keyof T]?: T[P] extends object ? DeepPartial<T[P]> : T[P];
+};
+
+// ── Merge helper ─────────────────────────────────────────────
+
+function deepMerge(
+  base: Record<string, unknown>,
+  override: Record<string, unknown>,
+): Record<string, unknown> {
+  const result = { ...base };
+  for (const key of Object.keys(override)) {
+    const val = override[key];
+    if (
+      val !== undefined &&
+      typeof val === "object" &&
+      val !== null &&
+      !Array.isArray(val)
+    ) {
+      result[key] = deepMerge(
+        (result[key] ?? {}) as Record<string, unknown>,
+        val as Record<string, unknown>,
+      );
+    } else if (val !== undefined) {
+      result[key] = val;
+    }
+  }
+  return result;
+}
+
+// ── Build config ─────────────────────────────────────────────
+
+function buildConfig(): AppConfig {
+  const env = process.env.NODE_ENV || "development";
+
+  // 1. Start with defaults
+  const envOverrides: DeepPartial<AppConfig> =
+    env === "production" ? productionConfig : developmentConfig;
+
+  // 2. Merge environment-specific overrides
+  const merged = deepMerge(
+    defaultConfig as unknown as Record<string, unknown>,
+    envOverrides as unknown as Record<string, unknown>,
+  ) as unknown as AppConfig;
+
+  let config: AppConfig = { ...merged };
+
+  // 3. Apply process.env overrides (highest priority)
+  config.port = parseInt(process.env.API_PORT || String(config.port), 10);
+  config.nodeEnv = process.env.NODE_ENV || config.nodeEnv;
+  config.mongodbUri = process.env.MONGODB_URI || config.mongodbUri;
+
+  config.azureOpenAi = {
+    apiKey: process.env.AZURE_OPENAI_API_KEY || config.azureOpenAi.apiKey,
+    endpointUrl:
+      process.env.AZURE_OPENAI_ENDPOINT_URL ||
+      config.azureOpenAi.endpointUrl,
+    instanceName:
+      process.env.AZURE_OPENAI_INSTANCE_NAME ||
+      config.azureOpenAi.instanceName,
+    deployment:
+      process.env.AZURE_OPENAI_DEPLOYMENT ||
+      process.env.AZURE_OPENAI_API_DEPLOYMENT_NAME ||
+      config.azureOpenAi.deployment,
+  };
+
+  config.anthropicApiKey = process.env.ANTHROPIC_API_KEY || config.anthropicApiKey;
+  config.openaiApiKey = process.env.OPENAI_API_KEY || config.openaiApiKey;
+
+  config.useOrchestrator =
+    process.env.USE_ORCHESTRATOR !== "false" && config.useOrchestrator;
+  config.useApiV2 =
+    process.env.USE_API_V2 !== "false" && config.useApiV2;
+
+  config.workspaceBaseDir =
+    process.env.WORKSPACE_BASE_DIR || config.workspaceBaseDir;
+  config.collabPort = process.env.COLLAB_PORT
+    ? parseInt(process.env.COLLAB_PORT, 10)
+    : config.collabPort;
+  config.agentsDir = process.env.AGENTS_DIR || config.agentsDir;
+
+  return Object.freeze(config);
+}
+
+// ── Singleton ────────────────────────────────────────────────
+
+let _config: AppConfig | null = null;
+
 export function getConfig(): AppConfig {
   if (!_config) {
     _config = buildConfig();
@@ -74,28 +132,23 @@ export function getConfig(): AppConfig {
 }
 
 /**
- * Validate required configuration at startup.
- * Throws an error with a clear message if any required var is missing.
- *
- * Call this in server.ts BEFORE connecting to the database or starting the server.
+ * Validate that all required environment variables are present.
+ * Call at startup — throws with a clear message listing all missing vars.
  */
 export function validateConfig(): void {
   const config = getConfig();
   const missing: string[] = [];
 
   if (!config.mongodbUri) missing.push("MONGODB_URI");
-  if (!config.azureOpenAI.endpointUrl) missing.push("AZURE_OPENAI_ENDPOINT_URL");
-  if (!config.azureOpenAI.apiKey) missing.push("AZURE_OPENAI_API_KEY");
+  if (!config.azureOpenAi.endpointUrl)
+    missing.push("AZURE_OPENAI_ENDPOINT_URL");
+  if (!config.azureOpenAi.apiKey) missing.push("AZURE_OPENAI_API_KEY");
 
   if (missing.length > 0) {
     throw new Error(
-      `[config] Missing required environment variables:\n` +
+      `Missing required environment variables:\n` +
         missing.map((v) => `  - ${v}`).join("\n") +
-        `\n\nCopy .env.example to .env and fill in the values.\n`,
+        `\n\nSee packages/backend/.env.example for reference.`,
     );
   }
 }
-
-// Re-export types and individual configs for consumers that need them
-export type { AppConfig };
-export { defaultConfig } from "./default.js";

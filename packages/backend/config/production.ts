@@ -1,10 +1,12 @@
 /**
- * Production configuration overrides.
- * Applied when NODE_ENV=production.
+ * Production environment overrides.
  */
-import type { AppConfig } from "./default.js";
 
-export const productionConfig: Partial<AppConfig> = {
-  logLevel: "info",
-  seedEnabled: false,
+import type { DeepPartial } from "./index.js";
+import type { AppConfig } from "./index.js";
+
+const productionConfig: DeepPartial<AppConfig> = {
+  nodeEnv: "production",
 };
+
+export default productionConfig;

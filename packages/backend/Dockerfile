@@ -1,45 +1,42 @@
-# ─── Backend Dockerfile ───────────────────────────────────────────────────────
-# Multi-stage build: installs deps + compiles TypeScript in builder,
-# copies only the built artifacts to the final image.
-# ─────────────────────────────────────────────────────────────────────────────
-
-# Stage 1: builder
+# Stage 1: Install dependencies and build
 FROM oven/bun:1 AS builder
 
 WORKDIR /app
 
-# Copy workspace manifests first for layer caching
-COPY package.json bun.lockb ./
-COPY packages/backend/package.json ./packages/backend/
-COPY packages/teams/package.json ./packages/teams/
-COPY packages/agent-manager/package.json ./packages/agent-manager/
+# Copy workspace root files needed for bun install
+COPY package.json bunfig.toml ./
+COPY packages/backend/package.json packages/backend/package.json
+# Stub other workspace packages so bun resolves workspace deps
+COPY packages/frontend/package.json packages/frontend/package.json
+COPY packages/registry/package.json packages/registry/package.json
 
-# Install dependencies (workspace-aware)
 RUN bun install --frozen-lockfile
 
-# Copy source
-COPY packages/backend ./packages/backend
-COPY packages/teams ./packages/teams
-COPY packages/agent-manager ./packages/agent-manager
-COPY tsconfig.json ./
+# Copy backend source
+COPY packages/backend/ packages/backend/
+COPY tsconfig.json tsconfig.json
 
-# Build backend (tsc compile + copy agent YAML)
+# Build
 WORKDIR /app/packages/backend
 RUN bun run build
 
-# Stage 2: runtime
+# Stage 2: Slim production runtime
 FROM oven/bun:1-slim AS runtime
 
 WORKDIR /app
 
-# Copy compiled output from builder
-COPY --from=builder /app/packages/backend/dist ./dist
-COPY --from=builder /app/packages/backend/package.json ./
+# Copy only what's needed to run
 COPY --from=builder /app/node_modules ./node_modules
+COPY --from=builder /app/packages/backend/node_modules ./packages/backend/node_modules
+COPY --from=builder /app/packages/backend/dist ./packages/backend/dist
+COPY --from=builder /app/packages/backend/package.json ./packages/backend/package.json
+COPY --from=builder /app/package.json ./package.json
 
-# Create workspaces directory
-RUN mkdir -p /app/data/workspaces
+# Create data directories
+RUN mkdir -p /app/data/workspaces /app/data/plans
 
+ENV NODE_ENV=production
 EXPOSE 3002
 
+WORKDIR /app/packages/backend
 CMD ["bun", "dist/server.js"]

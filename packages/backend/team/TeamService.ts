@@ -24,7 +24,6 @@ import type {
   TeamFilters,
   AgentConfig,
   AgentStatusUpdate,
-  AgentConfigUpdate,
   MemberRole,
   WorkspaceInfo,
   ITeamService,
@@ -44,7 +43,6 @@ import {
   CannotRemoveManagerError,
   SkillAlreadyAssignedError,
   SkillNotAssignedError,
-  ValidationError,
 } from "./errors.js";
 
 // Default Planner Agent YAML template
@@ -341,53 +339,11 @@ export class TeamService implements ITeamService {
     return toAgent(agent);
   }
 
-  /**
-   * Update an agent's editable configuration (name, role, YAML definition).
-   * Called by the Agent Settings Panel (DetailPanel Settings tab).
-   */
-  async updateAgent(
-    agentId: string,
-    update: AgentConfigUpdate,
-  ): Promise<Agent> {
-    const agent = await AgentModel.findById(agentId);
-    if (!agent) {
-      throw new AgentNotFoundError(agentId);
-    }
-
-    if (update.name !== undefined) {
-      if (typeof update.name !== "string" || !update.name.trim()) {
-        throw new ValidationError("Agent name must be a non-empty string");
-      }
-      agent.name = update.name.trim();
-    }
-
-    if (update.role !== undefined) {
-      if (typeof update.role !== "string" || !update.role.trim()) {
-        throw new ValidationError("Agent role must be a non-empty string");
-      }
-      agent.role = update.role.trim().toLowerCase();
-    }
-
-    if (update.yaml !== undefined) {
-      if (typeof update.yaml !== "string" || !update.yaml.trim()) {
-        throw new ValidationError("Agent YAML definition must be a non-empty string");
-      }
-      agent.definitionYaml = update.yaml.trim();
-    }
-
-    await agent.save();
-    return toAgent(agent);
-  }
-
   async delegateAgent(
     teamId: string,
     agentId: string,
     employeeId: string,
   ): Promise<Agent> {
-    if (typeof employeeId !== "string" || !employeeId.trim()) {
-      throw new Error("employeeId must be a non-empty string");
-    }
-
     const agent = await AgentModel.findById(agentId);
     if (!agent) {
       throw new AgentNotFoundError(agentId);
@@ -406,13 +362,13 @@ export class TeamService implements ITeamService {
     // Verify employee is a team member
     const member = await TeamMemberModel.findOne({
       teamId: new Types.ObjectId(teamId),
-      userId: employeeId.trim(),
+      userId: employeeId,
     });
     if (!member) {
       throw new MemberNotFoundError(employeeId, teamId);
     }
 
-    agent.delegatedTo = employeeId.trim();
+    agent.delegatedTo = employeeId;
     await agent.save();
 
     return toAgent(agent);
@@ -440,13 +396,6 @@ export class TeamService implements ITeamService {
   // ===========================================================================
 
   async assignSkillToAgent(agentId: string, skillId: string): Promise<void> {
-    if (typeof skillId !== "string") {
-      throw new Error("skillId must be a string");
-    }
-    if (!skillId.trim()) {
-      throw new Error("skillId must be a non-empty string");
-    }
-
     const agent = await AgentModel.findById(agentId);
     if (!agent) {
       throw new AgentNotFoundError(agentId);
@@ -455,7 +404,7 @@ export class TeamService implements ITeamService {
     // Check if already assigned
     const existing = await AgentSkillModel.findOne({
       agentId: new Types.ObjectId(agentId),
-      skillId: skillId.trim(),
+      skillId,
     });
     if (existing) {
       throw new SkillAlreadyAssignedError(agentId, skillId);
@@ -463,7 +412,7 @@ export class TeamService implements ITeamService {
 
     await AgentSkillModel.create({
       agentId: new Types.ObjectId(agentId),
-      skillId: skillId.trim(),
+      skillId,
       enabled: true,
       assignedAt: new Date(),
     });
@@ -511,10 +460,6 @@ export class TeamService implements ITeamService {
     userId: string,
     role: MemberRole,
   ): Promise<TeamMember> {
-    if (typeof userId !== "string" || !userId.trim()) {
-      throw new Error("userId must be a non-empty string");
-    }
-
     const team = await TeamModel.findById(teamId);
     if (!team) {
       throw new TeamNotFoundError(teamId);
@@ -523,7 +468,7 @@ export class TeamService implements ITeamService {
     // Check if already a member
     const existing = await TeamMemberModel.findOne({
       teamId: new Types.ObjectId(teamId),
-      userId: userId.trim(),
+      userId,
     });
     if (existing) {
       throw new MemberAlreadyExistsError(userId, teamId);
@@ -531,7 +476,7 @@ export class TeamService implements ITeamService {
 
     const member = await TeamMemberModel.create({
       teamId: new Types.ObjectId(teamId),
-      userId: userId.trim(),
+      userId,
       role,
       joinedAt: new Date(),
     });

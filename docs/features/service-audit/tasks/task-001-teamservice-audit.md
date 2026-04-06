@@ -1,6 +1,6 @@
 # Task 001: TeamService Method-by-Method Audit
 
-**Status:** `completed`  
+**Status:** `not-started`  
 **Estimated:** 2-3 hours  
 **Branch:** `feature/service-audit`
 

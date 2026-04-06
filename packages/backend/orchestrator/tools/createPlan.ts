@@ -9,7 +9,7 @@
 import { tool } from "@langchain/core/tools";
 import { z } from "zod";
 import type { OrchestratorContext } from "../types.js";
-import { toGoalId } from "../../memory/L2/collaboration/PlanStore.js";
+import { toGoalId } from "../../plugin/utils.js";
 import { PlanRequirementsSchema, type CreatePlanResult } from "../schemas.js";
 
 /**

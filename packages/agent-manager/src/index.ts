@@ -1,36 +1,72 @@
 /**
- * @ping/agent-manager — Public API
+ * @ping/agent-manager — Core orchestration engine
  *
- * Orchestration layer for the Ping platform.
- *
- * Phase 3C Status:
- *   Step 1 (this PR)  — Package declared; public contract types exported here.
- *   Step 2 (next PR)  — Source code physically moved from @ping/backend to
- *                        packages/agent-manager/src/ and AgentManager class
- *                        exported from this package.
- *
- * See docs/features/ROADMAP.md — Phase 3C: Team Package & Multi-Team.
- *
- * Until Step 2 is complete, import the AgentManager implementation directly:
- *   import { AgentManager } from "@ping/backend/agentManager/AgentManagerV2.js"
- *   import { agentManagerRegistry } from "@ping/backend/agentManager/AgentManagerRegistry.js"
+ * Provides the multi-agent orchestration runtime:
+ * - AgentManager: top-level orchestrator (plans, assigns, coordinates)
+ * - WorkerPool: manages agent workers per task
+ * - OrchestratorService: LLM-powered planning with tools
+ * - AiSdkAgent: AI SDK streamText agent runtime
+ * - PluginRegistry: plugin-based tool/skill resolution
+ * - MemoryManager: task lifecycle and DAG readiness
  */
 
+// Core orchestrator
+export { AgentManager } from "./AgentManagerV2.js";
+export type { ManagerStreamCallbacks } from "./AgentManagerV2.js";
+
+// WorkerPool
+export { WorkerPool } from "./services/WorkerPool.js";
+export type { WorkerCallbacks } from "./services/WorkerPool.js";
+
+// OrchestratorService
+export { OrchestratorService } from "./orchestrator/OrchestratorService.js";
 export type {
-  // Plan types
-  TaskContext,
-  TaskItem,
-  PlanPhase,
-  AgentPlanOutput,
-  TaskPlan,
-  // Event types
   OrchestratorState,
+  OrchestratorContext,
+  OrchestratorConfig,
+  OrchestratorMessage,
+  OrchestratorCallbacks,
   PlanProposedEvent,
   PlanApprovedEvent,
-  // Callback interfaces
-  WorkerCallbacks,
-  OrchestratorCallbacks,
-  ManagerStreamCallbacks,
-  // Registry types
-  TeamData,
-} from "./types.js";
+  TaskPlan,
+} from "./orchestrator/types.js";
+
+// Agent system
+export { AiSdkAgent } from "./agent/internal/AiSdkAgent.js";
+export { AgentFactory, getAgentFactory } from "./agent/AgentFactory.js";
+export { BaseAgent } from "./agent/BaseAgent.js";
+export type {
+  AgentDefinition,
+  AgentEvent,
+  AgentInput,
+  IAgent,
+  AgentType,
+  AgentStatus,
+  InternalConfig,
+} from "./agent/types.js";
+
+// MemoryManager
+export { MemoryManager } from "./memory/MemoryManager.js";
+export type { Task, TaskStatus } from "./memory/types/index.js";
+
+// Persistence (built-in defaults)
+export { FilePlanStore } from "./persistence/FilePlanStore.js";
+export { FileTaskStore } from "./persistence/FileTaskStore.js";
+
+// Plugin system
+export { PluginRegistry } from "./plugin/PluginRegistry.js";
+export type {
+  IPlugin,
+  IMcpServer,
+  ISkill,
+  IPluginStorage,
+  IPlanStore,
+  ITaskStore,
+  ToolContext,
+  SkillContext,
+} from "./plugin/types.js";
+export { toGoalId } from "./plugin/utils.js";
+
+// RoleTaskQueue
+export { RoleTaskQueue } from "./util/RoleTaskQueue.js";
+export type { TaskWithContext, TaskCallbacks } from "./util/RoleTaskQueue.types.js";

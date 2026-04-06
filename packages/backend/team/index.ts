@@ -1,8 +1,30 @@
 /**
- * @ping/backend/team — re-exports from @ping/teams
+ * Team Service
  *
- * All team management code lives in the @ping/teams workspace package.
- * These re-exports preserve backward-compatibility for any internal
- * paths that still use "../team/..." imports.
+ * Manages teams with Planner Agent, manager ownership, and delegation model.
+ * Uses Mongoose ODM for MongoDB persistence.
  */
-export * from "@ping/teams";
+
+// Main service
+export { TeamService } from "./TeamService.js";
+
+// Mongoose models
+export {
+  TeamModel,
+  AgentModel,
+  TeamMemberModel,
+  AgentSkillModel,
+} from "./models.js";
+export type { ITeam, IAgent, ITeamMember, IAgentSkill } from "./models.js";
+
+// Types and errors
+export * from "./types/index.js";
+export * from "./errors.js";
+
+// Database utilities
+export {
+  initTeamServiceDb,
+  closeDb,
+  isConnected,
+  getConnection,
+} from "./database.js";

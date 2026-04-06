@@ -1,6 +1,6 @@
 # Task 004: Resolve Skill Duplication
 
-**Status:** `completed`  
+**Status:** `not-started`  
 **Depends on:** task-001, task-002  
 **Estimated:** 3-4 hours  
 **Branch:** `feature/service-audit`

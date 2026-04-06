@@ -1,38 +1,38 @@
 /**
- * Default configuration — shared by all environments.
- * Values here can be overridden by environment-specific configs.
+ * Default configuration — shared across all environments.
+ * Values here are overridden by environment-specific configs.
  */
-export const defaultConfig = {
+
+import type { AppConfig } from "./index.js";
+
+const defaultConfig: AppConfig = {
   // Server
   port: 3002,
-  nodeEnv: "development" as string,
+  nodeEnv: "development",
 
   // MongoDB
   mongodbUri: "mongodb://localhost:27017/ping",
 
-  // Azure OpenAI
-  azureOpenAI: {
-    endpointUrl: "",
+  // Azure OpenAI (required — validated at startup)
+  azureOpenAi: {
     apiKey: "",
+    endpointUrl: "",
     instanceName: "",
     deployment: "gpt-4o-2",
-    apiVersion: "2025-01-01-preview",
   },
 
-  // Workspace
-  workspaceBaseDir: "./data/workspaces",
+  // Optional LLM providers
+  anthropicApiKey: undefined,
+  openaiApiKey: undefined,
+
+  // Feature flags
+  useOrchestrator: true,
+  useApiV2: true,
 
   // Agent runtime
-  agentRuntime: "aisdk" as "aisdk" | "langgraph",
-
-  // Orchestrator
-  useOrchestrator: true,
-
-  // Seed
-  seedEnabled: false,
-
-  // Logging
-  logLevel: "info" as "debug" | "info" | "warn" | "error",
+  workspaceBaseDir: "./data/workspaces",
+  collabPort: 1234,
+  agentsDir: undefined,
 };
 
-export type AppConfig = typeof defaultConfig;
+export default defaultConfig;

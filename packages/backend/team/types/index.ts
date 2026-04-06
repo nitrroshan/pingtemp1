@@ -93,16 +93,6 @@ export interface AgentStatusUpdate {
   errorMessage?: string | null;
 }
 
-/**
- * Fields that can be updated on an agent via the settings panel.
- * Used by TeamService.updateAgent() / PATCH /teams/:id/agents/:agentId.
- */
-export interface AgentConfigUpdate {
-  name?: string;
-  role?: string;
-  yaml?: string; // Full YAML definition (overwrites definitionYaml)
-}
-
 // =============================================================================
 // Team Member Types
 // =============================================================================
@@ -161,7 +151,6 @@ export interface ITeamService {
   getTeamAgents(teamId: string): Promise<Agent[]>;
   removeAgent(teamId: string, agentId: string): Promise<void>;
   updateAgentStatus(agentId: string, update: AgentStatusUpdate): Promise<Agent>;
-  updateAgent(agentId: string, update: AgentConfigUpdate): Promise<Agent>;
   delegateAgent(
     teamId: string,
     agentId: string,

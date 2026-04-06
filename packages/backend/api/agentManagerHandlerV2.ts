@@ -4,16 +4,12 @@
  * Clean REST routes using AgentManagerRegistry (no passed AgentManager)
  *
  * Routes:
- *   POST /api/v2/teams                               - Create team
- *   GET  /api/v2/teams                               - List teams
- *   GET  /api/v2/teams/:id                           - Get team by ID
- *   DELETE /api/v2/teams/:id                         - Delete team
- *   GET  /api/v2/teams/:id/agents                    - Get agents for team
- *   GET  /api/v2/teams/:id/agents/:agentId/skills    - Get skills for agent
- *   POST /api/v2/teams/:id/agents/:agentId/skills    - Assign skill to agent
- *   DELETE /api/v2/teams/:id/agents/:agentId/skills/:skillId - Remove skill
- *   GET  /api/v2/sessions/:id                        - Get session state
- *   GET  /api/v2/sessions/:id/tasks                  - Get tasks for session
+ *   POST /api/v2/teams           - Create team
+ *   GET  /api/v2/teams           - List teams
+ *   GET  /api/v2/teams/:id       - Get team by ID
+ *   GET  /api/v2/teams/:id/agents - Get agents for team
+ *   GET  /api/v2/sessions/:id    - Get session state
+ *   GET  /api/v2/sessions/:id/tasks - Get tasks for session
  */
 
 import express from "express";
@@ -23,13 +19,9 @@ import { agentManagerRegistry } from "../agentManager/AgentManagerRegistry.js";
 import { TeamModel } from "../agentManager/team/schema/teamSchema.js";
 import { AgentModel } from "../agentManager/team/schema/agentSchema.js";
 import { AgentManager } from "../agentManager/AgentManagerV2.js";
-import { TeamService } from "../team/TeamService.js";
 import { randomUUID } from "crypto";
 
 const logger = new Logger({ name: "AgentManagerHandlerV2" });
-
-// Shared TeamService instance for skill management (uses AgentSkill collection)
-const teamService = new TeamService();
 
 /**
  * Create V2 router (no dependencies injected)
@@ -135,13 +127,23 @@ export function createAgentManagerHandlerV2(): express.Router {
     try {
       const teams = await TeamModel.find().lean();
 
+      // Count agents per team from AgentModel (more reliable than members array)
+      const teamIds = teams.map((t) => t._id);
+      const agentCounts = await AgentModel.aggregate([
+        { $match: { teamId: { $in: teamIds } } },
+        { $group: { _id: "$teamId", count: { $sum: 1 } } },
+      ]);
+      const countMap = new Map(
+        agentCounts.map((ac: { _id: any; count: number }) => [ac._id.toString(), ac.count]),
+      );
+
       res.json({
         teams: teams.map((t) => ({
           id: t._id.toString(),
           name: t.teamName,
           goal: t.goal,
           description: t.description,
-          memberCount: t.members?.length || 0,
+          memberCount: countMap.get(t._id.toString()) || 0,
         })),
         count: teams.length,
       });
@@ -164,13 +166,15 @@ export function createAgentManagerHandlerV2(): express.Router {
         return;
       }
 
+      const agentCount = await AgentModel.countDocuments({ teamId: team._id });
+
       res.json({
         team: {
           id: team._id.toString(),
           name: team.teamName,
           goal: team.goal,
           description: team.description,
-          memberCount: team.members?.length || 0,
+          memberCount: agentCount,
         },
       });
     } catch (error: any) {
@@ -240,155 +244,6 @@ export function createAgentManagerHandlerV2(): express.Router {
       res.status(500).json({ error: error.message || String(error) });
     }
   });
-
-  /**
-   * PATCH /teams/:id/agents/:agentId — Update agent config (name, role, yaml)
-   * Used by the Agent Settings Panel in the frontend.
-   */
-  router.patch(
-    "/teams/:id/agents/:agentId",
-    async (req: Request<{ id: string; agentId: string }>, res: Response) => {
-      try {
-        const { agentId } = req.params;
-        const { name, role, yaml } = req.body as {
-          name?: unknown;
-          role?: unknown;
-          yaml?: unknown;
-        };
-
-        const update: { name?: string; role?: string; yaml?: string } = {};
-
-        if (name !== undefined) {
-          if (typeof name !== "string" || !name.trim()) {
-            res.status(400).json({ error: "name must be a non-empty string" });
-            return;
-          }
-          update.name = name;
-        }
-
-        if (role !== undefined) {
-          if (typeof role !== "string" || !role.trim()) {
-            res.status(400).json({ error: "role must be a non-empty string" });
-            return;
-          }
-          update.role = role;
-        }
-
-        if (yaml !== undefined) {
-          if (typeof yaml !== "string" || !yaml.trim()) {
-            res.status(400).json({ error: "yaml must be a non-empty string" });
-            return;
-          }
-          update.yaml = yaml;
-        }
-
-        if (Object.keys(update).length === 0) {
-          res.status(400).json({ error: "At least one field (name, role, yaml) is required" });
-          return;
-        }
-
-        const { TeamService } = await import("../team/TeamService.js");
-        const teamService = new TeamService();
-        const agent = await teamService.updateAgent(agentId, update);
-
-        res.json({
-          status: "updated",
-          agent: {
-            id: agent._id.toHexString(),
-            name: agent.name,
-            role: agent.role,
-            definitionYaml: agent.definitionYaml,
-            updatedAt: agent.updatedAt,
-          },
-        });
-      } catch (error: any) {
-        logger.error("[V2] Error updating agent config:", error);
-        res.status(500).json({ error: error.message || String(error) });
-      }
-    },
-  );
-
-  // ============================================================================
-  // Agent Skills
-  // ============================================================================
-
-  /**
-   * GET /teams/:id/agents/:agentId/skills - Get skills assigned to an agent
-   */
-  router.get(
-    "/teams/:id/agents/:agentId/skills",
-    async (req: Request<{ id: string; agentId: string }>, res: Response) => {
-      try {
-        const { agentId } = req.params;
-        const skills = await teamService.getAgentSkills(agentId);
-
-        res.json({
-          agentId,
-          skills: skills.map((s) => ({
-            skillId: s.skillId,
-            enabled: s.enabled,
-            assignedAt: s.assignedAt,
-          })),
-        });
-      } catch (error: any) {
-        logger.error("[V2] Error getting agent skills:", error);
-        res.status(500).json({ error: error.message || String(error) });
-      }
-    },
-  );
-
-  /**
-   * POST /teams/:id/agents/:agentId/skills - Assign a skill to an agent
-   * Body: { skillId: string }
-   */
-  router.post(
-    "/teams/:id/agents/:agentId/skills",
-    async (req: Request<{ id: string; agentId: string }>, res: Response) => {
-      try {
-        const { agentId } = req.params;
-        const { skillId } = req.body;
-
-        if (!skillId || typeof skillId !== "string" || !skillId.trim()) {
-          res.status(400).json({ error: "skillId must be a non-empty string" });
-          return;
-        }
-
-        await teamService.assignSkillToAgent(agentId, skillId);
-        res.status(201).json({ status: "assigned", agentId, skillId });
-      } catch (error: any) {
-        if (error.message?.includes("already assigned")) {
-          res.status(409).json({ error: error.message });
-          return;
-        }
-        logger.error("[V2] Error assigning skill:", error);
-        res.status(500).json({ error: error.message || String(error) });
-      }
-    },
-  );
-
-  /**
-   * DELETE /teams/:id/agents/:agentId/skills/:skillId - Remove skill from agent
-   */
-  router.delete(
-    "/teams/:id/agents/:agentId/skills/:skillId",
-    async (
-      req: Request<{ id: string; agentId: string; skillId: string }>,
-      res: Response,
-    ) => {
-      try {
-        const { agentId, skillId } = req.params;
-        await teamService.removeSkillFromAgent(agentId, skillId);
-        res.json({ status: "removed", agentId, skillId });
-      } catch (error: any) {
-        if (error.message?.includes("not assigned")) {
-          res.status(404).json({ error: error.message });
-          return;
-        }
-        logger.error("[V2] Error removing skill:", error);
-        res.status(500).json({ error: error.message || String(error) });
-      }
-    },
-  );
 
   // ============================================================================
   // Sessions (read-only, runtime state)

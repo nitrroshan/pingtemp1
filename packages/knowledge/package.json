@@ -1,0 +1,13 @@
+{
+  "name": "@ping/knowledge",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "dependencies": {
+    "@ping/agent-manager": "workspace:*",
+    "@langchain/core": "^1.1.0",
+    "mongoose": "^9.0.2",
+    "tslog": "^4.10.2"
+  }
+}

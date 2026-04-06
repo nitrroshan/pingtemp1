@@ -1,10 +1,12 @@
 /**
- * Development configuration overrides.
- * Applied when NODE_ENV=development (default).
+ * Development environment overrides.
  */
-import type { AppConfig } from "./default.js";
 
-export const developmentConfig: Partial<AppConfig> = {
-  logLevel: "debug",
-  seedEnabled: false,
+import type { DeepPartial } from "./index.js";
+import type { AppConfig } from "./index.js";
+
+const developmentConfig: DeepPartial<AppConfig> = {
+  // Development uses defaults — override here as needed
 };
+
+export default developmentConfig;

@@ -1,31 +1,22 @@
-version: "3.9"
+# docker-compose.yml — Full production stack
+# Usage: docker compose up -d --build
 
 services:
-  # ─────────────────────────────────────────────────────────────────────────────
-  # MongoDB
-  # ─────────────────────────────────────────────────────────────────────────────
-  mongo:
+  mongodb:
     image: mongo:7
     container_name: ping-mongo
     restart: unless-stopped
     ports:
-      - "27017:27017"
+      - "${MONGO_PORT:-27017}:27017"
     volumes:
       - ping-mongo-data:/data/db
-    environment:
-      MONGO_INITDB_DATABASE: ping
     healthcheck:
       test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
       interval: 10s
       timeout: 5s
       retries: 5
       start_period: 10s
-    networks:
-      - ping-net
 
-  # ─────────────────────────────────────────────────────────────────────────────
-  # Backend API (port 3002)
-  # ─────────────────────────────────────────────────────────────────────────────
   backend:
     build:
       context: .
@@ -33,42 +24,37 @@ services:
     container_name: ping-backend
     restart: unless-stopped
     ports:
-      - "3002:3002"
+      - "${API_PORT:-3002}:3002"
     env_file:
-      - .env
+      - ./packages/backend/.env
     environment:
-      MONGODB_URI: mongodb://mongo:27017/ping
-      NODE_ENV: production
+      - NODE_ENV=production
+      - MONGODB_URI=mongodb://mongodb:27017/ping
+      - API_PORT=3002
     depends_on:
-      mongo:
+      mongodb:
         condition: service_healthy
-    volumes:
-      - ping-workspaces:/app/data/workspaces
-    networks:
-      - ping-net
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3002/api/v2/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
 
-  # ─────────────────────────────────────────────────────────────────────────────
-  # Frontend (port 3000)  — served via nginx in production
-  # ─────────────────────────────────────────────────────────────────────────────
   frontend:
     build:
       context: .
       dockerfile: packages/frontend/Dockerfile
+      args:
+        - VITE_API_URL=${VITE_API_URL:-http://localhost:3002}
     container_name: ping-frontend
     restart: unless-stopped
     ports:
-      - "3000:80"
-    environment:
-      VITE_API_URL: http://localhost:3002
+      - "${FRONTEND_PORT:-3000}:80"
     depends_on:
-      - backend
-    networks:
-      - ping-net
+      backend:
+        condition: service_healthy
 
 volumes:
   ping-mongo-data:
-  ping-workspaces:
-
-networks:
-  ping-net:
-    driver: bridge
+    name: ping-mongo-data

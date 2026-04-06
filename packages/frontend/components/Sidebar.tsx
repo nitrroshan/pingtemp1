@@ -363,36 +363,53 @@ const Sidebar: React.FC<SidebarProps> = ({
           ))}
         </div>
 
-        {/* ── Agents / Teams section ── */}
+        {/* ── Agents section (current team only) ── */}
         <div className="flex-1 overflow-y-auto p-1.5 min-h-0">
-          {isExpanded && (
-            <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider px-2 py-1.5 select-none">
-              Teams
-            </p>
-          )}
-          {agents.length === 0 ? (
+          {!activeTeam ? (
             isExpanded ? (
               <div className="text-xs text-muted-foreground text-center py-4 px-2">
-                No teams yet.
+                Select a team to see agents.
               </div>
             ) : null
           ) : (
-            agents.map(agent => (
+            <>
+              {/* Team orchestrator (manager) — render without expanding children */}
               <AgentRow
-                key={agent.id}
-                agent={agent}
+                key={activeTeam.id}
+                agent={{ ...activeTeam, collapsed: true, subAgents: [] }}
                 depth={0}
                 activeAgentId={activeAgentId}
                 isExpanded={isExpanded}
-                onSelectAgent={onSelectAgent}
+                onSelectAgent={() => onSelectAgent(activeTeam)}
                 onToggleCollapse={onToggleCollapse}
                 onAddAgent={onAddAgent}
               />
-            ))
+
+              {/* Sub-agents listed flat */}
+              {activeTeam.subAgents && activeTeam.subAgents.length > 0 && (
+                <>
+                  {isExpanded && (
+                    <div className="border-t border-border my-1 mx-2" />
+                  )}
+                  {activeTeam.subAgents.map(agent => (
+                    <AgentRow
+                      key={agent.id}
+                      agent={agent}
+                      depth={0}
+                      activeAgentId={activeAgentId}
+                      isExpanded={isExpanded}
+                      onSelectAgent={onSelectAgent}
+                      onToggleCollapse={onToggleCollapse}
+                      onAddAgent={onAddAgent}
+                    />
+                  ))}
+                </>
+              )}
+            </>
           )}
         </div>
 
-        {/* ── Footer: new team + collapse ── */}
+        {/* ── Footer: manage teams + collapse ── */}
         <div className={cn(
           'p-1.5 border-t border-border flex-shrink-0',
           isExpanded ? 'flex items-center gap-1' : 'flex flex-col items-center gap-1'
@@ -400,7 +417,7 @@ const Sidebar: React.FC<SidebarProps> = ({
           {isExpanded ? (
             <>
               <button
-                onClick={() => onAddAgent()}
+                onClick={() => onNavigateToTeams?.()}
                 className="flex-1 flex items-center gap-2 px-2.5 py-1.5 rounded-md text-sm text-muted-foreground hover:text-foreground hover:bg-accent transition-colors cursor-pointer"
               >
                 <Plus size={14} className="flex-shrink-0" />
@@ -419,7 +436,7 @@ const Sidebar: React.FC<SidebarProps> = ({
               <Tooltip>
                 <TooltipTrigger asChild>
                   <button
-                    onClick={() => onAddAgent()}
+                    onClick={() => onNavigateToTeams?.()}
                     className="p-2 rounded-md text-muted-foreground hover:text-foreground hover:bg-accent transition-colors cursor-pointer"
                   >
                     <Plus size={14} />

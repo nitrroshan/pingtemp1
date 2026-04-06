@@ -792,19 +792,9 @@ export class SocketServerV2 {
     const approval = manager.approveTaskForChat(taskId);
 
     // Then actually start execution
-    // Note: The response message is broadcast via worker:done event listener
-    // to avoid duplicate messages
+    // Note: Task status updates (in_progress, completed) are handled by
+    // onTaskUpdate callback — don't send stale status here.
     const result = await manager.startTaskExecution(taskId);
-
-    const stateResponse: StateResponse = {
-      sessionId: "default",
-      tasks: [{ id: taskId, status: "in_progress", role: result.role }],
-      timestamp: Date.now(),
-    };
-    socket.emit("state", stateResponse);
-
-    // Don't emit message here - worker:done event will broadcast it
-    // This prevents duplicate messages
 
     logger.info(`[SocketServerV2] Task ${taskId} started and executing`);
   }

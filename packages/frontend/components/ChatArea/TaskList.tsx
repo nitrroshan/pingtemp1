@@ -28,8 +28,8 @@ const TaskList: React.FC<TaskListProps> = ({
     <div className="flex-1 flex flex-col max-w-4xl mx-auto w-full p-4 sm:p-8">
       
       {/* Read Only Header / Prompt */}
-      <div className="mb-6 flex items-center gap-3 p-4 rounded-xl bg-nexus-900/50 border border-nexus-800 border-dashed text-slate-400">
-        <div className="p-2 bg-nexus-800 rounded-lg text-nexus-cyan">
+      <div className="mb-6 flex items-center gap-3 p-4 rounded-xl bg-muted/50 border border-border border-dashed text-muted-foreground">
+        <div className="p-2 bg-primary/10 rounded-lg text-primary">
           <Sparkles size={18} />
         </div>
         <p className="text-sm">
@@ -40,7 +40,7 @@ const TaskList: React.FC<TaskListProps> = ({
       {/* Task List */}
       <div className="flex-1 overflow-y-auto space-y-2 scrollbar-thin pb-4">
         {tasks.length === 0 ? (
-          <div className="flex flex-col items-center justify-center h-56 text-slate-500 gap-3">
+          <div className="flex flex-col items-center justify-center h-56 text-muted-foreground gap-3">
             <div className="w-44 h-28 rounded-2xl border border-border bg-card/50 p-3">
               <svg viewBox="0 0 240 140" className="w-full h-full" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden>
                 <rect x="20" y="16" width="200" height="108" rx="14" className="fill-muted/20 stroke-border" />

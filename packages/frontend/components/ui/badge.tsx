@@ -12,9 +12,9 @@ const Badge = React.forwardRef<
     secondary: 'bg-secondary text-secondary-foreground border-border',
     destructive: 'bg-destructive/20 text-destructive border-destructive/30',
     outline: 'bg-transparent border-border text-foreground',
-    success: 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30',
-    warning: 'bg-yellow-500/10 text-yellow-400 border-yellow-500/30',
-    info: 'bg-blue-500/10 text-blue-400 border-blue-500/30',
+    success: 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 border-emerald-500/30',
+    warning: 'bg-yellow-500/10 text-yellow-700 dark:text-yellow-400 border-yellow-500/30',
+    info: 'bg-blue-500/10 text-blue-700 dark:text-blue-400 border-blue-500/30',
   };
 
   return (

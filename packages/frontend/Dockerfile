@@ -1,33 +1,34 @@
-# ─── Frontend Dockerfile ──────────────────────────────────────────────────────
-# Multi-stage: Vite build → nginx static serving
-# ─────────────────────────────────────────────────────────────────────────────
-
-# Stage 1: build
+# Stage 1: Build with Bun
 FROM oven/bun:1 AS builder
 
 WORKDIR /app
 
-COPY package.json bun.lockb ./
-COPY packages/frontend/package.json ./packages/frontend/
+# Copy workspace root files
+COPY package.json bunfig.toml ./
+COPY packages/frontend/package.json packages/frontend/package.json
+# Stub other workspace packages
+COPY packages/backend/package.json packages/backend/package.json
+COPY packages/registry/package.json packages/registry/package.json
 
 RUN bun install --frozen-lockfile
 
-COPY packages/frontend ./packages/frontend
-COPY tsconfig.json ./
+# Copy frontend source
+COPY packages/frontend/ packages/frontend/
+
+# Build-time env — override API URL at build
+ARG VITE_API_URL=http://localhost:3002
+ENV VITE_API_URL=$VITE_API_URL
 
 WORKDIR /app/packages/frontend
 RUN bun run build
 
-# Stage 2: serve with nginx
+# Stage 2: Serve with nginx
 FROM nginx:alpine AS runtime
 
-# Remove default nginx static assets
-RUN rm -rf /usr/share/nginx/html/*
-
-# Copy built Vite output
+# Copy built assets
 COPY --from=builder /app/packages/frontend/dist /usr/share/nginx/html
 
-# SPA fallback: all routes serve index.html
+# SPA fallback: all routes → index.html
 RUN printf 'server {\n\
   listen 80;\n\
   root /usr/share/nginx/html;\n\
@@ -35,8 +36,12 @@ RUN printf 'server {\n\
   location / {\n\
     try_files $uri $uri/ /index.html;\n\
   }\n\
+  # Cache static assets\n\
+  location ~* \\.(js|css|png|jpg|jpeg|gif|ico|svg|woff2?)$ {\n\
+    expires 1y;\n\
+    add_header Cache-Control "public, immutable";\n\
+  }\n\
 }\n' > /etc/nginx/conf.d/default.conf
 
 EXPOSE 80
-
 CMD ["nginx", "-g", "daemon off;"]

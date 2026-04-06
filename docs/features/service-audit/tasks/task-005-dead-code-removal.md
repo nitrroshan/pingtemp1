@@ -1,6 +1,6 @@
 # Task 005: Dead Code Removal
 
-**Status:** `in-progress`  
+**Status:** `not-started`  
 **Depends on:** task-001, task-002, task-003  
 **Estimated:** 2-4 hours  
 **Branch:** `feature/service-audit`

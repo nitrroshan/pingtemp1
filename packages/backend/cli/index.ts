@@ -10,7 +10,7 @@
 
 import * as readline from "readline";
 import { AgentManager } from "../agentManager/AgentManagerV2.js";
-import { MemoryManager } from "../memory/MemoryManager.js";
+import { MemoryManager } from "@ping/agent-manager";
 
 // ANSI colors
 const colors = {

@@ -1,0 +1,21 @@
+{
+  "name": "@ping/collaboration",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "dependencies": {
+    "@ping/agent-manager": "workspace:*",
+    "@hocuspocus/extension-database": "^3.4.4",
+    "@hocuspocus/server": "^3.4.4",
+    "@langchain/core": "^1.1.0",
+    "ai": "^6.0.143",
+    "fast-glob": "^3.3.3",
+    "minisearch": "^7.2.0",
+    "mongoose": "^9.0.2",
+    "tslog": "^4.10.2",
+    "y-protocols": "^1.0.7",
+    "yjs": "^13.6.29",
+    "zod": "^3.23.0"
+  }
+}

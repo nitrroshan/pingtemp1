@@ -1,22 +1,43 @@
+import mongoose from "mongoose";
+import type { AgentSkill } from "../types/index.js";
+
 /**
  * Agent Skills Collection Schema
  *
- * Single source of truth: AgentSkillModel lives in the team package (packages/backend/team/models.ts).
- * The canonical schema uses:
- *   - agentId: ObjectId (ref to Agent document)
- *   - skillId: string
- *   - enabled: boolean (used by SkillSelector UI)
- *   - assignedAt: Date
- *
- * This file re-exports from the canonical location to avoid duplicate schema registration.
- * Previously this file defined its own schema with agentId as a plain string and no
- * `enabled` field — that caused the two schemas to compete for the same "AgentSkill"
- * collection, whichever module loaded first would win. Fixed in task-004.
+ * Many-to-many relationship between agents and skills.
+ * Tracks which skills are assigned to which agents.
  */
 
-export {
-  AgentSkillModel,
-  agentSkillSchema,
-  type IAgentSkill,
-} from "../../team/models.js";
+const agentSkillSchema = new mongoose.Schema<AgentSkill>(
+  {
+    agentId: {
+      type: String,
+      required: true,
+      trim: true,
+    },
+    skillId: {
+      type: String,
+      required: true,
+      trim: true,
+    },
+    assignedAt: {
+      type: Date,
+      default: Date.now,
+    },
+  },
+  {
+    versionKey: false,
+  },
+);
 
+// Indexes
+agentSkillSchema.index({ agentId: 1 });
+agentSkillSchema.index({ skillId: 1 });
+agentSkillSchema.index({ agentId: 1, skillId: 1 }, { unique: true }); // Prevent duplicate assignments
+
+// Use existing model if already compiled, otherwise create new
+const AgentSkillModel =
+  (mongoose.models.AgentSkill as mongoose.Model<AgentSkill>) ||
+  mongoose.model<AgentSkill>("AgentSkill", agentSkillSchema);
+
+export { agentSkillSchema, AgentSkillModel };

@@ -7,17 +7,12 @@ import cors from "cors";
 import swaggerUi from "swagger-ui-express";
 import { Logger } from "tslog";
 import { AgentManager } from "../agentManager/AgentManagerV2.js";
-import { createAgentMangerRouteHandlers } from "./agentManagerHandler.js";
 import { createAgentManagerHandlerV2 } from "./agentManagerHandlerV2.js";
-import { createTeamRoutes } from "./routes/index.js";
 import { TeamService } from "../team/index.js";
 import { swaggerSpec } from "./swagger.js";
 import { skillsRouter } from "../skills/index.js";
 
 const logger = new Logger({ name: "HttpServer" });
-
-// Feature flag: Use V2 API as default (V1 still available)
-const USE_API_V2 = process.env.USE_API_V2 !== "false";
 
 export interface HttpServerOptions {
   agentManager: AgentManager;
@@ -56,34 +51,16 @@ export class HttpServer {
       });
     });
 
-    // Mount agentManager route handlers (V1)
-    const agentManagerRouteHandlers = createAgentMangerRouteHandlers(
-      options.agentManager,
-    );
-    this.app.use("/api", agentManagerRouteHandlers);
-    logger.info("[HttpServer] V1 API mounted at /api");
-
-    // Mount V2 API routes (uses registry, no AgentManager passed)
+    // Mount V2 API routes
     const v2Routes = createAgentManagerHandlerV2();
     this.app.use("/api/v2", v2Routes);
-    logger.info("[HttpServer] V2 API mounted at /api/v2");
-
-    if (USE_API_V2) {
-      logger.info(
-        "[HttpServer] V2 API is the recommended path (USE_API_V2=true)",
-      );
-    }
+    // Also mount at /api for backward compat
+    this.app.use("/api", v2Routes);
+    logger.info("[HttpServer] V2 API mounted at /api/v2 and /api");
 
     // Mount skills API routes
     this.app.use("/api/skills", skillsRouter);
     logger.info("[HttpServer] Skills API mounted at /api/skills");
-
-    // Mount team routes (v1 API)
-    if (options.teamService) {
-      const teamRoutes = createTeamRoutes(options.teamService);
-      this.app.use("/api/v1/teams", teamRoutes);
-      logger.info("[HttpServer] Team routes mounted at /api/v1/teams");
-    }
 
     // Mount Swagger UI
     this.app.use("/api-docs", swaggerUi.serve, swaggerUi.setup(swaggerSpec));
@@ -100,8 +77,9 @@ export class HttpServer {
         const manager = await agentManagerRegistry.getForTeam(
           req.params.teamId,
         );
-        const coordinator = manager.getMemoryCoordinator();
-        const l2 = coordinator?.L2;
+        const registry = manager.getPluginRegistry();
+        const collabStorage = registry?.getPluginStorage?.("collaboration");
+        const l2 = collabStorage?.crdt;
         if (!l2) {
           res.json({ docs: [] });
           return;

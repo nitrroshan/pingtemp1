@@ -1,0 +1,141 @@
+/**
+ * FilePlanStore — Built-in file-based plan persistence for @ping/agent-manager
+ *
+ * Simple JSON-on-disk store. Used as default when no plugin provides a PlanStore.
+ * Directory structure: data/plans/{teamId}/{goalId}/{planId}.json
+ */
+
+import { promises as fs } from "fs";
+import path from "path";
+import { Logger } from "tslog";
+
+const logger = new Logger({ name: "FilePlanStore" });
+
+export type PlanStatus = "pending" | "approved" | "executing" | "completed" | "failed" | "archived";
+
+export interface StoredPlan {
+  plan: any;
+  metadata: {
+    planId: string;
+    teamId: string;
+    goalId: string;
+    goal: string;
+    createdAt: string;
+    status: PlanStatus;
+    taskCount?: number;
+    version: number;
+    parentPlanId?: string;
+    completedAt?: string;
+  };
+  savedAt: string;
+}
+
+export class FilePlanStore {
+  private baseDir: string;
+
+  constructor(teamId: string, repoPath: string = ".") {
+    this.baseDir = path.join(repoPath, "data", "plans", teamId);
+  }
+
+  private goalDir(goalId: string): string {
+    return path.join(this.baseDir, goalId);
+  }
+
+  private archiveDir(goalId: string): string {
+    return path.join(this.baseDir, goalId, "_archive");
+  }
+
+  private planPath(goalId: string, planId: string): string {
+    return path.join(this.goalDir(goalId), `${planId}.json`);
+  }
+
+  private async ensureDir(dir: string): Promise<void> {
+    await fs.mkdir(dir, { recursive: true });
+  }
+
+  async savePlan(
+    plan: any,
+    opts: { goalId: string; status?: PlanStatus; parentPlanId?: string; version?: number },
+  ): Promise<void> {
+    const goalId = opts.goalId;
+    await this.ensureDir(this.goalDir(goalId));
+    const version = opts.version ?? (await this.listPlansByGoal(goalId)).length + 1;
+
+    const storedPlan: StoredPlan = {
+      plan,
+      metadata: {
+        planId: plan.planId,
+        teamId: path.basename(this.baseDir),
+        goalId,
+        goal: plan.goal,
+        createdAt: new Date().toISOString(),
+        status: opts.status || "pending",
+        taskCount: plan.tasks?.length,
+        version,
+        parentPlanId: opts.parentPlanId,
+      },
+      savedAt: new Date().toISOString(),
+    };
+
+    await fs.writeFile(this.planPath(goalId, plan.planId), JSON.stringify(storedPlan, null, 2), "utf8");
+    logger.info(`Plan saved: ${plan.planId} (goal: ${goalId}, v${version})`);
+  }
+
+  async loadPlan(planId: string, goalId: string): Promise<StoredPlan | null> {
+    try {
+      const content = await fs.readFile(this.planPath(goalId, planId), "utf8");
+      return JSON.parse(content);
+    } catch (e: any) {
+      if (e.code === "ENOENT") return null;
+      throw e;
+    }
+  }
+
+  async listPlansByGoal(goalId: string): Promise<StoredPlan[]> {
+    try {
+      const dir = this.goalDir(goalId);
+      const files = await fs.readdir(dir);
+      const plans: StoredPlan[] = [];
+      for (const f of files) {
+        if (f.endsWith(".json") && !f.startsWith("_")) {
+          const content = await fs.readFile(path.join(dir, f), "utf8");
+          plans.push(JSON.parse(content));
+        }
+      }
+      return plans;
+    } catch {
+      return [];
+    }
+  }
+
+  async getActivePlan(goalId: string): Promise<StoredPlan | null> {
+    const plans = await this.listPlansByGoal(goalId);
+    return plans.find(p => ["pending", "approved", "executing"].includes(p.metadata.status)) ?? null;
+  }
+
+  async archivePlan(goalId: string, planId: string): Promise<void> {
+    const src = this.planPath(goalId, planId);
+    const dst = path.join(this.archiveDir(goalId), `${planId}.json`);
+    await this.ensureDir(this.archiveDir(goalId));
+    await fs.rename(src, dst);
+    logger.info(`Plan archived: ${planId}`);
+  }
+
+  async updatePlanStatus(planId: string, goalId: string, status: PlanStatus): Promise<boolean> {
+    const stored = await this.loadPlan(planId, goalId);
+    if (!stored) return false;
+    stored.metadata.status = status;
+    if (status === "completed" || status === "failed") {
+      stored.metadata.completedAt = new Date().toISOString();
+    }
+    await fs.writeFile(this.planPath(goalId, planId), JSON.stringify(stored, null, 2), "utf8");
+    logger.info(`Plan ${planId} status → ${status}`);
+    return true;
+  }
+
+  async deletePlan(goalId: string, planId: string): Promise<void> {
+    try {
+      await fs.unlink(this.planPath(goalId, planId));
+    } catch { /* ignore */ }
+  }
+}
