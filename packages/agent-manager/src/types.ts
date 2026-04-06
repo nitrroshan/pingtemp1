@@ -81,12 +81,17 @@ export type TaskPlan = AgentPlanOutput;
 
 /**
  * Orchestrator state machine states.
+ *
+ * - `idle`              — No active session.
+ * - `gathering`         — Collecting requirements from the user via conversation.
+ * - `awaiting_approval` — Plan created and proposed; waiting for user approval.
+ * - `executing`         — Plan approved, tasks queued and running.
  */
 export type OrchestratorState =
-  | "idle"             // No active session
-  | "gathering"        // Gathering requirements through conversation
-  | "awaiting_approval" // Plan created, waiting for user approval
-  | "executing";       // Plan approved, tasks being executed
+  | "idle"
+  | "gathering"
+  | "awaiting_approval"
+  | "executing";
 
 /**
  * Emitted when the orchestrator proposes a plan for user review.
