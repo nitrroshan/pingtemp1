@@ -138,7 +138,7 @@ export class SocketServer {
     socket.on("disconnect", this.handleDisconnect.bind(this, connection));
 
     // Forward orchestrator events to this socket
-    this.setupOrchestratorEventForwarding(socket, connection);
+    this.setupOrchestratorEventForwarding(socket);
   }
 
   /**
@@ -146,7 +146,6 @@ export class SocketServer {
    */
   private setupOrchestratorEventForwarding(
     socket: Socket,
-    _connection: SocketConnection,
   ) {
     const forwardEvent = (eventName: string) => (data: any) => {
       socket.emit(eventName, {

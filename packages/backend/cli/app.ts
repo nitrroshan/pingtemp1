@@ -178,21 +178,21 @@ class AgentManagerCLI {
 
     this.mgr.registerStreamCallbacks({
       onPlanProposed: (data) => {
-        logEvent("plan:proposed", { tasks: (data as any).plan?.tasks?.length });
+        logEvent("plan:proposed", { tasks: data.plan?.tasks?.length });
         console.log(
-          c.info(`\n📋 Plan proposed: ${(data as any).plan?.tasks?.length || 0} tasks`),
+          c.info(`\n📋 Plan proposed: ${data.plan?.tasks?.length || 0} tasks`),
         );
-        if ((data as any).plan?.tasks) {
-          for (const t of (data as any).plan.tasks) {
+        if (data.plan?.tasks) {
+          for (const t of data.plan.tasks) {
             console.log(c.dim(`   • [${t.assignedRole}] ${t.title}`));
           }
         }
         console.log(c.warn(`\nType /approve to approve the plan`));
       },
       onPlanUpdate: (data) => {
-        logEvent("plan:approved", { tasksQueued: (data as any).tasksQueued });
+        logEvent("plan:approved", { tasksQueued: data.tasksQueued });
         console.log(
-          c.success(`\n✓ Plan approved: ${(data as any).tasksQueued} tasks queued`),
+          c.success(`\n✓ Plan approved: ${data.tasksQueued} tasks queued`),
         );
       },
       onTaskUpdate: (data) => {

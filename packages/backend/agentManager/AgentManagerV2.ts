@@ -23,6 +23,7 @@ import { AiSdkAgent } from "../agent/internal/AiSdkAgent.js";
 import type { AgentDefinition } from "../agent/types.js";
 import type { TaskWithContext } from "../util/RoleTaskQueue.types.js";
 import { OrchestratorService } from "../orchestrator/OrchestratorService.js";
+import type { PlanProposedEvent } from "../orchestrator/types.js";
 import { MemoryManager } from "../memory/MemoryManager.js";
 import { MemoryCoordinator } from "../memory/MemoryCoordinator.js";
 import { L2CollaborationPlugin } from "../memory/L2/L2CollaborationPlugin.js";
@@ -38,7 +39,7 @@ export interface ManagerStreamCallbacks {
   onError?: (data: { taskId: string; error: string }) => void;
   onTaskUpdate?: (data: { taskId: string; status: string; role?: string; output?: any }) => void;
   onPlanUpdate?: (data: { action: string; tasksQueued?: number; timestamp: number }) => void;
-  onPlanProposed?: (data: any) => void;
+  onPlanProposed?: (data: PlanProposedEvent) => void;
 }
 
 // Feature flag for orchestrator mode - defaulting to true as orchestrator is now the primary path
