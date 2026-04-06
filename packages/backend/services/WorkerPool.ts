@@ -87,6 +87,13 @@ export class WorkerPool {
   /** Callbacks for worker lifecycle events */
   private callbacks: WorkerCallbacks = {};
 
+  /**
+   * Maximum number of tasks that can run concurrently.
+   * Wired from TeamSettings.maxConcurrency by AgentManagerV2.
+   * Default: 5 (unconstrained for teams that haven't configured it).
+   */
+  private maxConcurrency: number = 5;
+
   // ===========================================================================
   // Definition Management
   // ===========================================================================
@@ -145,6 +152,21 @@ export class WorkerPool {
    */
   setCallbacks(callbacks: WorkerCallbacks): void {
     this.callbacks = callbacks;
+  }
+
+  /**
+   * Set the maximum number of tasks that can execute concurrently.
+   * Called by AgentManagerV2 when it loads the team's settings.
+   * Value comes from TeamSettings.maxConcurrency (default: 3).
+   */
+  setMaxConcurrency(limit: number): void {
+    this.maxConcurrency = Math.max(1, limit);
+    logger.info(`WorkerPool maxConcurrency set to ${this.maxConcurrency}`);
+  }
+
+  /** Return the current concurrency limit */
+  getMaxConcurrency(): number {
+    return this.maxConcurrency;
   }
 
   /**
@@ -235,6 +257,15 @@ export class WorkerPool {
       finalMessage = this.buildMessageWithContext(task);
       logger.debug(
         `Queue mode: ${taskId} with ${task.context.previousOutputs.length} previous outputs`,
+      );
+    }
+
+    // Enforce concurrency limit from TeamSettings.maxConcurrency
+    const activeWorkers = this.workers.size;
+    if (activeWorkers >= this.maxConcurrency) {
+      logger.warn(
+        `WorkerPool at capacity (${activeWorkers}/${this.maxConcurrency}) for task ${taskId}. ` +
+        `Increase TeamSettings.maxConcurrency if you need more parallel workers.`,
       );
     }
 

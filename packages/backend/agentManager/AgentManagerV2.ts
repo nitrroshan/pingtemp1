@@ -126,6 +126,7 @@ export class AgentManager {
     teamId: string,
     teamRoles: string[],
     roleAgentIdMap?: Record<string, string>,
+    teamSettings?: { maxConcurrency?: number; executionMode?: string },
   ): Promise<void> {
     if (!USE_ORCHESTRATOR) {
       logger.warn(
@@ -300,6 +301,11 @@ Do NOT invent tools you don't have. If unsure, use \`my_tools\` to check.
     logger.info(
       `[AgentManager] Registered ${workerDefinitions.length} worker definitions`,
     );
+
+    // Wire TeamSettings.maxConcurrency into WorkerPool
+    if (teamSettings?.maxConcurrency) {
+      this.workerPool.setMaxConcurrency(teamSettings.maxConcurrency);
+    }
 
     // Inject MemoryCoordinator into WorkerPool for artifact/collab integration
     if (this.memoryCoordinator) {

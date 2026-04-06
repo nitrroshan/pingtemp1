@@ -6,6 +6,7 @@
  */
 
 import { Logger } from "tslog";
+import { Types } from "mongoose";
 import { SkillModel } from "../schema/skillSchema.js";
 import { AgentSkillModel } from "../schema/agentSkillSchema.js";
 import { generateEmbedding, cosineSimilarity } from "./EmbeddingService.js";
@@ -371,12 +372,17 @@ export class SkillRegistryService {
   ): Promise<AgentSkill> {
     logger.info(`Assigning skill ${skillId} to agent ${agentId}`);
 
+    // The canonical AgentSkillModel uses ObjectId for agentId.
+    const agentObjectId = Types.ObjectId.isValid(agentId)
+      ? new Types.ObjectId(agentId)
+      : agentId;
+
     const assignment = await AgentSkillModel.create({
-      agentId,
+      agentId: agentObjectId,
       skillId,
     });
 
-    return assignment.toObject();
+    return assignment.toObject() as unknown as AgentSkill;
   }
 
   /**
@@ -386,7 +392,10 @@ export class SkillRegistryService {
     agentId: string,
     skillId: string,
   ): Promise<boolean> {
-    const result = await AgentSkillModel.deleteOne({ agentId, skillId });
+    const agentObjectId = Types.ObjectId.isValid(agentId)
+      ? new Types.ObjectId(agentId)
+      : agentId;
+    const result = await AgentSkillModel.deleteOne({ agentId: agentObjectId, skillId });
     return result.deletedCount > 0;
   }
 
@@ -394,7 +403,10 @@ export class SkillRegistryService {
    * Get all skills for an agent
    */
   async getAgentSkills(agentId: string): Promise<Skill[]> {
-    const assignments = await AgentSkillModel.find({ agentId }).lean();
+    const agentObjectId = Types.ObjectId.isValid(agentId)
+      ? new Types.ObjectId(agentId)
+      : agentId;
+    const assignments = await AgentSkillModel.find({ agentId: agentObjectId }).lean();
     const skillIds = assignments.map((a) => a.skillId);
 
     if (skillIds.length === 0) {
@@ -410,7 +422,7 @@ export class SkillRegistryService {
    */
   async getAgentsWithSkill(skillId: string): Promise<string[]> {
     const assignments = await AgentSkillModel.find({ skillId }).lean();
-    return assignments.map((a) => a.agentId);
+    return assignments.map((a) => a.agentId.toString());
   }
 
   /**
