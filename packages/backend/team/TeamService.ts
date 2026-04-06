@@ -396,6 +396,10 @@ export class TeamService implements ITeamService {
   // ===========================================================================
 
   async assignSkillToAgent(agentId: string, skillId: string): Promise<void> {
+    if (typeof skillId !== "string" || !skillId.trim()) {
+      throw new Error("skillId must be a non-empty string");
+    }
+
     const agent = await AgentModel.findById(agentId);
     if (!agent) {
       throw new AgentNotFoundError(agentId);
@@ -404,7 +408,7 @@ export class TeamService implements ITeamService {
     // Check if already assigned
     const existing = await AgentSkillModel.findOne({
       agentId: new Types.ObjectId(agentId),
-      skillId,
+      skillId: skillId.trim(),
     });
     if (existing) {
       throw new SkillAlreadyAssignedError(agentId, skillId);
@@ -412,7 +416,7 @@ export class TeamService implements ITeamService {
 
     await AgentSkillModel.create({
       agentId: new Types.ObjectId(agentId),
-      skillId,
+      skillId: skillId.trim(),
       enabled: true,
       assignedAt: new Date(),
     });
