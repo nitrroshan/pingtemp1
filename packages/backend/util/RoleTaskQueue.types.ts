@@ -67,3 +67,9 @@ export interface QueueMetrics {
   /** Average time from queue to completion (ms) */
   avgCompletionTime: number;
 }
+
+export interface TaskCallbacks {
+  onTaskReady?: (data: { role: string; taskId: string }) => void;
+  onTaskComplete?: (data: { taskId: string; output: any }) => void;
+  onTaskFailed?: (data: { taskId: string; error: string }) => void;
+}

@@ -6,7 +6,6 @@
  */
 
 import { describe, it, expect, beforeEach, mock, afterEach } from "bun:test";
-import { EventEmitter } from "events";
 import { OrchestratorService } from "../OrchestratorService.js";
 import { MemoryManager } from "../../memory/MemoryManager.js";
 
@@ -107,11 +106,11 @@ mock.module("../../agent/AgentFactory.js", () => {
 describe("OrchestratorService Integration", () => {
   let orchestrator: OrchestratorService;
   let memoryManager: MemoryManager;
-  let events: EventEmitter;
+  let capturedCallbacks: Record<string, any> = {};
   let mockWorkerPool: any;
 
   beforeEach(async () => {
-    events = new EventEmitter();
+    capturedCallbacks = {};
     memoryManager = new MemoryManager();
 
     // Create mock WorkerPool
@@ -123,10 +122,10 @@ describe("OrchestratorService Integration", () => {
       dispose: mock(),
       disposeAll: mock(async () => {}),
       setGoalContext: mock(),
+      setCallbacks: mock(),
       get workerCount() {
         return 0;
       },
-      events: new EventEmitter(),
     };
 
     orchestrator = new OrchestratorService({
@@ -134,7 +133,11 @@ describe("OrchestratorService Integration", () => {
       teamRoles: ["backend", "frontend", "devops"],
       memoryManager,
       workerPool: mockWorkerPool,
-      events,
+      callbacks: {
+        onPlanApproved: (data) => { capturedCallbacks["plan:approved"] = data; },
+        onPlanProposed: (data) => { capturedCallbacks["plan:proposed"] = data; },
+        onTaskUpdate: (data) => { capturedCallbacks["task:update"] = data; },
+      },
     });
 
     await orchestrator.initialize();
@@ -177,12 +180,8 @@ describe("OrchestratorService Integration", () => {
     // by manually setting a pending plan.
   });
 
-  describe("Event Emission", () => {
-    it("should emit plan:approved when plan is approved", async () => {
-      const eventPromise = new Promise((resolve) => {
-        events.once("plan:approved", resolve);
-      });
-
+  describe("Callback Invocation", () => {
+    it("should invoke onPlanApproved when plan is approved", async () => {
       // Manually set pending plan (simulating create_plan tool call)
       (orchestrator as any).pendingPlan = {
         planId: "plan-test",
@@ -204,7 +203,8 @@ describe("OrchestratorService Integration", () => {
       expect(result.success).toBe(true);
       expect(result.tasksQueued).toBe(1);
 
-      const event = await eventPromise as any;
+      const event = capturedCallbacks["plan:approved"] as any;
+      expect(event).toBeDefined();
       expect(event.teamId).toBe("team-integration");
       expect(event.tasksQueued).toBe(1);
     });

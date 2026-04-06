@@ -4,5 +4,5 @@
  * Services provide infrastructure that AgentManager uses for orchestration.
  */
 
-export { WorkerPool, type WorkerPoolEvents } from "./WorkerPool.js";
+export { WorkerPool, type WorkerCallbacks } from "./WorkerPool.js";
 export type { AgentEvent, AgentInput, AgentDefinition, IAgent } from "./types.js";

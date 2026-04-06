@@ -4,7 +4,6 @@
  * Type definitions for the Orchestrator module.
  */
 
-import type { EventEmitter } from "events";
 import type { MemoryManager } from "../memory/MemoryManager.js";
 import type { WorkerPool } from "../services/WorkerPool.js";
 import type { PlanStore } from "../memory/L2/collaboration/PlanStore.js";
@@ -19,6 +18,17 @@ export type OrchestratorState =
   | "awaiting_approval" // Plan created, waiting for user approval
   | "executing"; // Plan approved, tasks being executed
 
+export interface OrchestratorCallbacks {
+  onStream?: (data: { taskId: string; agentId: string; part: any }) => void;
+  onEvent?: (data: { taskId: string; event: any }) => void;
+  onDone?: (data: { taskId: string; role: string; output: any }) => void;
+  onError?: (data: { taskId: string; error: string }) => void;
+  onPlanProposed?: (data: { plan: any; teamId: string; timestamp: string }) => void;
+  onPlanApproved?: (data: { planId: string; teamId: string; tasksQueued: number; timestamp: string }) => void;
+  onTaskUpdate?: (data: { taskId: string; status: string; role?: string; output?: any; timestamp?: number }) => void;
+  onProgress?: (data: { teamId: string; state: string; message: string; [key: string]: any }) => void;
+}
+
 /**
  * Context provided to all orchestrator tools
  * Uses closure pattern for dependency injection
@@ -26,7 +36,7 @@ export type OrchestratorState =
 export interface OrchestratorContext {
   // Core dependencies
   memoryManager: MemoryManager;
-  events: EventEmitter;
+  callbacks: OrchestratorCallbacks;
   planStore: PlanStore;
 
   // Team configuration
@@ -58,7 +68,7 @@ export interface OrchestratorConfig {
   teamRoles: string[];
   memoryManager: MemoryManager;
   workerPool: WorkerPool;
-  events: EventEmitter;
+  callbacks?: OrchestratorCallbacks;
   /**
    * When true (default), tasks execute automatically when ready.
    * When false, tasks wait in pending state for manual approval.

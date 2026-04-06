@@ -8,7 +8,6 @@
  * - Clean up workers when done
  */
 
-import { EventEmitter } from "events";
 import { Logger } from "tslog";
 import { AiSdkAgent } from "../agent/internal/AiSdkAgent.js";
 import {
@@ -34,7 +33,14 @@ dotenv.config();
 
 const logger = new Logger({ name: "WorkerPool" });
 
-
+export interface WorkerCallbacks {
+  onStream?: (data: { taskId: string; agentId: string; part: any }) => void;
+  onEvent?: (data: { taskId: string; event: any }) => void;
+  onDone?: (data: { taskId: string; role: string; output: any }) => void;
+  onError?: (data: { taskId: string; error: string }) => void;
+  onAgentComplete?: (data: { taskId: string; role: string; summary: string; deliverables: string[]; nextSteps: string[]; timestamp: number }) => void;
+  onStatusUpdate?: (data: { taskId: string; role: string; status: string; summary: string; progress?: number; timestamp: number }) => void;
+}
 
 /**
  * Default model config - uses environment variables
@@ -46,15 +52,6 @@ const DEFAULT_MODEL_CONFIG = {
   temperature: 0.7,
   maxTokens: 4096,
 };
-
-/**
- * Events emitted by WorkerPool
- */
-export interface WorkerPoolEvents {
-  "worker:event": { taskId: string; event: AgentEvent };
-  "worker:done": { taskId: string; role: string; output: any };
-  "worker:error": { taskId: string; error: string };
-}
 
 export class WorkerPool {
   /** Cached definitions by role */
@@ -87,8 +84,8 @@ export class WorkerPool {
   /** Base (non-skill) tools per worker — skills are refreshed per request */
   private workerBaseTools = new Map<string, any[]>();
 
-  /** Event emitter for Socket.IO to subscribe */
-  public readonly events = new EventEmitter();
+  /** Callbacks for worker lifecycle events */
+  private callbacks: WorkerCallbacks = {};
 
   // ===========================================================================
   // Definition Management
@@ -141,6 +138,13 @@ export class WorkerPool {
    */
   getMemoryCoordinator(): MemoryCoordinator | null {
     return this.memoryCoordinator;
+  }
+
+  /**
+   * Set callbacks for worker lifecycle events
+   */
+  setCallbacks(callbacks: WorkerCallbacks): void {
+    this.callbacks = callbacks;
   }
 
   /**
@@ -271,7 +275,7 @@ export class WorkerPool {
       const reportStatusTool = createReportStatusTool(
         taskId,
         roleKey,
-        this.events,
+        (data) => this.callbacks.onStatusUpdate?.(data),
       );
       additionalTools.push(reportStatusTool);
 
@@ -279,7 +283,7 @@ export class WorkerPool {
       const completeTaskTool = createCompleteTaskTool(
         taskId,
         roleKey,
-        this.events,
+        (data) => this.callbacks.onAgentComplete?.(data),
       );
       additionalTools.push(completeTaskTool);
 
@@ -360,25 +364,25 @@ export class WorkerPool {
       };
 
       for await (const event of agent.execute(input)) {
-        // Forward stream_part events directly on worker:stream channel
+        // Forward stream_part events directly on onStream callback
         if (event.type === "stream_part") {
-          this.events.emit("worker:stream", {
+          this.callbacks.onStream?.({
             taskId,
             agentId: roleKey,
             part: event.part,
           });
-          continue; // Don't emit stream_parts on worker:event (legacy channel)
+          continue; // Don't emit stream_parts on onEvent (legacy channel)
         }
 
-        // Emit all other events for Socket.IO (legacy progress channel)
-        this.events.emit("worker:event", { taskId, event });
+        // Invoke event callback for all other events (legacy progress channel)
+        this.callbacks.onEvent?.({ taskId, event });
 
         // Capture output
         if (event.type === "done") {
           output = event.output;
           this.lastResponses.set(taskId, output); // Store for getLastResponse
           const role = this.workerRoles.get(taskId) || "worker";
-          this.events.emit("worker:done", { taskId, role, output });
+          this.callbacks.onDone?.({ taskId, role, output });
 
           // Auto-update agent status: idle
           await this.updateAgentStatus(roleKey, "idle", { taskId });
@@ -388,12 +392,12 @@ export class WorkerPool {
         }
 
         if (event.type === "error") {
-          this.events.emit("worker:error", { taskId, error: event.error });
+          this.callbacks.onError?.({ taskId, error: event.error });
         }
       }
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
-      this.events.emit("worker:error", { taskId, error: msg });
+      this.callbacks.onError?.({ taskId, error: msg });
 
       // Auto-update agent status: error
       await this.updateAgentStatus(roleKey, "error", { taskId, error: msg });

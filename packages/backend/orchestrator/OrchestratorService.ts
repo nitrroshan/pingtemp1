@@ -18,7 +18,6 @@
  * ```
  */
 
-import { EventEmitter } from "events";
 import path from "path";
 import { fileURLToPath } from "url";
 import type { MemoryManager } from "../memory/MemoryManager.js";
@@ -32,6 +31,7 @@ import type {
   OrchestratorContext,
   OrchestratorConfig,
   OrchestratorMessage,
+  OrchestratorCallbacks,
   TaskPlan,
 } from "./types.js";
 import type { AgentPlanOutput } from "./schemas.js";
@@ -45,7 +45,7 @@ export class OrchestratorService {
   private teamRoles: string[];
   private memoryManager: MemoryManager;
   private workerPool: WorkerPool;
-  private events: EventEmitter;
+  private callbacks: OrchestratorCallbacks;
 
   // State
   private state: OrchestratorState = "idle";
@@ -85,7 +85,7 @@ export class OrchestratorService {
     this.teamRoles = config.teamRoles;
     this.memoryManager = config.memoryManager;
     this.workerPool = config.workerPool;
-    this.events = config.events;
+    this.callbacks = config.callbacks || {};
     this.sessionId = `team-${config.teamId}`;
     this.planStore = new PlanStore(config.teamId);
     // Default to false — user controls when tasks start
@@ -137,24 +137,20 @@ DO NOT invent new roles. Only use roles from the list above.
     }
 
     // Subscribe to task lifecycle events directly from RoleTaskQueue
-    this.memoryManager.taskQueue.on(
-      "task:available",
-      this.wakeWorker.bind(this),
-    );
-    this.memoryManager.taskQueue.on(
-      "task:complete",
-      this.handleTaskComplete.bind(this),
-    );
-    this.memoryManager.taskQueue.on(
-      "task:failed",
-      this.handleTaskFailed.bind(this),
-    );
+    this.memoryManager.taskQueue.setCallbacks({
+      onTaskReady: this.wakeWorker.bind(this),
+      onTaskComplete: this.handleTaskComplete.bind(this),
+      onTaskFailed: this.handleTaskFailed.bind(this),
+    });
 
     // Subscribe to agent-initiated task completion (via complete_task tool)
-    this.workerPool.events.on(
-      "task:agent-complete",
-      this.handleAgentTaskComplete.bind(this),
-    );
+    this.workerPool.setCallbacks({
+      onStream: (data) => this.callbacks.onStream?.(data),
+      onEvent: (data) => this.callbacks.onEvent?.(data),
+      onDone: (data) => this.callbacks.onDone?.(data),
+      onError: (data) => this.callbacks.onError?.(data),
+      onAgentComplete: this.handleAgentTaskComplete.bind(this),
+    });
 
     // Load active plan if exists (for restart recovery)
     await this.loadActivePlan();
@@ -189,9 +185,9 @@ DO NOT invent new roles. Only use roles from the list above.
     for await (const event of agent.execute({ message, threadId })) {
       eventCount++;
 
-      // Forward stream_part events directly on worker:stream channel
+      // Forward stream_part events directly on onStream callback
       if (event.type === "stream_part") {
-        this.events.emit("worker:stream", {
+        this.callbacks.onStream?.({
           taskId: threadId,
           agentId: "orchestrator",
           part: event.part,
@@ -199,10 +195,10 @@ DO NOT invent new roles. Only use roles from the list above.
         continue;
       }
 
-      // Forward legacy streaming events to SocketServerV2 via worker:event channel
+      // Forward legacy streaming events to SocketServerV2 via onEvent callback
       if (OrchestratorService.STREAMING_EVENT_TYPES.has(event.type)) {
         if (event.type === "message_delta") deltaCount++;
-        this.events.emit("worker:event", {
+        this.callbacks.onEvent?.({
           taskId: threadId,
           event: { ...event, role: "orchestrator" },
         });
@@ -235,7 +231,7 @@ DO NOT invent new roles. Only use roles from the list above.
   private createContext(): OrchestratorContext {
     return {
       memoryManager: this.memoryManager,
-      events: this.events,
+      callbacks: this.callbacks,
       planStore: this.planStore,
       teamId: this.teamId,
       currentGoalId: this.currentGoalId,
@@ -287,7 +283,7 @@ DO NOT invent new roles. Only use roles from the list above.
     // Update state if we were idle
     if (this.state === "idle") {
       this.state = "gathering";
-      this.events.emit("orchestrator:progress", {
+      this.callbacks.onProgress?.({
         teamId: this.teamId,
         state: "gathering",
         message: "Started gathering requirements",
@@ -418,7 +414,7 @@ DO NOT invent new roles. Only use roles from the list above.
       await this.planStore.updatePlanStatus(planId, goalId, "executing");
 
       // Emit approval event
-      this.events.emit("plan:approved", {
+      this.callbacks.onPlanApproved?.({
         planId,
         teamId: this.teamId,
         tasksQueued,
@@ -426,7 +422,7 @@ DO NOT invent new roles. Only use roles from the list above.
       });
 
       // Emit progress event for execution start
-      this.events.emit("orchestrator:progress", {
+      this.callbacks.onProgress?.({
         teamId: this.teamId,
         state: "executing",
         message: `Plan approved, executing ${tasksQueued} tasks`,
@@ -522,11 +518,6 @@ DO NOT invent new roles. Only use roles from the list above.
       console.log(
         `[OrchestratorService] Auto-execute OFF, task ${taskId} waiting for manual start`,
       );
-      this.events.emit("task:pending_approval", {
-        taskId,
-        role,
-        timestamp: new Date().toISOString(),
-      });
       return;
     }
 
@@ -576,7 +567,7 @@ DO NOT invent new roles. Only use roles from the list above.
 
       this.memoryManager.updateTaskStatus(taskId, "in_progress");
 
-      this.events.emit("orchestrator:progress", {
+      this.callbacks.onProgress?.({
         teamId: this.teamId,
         state: "executing",
         message: `Starting task: ${task.description}`,
@@ -605,13 +596,6 @@ DO NOT invent new roles. Only use roles from the list above.
       console.log(
         `[OrchestratorService] Task ${taskId} first response received (staying in_progress)`,
       );
-
-      this.events.emit("task:response", {
-        taskId,
-        role,
-        output,
-        timestamp: new Date().toISOString(),
-      });
     } catch (error: any) {
       console.error(
         `[OrchestratorService] Error executing task ${taskId}:`,
@@ -623,12 +607,7 @@ DO NOT invent new roles. Only use roles from the list above.
         try {
           (this.memoryManager as any).taskQueue.failTask(taskId, error.message);
         } catch (err) {
-          this.events.emit("task:error", {
-            taskId,
-            role,
-            error: error.message,
-            timestamp: new Date().toISOString(),
-          });
+          // task:error has no subscribers, skip
         }
       }
     }
@@ -678,9 +657,9 @@ DO NOT invent new roles. Only use roles from the list above.
       timestamp: data.timestamp,
     });
 
-    // Emit task:update for each newly-ready task so frontend updates
+    // Invoke callback for each newly-ready task so frontend updates
     for (const readyTask of newlyReadyTasks) {
-      this.events.emit("task:update", {
+      this.callbacks.onTaskUpdate?.({
         taskId: readyTask.id,
         status: "ready",
         role: readyTask.assigned_role,
@@ -705,8 +684,8 @@ DO NOT invent new roles. Only use roles from the list above.
     // Register task output as artifact
     const task = this.memoryManager.getTask(taskId);
 
-    // Emit task:update event for SocketServerV2 to broadcast updated task list
-    this.events.emit("task:update", {
+    // Invoke callback for SocketServerV2 to broadcast updated task list
+    this.callbacks.onTaskUpdate?.({
       taskId,
       status: "completed",
       role: task?.assigned_role,
@@ -715,7 +694,7 @@ DO NOT invent new roles. Only use roles from the list above.
     });
 
     // Emit progress event for task completion
-    this.events.emit("orchestrator:progress", {
+    this.callbacks.onProgress?.({
       teamId: this.teamId,
       state: "executing",
       message: `Task completed: ${task?.description || taskId}`,
@@ -752,13 +731,10 @@ DO NOT invent new roles. Only use roles from the list above.
         }
       }
 
-      this.events.emit("execution:complete", {
-        teamId: this.teamId,
-        timestamp: new Date().toISOString(),
-      });
+      // execution:complete has no subscribers, skip
 
       // Emit final progress event
-      this.events.emit("orchestrator:progress", {
+      this.callbacks.onProgress?.({
         teamId: this.teamId,
         state: "idle",
         message: "All tasks completed successfully",
@@ -784,15 +760,10 @@ DO NOT invent new roles. Only use roles from the list above.
     const task = this.memoryManager.getTask(taskId);
     const role = task?.assigned_role || "unknown";
 
-    this.events.emit("task:error", {
-      taskId,
-      role,
-      error,
-      timestamp: new Date().toISOString(),
-    });
+    // task:error has no subscribers, skip
 
     // Emit progress event for task failure
-    this.events.emit("orchestrator:progress", {
+    this.callbacks.onProgress?.({
       teamId: this.teamId,
       state: "executing",
       message: `Task failed: ${task?.description || taskId}`,
@@ -942,25 +913,11 @@ DO NOT invent new roles. Only use roles from the list above.
   }
 
   /**
-   * Cleanup resources and remove event listeners
+   * Cleanup resources and remove callbacks
    */
   dispose(): void {
-    this.memoryManager.taskQueue.off(
-      "task:available",
-      this.wakeWorker.bind(this),
-    );
-    this.memoryManager.taskQueue.off(
-      "task:complete",
-      this.handleTaskComplete.bind(this),
-    );
-    this.memoryManager.taskQueue.off(
-      "task:failed",
-      this.handleTaskFailed.bind(this),
-    );
-    this.workerPool.events.off(
-      "task:agent-complete",
-      this.handleAgentTaskComplete.bind(this),
-    );
+    this.memoryManager.taskQueue.setCallbacks({});
+    this.workerPool.setCallbacks({});
     this.reset();
   }
 }

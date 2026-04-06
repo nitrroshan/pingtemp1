@@ -283,10 +283,10 @@ export class SocketServerV2 {
   // ============================================================================
 
   /**
-   * Attach event listeners to broadcast manager events to Socket.IO room.
+   * Register direct callbacks on the manager to broadcast events to Socket.IO room.
    * Called once per team on first interaction.
    */
-  private ensureTeamEventsBroadcast(
+  private ensureTeamCallbacks(
     teamId: string,
     manager: AgentManager,
   ): void {
@@ -294,143 +294,136 @@ export class SocketServerV2 {
     this.attachedTeams.add(teamId);
 
     const room = `team:${teamId}`;
+    const streamedTasks = new Set<string>();
 
-    // Route worker events to appropriate socket channels via WORKER_EVENT_ROUTES
-    manager.events.on("worker:event", ({ taskId, event }) => {
-      const eventType = event.type as WorkerEventType;
-      const routes = WORKER_EVENT_ROUTES[eventType];
-
-      if (!routes) return; // Unknown event type — skip silently
-
-      const agentId = event.role || "worker";
-
-      if (routes.includes("progress")) {
-        this.io.to(room).emit("progress", {
+    manager.registerStreamCallbacks({
+      onStream: ({ taskId, agentId, part }) => {
+        if (taskId) streamedTasks.add(taskId);
+        const payload: StreamPayload = {
           sessionId: "default",
           taskId,
-          agentId,
-          type: eventType,
-          content: this.formatProgressContent(event),
-          tool: event.tool,
+          agentId: agentId || "worker",
+          part,
           timestamp: Date.now(),
-        } satisfies ProgressResponse);
-      }
+        };
+        this.io.to(room).emit("stream", payload);
+      },
 
-      if (routes.includes("stream")) {
-        const streamPart = this.toStreamPart(eventType, event, taskId);
-        if (streamPart) {
-          const payload: StreamPayload = {
+      onEvent: ({ taskId, event }) => {
+        const eventType = event.type as WorkerEventType;
+        const routes = WORKER_EVENT_ROUTES[eventType];
+        if (!routes) return;
+
+        const agentId = event.role || "worker";
+
+        if (routes.includes("progress")) {
+          this.io.to(room).emit("progress", {
             sessionId: "default",
             taskId,
             agentId,
-            part: streamPart,
+            type: eventType,
+            content: this.formatProgressContent(event),
+            tool: event.tool,
+            timestamp: Date.now(),
+          } satisfies ProgressResponse);
+        }
+
+        if (routes.includes("stream")) {
+          const streamPart = this.toStreamPart(eventType, event, taskId);
+          if (streamPart) {
+            const payload: StreamPayload = {
+              sessionId: "default",
+              taskId,
+              agentId,
+              part: streamPart,
+              timestamp: Date.now(),
+            };
+            this.io.to(room).emit("stream", payload);
+          }
+        }
+      },
+
+      onDone: ({ taskId, role }) => {
+        if (taskId && streamedTasks.has(taskId)) {
+          streamedTasks.delete(taskId);
+          return; // stream finish part already sent
+        }
+        this.io.to(room).emit("stream", {
+          sessionId: "default",
+          agentId: role,
+          taskId,
+          part: { type: "finish", finishReason: "stop" },
+          timestamp: Date.now(),
+        } as StreamPayload);
+      },
+
+      onError: ({ taskId, error }) => {
+        this.io.to(room).emit("error", {
+          taskId,
+          error,
+          timestamp: Date.now(),
+        } satisfies ErrorResponse);
+      },
+
+      onTaskUpdate: ({ taskId, status, role }) => {
+        const stateResponse = this.buildStateResponse(manager);
+        this.io.to(room).emit("state", stateResponse);
+        logger.debug(
+          `[SocketServerV2] Task ${taskId} → ${status}, broadcast to ${room}`,
+        );
+
+        if (status === "in_progress") {
+          const payload: StreamPayload = {
+            sessionId: "default",
+            taskId,
+            agentId: role || "worker",
+            part: { type: "task-started", taskId, role: role || "worker" },
+            timestamp: Date.now(),
+          };
+          this.io.to(room).emit("stream", payload);
+        } else if (status === "completed") {
+          const payload: StreamPayload = {
+            sessionId: "default",
+            taskId,
+            agentId: role || "worker",
+            part: { type: "task-completed", taskId, role: role || "worker" },
+            timestamp: Date.now(),
+          };
+          this.io.to(room).emit("stream", payload);
+        } else if (status === "failed") {
+          const payload: StreamPayload = {
+            sessionId: "default",
+            taskId,
+            agentId: role || "worker",
+            part: { type: "task-failed", taskId, role: role || "worker", error: "Task failed" },
             timestamp: Date.now(),
           };
           this.io.to(room).emit("stream", payload);
         }
-      }
-    });
+      },
 
-    // AI SDK stream parts forwarded directly from WorkerPool
-    // Track which tasks have had stream parts sent (to skip duplicate worker:done message)
-    const streamedTasks = new Set<string>();
-    manager.events.on("worker:stream", ({ taskId, agentId, part }) => {
-      if (taskId) streamedTasks.add(taskId);
-      const payload: StreamPayload = {
-        sessionId: "default",
-        taskId,
-        agentId: agentId || "worker",
-        part,
-        timestamp: Date.now(),
-      };
-      this.io.to(room).emit("stream", payload);
-    });
+      onPlanUpdate: ({ action }) => {
+        const stateResponse = this.buildStateResponse(manager);
+        this.io.to(room).emit("state", stateResponse);
+        logger.debug(`[SocketServerV2] Plan ${action}, broadcast to ${room}`);
 
-    // Task lifecycle notifications on the `stream` channel
-    manager.events.on("task:update", ({ taskId, status, role }) => {
-      const stateResponse = this.buildStateResponse(manager);
-      this.io.to(room).emit("state", stateResponse);
-      logger.debug(
-        `[SocketServerV2] Task ${taskId} → ${status}, broadcast to ${room}`,
-      );
-
-      // Also emit notification on stream channel
-      if (status === "in_progress") {
         const payload: StreamPayload = {
           sessionId: "default",
-          taskId,
-          agentId: role || "worker",
-          part: { type: "task-started", taskId, role: role || "worker" },
+          agentId: "orchestrator",
+          part: action === "approved"
+            ? { type: "plan-approved", planId: "current" }
+            : { type: "plan-proposed", planId: "current", taskCount: 0 },
           timestamp: Date.now(),
         };
         this.io.to(room).emit("stream", payload);
-      } else if (status === "completed") {
-        const payload: StreamPayload = {
-          sessionId: "default",
-          taskId,
-          agentId: role || "worker",
-          part: { type: "task-completed", taskId, role: role || "worker" },
-          timestamp: Date.now(),
-        };
-        this.io.to(room).emit("stream", payload);
-      } else if (status === "failed") {
-        const payload: StreamPayload = {
-          sessionId: "default",
-          taskId,
-          agentId: role || "worker",
-          part: { type: "task-failed", taskId, role: role || "worker", error: "Task failed" },
-          timestamp: Date.now(),
-        };
-        this.io.to(room).emit("stream", payload);
-      }
+      },
+
+      onPlanProposed: (_data) => {
+        // Plan proposed is handled via state update when pending plan is queried
+      },
     });
 
-    // Plan Update: Broadcast state when plan is approved or modified
-    manager.events.on("plan:update", ({ action }) => {
-      const stateResponse = this.buildStateResponse(manager);
-      this.io.to(room).emit("state", stateResponse);
-      logger.debug(`[SocketServerV2] Plan ${action}, broadcast to ${room}`);
-
-      // Emit plan notifications on stream channel
-      const payload: StreamPayload = {
-        sessionId: "default",
-        agentId: "orchestrator",
-        part: action === "approved"
-          ? { type: "plan-approved", planId: "current" }
-          : { type: "plan-proposed", planId: "current", taskCount: 0 },
-        timestamp: Date.now(),
-      };
-      this.io.to(room).emit("stream", payload);
-    });
-
-    // Worker done: stream_parts deliver all content, so worker:done
-    // only needs to clean up tracking and emit a finish signal if
-    // the stream didn't already send one.
-    manager.events.on("worker:done", ({ taskId, role }) => {
-      if (taskId && streamedTasks.has(taskId)) {
-        streamedTasks.delete(taskId);
-        return; // stream finish part already sent
-      }
-      // No stream_parts were sent (shouldn't happen, but safety net)
-      this.io.to(room).emit("stream", {
-        sessionId: "default",
-        agentId: role,
-        taskId,
-        part: { type: "finish", finishReason: "stop" },
-        timestamp: Date.now(),
-      } as StreamPayload);
-    });
-
-    // Error: Task failure notification
-    manager.events.on("worker:error", ({ taskId, error }) => {
-      this.io.to(room).emit("error", {
-        taskId,
-        error,
-        timestamp: Date.now(),
-      } satisfies ErrorResponse);
-    });
-
-    logger.info(`[SocketServerV2] Event listeners attached for team ${teamId}`);
+    logger.info(`[SocketServerV2] Callbacks registered for team ${teamId}`);
   }
 
   /** Join socket to team's broadcast room */
@@ -587,7 +580,7 @@ export class SocketServerV2 {
 
       // Join team room and ensure event broadcasting is set up
       this.joinTeamRoom(socket, teamId);
-      this.ensureTeamEventsBroadcast(teamId, manager);
+      this.ensureTeamCallbacks(teamId, manager);
 
       // "manager" is the planning agent (maps to orchestrator internally)
       if (agentId === "manager" || agentId === "orchestrator") {
@@ -902,7 +895,7 @@ export class SocketServerV2 {
   ) {
     // Join team room and ensure event broadcasting
     this.joinTeamRoom(socket, teamId);
-    this.ensureTeamEventsBroadcast(teamId, manager);
+    this.ensureTeamCallbacks(teamId, manager);
 
     const pendingPlan = manager.getOrchestratorPendingPlan();
     const autoExecute = manager.getAutoExecute();

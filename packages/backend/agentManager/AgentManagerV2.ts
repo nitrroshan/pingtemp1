@@ -15,7 +15,6 @@
  * - Integrates with MemoryCoordinator for full memory (tasks + knowledge)
  */
 
-import { EventEmitter } from "events";
 import { Logger } from "tslog";
 import { getAgentFactory } from "../agent/AgentFactory.js";
 import { WorkerPool } from "../services/WorkerPool.js";
@@ -31,6 +30,16 @@ import { L3KnowledgePlugin } from "../memory/L3/L3KnowledgePlugin.js";
 import type { KnowledgeBaseConfig } from "../memory/types/index.js";
 
 const logger = new Logger({ name: "AgentManager" });
+
+export interface ManagerStreamCallbacks {
+  onStream?: (data: { taskId: string; agentId: string; part: any }) => void;
+  onEvent?: (data: { taskId: string; event: any }) => void;
+  onDone?: (data: { taskId: string; role: string; output: any }) => void;
+  onError?: (data: { taskId: string; error: string }) => void;
+  onTaskUpdate?: (data: { taskId: string; status: string; role?: string; output?: any }) => void;
+  onPlanUpdate?: (data: { action: string; tasksQueued?: number; timestamp: number }) => void;
+  onPlanProposed?: (data: any) => void;
+}
 
 // Feature flag for orchestrator mode - defaulting to true as orchestrator is now the primary path
 // Setting USE_ORCHESTRATOR=false is deprecated and will be removed in next version
@@ -74,8 +83,8 @@ export class AgentManager {
   /** Task outputs for dependency injection */
   private taskOutputs = new Map<string, any>();
 
-  /** Forward events from WorkerPool */
-  public readonly events: EventEmitter;
+  /** Stream callbacks registered by SocketServerV2 */
+  private streamCallbacks: ManagerStreamCallbacks | null = null;
 
   // Orchestrator mode properties
   private orchestrator: OrchestratorService | null = null;
@@ -90,11 +99,7 @@ export class AgentManager {
 
   constructor() {
     this.workerPool = new WorkerPool();
-    this.events = this.workerPool.events;
     this.setupCompletionHandler();
-
-    // Setup orchestrator event forwarding
-    this.setupOrchestratorEventForwarding();
 
     logger.info(
       `AgentManager initialized (orchestrator mode: ${USE_ORCHESTRATOR})`,
@@ -102,19 +107,10 @@ export class AgentManager {
   }
 
   /**
-   * Forward orchestrator events to main events emitter
+   * Register stream callbacks for real-time event delivery (used by SocketServerV2)
    */
-  private setupOrchestratorEventForwarding() {
-    // Forward plan events from orchestrator to main events
-    this.events.on("plan:proposed", (data) => {
-      logger.info(`[AgentManager] Plan proposed for team ${data.teamId}`);
-    });
-
-    this.events.on("plan:approved", (data) => {
-      logger.info(
-        `[AgentManager] Plan approved for team ${data.teamId}, ${data.tasksQueued} tasks queued`,
-      );
-    });
+  registerStreamCallbacks(callbacks: ManagerStreamCallbacks): void {
+    this.streamCallbacks = callbacks;
   }
 
   // ===========================================================================
@@ -326,7 +322,15 @@ Do NOT invent tools you don't have. If unsure, use \`my_tools\` to check.
       teamRoles,
       memoryManager: this.memoryManager,
       workerPool: this.workerPool,
-      events: this.events,
+      callbacks: {
+        onStream: (data) => this.streamCallbacks?.onStream?.(data),
+        onEvent: (data) => this.streamCallbacks?.onEvent?.(data),
+        onDone: (data) => this.streamCallbacks?.onDone?.(data),
+        onError: (data) => this.streamCallbacks?.onError?.(data),
+        onTaskUpdate: (data) => this.streamCallbacks?.onTaskUpdate?.(data),
+        onPlanProposed: (data) => this.streamCallbacks?.onPlanProposed?.(data),
+        onProgress: (_data) => { /* optional */ },
+      },
     });
 
     await this.orchestrator.initialize();
@@ -381,12 +385,6 @@ Do NOT invent tools you don't have. If unsure, use \`my_tools\` to check.
         `[AgentManager] Auto-approve disabled for role: ${normalizedRole}`,
       );
     }
-
-    this.events.emit("autoApprove:changed", {
-      role: normalizedRole,
-      enabled,
-      timestamp: Date.now(),
-    });
   }
 
   /**
@@ -399,12 +397,6 @@ Do NOT invent tools you don't have. If unsure, use \`my_tools\` to check.
     logger.info(
       `[AgentManager] Auto-approve ALL roles: ${enabled ? "enabled" : "disabled"}`,
     );
-
-    this.events.emit("autoApprove:changed", {
-      role: "*",
-      enabled,
-      timestamp: Date.now(),
-    });
   }
 
   /**
@@ -498,9 +490,9 @@ Do NOT invent tools you don't have. If unsure, use \`my_tools\` to check.
     }
     const result = await this.orchestrator.approvePlan();
 
-    // Emit plan:update event for socket broadcast
+    // Emit plan:update callback for socket broadcast
     if (result.success) {
-      this.events.emit("plan:update", {
+      this.streamCallbacks?.onPlanUpdate?.({
         action: "approved",
         tasksQueued: result.tasksQueued,
         timestamp: Date.now(),
@@ -625,12 +617,6 @@ Do NOT invent tools you don't have. If unsure, use \`my_tools\` to check.
     logger.info(
       `Task ${taskId} approved for chat with role: ${task.assigned_role}`,
     );
-
-    this.events.emit("task:approved", {
-      taskId,
-      role: task.assigned_role,
-      timestamp: Date.now(),
-    });
 
     return { taskId, role: task.assigned_role };
   }
@@ -782,11 +768,10 @@ Do NOT invent tools you don't have. If unsure, use \`my_tools\` to check.
 
     // WorkerPool stores the response internally via lastResponses Map
 
-    this.events.emit("task:update", {
+    this.streamCallbacks?.onTaskUpdate?.({
       taskId,
       status: "in_progress",
       role: task.assigned_role,
-      timestamp: Date.now(),
     });
 
     return {
@@ -850,13 +835,11 @@ Do NOT invent tools you don't have. If unsure, use \`my_tools\` to check.
       `Task ${taskId} completed by user${mergeResult.error ? " (merge failed)" : ""}`,
     );
 
-    this.events.emit("task:update", {
+    this.streamCallbacks?.onTaskUpdate?.({
       taskId,
       status: "completed",
       role: task.assigned_role,
       output: finalOutput,
-      mergeError: mergeResult.error,
-      timestamp: Date.now(),
     });
 
     return {
@@ -964,12 +947,6 @@ Do NOT invent tools you don't have. If unsure, use \`my_tools\` to check.
     this.workerPool.registerDefinitions([definition]);
 
     logger.info(`Registered new agent: ${definition.role} (${definition.id})`);
-
-    this.events.emit("agent:registered", {
-      agentId: definition.id,
-      role: definition.role,
-      timestamp: Date.now(),
-    });
   }
 
   /**
@@ -995,12 +972,6 @@ Do NOT invent tools you don't have. If unsure, use \`my_tools\` to check.
 
     this.definitions.splice(idx, 1);
     logger.info(`Unregistered agent: ${agentDef.role} (${agentDef.id})`);
-
-    this.events.emit("agent:unregistered", {
-      agentId: agentDef.id,
-      role: agentDef.role,
-      timestamp: Date.now(),
-    });
   }
 
   /**
@@ -1046,12 +1017,6 @@ Do NOT invent tools you don't have. If unsure, use \`my_tools\` to check.
     }
 
     logger.info(`Modified task ${taskId}:`, changes);
-
-    this.events.emit("task:modified", {
-      taskId,
-      changes,
-      timestamp: Date.now(),
-    });
   }
 
   /**
@@ -1091,12 +1056,6 @@ Do NOT invent tools you don't have. If unsure, use \`my_tools\` to check.
     }
 
     logger.info(`Discarded task ${taskId}`);
-
-    this.events.emit("task:discarded", {
-      taskId,
-      role: task.assigned_role,
-      timestamp: Date.now(),
-    });
   }
 
   /**
@@ -1172,15 +1131,15 @@ Do NOT invent tools you don't have. If unsure, use \`my_tools\` to check.
    * Listen for task completions to queue dependent tasks
    */
   private setupCompletionHandler(): void {
-    this.taskQueue.on("task:complete", ({ taskId, output }) => {
-      logger.info(`Task ${taskId} completed, checking dependents`);
-      this.taskOutputs.set(taskId, output);
-      this.queueReadyDependents(taskId);
-    });
-
-    this.taskQueue.on("task:failed", ({ taskId, error }) => {
-      logger.error(`Task ${taskId} failed: ${error}`);
-      // Dependents won't be queued since dependency wasn't completed
+    this.taskQueue.setCallbacks({
+      onTaskComplete: ({ taskId, output }) => {
+        logger.info(`Task ${taskId} completed, checking dependents`);
+        this.taskOutputs.set(taskId, output);
+        this.queueReadyDependents(taskId);
+      },
+      onTaskFailed: ({ taskId, error }) => {
+        logger.error(`Task ${taskId} failed: ${error}`);
+      },
     });
   }
 

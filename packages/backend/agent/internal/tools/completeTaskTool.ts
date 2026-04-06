@@ -10,7 +10,6 @@
 
 import { z } from "zod";
 import { tool } from "@langchain/core/tools";
-import { EventEmitter } from "events";
 
 /**
  * Schema for task completion
@@ -25,20 +24,19 @@ export type CompleteTaskInput = z.infer<typeof CompleteTaskSchema>;
 
 /**
  * Create a complete_task tool that signals task completion
- * 
+ *
  * @param taskId - The task ID this tool is bound to
  * @param role - The agent role
- * @param events - EventEmitter to emit completion events
+ * @param onComplete - Callback invoked on task completion
  */
 export function createCompleteTaskTool(
   taskId: string,
   role: string,
-  events: EventEmitter
+  onComplete?: (data: { taskId: string; role: string; summary: string; deliverables: string[]; nextSteps: string[]; timestamp: number }) => void
 ) {
   return tool(
     async (input: CompleteTaskInput) => {
-      // Emit event for OrchestratorService/AgentManager to handle
-      events.emit("task:agent-complete", {
+      onComplete?.({
         taskId,
         role,
         summary: input.summary,

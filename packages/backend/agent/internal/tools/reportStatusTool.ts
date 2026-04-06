@@ -7,7 +7,6 @@
 
 import { z } from "zod";
 import { tool } from "@langchain/core/tools";
-import { EventEmitter } from "events";
 
 /**
  * Status values that agents can report
@@ -26,21 +25,20 @@ export const TaskStatusSchema = z.object({
 export type TaskStatusInput = z.infer<typeof TaskStatusSchema>;
 
 /**
- * Create a report_status tool that emits events
- * 
+ * Create a report_status tool that invokes a callback
+ *
  * @param taskId - The task ID this tool is bound to
  * @param role - The agent role
- * @param events - EventEmitter to emit status updates
+ * @param onStatus - Callback invoked on status updates
  */
 export function createReportStatusTool(
   taskId: string,
   role: string,
-  events: EventEmitter
+  onStatus?: (data: { taskId: string; role: string; status: string; summary: string; progress?: number; timestamp: number }) => void
 ) {
   return tool(
     async (input: TaskStatusInput) => {
-      // Emit event for Socket.IO to pick up
-      events.emit("task:status", {
+      onStatus?.({
         taskId,
         role,
         status: input.status,

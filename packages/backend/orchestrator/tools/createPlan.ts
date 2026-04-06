@@ -71,8 +71,8 @@ Create a detailed task plan to accomplish this goal. Break it down into specific
         // Update state to awaiting approval
         context.setState("awaiting_approval");
 
-        // Emit event for UI
-        context.events.emit("plan:proposed", {
+        // Invoke callback for UI
+        context.callbacks.onPlanProposed?.({
           plan,
           teamId: context.teamId,
           timestamp: new Date().toISOString(),

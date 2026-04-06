@@ -146,7 +146,7 @@ export class SocketServer {
    */
   private setupOrchestratorEventForwarding(
     socket: Socket,
-    connection: SocketConnection,
+    _connection: SocketConnection,
   ) {
     const forwardEvent = (eventName: string) => (data: any) => {
       socket.emit(eventName, {
@@ -155,42 +155,21 @@ export class SocketServer {
       });
     };
 
-    // Forward plan lifecycle events
-    this.agentManager.events.on("plan:proposed", forwardEvent("plan:proposed"));
-    this.agentManager.events.on("plan:approved", forwardEvent("plan:approved"));
-    
-    // Forward progress monitoring events
-    this.agentManager.events.on("orchestrator:progress", forwardEvent("orchestrator:progress"));
-    this.agentManager.events.on("execution:complete", forwardEvent("execution:complete"));
-    this.agentManager.events.on("task:error", forwardEvent("task:error"));
-    
-    // Forward task lifecycle events (v2)
-    this.agentManager.events.on("task:approved", forwardEvent("task:approved"));
-    this.agentManager.events.on("task:completed", forwardEvent("task:completed"));
-    this.agentManager.events.on("task:status", forwardEvent("task:status"));
+    // Forward plan lifecycle events via registerStreamCallbacks
+    this.agentManager.registerStreamCallbacks({
+      onPlanProposed: forwardEvent("plan:proposed"),
+      onPlanUpdate: (data) => {
+        if ((data as any).action === "approved") {
+          forwardEvent("plan:approved")(data);
+        }
+      },
+      onTaskUpdate: forwardEvent("task:update"),
+      onError: forwardEvent("task:error"),
+    });
 
     // Cleanup on disconnect
     socket.on("disconnect", () => {
-      this.agentManager.events.removeListener(
-        "plan:proposed",
-        forwardEvent("plan:proposed"),
-      );
-      this.agentManager.events.removeListener(
-        "plan:approved",
-        forwardEvent("plan:approved"),
-      );
-      this.agentManager.events.removeListener(
-        "orchestrator:progress",
-        forwardEvent("orchestrator:progress"),
-      );
-      this.agentManager.events.removeListener(
-        "execution:complete",
-        forwardEvent("execution:complete"),
-      );
-      this.agentManager.events.removeListener(
-        "task:error",
-        forwardEvent("task:error"),
-      );
+      this.agentManager.registerStreamCallbacks({});
     });
   }
 

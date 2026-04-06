@@ -14,14 +14,11 @@
  * - Agents poll() for their role's tasks
  */
 
-import { EventEmitter } from "events";
 import { PriorityQueue } from "./PriorityQueue.js";
 import type {
   TaskWithContext,
-  TaskAvailableEvent,
-  TaskCompleteEvent,
-  TaskFailedEvent,
   QueueMetrics,
+  TaskCallbacks,
 } from "./RoleTaskQueue.types.js";
 import { Logger } from "tslog";
 
@@ -37,8 +34,8 @@ export class RoleTaskQueue {
   /** Task completion times for metrics */
   private completionTimes: number[] = [];
 
-  /** Event emitter for task lifecycle events */
-  private events: EventEmitter = new EventEmitter();
+  /** Callbacks for task lifecycle events */
+  private callbacks: TaskCallbacks = {};
 
   /** Queue metrics */
   private metrics: QueueMetrics = {
@@ -88,8 +85,8 @@ export class RoleTaskQueue {
 
     logger.debug(`Task ${task.id} queued for role: ${role}`);
 
-    // Emit event
-    this.emit("task:available", { role, taskId: task.id });
+    // Invoke callback
+    this.callbacks.onTaskReady?.({ role, taskId: task.id });
   }
 
   /**
@@ -165,8 +162,8 @@ export class RoleTaskQueue {
 
     logger.debug(`Task ${taskId} completed`);
 
-    // Emit event
-    this.emit("task:complete", { taskId, output });
+    // Invoke callback
+    this.callbacks.onTaskComplete?.({ taskId, output });
   }
 
   /**
@@ -194,8 +191,8 @@ export class RoleTaskQueue {
 
     logger.warn(`Task ${taskId} failed: ${error}`);
 
-    // Emit event
-    this.emit("task:failed", { taskId, error });
+    // Invoke callback
+    this.callbacks.onTaskFailed?.({ taskId, error });
   }
 
   /**
@@ -277,45 +274,19 @@ export class RoleTaskQueue {
   }
 
   // ==========================================================================
-  // Events
+  // Callbacks
   // ==========================================================================
 
   /**
-   * Subscribe to queue events
-   * @param event - Event name
-   * @param handler - Event handler
+   * Set callbacks for task lifecycle events
+   * @param callbacks - Callback functions for task events
    */
-  on(
-    event: "task:available",
-    handler: (payload: TaskAvailableEvent) => void,
-  ): void;
-  on(
-    event: "task:complete",
-    handler: (payload: TaskCompleteEvent) => void,
-  ): void;
-  on(event: "task:failed", handler: (payload: TaskFailedEvent) => void): void;
-  on(event: string, handler: (...args: any[]) => void): void {
-    this.events.on(event, handler);
+  setCallbacks(callbacks: TaskCallbacks): void {
+    this.callbacks = callbacks;
   }
 
   /**
-   * Unsubscribe from queue events
-   * @param event - Event name
-   * @param handler - Event handler
-   */
-  off(event: string, handler: (...args: any[]) => void): void {
-    this.events.off(event, handler);
-  }
-
-  /**
-   * Remove all event listeners
-   */
-  removeAllListeners(): void {
-    this.events.removeAllListeners();
-  }
-
-  /**
-   * Clear all tasks and queues, but keep event listeners attached
+   * Clear all tasks and queues, but keep callbacks attached
    * Used when clearing tasks for a new plan
    */
   clear(): void {
@@ -329,14 +300,7 @@ export class RoleTaskQueue {
       queueSizes: {},
       avgCompletionTime: 0,
     };
-    logger.info("RoleTaskQueue cleared (event listeners preserved)");
-  }
-
-  /**
-   * Emit an event
-   */
-  private emit(event: string, payload: any): void {
-    this.events.emit(event, payload);
+    logger.info("RoleTaskQueue cleared (callbacks preserved)");
   }
 
   // ==========================================================================

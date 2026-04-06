@@ -71,8 +71,8 @@ export function createApprovePlanTool(context: OrchestratorContext) {
         // Update orchestrator state
         context.setState("executing");
 
-        // Emit event for UI
-        context.events.emit("plan:approved", {
+        // Invoke callback for UI
+        context.callbacks.onPlanApproved?.({
           planId: plan.planId,
           teamId: context.teamId,
           tasksQueued,

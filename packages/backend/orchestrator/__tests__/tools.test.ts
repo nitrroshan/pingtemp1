@@ -5,7 +5,6 @@
  */
 
 import { describe, it, expect, beforeEach, mock, type Mock } from "bun:test";
-import { EventEmitter } from "events";
 import { createOrchestratorTools } from "../tools/index.js";
 import { PlanStore } from "../../memory/L2/collaboration/PlanStore.js";
 import type { OrchestratorContext } from "../types.js";
@@ -73,7 +72,7 @@ describe("Orchestrator Tools", () => {
   let mockPlanBuilder: ReturnType<typeof createMockPlanBuilder>;
   let mockPlanStore: any;
   let mockArtifactRegistry: any;
-  let events: EventEmitter;
+  let capturedCallbacks: Record<string, any>;
   let pendingPlan: any;
   let state: string;
   let tools: StructuredTool[];
@@ -92,16 +91,19 @@ describe("Orchestrator Tools", () => {
       queryArtifacts: mock().mockReturnValue([]),
       getTaskContext: mock().mockReturnValue("No artifacts found"),
     };
-    events = new EventEmitter();
+    capturedCallbacks = {};
     pendingPlan = null;
     state = "idle";
 
     context = {
       memoryManager: mockMemoryManager as any,
-      events,
+      callbacks: {
+        onPlanProposed: (data) => { capturedCallbacks["plan:proposed"] = data; },
+        onPlanApproved: (data) => { capturedCallbacks["plan:approved"] = data; },
+      },
       planStore: mockPlanStore,
-      artifactRegistry: mockArtifactRegistry,
       teamId: "team-test",
+      currentGoalId: null,
       teamRoles: ["backend", "frontend", "devops"],
       planBuilder: mockPlanBuilder,
       getState: () => state as any,
@@ -141,11 +143,7 @@ describe("Orchestrator Tools", () => {
       expect(state).toBe("awaiting_approval");
     });
 
-    it("should emit plan:proposed event", async () => {
-      const eventPromise = new Promise((resolve) => {
-        events.on("plan:proposed", resolve);
-      });
-
+    it("should invoke onPlanProposed callback", async () => {
       await callTool(tools, "create_plan", {
         goal: "Build something",
         context: "Context here",
@@ -153,7 +151,7 @@ describe("Orchestrator Tools", () => {
         roles: ["backend"],
       });
 
-      const event = await eventPromise;
+      const event = capturedCallbacks["plan:proposed"];
       expect(event).toHaveProperty("plan");
       expect(event).toHaveProperty("teamId", "team-test");
     });
@@ -218,14 +216,10 @@ describe("Orchestrator Tools", () => {
       expect(pendingPlan).toBeNull();
     });
 
-    it("should emit plan:approved event", async () => {
-      const eventPromise = new Promise((resolve) => {
-        events.on("plan:approved", resolve);
-      });
-
+    it("should invoke onPlanApproved callback", async () => {
       await callTool(tools, "approve_plan", {});
 
-      const event = await eventPromise;
+      const event = capturedCallbacks["plan:approved"];
       expect(event).toHaveProperty("tasksQueued", 1);
     });
 
