@@ -13,7 +13,7 @@
 import React, { useState, useEffect, useRef, lazy, Suspense, useCallback } from 'react';
 import { BrowserRouter, Routes, Route } from 'react-router-dom';
 import { v4 as uuidv4 } from 'uuid';
-import { Menu, PanelRight, Search, Zap } from 'lucide-react';
+import { Menu, PanelRight, Search, Zap, Sun, Moon } from 'lucide-react';
 import { AnimatePresence, motion } from 'framer-motion';
 
 import Sidebar from './components/Sidebar';
@@ -43,6 +43,7 @@ import { useAgentTree } from './hooks/useAgentTree';
 import { agentServiceV2, type Task as BackendTask } from './services/AgentServiceV2';
 import type { Agent, Message } from './types';
 import { Skeleton } from './components/ui/skeleton';
+import { TeamsPage } from './components/TeamsPage/TeamsPage';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // CollabFileTree — lightweight CRDT doc browser
@@ -97,6 +98,23 @@ function CollabFileTree({ teamId, activeDoc, onSelectDoc }: {
 function InnerApp() {
   const { toasts, showToast, dismissToast } = useToast();
 
+  // ── Theme ────────────────────────────────────────────────────────────────
+  const [theme, setTheme] = useState<'dark' | 'light'>(() => {
+    const stored = localStorage.getItem('ping:theme') as 'dark' | 'light' | null;
+    if (stored === 'dark' || stored === 'light') return stored;
+    return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+  });
+
+  useEffect(() => {
+    if (theme === 'light') {
+      document.documentElement.classList.add('light');
+    } else {
+      document.documentElement.classList.remove('light');
+    }
+    localStorage.setItem('ping:theme', theme);
+  }, [theme]);
+  // ─────────────────────────────────────────────────────────────────────────
+
   const { agents, isLoadingTeams, agentsRef, findAgentById, handleToggleCollapse, loadTeams, createTeam, addLocalSubAgent } = useAgentTree();
   const { chatHistories, addMessage, updateMessages, processStreamPart } = useChat();
   const {
@@ -146,6 +164,13 @@ function InnerApp() {
   useEffect(() => { activeAgentIdRef.current = activeAgentId; }, [activeAgentId]);
   useEffect(() => { selectedTeamIdRef.current = selectedTeamId; }, [selectedTeamId]);
 
+  // Persist active team ID to localStorage whenever it changes
+  useEffect(() => {
+    if (selectedTeamId) {
+      localStorage.setItem('ping:activeTeamId', selectedTeamId);
+    }
+  }, [selectedTeamId]);
+
   useEffect(() => { loadTeams(); }, [loadTeams]);
 
   useEffect(() => {
@@ -174,8 +199,14 @@ function InnerApp() {
 
   // Route is the source of truth for shell view and selected team (Option C foundation).
   useEffect(() => {
+    if (currentPath === '/manage-teams') return; // handled separately
     if (currentPath === '/') {
-      pushRoute('/chat');
+      const storedTeamId = localStorage.getItem('ping:activeTeamId');
+      if (storedTeamId) {
+        pushRoute(`/teams/${encodeURIComponent(storedTeamId)}/chat`);
+      } else {
+        pushRoute('/chat');
+      }
       return;
     }
     const { nextView, nextTeamId } = parseRouteState(currentPath);
@@ -331,10 +362,28 @@ function InnerApp() {
       onAddAgent={(parentId) => { setModalParentId(parentId); setIsModalOpen(true); }}
       isExpanded={isMobileViewport ? true : isSidebarExpanded}
       onToggleExpanded={() => setIsSidebarExpanded(v => !v)}
+      teams={agents}
+      activeTeamId={selectedTeamId}
+      onSelectTeam={handleSelectAgent}
+      onNavigateToTeams={() => { pushRoute('/manage-teams'); if (isMobileViewport) setIsMobileSidebarOpen(false); }}
     />
   );
 
   const appShellLoading = isLoadingTeams && !selectedTeamId;
+
+  // /manage-teams route — render full-page TeamsPage
+  if (currentPath === '/manage-teams') {
+    return (
+      <TeamsPage
+        onBack={() => pushRoute(selectedTeamId ? `/teams/${encodeURIComponent(selectedTeamId)}/chat` : '/chat')}
+        onTeamCreated={(team) => {
+          setActiveAgentId(team.id);
+          setSelectedTeamId(team.id);
+          pushRoute(`/teams/${encodeURIComponent(team.id)}/chat`);
+        }}
+      />
+    );
+  }
 
   return (
     <div className="flex flex-col h-screen w-full bg-nexus-950 font-sans text-slate-200">
@@ -368,8 +417,15 @@ function InnerApp() {
           </button>
         </div>
 
-        {/* Right: spacer for balance */}
-        <div className="w-6 hidden sm:block" />
+        {/* Right: theme toggle */}
+        <button
+          onClick={() => setTheme(t => t === 'dark' ? 'light' : 'dark')}
+          className="p-1.5 rounded-md text-slate-400 hover:text-white hover:bg-nexus-800 transition-colors cursor-pointer"
+          aria-label="Toggle theme"
+          title={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
+        >
+          {theme === 'dark' ? <Sun size={15} /> : <Moon size={15} />}
+        </button>
       </div>
 
       <div className="flex flex-1 min-h-0">

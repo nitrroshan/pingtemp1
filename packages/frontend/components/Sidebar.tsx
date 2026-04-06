@@ -11,12 +11,13 @@
  * Collapsible to icon-only rail (48px) via isWorkflowsExpanded.
  */
 
-import React from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import {
   ChevronRight, ChevronDown, Plus,
   Cpu, Code, Bug, Palette, PenTool, Search, Bot,
   BarChart3, Workflow, PanelLeftClose, PanelLeft,
   MessageSquare, LayoutDashboard, FileCode2,
+  ChevronsUpDown, Check, Settings,
 } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from './ui/tooltip';
@@ -64,6 +65,14 @@ interface SidebarProps {
   onAddAgent: (parentId?: string) => void;
   isExpanded: boolean;
   onToggleExpanded: () => void;
+  /** Top-level teams for the team switcher */
+  teams?: Agent[];
+  /** Currently active team ID */
+  activeTeamId?: string | null;
+  /** Called when a team is selected from the switcher */
+  onSelectTeam?: (team: Agent) => void;
+  /** Called when "Manage teams" is clicked */
+  onNavigateToTeams?: () => void;
 }
 
 // ─── NavButton ────────────────────────────────────────────────────────────────
@@ -233,7 +242,28 @@ const Sidebar: React.FC<SidebarProps> = ({
   onAddAgent,
   isExpanded,
   onToggleExpanded,
+  teams = [],
+  activeTeamId,
+  onSelectTeam,
+  onNavigateToTeams,
 }) => {
+  const [isTeamDropdownOpen, setIsTeamDropdownOpen] = useState(false);
+  const dropdownRef = useRef<HTMLDivElement>(null);
+  const activeTeam = teams.find(t => t.id === activeTeamId);
+
+  // Close dropdown on click outside
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (dropdownRef.current && !dropdownRef.current.contains(e.target as Node)) {
+        setIsTeamDropdownOpen(false);
+      }
+    };
+    if (isTeamDropdownOpen) {
+      document.addEventListener('mousedown', handleClickOutside);
+    }
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [isTeamDropdownOpen]);
+
   return (
     <TooltipProvider delayDuration={300}>
       <aside
@@ -242,6 +272,84 @@ const Sidebar: React.FC<SidebarProps> = ({
           isExpanded ? 'w-60' : 'w-12'
         )}
       >
+        {/* ── Section 1: Team Switcher ── */}
+        {isExpanded ? (
+          <div ref={dropdownRef} className="p-2 border-b border-border shrink-0 relative">
+            <button
+              onClick={() => setIsTeamDropdownOpen(v => !v)}
+              className="w-full flex items-center justify-between gap-2 px-2 py-1.5 rounded-md hover:bg-accent transition-colors text-sm cursor-pointer"
+            >
+              <div className="flex items-center gap-2 min-w-0">
+                <div className="w-5 h-5 rounded bg-primary/20 flex items-center justify-center shrink-0">
+                  <Cpu size={11} className="text-primary" />
+                </div>
+                <span className="truncate font-medium text-foreground text-xs">
+                  {activeTeam?.name ?? 'Select team…'}
+                </span>
+              </div>
+              <ChevronsUpDown size={12} className="text-muted-foreground shrink-0" />
+            </button>
+
+            {isTeamDropdownOpen && (
+              <div className="absolute left-2 right-2 top-full mt-1 z-50 bg-popover border border-border rounded-lg shadow-lg overflow-hidden">
+                {teams.length === 0 ? (
+                  <div className="px-3 py-2 text-xs text-muted-foreground">No teams yet</div>
+                ) : (
+                  <div className="max-h-48 overflow-y-auto p-1">
+                    {teams.map(team => (
+                      <button
+                        key={team.id}
+                        onClick={() => {
+                          onSelectTeam?.(team);
+                          setIsTeamDropdownOpen(false);
+                        }}
+                        className={cn(
+                          'w-full flex items-center gap-2 px-2.5 py-1.5 rounded-md text-xs transition-colors text-left cursor-pointer',
+                          activeTeamId === team.id
+                            ? 'bg-primary/10 text-primary'
+                            : 'text-foreground hover:bg-accent'
+                        )}
+                      >
+                        {getIcon(team.icon, 12)}
+                        <span className="truncate flex-1">{team.name}</span>
+                        {activeTeamId === team.id && <Check size={11} className="shrink-0" />}
+                      </button>
+                    ))}
+                  </div>
+                )}
+                <div className="border-t border-border p-1">
+                  <button
+                    onClick={() => {
+                      onNavigateToTeams?.();
+                      setIsTeamDropdownOpen(false);
+                    }}
+                    className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-md text-xs text-muted-foreground hover:text-foreground hover:bg-accent transition-colors cursor-pointer"
+                  >
+                    <Settings size={11} />
+                    <span>Manage teams</span>
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        ) : (
+          /* Collapsed: show active team icon as a tooltip button */
+          <div className="p-1.5 border-b border-border flex justify-center shrink-0">
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button
+                  onClick={() => onSelectTeam?.(teams[0])}
+                  className="w-8 h-8 rounded bg-primary/20 flex items-center justify-center hover:bg-primary/30 transition-colors cursor-pointer"
+                >
+                  <Cpu size={13} className="text-primary" />
+                </button>
+              </TooltipTrigger>
+              <TooltipContent side="right">
+                {activeTeam?.name ?? 'Select team'}
+              </TooltipContent>
+            </Tooltip>
+          </div>
+        )}
         {/* ── Navigation ── */}
         <div className={cn('p-1.5 border-b border-border flex-shrink-0', !isExpanded && 'flex flex-col items-center gap-1')}>
           {NAV_ITEMS.map(item => (

@@ -2,14 +2,38 @@
  * useChat — manages per-agent chat history with streaming support
  */
 
-import { useState, useCallback, useRef } from 'react';
+import { useState, useCallback, useRef, useEffect } from 'react';
 import { v4 as uuidv4 } from 'uuid';
 import type { Message, RenderedPart, ToolCardState, StreamPart, NotificationChipState } from '../types';
 
 export function useChat() {
-  const [chatHistories, setChatHistories] = useState<Record<string, Message[]>>({});
+  const [chatHistories, setChatHistories] = useState<Record<string, Message[]>>(() => {
+    try {
+      const stored = localStorage.getItem('ping:chatHistories');
+      if (!stored) return {};
+      const parsed = JSON.parse(stored) as Record<string, Message[]>;
+      // Fix messages that were interrupted mid-stream
+      return Object.fromEntries(
+        Object.entries(parsed).map(([agentId, messages]) => [
+          agentId,
+          messages.map(m => m.isStreaming ? { ...m, isStreaming: false } : m),
+        ])
+      );
+    } catch {
+      return {};
+    }
+  });
   /** Track the current streaming message ID per agent */
   const streamingMessageIds = useRef<Record<string, string>>({});
+
+  // Persist chat histories to localStorage on every change
+  useEffect(() => {
+    try {
+      localStorage.setItem('ping:chatHistories', JSON.stringify(chatHistories));
+    } catch {
+      // Storage quota exceeded or unavailable — silently ignore
+    }
+  }, [chatHistories]);
   /** Track active text/reasoning part IDs per streaming message */
   const activeTextParts = useRef<Record<string, string>>({});
   const activeReasoningParts = useRef<Record<string, string>>({});
