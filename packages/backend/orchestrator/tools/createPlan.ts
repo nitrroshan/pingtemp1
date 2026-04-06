@@ -9,7 +9,7 @@
 import { tool } from "@langchain/core/tools";
 import { z } from "zod";
 import type { OrchestratorContext } from "../types.js";
-import { toGoalId } from "../../memory/L2/collaboration/PlanStore.js";
+import { toGoalId } from "../../plugin/utils.js";
 import { PlanRequirementsSchema, type CreatePlanResult } from "../schemas.js";
 
 /**
@@ -71,8 +71,8 @@ Create a detailed task plan to accomplish this goal. Break it down into specific
         // Update state to awaiting approval
         context.setState("awaiting_approval");
 
-        // Emit event for UI
-        context.events.emit("plan:proposed", {
+        // Invoke callback for UI
+        context.callbacks.onPlanProposed?.({
           plan,
           teamId: context.teamId,
           timestamp: new Date().toISOString(),

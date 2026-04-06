@@ -116,24 +116,24 @@ const SkillSelector: React.FC<SkillSelectorProps> = ({ agentId, teamId, onClose 
   );
 
   return (
-    <div className="flex flex-col h-full bg-nexus-950 border-l border-nexus-800">
+    <div className="flex flex-col h-full bg-background border-l border-border">
       {/* Header */}
-      <div className="flex items-center justify-between px-4 py-3 border-b border-nexus-800">
-        <h3 className="text-sm font-semibold text-slate-200">Skills</h3>
-        <button onClick={onClose} className="text-slate-500 hover:text-slate-200 cursor-pointer transition-colors">
+      <div className="flex items-center justify-between px-4 py-3 border-b border-border">
+        <h3 className="text-sm font-semibold text-foreground">Skills</h3>
+        <button onClick={onClose} className="text-muted-foreground hover:text-foreground cursor-pointer transition-colors">
           <X size={16} />
         </button>
       </div>
 
       {/* Search */}
-      <div className="px-3 py-2 border-b border-nexus-800">
-        <div className="flex items-center gap-2 bg-nexus-900 rounded-lg px-3 py-1.5">
-          <Search size={13} className="text-slate-500 flex-shrink-0" />
+      <div className="px-3 py-2 border-b border-border">
+        <div className="flex items-center gap-2 bg-muted rounded-lg px-3 py-1.5">
+          <Search size={13} className="text-muted-foreground flex-shrink-0" />
           <input
             value={search}
             onChange={e => setSearch(e.target.value)}
             placeholder="Search skills…"
-            className="flex-1 bg-transparent text-sm text-slate-200 placeholder-slate-600 focus:outline-none"
+            className="flex-1 bg-transparent text-sm text-foreground placeholder-muted-foreground focus:outline-none"
           />
         </div>
       </div>
@@ -142,18 +142,18 @@ const SkillSelector: React.FC<SkillSelectorProps> = ({ agentId, teamId, onClose 
       <div className="flex-1 overflow-y-auto p-2 space-y-1">
         {loading && (
           <div className="flex items-center justify-center h-32">
-            <Loader2 size={20} className="animate-spin text-slate-500" />
+            <Loader2 size={20} className="animate-spin text-muted-foreground" />
           </div>
         )}
 
         {error && (
-          <div className="p-3 rounded-lg bg-red-900/20 border border-red-800 text-red-300 text-xs">
+          <div className="p-3 rounded-lg bg-destructive/10 border border-destructive/30 text-destructive text-xs">
             {error}
           </div>
         )}
 
         {!loading && !error && filtered.length === 0 && (
-          <div className="text-center text-xs text-slate-500 py-8">
+          <div className="text-center text-xs text-muted-foreground py-8">
             {search ? 'No skills match your search' : 'No skills installed'}
           </div>
         )}
@@ -166,13 +166,13 @@ const SkillSelector: React.FC<SkillSelectorProps> = ({ agentId, teamId, onClose 
             <label
               key={skill.skillId}
               className={`flex items-start gap-3 px-3 py-2.5 rounded-lg cursor-pointer transition-colors group ${
-                isAssigned ? 'bg-nexus-800/60' : 'hover:bg-nexus-900'
+                isAssigned ? 'bg-primary/10' : 'hover:bg-accent'
               }`}
             >
               {/* Checkbox */}
               <div className="flex-shrink-0 mt-0.5">
                 {isToggling ? (
-                  <Loader2 size={14} className="animate-spin text-nexus-cyan" />
+                  <Loader2 size={14} className="animate-spin text-primary" />
                 ) : (
                   <input
                     type="checkbox"
@@ -185,16 +185,16 @@ const SkillSelector: React.FC<SkillSelectorProps> = ({ agentId, teamId, onClose 
 
               {/* Skill info */}
               <div className="flex-1 min-w-0">
-                <p className={`text-xs font-medium truncate ${isAssigned ? 'text-slate-100' : 'text-slate-300'}`}>
+                <p className={`text-xs font-medium truncate ${isAssigned ? 'text-foreground' : 'text-foreground/80'}`}>
                   {skill.name}
                 </p>
-                <p className="text-[11px] text-slate-500 mt-0.5 line-clamp-2">
+                <p className="text-[11px] text-muted-foreground mt-0.5 line-clamp-2">
                   {skill.description}
                 </p>
                 {skill.tags.length > 0 && (
                   <div className="flex flex-wrap gap-1 mt-1.5">
                     {skill.tags.slice(0, 3).map(tag => (
-                      <span key={tag} className="flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] bg-nexus-800 text-slate-400">
+                      <span key={tag} className="flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] bg-muted text-muted-foreground">
                         <Tag size={8} />
                         {tag}
                       </span>
@@ -208,7 +208,7 @@ const SkillSelector: React.FC<SkillSelectorProps> = ({ agentId, teamId, onClose 
       </div>
 
       {/* Footer */}
-      <div className="px-4 py-2 border-t border-nexus-800 text-[11px] text-slate-500">
+      <div className="px-4 py-2 border-t border-border text-[11px] text-muted-foreground">
         {assignedIds.size} skill{assignedIds.size !== 1 ? 's' : ''} assigned
       </div>
     </div>

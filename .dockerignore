@@ -1,0 +1,43 @@
+# Dependencies
+node_modules/
+.bun/
+
+# Build output
+packages/backend/dist/
+packages/frontend/dist/
+
+# Version control
+.git/
+.gitignore
+
+# Environment files (secrets)
+.env
+.env.local
+packages/backend/.env
+packages/frontend/.env
+
+# IDE / editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Documentation (not needed in images)
+docs/
+*.md
+!README.md
+
+# Test files
+**/__tests__/
+**/*.test.ts
+**/*.integration.test.ts
+**/*.spec.ts
+
+# Dev artifacts
+data/
+.github/
+start.ps1

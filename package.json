@@ -3,6 +3,7 @@
   "private": true,
   "workspaces": ["packages/*"],
   "scripts": {
+    "dev": "docker compose -f docker-compose.dev.yml up -d && bun run dev:backend & bun run dev:frontend",
     "dev:backend": "bun run --filter @ping/backend dev",
     "dev:frontend": "bun run --filter @ping/frontend dev",
     "build:backend": "bun run --filter @ping/backend build",
@@ -13,6 +14,12 @@
     "mongo:start": "docker run -d --name ping-mongo -p 27017:27017 -v ping-mongo-data:/data/db mongo:7",
     "mongo:stop": "docker stop ping-mongo",
     "mongo:rm": "docker rm ping-mongo",
+    "docker:build": "docker compose build",
+    "docker:up": "docker compose up -d",
+    "docker:down": "docker compose down",
+    "docker:logs": "docker compose logs -f",
+    "docker:dev:up": "docker compose -f docker-compose.dev.yml up -d",
+    "docker:dev:down": "docker compose -f docker-compose.dev.yml down",
     "seed": "bun run --filter @ping/backend seed",
     "db:reset": "bun run --filter @ping/backend db:reset"
   }

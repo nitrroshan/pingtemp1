@@ -1,0 +1,18 @@
+{
+  "name": "@ping/workspace",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "dependencies": {
+    "@ping/agent-manager": "workspace:*",
+    "@langchain/core": "^1.1.0",
+    "@vscode/ripgrep": "^1.17.1",
+    "fast-glob": "^3.3.3",
+    "minisearch": "^7.2.0",
+    "mongoose": "^9.0.2",
+    "simple-git": "^3.31.1",
+    "tslog": "^4.10.2",
+    "zod": "^3.23.0"
+  }
+}

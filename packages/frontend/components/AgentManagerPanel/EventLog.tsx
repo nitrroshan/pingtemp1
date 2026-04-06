@@ -8,17 +8,17 @@ interface EventLogProps {
 const EventLog: React.FC<EventLogProps> = ({ log }) => {
   const getTypeColor = () => {
     switch (log.type) {
-      case 'info': return 'text-nexus-cyan';
-      case 'success': return 'text-green-400';
-      case 'warning': return 'text-amber-400';
-      case 'error': return 'text-red-400';
-      default: return 'text-slate-400';
+      case 'info': return 'text-primary';
+      case 'success': return 'text-green-600 dark:text-green-400';
+      case 'warning': return 'text-amber-600 dark:text-amber-400';
+      case 'error': return 'text-red-600 dark:text-red-400';
+      default: return 'text-muted-foreground';
     }
   };
 
   return (
-    <div className="flex gap-2 hover:bg-white/5 p-1.5 rounded transition-colors border-l-2 border-transparent hover:border-slate-700">
-      <span className="text-slate-600 flex-shrink-0 select-none w-14 text-right">
+    <div className="flex gap-2 hover:bg-accent/50 p-1.5 rounded transition-colors border-l-2 border-transparent hover:border-border">
+      <span className="text-muted-foreground/60 flex-shrink-0 select-none w-14 text-right">
         {new Date(log.timestamp).toLocaleTimeString([], {
           hour12: false, 
           hour: '2-digit', 
@@ -30,7 +30,7 @@ const EventLog: React.FC<EventLogProps> = ({ log }) => {
         <span className={`font-bold mr-2 tracking-wide ${getTypeColor()}`}>
           [{log.source}]
         </span>
-        <span className="text-slate-400">
+        <span className="text-foreground/70">
           {log.message}
         </span>
       </div>

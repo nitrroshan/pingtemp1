@@ -10,7 +10,7 @@
 
 import * as readline from "readline";
 import { AgentManager } from "../agentManager/AgentManagerV2.js";
-import { MemoryManager } from "../memory/MemoryManager.js";
+import { MemoryManager } from "@ping/agent-manager";
 
 // ANSI colors
 const colors = {
@@ -174,58 +174,45 @@ ${c.dim("Shortcuts: 'q' = exit, 's' = status, 't' = tasks")}
       if (this.eventLog.length > 50) this.eventLog.shift();
     };
 
-    this.mgr.events.on("plan:proposed", (data) => {
-      logEvent("plan:proposed", { tasks: data.plan?.tasks?.length });
-      this.print(
-        c.info(`\n📋 Plan proposed: ${data.plan?.tasks?.length || 0} tasks`),
-      );
-      if (data.plan?.tasks) {
-        for (const t of data.plan.tasks) {
-          this.print(c.dim(`   • [${t.assignedRole}] ${t.title}`));
+    this.mgr.registerStreamCallbacks({
+      onPlanProposed: (data) => {
+        logEvent("plan:proposed", { tasks: data.plan?.tasks?.length });
+        this.print(
+          c.info(`\n📋 Plan proposed: ${data.plan?.tasks?.length || 0} tasks`),
+        );
+        if (data.plan?.tasks) {
+          for (const t of data.plan.tasks) {
+            this.print(c.dim(`   • [${t.assignedRole}] ${t.title}`));
+          }
         }
-      }
-      this.print(c.warn(`\nType 'approve' to approve the plan`));
-    });
-
-    this.mgr.events.on("plan:approved", (data) => {
-      logEvent("plan:approved", { tasksQueued: data.tasksQueued });
-      this.print(
-        c.success(`\n✓ Plan approved: ${data.tasksQueued} tasks queued`),
-      );
-    });
-
-    this.mgr.events.on("task:update", (data) => {
-      logEvent("task:update", {
-        taskId: data.taskId?.slice(0, 8),
-        status: data.status,
-      });
-      const icon =
-        data.status === "completed"
-          ? "✓"
-          : data.status === "in_progress"
-            ? "▶"
-            : "•";
-      this.print(
-        c.dim(`\n${icon} Task ${data.taskId.slice(0, 8)}: ${data.status}`),
-      );
-    });
-
-    this.mgr.events.on("task:approved", (data) => {
-      logEvent("task:approved", { taskId: data.taskId?.slice(0, 8) });
-    });
-
-    this.mgr.events.on("task:discarded", (data) => {
-      logEvent("task:discarded", { taskId: data.taskId?.slice(0, 8) });
-    });
-
-    this.mgr.events.on("autoApprove:changed", (data) => {
-      logEvent("autoApprove:changed", data);
-    });
-
-    this.mgr.events.on("worker:event", ({ taskId, event }) => {
-      if ((event as any).type === "message_delta") {
-        process.stdout.write((event as any).delta || "");
-      }
+        this.print(c.warn(`\nType 'approve' to approve the plan`));
+      },
+      onPlanUpdate: (data) => {
+        logEvent("plan:approved", { tasksQueued: data.tasksQueued });
+        this.print(
+          c.success(`\n✓ Plan approved: ${data.tasksQueued} tasks queued`),
+        );
+      },
+      onTaskUpdate: (data) => {
+        logEvent("task:update", {
+          taskId: data.taskId?.slice(0, 8),
+          status: data.status,
+        });
+        const icon =
+          data.status === "completed"
+            ? "✓"
+            : data.status === "in_progress"
+              ? "▶"
+              : "•";
+        this.print(
+          c.dim(`\n${icon} Task ${data.taskId.slice(0, 8)}: ${data.status}`),
+        );
+      },
+      onEvent: ({ taskId: _taskId, event }) => {
+        if ((event as any).type === "message_delta") {
+          process.stdout.write((event as any).delta || "");
+        }
+      },
     });
   }
 

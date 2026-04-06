@@ -13,7 +13,7 @@
 import React, { useState, useEffect, useRef, lazy, Suspense, useCallback } from 'react';
 import { BrowserRouter, Routes, Route } from 'react-router-dom';
 import { v4 as uuidv4 } from 'uuid';
-import { Menu, PanelRight, Search, Zap } from 'lucide-react';
+import { Menu, PanelRight, Search, Zap, Sun, Moon } from 'lucide-react';
 import { AnimatePresence, motion } from 'framer-motion';
 
 import Sidebar from './components/Sidebar';
@@ -43,6 +43,7 @@ import { useAgentTree } from './hooks/useAgentTree';
 import { agentServiceV2, type Task as BackendTask } from './services/AgentServiceV2';
 import type { Agent, Message } from './types';
 import { Skeleton } from './components/ui/skeleton';
+import { TeamsPage } from './components/TeamsPage/TeamsPage';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // CollabFileTree — lightweight CRDT doc browser
@@ -65,26 +66,26 @@ function CollabFileTree({ teamId, activeDoc, onSelectDoc }: {
   }, [teamId]);
 
   return (
-    <div className="w-60 border-r border-nexus-800 bg-nexus-950 flex flex-col shrink-0">
-      <div className="p-3 border-b border-nexus-800">
-        <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider">CRDT Documents</span>
+    <div className="w-60 border-r border-border bg-card flex flex-col shrink-0">
+      <div className="p-3 border-b border-border">
+        <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">CRDT Documents</span>
       </div>
       <div className="flex-1 overflow-auto p-2 text-sm">
         {docs.length === 0
-          ? <div className="text-slate-500 text-xs p-2">No documents yet.</div>
+          ? <div className="text-muted-foreground text-xs p-2">No documents yet.</div>
           : docs.map(doc => (
             <button key={doc} onClick={() => onSelectDoc(doc)}
-              className={`w-full text-left px-3 py-1.5 rounded text-xs truncate transition-colors cursor-pointer ${doc === activeDoc ? 'bg-blue-600/20 text-blue-400' : 'text-slate-300 hover:bg-nexus-800'}`}>
+              className={`w-full text-left px-3 py-1.5 rounded text-xs truncate transition-colors cursor-pointer ${doc === activeDoc ? 'bg-primary/10 text-primary' : 'text-foreground/80 hover:bg-accent'}`}>
               📄 {doc}
             </button>
           ))}
       </div>
-      <div className="p-2 border-t border-nexus-800 flex gap-1">
+      <div className="p-2 border-t border-border flex gap-1">
         <input value={newDocName} onChange={e => setNewDocName(e.target.value)} placeholder="new-doc"
           onKeyDown={e => { if (e.key === 'Enter' && newDocName.trim()) { onSelectDoc(newDocName.trim()); setNewDocName(''); } }}
-          className="flex-1 px-2 py-1 text-xs bg-nexus-800 border border-nexus-700 rounded text-slate-200 focus:outline-none" />
+          className="flex-1 px-2 py-1 text-xs bg-muted border border-border rounded text-foreground focus:outline-none" />
         <button onClick={() => { if (newDocName.trim()) { onSelectDoc(newDocName.trim()); setNewDocName(''); } }}
-          className="px-2 py-1 text-xs bg-blue-600 text-white rounded hover:bg-blue-500 cursor-pointer">+</button>
+          className="px-2 py-1 text-xs bg-primary text-primary-foreground rounded hover:bg-primary/90 cursor-pointer">+</button>
       </div>
     </div>
   );
@@ -96,6 +97,28 @@ function CollabFileTree({ teamId, activeDoc, onSelectDoc }: {
 
 function InnerApp() {
   const { toasts, showToast, dismissToast } = useToast();
+
+  // ── Theme ────────────────────────────────────────────────────────────────
+  const [theme, setTheme] = useState<'dark' | 'light'>(() => {
+    const stored = localStorage.getItem('ping:theme') as 'dark' | 'light' | null;
+    if (stored === 'dark' || stored === 'light') return stored;
+    return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+  });
+
+  useEffect(() => {
+    // Enable smooth transition for theme switch
+    document.documentElement.classList.add('theme-transition');
+    if (theme === 'light') {
+      document.documentElement.classList.add('light');
+    } else {
+      document.documentElement.classList.remove('light');
+    }
+    localStorage.setItem('ping:theme', theme);
+    // Remove transition class after animation completes to avoid interfering with normal transitions
+    const timeout = setTimeout(() => document.documentElement.classList.remove('theme-transition'), 350);
+    return () => clearTimeout(timeout);
+  }, [theme]);
+  // ─────────────────────────────────────────────────────────────────────────
 
   const { agents, isLoadingTeams, agentsRef, findAgentById, handleToggleCollapse, loadTeams, createTeam, addLocalSubAgent } = useAgentTree();
   const { chatHistories, addMessage, updateMessages, processStreamPart } = useChat();
@@ -146,6 +169,13 @@ function InnerApp() {
   useEffect(() => { activeAgentIdRef.current = activeAgentId; }, [activeAgentId]);
   useEffect(() => { selectedTeamIdRef.current = selectedTeamId; }, [selectedTeamId]);
 
+  // Persist active team ID to localStorage whenever it changes
+  useEffect(() => {
+    if (selectedTeamId) {
+      localStorage.setItem('ping:activeTeamId', selectedTeamId);
+    }
+  }, [selectedTeamId]);
+
   useEffect(() => { loadTeams(); }, [loadTeams]);
 
   useEffect(() => {
@@ -174,8 +204,14 @@ function InnerApp() {
 
   // Route is the source of truth for shell view and selected team (Option C foundation).
   useEffect(() => {
+    if (currentPath === '/manage-teams') return; // handled separately
     if (currentPath === '/') {
-      pushRoute('/chat');
+      const storedTeamId = localStorage.getItem('ping:activeTeamId');
+      if (storedTeamId) {
+        pushRoute(`/teams/${encodeURIComponent(storedTeamId)}/chat`);
+      } else {
+        pushRoute('/chat');
+      }
       return;
     }
     const { nextView, nextTeamId } = parseRouteState(currentPath);
@@ -331,19 +367,37 @@ function InnerApp() {
       onAddAgent={(parentId) => { setModalParentId(parentId); setIsModalOpen(true); }}
       isExpanded={isMobileViewport ? true : isSidebarExpanded}
       onToggleExpanded={() => setIsSidebarExpanded(v => !v)}
+      teams={agents}
+      activeTeamId={selectedTeamId}
+      onSelectTeam={handleSelectAgent}
+      onNavigateToTeams={() => { pushRoute('/manage-teams'); if (isMobileViewport) setIsMobileSidebarOpen(false); }}
     />
   );
 
   const appShellLoading = isLoadingTeams && !selectedTeamId;
 
+  // /manage-teams route — render full-page TeamsPage
+  if (currentPath === '/manage-teams') {
+    return (
+      <TeamsPage
+        onBack={() => pushRoute(selectedTeamId ? `/teams/${encodeURIComponent(selectedTeamId)}/chat` : '/chat')}
+        onTeamCreated={(team) => {
+          setActiveAgentId(team.id);
+          setSelectedTeamId(team.id);
+          pushRoute(`/teams/${encodeURIComponent(team.id)}/chat`);
+        }}
+      />
+    );
+  }
+
   return (
-    <div className="flex flex-col h-screen w-full bg-nexus-950 font-sans text-slate-200">
+    <div className="flex flex-col h-screen w-full bg-background font-sans text-foreground">
       {/* ── Command Bar (top-level, full width) ── */}
-      <div className="flex items-center gap-3 px-3 h-11 border-b border-nexus-800/80 bg-gradient-to-r from-nexus-900 via-nexus-900/95 to-nexus-900 shrink-0 z-30">
+      <div className="flex items-center gap-3 px-3 h-11 border-b border-border bg-card shrink-0 z-30">
         {/* Left: hamburger (mobile) + brand */}
         <button
           onClick={() => setIsMobileSidebarOpen(v => !v)}
-          className="lg:hidden p-1.5 rounded-md text-slate-400 hover:text-white hover:bg-nexus-800 transition-colors cursor-pointer"
+          className="lg:hidden p-1.5 rounded-md text-muted-foreground hover:text-foreground hover:bg-accent transition-colors cursor-pointer"
           aria-label="Toggle sidebar"
         >
           <Menu size={16} />
@@ -359,17 +413,24 @@ function InnerApp() {
         <div className="flex-1 flex justify-center">
           <button
             onClick={() => setIsCommandPaletteOpen(true)}
-            className="flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs text-slate-500 hover:text-slate-300 bg-nexus-800/50 hover:bg-nexus-800 border border-nexus-700/40 hover:border-nexus-600/50 transition-all cursor-pointer w-full max-w-xs"
+            className="flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs text-muted-foreground hover:text-foreground bg-muted/50 hover:bg-muted border border-border hover:border-border transition-all cursor-pointer w-full max-w-xs"
             aria-label="Open command palette"
           >
-            <Search size={13} className="shrink-0 text-slate-600" />
+            <Search size={13} className="shrink-0 text-muted-foreground/60" />
             <span className="flex-1 text-left truncate">Search or jump to…</span>
-            <kbd className="text-[10px] text-slate-600 bg-nexus-900/80 px-1.5 py-0.5 rounded font-mono">⌘K</kbd>
+            <kbd className="text-[10px] text-muted-foreground/60 bg-muted px-1.5 py-0.5 rounded font-mono">⌘K</kbd>
           </button>
         </div>
 
-        {/* Right: spacer for balance */}
-        <div className="w-6 hidden sm:block" />
+        {/* Right: theme toggle */}
+        <button
+          onClick={() => setTheme(t => t === 'dark' ? 'light' : 'dark')}
+          className="p-1.5 rounded-md text-muted-foreground hover:text-foreground hover:bg-accent transition-colors cursor-pointer"
+          aria-label="Toggle theme"
+          title={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
+        >
+          {theme === 'dark' ? <Sun size={15} /> : <Moon size={15} />}
+        </button>
       </div>
 
       <div className="flex flex-1 min-h-0">
@@ -405,13 +466,13 @@ function InnerApp() {
         {/* ── Main content column ── */}
         <div className="flex-1 flex flex-col min-h-0 min-w-0">
           {/* Context Bar */}
-          <div className="flex items-center gap-3 px-4 py-2 border-b border-nexus-800 bg-nexus-900/50 shrink-0">
+          <div className="flex items-center gap-3 px-4 py-2 border-b border-border bg-card/80 shrink-0">
             <div className="flex items-center gap-2 min-w-0">
-              <span className="text-sm font-medium text-slate-200 truncate">
+              <span className="text-sm font-medium text-foreground truncate">
                 {activeAgent?.name ?? 'Ping'}
               </span>
               {activeAgent?.role && (
-                <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-nexus-800 text-slate-400 uppercase tracking-wider shrink-0">
+                <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-muted text-muted-foreground uppercase tracking-wider shrink-0">
                   {activeAgent.role}
                 </span>
               )}
@@ -428,8 +489,8 @@ function InnerApp() {
               onClick={() => setIsPanelOpen(v => !v)}
               className={`p-1.5 rounded-md transition-colors cursor-pointer ${
                 isPanelOpen
-                  ? 'text-blue-400 bg-blue-500/10'
-                  : 'text-slate-500 hover:text-slate-300 hover:bg-nexus-800'
+                  ? 'text-primary bg-primary/10'
+                  : 'text-muted-foreground hover:text-foreground hover:bg-accent'
               }`}
               aria-label="Toggle detail panel"
             >
@@ -458,20 +519,20 @@ function InnerApp() {
               >
                 <CollabFileTree teamId={selectedTeamId} activeDoc={collabDocId} onSelectDoc={setCollabDocId} />
                 <div className="flex-1 flex flex-col min-h-0 min-w-0">
-                  <div className="flex items-center gap-3 p-3 border-b border-nexus-800 bg-nexus-900 shrink-0">
-                    <span className="text-sm text-slate-400">Document:</span>
-                    <span className="text-sm text-slate-200 font-mono truncate">{collabDocId || "none"}</span>
+                  <div className="flex items-center gap-3 p-3 border-b border-border bg-card shrink-0">
+                    <span className="text-sm text-muted-foreground">Document:</span>
+                    <span className="text-sm text-foreground font-mono truncate">{collabDocId || "none"}</span>
                   </div>
-                  <div className="flex-1 bg-white overflow-auto min-h-0">
+                  <div className="flex-1 overflow-auto min-h-0">
                     {collabDocId ? (
-                      <Suspense fallback={<div className="flex items-center justify-center h-full text-slate-500">Loading editor...</div>}>
+                      <Suspense fallback={<div className="flex items-center justify-center h-full text-muted-foreground">Loading editor...</div>}>
                         <CollaborativeEditor key={collabDocId}
                           docId={`${selectedTeamId || "default"}/${collabDocId}`}
                           userName="User" userColor="#3b82f6"
                           serverUrl={`ws://localhost:${"1234"}`} />
                       </Suspense>
                     ) : (
-                      <div className="flex items-center justify-center h-full text-slate-400">Select a document</div>
+                      <div className="flex items-center justify-center h-full text-muted-foreground">Select a document</div>
                     )}
                   </div>
                 </div>
@@ -487,8 +548,8 @@ function InnerApp() {
               >
                 <div className="max-w-4xl mx-auto">
                   <div className="mb-6">
-                    <h1 className="text-xl font-semibold text-slate-100 mb-1">Task Dashboard</h1>
-                    <p className="text-sm text-slate-500">Real-time status of all tasks across all agents</p>
+                    <h1 className="text-xl font-semibold text-foreground mb-1">Task Dashboard</h1>
+                    <p className="text-sm text-muted-foreground">Real-time status of all tasks across all agents</p>
                   </div>
                   {selectedTeamId && (
                     <div className="mb-6">
@@ -513,7 +574,7 @@ function InnerApp() {
                 {activeAgent ? (
                   <div className="flex-1 flex flex-col min-h-0 min-w-0">
                     {isGoalInputVisible && (
-                      <div className="px-6 py-4 border-b border-nexus-800 bg-nexus-900/30">
+                      <div className="px-6 py-4 border-b border-border bg-card/50">
                         <GoalInput onSubmit={handleGoalSubmit} sessionState={sessionState}
                           disabled={sessionState === 'executing' || sessionState === 'planning'} />
                       </div>
@@ -543,7 +604,7 @@ function InnerApp() {
                     </div>
                   </div>
                 ) : (
-                  <div className="flex-1 flex items-center justify-center text-slate-500">
+                  <div className="flex-1 flex items-center justify-center text-muted-foreground">
                     Select a team to start.
                   </div>
                 )}

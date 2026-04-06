@@ -127,13 +127,23 @@ export function createAgentManagerHandlerV2(): express.Router {
     try {
       const teams = await TeamModel.find().lean();
 
+      // Count agents per team from AgentModel (more reliable than members array)
+      const teamIds = teams.map((t) => t._id);
+      const agentCounts = await AgentModel.aggregate([
+        { $match: { teamId: { $in: teamIds } } },
+        { $group: { _id: "$teamId", count: { $sum: 1 } } },
+      ]);
+      const countMap = new Map(
+        agentCounts.map((ac: { _id: any; count: number }) => [ac._id.toString(), ac.count]),
+      );
+
       res.json({
         teams: teams.map((t) => ({
           id: t._id.toString(),
           name: t.teamName,
           goal: t.goal,
           description: t.description,
-          memberCount: t.members?.length || 0,
+          memberCount: countMap.get(t._id.toString()) || 0,
         })),
         count: teams.length,
       });
@@ -156,13 +166,15 @@ export function createAgentManagerHandlerV2(): express.Router {
         return;
       }
 
+      const agentCount = await AgentModel.countDocuments({ teamId: team._id });
+
       res.json({
         team: {
           id: team._id.toString(),
           name: team.teamName,
           goal: team.goal,
           description: team.description,
-          memberCount: team.members?.length || 0,
+          memberCount: agentCount,
         },
       });
     } catch (error: any) {

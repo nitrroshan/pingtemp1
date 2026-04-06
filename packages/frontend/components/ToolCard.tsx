@@ -37,13 +37,13 @@ function StatusIcon({ status }: { status: ToolCardState['status'] }) {
     case 'calling':
     case 'streaming-args':
     case 'executing':
-      return <Loader2 size={12} className="animate-spin text-nexus-cyan" />;
+      return <Loader2 size={12} className="animate-spin text-primary" />;
     case 'complete':
-      return <CheckCircle size={12} className="text-emerald-400" />;
+      return <CheckCircle size={12} className="text-emerald-600 dark:text-emerald-400" />;
     case 'error':
-      return <AlertCircle size={12} className="text-red-400" />;
+      return <AlertCircle size={12} className="text-red-600 dark:text-red-400" />;
     default:
-      return <Wrench size={12} className="text-slate-400" />;
+      return <Wrench size={12} className="text-muted-foreground" />;
   }
 }
 
@@ -63,31 +63,31 @@ const ToolCard: React.FC<ToolCardProps> = ({ card }) => {
   const hasArgs = card.argsText.length > 0;
 
   return (
-    <div className="my-1 border border-nexus-800 rounded-lg bg-nexus-950/60 text-xs overflow-hidden">
+    <div className="my-1 border border-border rounded-lg bg-muted/40 text-xs overflow-hidden">
       {/* Header */}
       <button
         onClick={() => setExpanded(!expanded)}
-        className="flex items-center gap-2 w-full px-3 py-2 text-left hover:bg-nexus-800/30 transition-colors cursor-pointer"
+        className="flex items-center gap-2 w-full px-3 py-2 text-left hover:bg-accent/50 transition-colors cursor-pointer"
       >
-        {expanded ? <ChevronDown size={12} className="text-slate-400" /> : <ChevronRight size={12} className="text-slate-400" />}
+        {expanded ? <ChevronDown size={12} className="text-muted-foreground" /> : <ChevronRight size={12} className="text-muted-foreground" />}
         <StatusIcon status={card.status} />
-        <span className="text-slate-300 font-medium">{label}</span>
+        <span className="text-foreground/80 font-medium">{label}</span>
         {card.status === 'complete' && (
-          <span className="ml-auto text-[10px] text-emerald-500">done</span>
+          <span className="ml-auto text-[10px] text-emerald-600 dark:text-emerald-500">done</span>
         )}
         {card.status === 'error' && (
-          <span className="ml-auto text-[10px] text-red-400">error</span>
+          <span className="ml-auto text-[10px] text-red-600 dark:text-red-400">error</span>
         )}
       </button>
 
       {/* Expanded content */}
       {expanded && (
-        <div className="border-t border-nexus-800 divide-y divide-nexus-800">
+        <div className="border-t border-border divide-y divide-border">
           {/* Args */}
           {hasArgs && (
             <div className="px-3 py-2">
-              <p className="text-[10px] text-slate-500 mb-1 uppercase tracking-wide font-semibold">Input</p>
-              <pre className="text-[11px] text-slate-400 font-mono overflow-x-auto max-h-32 whitespace-pre-wrap">
+              <p className="text-[10px] text-muted-foreground mb-1 uppercase tracking-wide font-semibold">Input</p>
+              <pre className="text-[11px] text-foreground/70 font-mono overflow-x-auto max-h-32 whitespace-pre-wrap">
                 {tryParseJson(card.argsText)}
                 {card.status === 'streaming-args' && <span className="animate-pulse">▍</span>}
               </pre>
@@ -97,8 +97,8 @@ const ToolCard: React.FC<ToolCardProps> = ({ card }) => {
           {/* Result */}
           {hasOutput && (
             <div className="px-3 py-2">
-              <p className="text-[10px] text-slate-500 mb-1 uppercase tracking-wide font-semibold">Output</p>
-              <pre className="text-[11px] text-slate-400 font-mono overflow-x-auto max-h-48 whitespace-pre-wrap">
+              <p className="text-[10px] text-muted-foreground mb-1 uppercase tracking-wide font-semibold">Output</p>
+              <pre className="text-[11px] text-foreground/70 font-mono overflow-x-auto max-h-48 whitespace-pre-wrap">
                 {typeof card.result === 'string'
                   ? card.result.slice(0, 500)
                   : JSON.stringify(card.result, null, 2)}
@@ -109,7 +109,7 @@ const ToolCard: React.FC<ToolCardProps> = ({ card }) => {
           {/* Error */}
           {card.status === 'error' && card.errorMessage && (
             <div className="px-3 py-2">
-              <p className="text-[11px] text-red-400">{card.errorMessage}</p>
+              <p className="text-[11px] text-red-600 dark:text-red-400">{card.errorMessage}</p>
             </div>
           )}
         </div>

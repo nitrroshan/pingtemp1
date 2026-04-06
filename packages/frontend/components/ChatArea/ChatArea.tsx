@@ -37,7 +37,7 @@ interface ChatAreaProps {
 
 function ChatAreaSkeleton() {
   return (
-    <div className="flex-1 flex flex-col h-full bg-nexus-950 relative overflow-hidden">
+    <div className="flex-1 flex flex-col h-full bg-background relative overflow-hidden">
       <div className="h-12 border-b border-border px-4 flex items-center justify-between">
         <div className="flex items-center gap-2.5">
           <Skeleton className="w-7 h-7 rounded-lg" />
@@ -186,9 +186,9 @@ const ChatArea: React.FC<ChatAreaProps> = ({
   }
 
   return (
-    <div className="flex-1 flex flex-col h-full bg-nexus-950 relative overflow-hidden transition-all duration-300">
+    <div className="flex-1 flex flex-col h-full bg-background relative overflow-hidden transition-all duration-300">
       {/* Background Gradient Effect */}
-      <div className="absolute top-0 left-0 w-full h-32 bg-gradient-to-b from-nexus-900/50 to-transparent pointer-events-none" />
+      <div className="absolute top-0 left-0 w-full h-32 bg-gradient-to-b from-muted/30 to-transparent pointer-events-none" />
       
       {/* Header */}
       <Header

@@ -81,12 +81,33 @@
 
   html,
   body {
-    @apply bg-background text-foreground antialiased;
+    @apply bg-background text-foreground antialiased select-none;
     font-family: 'Inter', ui-sans-serif, system-ui, sans-serif;
     font-size: 14px;
     line-height: 1.5;
     overflow: hidden;
     height: 100%;
+  }
+
+  /* Smooth theme transition */
+  html.theme-transition,
+  html.theme-transition *,
+  html.theme-transition *::before,
+  html.theme-transition *::after {
+    transition: background-color 0.3s ease, border-color 0.3s ease, color 0.3s ease, fill 0.3s ease, box-shadow 0.3s ease !important;
+  }
+
+  /* Allow text selection only in content areas */
+  input,
+  textarea,
+  [contenteditable],
+  pre,
+  code,
+  .prose,
+  .select-text,
+  [class*="whitespace-pre-wrap"],
+  [class*="font-mono"] {
+    user-select: text;
   }
 
   #root {
@@ -109,9 +130,20 @@
     background: hsl(var(--muted-foreground) / 0.4);
   }
 
-  /* Focus ring */
-  :focus-visible {
-    @apply outline-none ring-2 ring-ring ring-offset-1 ring-offset-background;
+  /* Focus ring — only on keyboard-navigable interactive elements, not all focusable elements */
+  button:focus-visible,
+  a:focus-visible,
+  [role="button"]:focus-visible,
+  [tabindex]:focus-visible:not([tabindex="-1"]) {
+    @apply outline-none ring-2 ring-ring/40 ring-offset-1 ring-offset-background;
+  }
+
+  /* Remove focus ring from inputs — they use border-based focus styles instead */
+  input:focus-visible,
+  textarea:focus-visible,
+  select:focus-visible,
+  [contenteditable]:focus-visible {
+    @apply outline-none ring-0;
   }
 
   code,

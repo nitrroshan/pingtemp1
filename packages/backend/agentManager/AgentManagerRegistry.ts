@@ -16,6 +16,9 @@ import { Logger } from "tslog";
 import { AgentManager } from "./AgentManagerV2.js";
 import { TeamModel } from "./team/schema/teamSchema.js";
 import { AgentModel } from "./team/schema/agentSchema.js";
+import { WorkspacePlugin } from "@ping/workspace";
+import { CollaborationPlugin } from "@ping/collaboration";
+import { KnowledgePlugin } from "@ping/knowledge";
 
 const logger = new Logger({ name: "AgentManagerRegistry" });
 
@@ -98,6 +101,39 @@ export class AgentManagerRegistry {
 
     // Create AgentManager
     const manager = new AgentManager();
+
+    // Compute workspace/collab paths
+    const workspaceDir = process.env.WORKSPACE_BASE_DIR || "./data/workspaces";
+    const teamRepoPath = `${workspaceDir}/${teamId}`;
+
+    // Register plugins — workspace (L1), collaboration (L2), knowledge (L3)
+    manager.registerPlugin(
+      new WorkspacePlugin({ repoPath: teamRepoPath }),
+    );
+
+    const collabPort = process.env.COLLAB_PORT
+      ? parseInt(process.env.COLLAB_PORT, 10)
+      : undefined;
+    manager.registerPlugin(
+      new CollaborationPlugin({
+        teamId,
+        collabStorageDir: `${teamRepoPath}/.ping/collab`,
+        repoPath: teamRepoPath,
+        collabPort,
+      }),
+    );
+
+    if (process.env.MONGODB_URI) {
+      manager.registerPlugin(
+        new KnowledgePlugin({
+          mongoUri: process.env.MONGODB_URI,
+          promotion: {
+            autoApproveFromTrusted: true,
+            trustedProposers: ["system", "orchestrator"],
+          },
+        }),
+      );
+    }
 
     // Initialize orchestrator with team data (include MongoDB agent IDs for skill resolution)
     await manager.initializeOrchestrator(

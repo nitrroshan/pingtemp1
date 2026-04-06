@@ -8,13 +8,13 @@ interface ModalTabsProps {
 
 const ModalTabs: React.FC<ModalTabsProps> = ({ activeTab, onTabChange }) => {
   return (
-    <div className="flex border-b border-nexus-800 bg-nexus-950/50 flex-shrink-0">
+    <div className="flex border-b border-border bg-muted/30 flex-shrink-0">
       <button
         onClick={() => onTabChange('library')}
         className={`flex-1 py-3 text-xs font-medium uppercase tracking-wider flex items-center justify-center gap-2 transition-colors ${
           activeTab === 'library' 
-            ? 'bg-nexus-800 text-nexus-cyan border-b-2 border-nexus-cyan' 
-            : 'text-slate-500 hover:text-slate-300 hover:bg-white/5'
+            ? 'bg-accent text-primary border-b-2 border-primary' 
+            : 'text-muted-foreground hover:text-foreground hover:bg-accent/50'
         }`}
       >
         <Grid size={14} />
@@ -24,8 +24,8 @@ const ModalTabs: React.FC<ModalTabsProps> = ({ activeTab, onTabChange }) => {
         onClick={() => onTabChange('custom')}
         className={`flex-1 py-3 text-xs font-medium uppercase tracking-wider flex items-center justify-center gap-2 transition-colors ${
           activeTab === 'custom' 
-            ? 'bg-nexus-800 text-nexus-cyan border-b-2 border-nexus-cyan' 
-            : 'text-slate-500 hover:text-slate-300 hover:bg-white/5'
+            ? 'bg-accent text-primary border-b-2 border-primary' 
+            : 'text-muted-foreground hover:text-foreground hover:bg-accent/50'
         }`}
       >
         <Edit3 size={14} />

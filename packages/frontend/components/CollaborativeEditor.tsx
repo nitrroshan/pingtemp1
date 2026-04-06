@@ -79,9 +79,9 @@ function PresenceBar({ provider }: { provider: HocuspocusProvider }) {
         gap: "8px",
         padding: "4px 8px",
         fontSize: "12px",
-        color: "#666",
-        borderBottom: "1px solid #eee",
+        borderBottom: "1px solid var(--border-color, #e5e7eb)",
       }}
+      className="text-muted-foreground border-border"
     >
       <span>Editing:</span>
       {users.map((u, i) => (
@@ -148,13 +148,13 @@ export function CollaborativeEditor({
 
   if (status === "error") {
     return (
-      <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", height: "100%", gap: "12px", color: "#64748b", padding: "40px" }}>
+      <div className="flex flex-col items-center justify-center h-full gap-3 text-muted-foreground p-10">
         <div style={{ fontSize: "48px" }}>🔌</div>
-        <div style={{ fontSize: "16px", fontWeight: 600, color: "#ef4444" }}>Cannot connect to CRDT server</div>
-        <div style={{ fontSize: "13px", textAlign: "center", maxWidth: "400px", lineHeight: 1.6 }}>
+        <div className="text-base font-semibold text-destructive">Cannot connect to CRDT server</div>
+        <div className="text-sm text-center max-w-[400px] leading-relaxed text-muted-foreground">
           Connection timeout. Ensure backend is running with COLLAB_PORT=1234
         </div>
-        <div style={{ fontSize: "12px", background: "#1e293b", padding: "12px 16px", borderRadius: "6px", fontFamily: "monospace", color: "#94a3b8" }}>
+        <div className="text-xs bg-muted p-3 rounded-md font-mono text-foreground/70">
           1. Add <strong>COLLAB_PORT=1234</strong> to your .env<br />
           2. Restart the backend: <strong>yarn start:api</strong><br />
           3. Reload this page
@@ -165,7 +165,7 @@ export function CollaborativeEditor({
 
   if (!provider || status === "connecting") {
     return (
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100%", color: "#64748b" }}>
+      <div className="flex items-center justify-center h-full text-muted-foreground">
         Connecting to {serverUrl}...
       </div>
     );
@@ -176,6 +176,7 @@ export function CollaborativeEditor({
 
 function ConnectedEditor({ provider, userName, userColor, docName }: { provider: HocuspocusProvider; userName: string; userColor: string; docName: string }) {
   const [mapData, setMapData] = useState<Record<string, any>>({});
+  const isLightMode = document.documentElement.classList.contains('light');
 
   const editor = useCreateBlockNote({
     collaboration: {
@@ -253,12 +254,10 @@ function ConnectedEditor({ provider, userName, userColor, docName }: { provider:
     >
       <PresenceBar provider={provider} />
       <div style={{ flex: 1, overflow: "auto", minHeight: 0 }}>
-        <BlockNoteView editor={editor} />
+        <BlockNoteView editor={editor} theme={isLightMode ? 'light' : 'dark'} />
       </div>
-      <div style={{
-        borderTop: "1px solid #e5e7eb",
+      <div className="border-t border-border bg-muted/50 text-foreground" style={{
         padding: "8px 12px",
-        background: "#f8fafc",
         maxHeight: "200px",
         overflow: "auto",
         fontSize: "11px",
@@ -266,10 +265,10 @@ function ConnectedEditor({ provider, userName, userColor, docName }: { provider:
         flexShrink: 0,
         }}>
           <details>
-            <summary style={{ cursor: "pointer", fontWeight: 600, color: "#475569", fontSize: "11px" }}>
+            <summary className="text-muted-foreground" style={{ cursor: "pointer", fontWeight: 600, fontSize: "11px" }}>
               Agent Data (Y.Map) {hasMapData ? `— ${Object.keys(mapData).length} keys` : ""}
             </summary>
-            <pre style={{ margin: "4px 0 0", whiteSpace: "pre-wrap", color: "#334155" }}>
+            <pre className="text-foreground/70" style={{ margin: "4px 0 0", whiteSpace: "pre-wrap" }}>
               {hasMapData ? JSON.stringify(mapData, null, 2) : "(no structured data)"}
             </pre>
           </details>

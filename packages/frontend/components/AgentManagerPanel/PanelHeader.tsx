@@ -7,8 +7,8 @@ interface PanelHeaderProps {
 
 const PanelHeader: React.FC<PanelHeaderProps> = ({ onClose }) => {
   return (
-    <div className="h-14 border-b border-nexus-800 flex items-center justify-between px-4 bg-nexus-900/50 backdrop-blur flex-shrink-0">
-      <div className="flex items-center gap-2 text-nexus-cyan">
+    <div className="h-14 border-b border-border flex items-center justify-between px-4 bg-card/80 backdrop-blur flex-shrink-0">
+      <div className="flex items-center gap-2 text-primary">
         <Activity size={18} className="animate-pulse" />
         <h2 className="font-bold text-sm tracking-wider uppercase">Orchestration Net</h2>
       </div>
@@ -19,7 +19,7 @@ const PanelHeader: React.FC<PanelHeaderProps> = ({ onClose }) => {
         </div>
         <button 
           onClick={onClose}
-          className="text-slate-500 hover:text-slate-200 transition-colors"
+          className="text-muted-foreground hover:text-foreground transition-colors"
           title="Close Panel"
         >
           <X size={18} />

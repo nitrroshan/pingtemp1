@@ -23,27 +23,27 @@ const WorkflowForm: React.FC<WorkflowFormProps> = ({
     <form id="workflow-form" onSubmit={onSubmit} className="p-6 space-y-4">
       <div className="grid grid-cols-2 gap-4">
         <div>
-          <label className="block text-xs font-medium text-nexus-cyan mb-1 uppercase tracking-wider">
+          <label className="block text-xs font-medium text-primary mb-1 uppercase tracking-wider">
             Workflow Name
           </label>
           <input 
             type="text" 
             value={name}
             onChange={(e) => onNameChange(e.target.value)}
-            className="w-full bg-nexus-950 border border-nexus-800 rounded-lg px-3 py-2 text-slate-200 focus:outline-none focus:border-nexus-cyan focus:ring-1 focus:ring-nexus-cyan transition-colors"
+            className="w-full bg-background border border-border rounded-lg px-3 py-2 text-foreground focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary transition-colors"
             placeholder="e.g. Marketing Campaign"
             required
           />
         </div>
         <div>
-          <label className="block text-xs font-medium text-nexus-cyan mb-1 uppercase tracking-wider">
+          <label className="block text-xs font-medium text-primary mb-1 uppercase tracking-wider">
             Short Description
           </label>
           <input 
             type="text" 
             value={description}
             onChange={(e) => onDescriptionChange(e.target.value)}
-            className="w-full bg-nexus-950 border border-nexus-800 rounded-lg px-3 py-2 text-slate-200 focus:outline-none focus:border-nexus-cyan focus:ring-1 focus:ring-nexus-cyan transition-colors"
+            className="w-full bg-background border border-border rounded-lg px-3 py-2 text-foreground focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary transition-colors"
             placeholder="e.g. Coffee brand campaign"
             required
           />
@@ -51,13 +51,13 @@ const WorkflowForm: React.FC<WorkflowFormProps> = ({
       </div>
 
       <div>
-        <label className="block text-xs font-medium text-nexus-cyan mb-1 uppercase tracking-wider">
+        <label className="block text-xs font-medium text-primary mb-1 uppercase tracking-wider">
           Workflow Goal / Task Description
         </label>
         <textarea 
           value={workflowGoal}
           onChange={(e) => onWorkflowGoalChange(e.target.value)}
-          className="w-full bg-nexus-950 border border-nexus-800 rounded-lg px-3 py-2 text-slate-200 focus:outline-none focus:border-nexus-cyan focus:ring-1 focus:ring-nexus-cyan h-32 resize-none font-mono text-xs transition-colors"
+          className="w-full bg-background border border-border rounded-lg px-3 py-2 text-foreground focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary h-32 resize-none font-mono text-xs transition-colors"
           placeholder="Describe what this team of agents should accomplish...
 
 e.g., 'Create a marketing campaign for a new coffee brand', or 'Build a Python script to scrape stock data'..."
