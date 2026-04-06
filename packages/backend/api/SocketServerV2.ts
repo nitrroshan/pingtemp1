@@ -419,7 +419,7 @@ export class SocketServerV2 {
       },
 
       onPlanProposed: (_data) => {
-        // Plan proposed is handled via state update when pending plan is queried
+        // Plan proposed: handled via state update when pending plan is queried
       },
     });
 

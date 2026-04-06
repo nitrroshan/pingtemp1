@@ -520,7 +520,6 @@ DO NOT invent new roles. Only use roles from the list above.
       );
       return;
     }
-
     // Chain dispatches sequentially. Multiple workspaces share a single Git
     // repo — concurrent file writes cause files to land on wrong branches.
     // By serializing, each task's workspace operations complete before the next starts.
@@ -607,7 +606,7 @@ DO NOT invent new roles. Only use roles from the list above.
         try {
           (this.memoryManager as any).taskQueue.failTask(taskId, error.message);
         } catch (err) {
-          // task:error has no subscribers, skip
+          console.error(`[OrchestratorService] Failed to fail task ${taskId}:`, err);
         }
       }
     }
@@ -731,7 +730,8 @@ DO NOT invent new roles. Only use roles from the list above.
         }
       }
 
-      // execution:complete has no subscribers, skip
+      // execution:complete: log and optionally invoke callback if needed in future
+      console.log(`[OrchestratorService] All tasks complete for team ${this.teamId}`);
 
       // Emit final progress event
       this.callbacks.onProgress?.({

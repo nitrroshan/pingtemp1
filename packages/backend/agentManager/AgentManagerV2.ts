@@ -329,7 +329,6 @@ Do NOT invent tools you don't have. If unsure, use \`my_tools\` to check.
         onError: (data) => this.streamCallbacks?.onError?.(data),
         onTaskUpdate: (data) => this.streamCallbacks?.onTaskUpdate?.(data),
         onPlanProposed: (data) => this.streamCallbacks?.onPlanProposed?.(data),
-        onProgress: (_data) => { /* optional */ },
       },
     });
 
