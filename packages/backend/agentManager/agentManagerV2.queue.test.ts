@@ -95,20 +95,20 @@ async function testQueueWorkflow(): Promise<void> {
     // =========================================================================
     // Step 4: Subscribe to events
     // =========================================================================
-    console.log("\n>>> Setting up event listeners...");
+    console.log("\n>>> Setting up stream callbacks...");
 
-    mgr.events.on("worker:event", ({ taskId, event }) => {
-      if (event.type === "message_delta") {
-        process.stdout.write((event as any).delta || "");
-      }
-    });
-
-    mgr.events.on("worker:done", ({ taskId }) => {
-      console.log(`\n\n✓ Task completed: ${taskId}`);
-    });
-
-    mgr.events.on("worker:error", ({ taskId, error }) => {
-      console.log(`\n\n✗ Task failed: ${taskId} - ${error}`);
+    mgr.registerStreamCallbacks({
+      onEvent: ({ taskId, event }) => {
+        if (event.type === "message_delta") {
+          process.stdout.write((event as any).delta || "");
+        }
+      },
+      onDone: ({ taskId }) => {
+        console.log(`\n\n✓ Task completed: ${taskId}`);
+      },
+      onError: ({ taskId, error }) => {
+        console.log(`\n\n✗ Task failed: ${taskId} - ${error}`);
+      },
     });
 
     // =========================================================================

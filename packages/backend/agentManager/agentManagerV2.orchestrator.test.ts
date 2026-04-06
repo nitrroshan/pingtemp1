@@ -53,37 +53,34 @@ async function testOrchestratorMode(): Promise<void> {
   let rlInterface: any = null;
 
   // Event handler functions (for cleanup)
-  const planProposedHandler = (data: any) => {
-    console.log("\n📋 [EVENT] plan:proposed");
-    console.log(`   Team: ${data.teamId}`);
-    console.log(`   Plan ID: ${data.plan?.planId}`);
-    console.log(`   Tasks: ${data.plan?.tasks?.length || 0}`);
-    if (data.plan?.tasks) {
-      for (const t of data.plan.tasks) {
-        console.log(
-          `     - [${t.assignedRole}] ${t.title}: ${t.description.slice(0, 60)}...`,
-        );
+  // Register stream callbacks (replaces EventEmitter subscription)
+  mgr.registerStreamCallbacks({
+    onPlanProposed: (data) => {
+      console.log("\n📋 [EVENT] plan:proposed");
+      console.log(`   Team: ${data.teamId}`);
+      console.log(`   Plan ID: ${data.plan?.planId}`);
+      console.log(`   Tasks: ${data.plan?.tasks?.length || 0}`);
+      if (data.plan?.tasks) {
+        for (const t of data.plan.tasks) {
+          console.log(
+            `     - [${t.assignedRole}] ${t.title}: ${t.description.slice(0, 60)}...`,
+          );
+        }
       }
-    }
-  };
-
-  const planApprovedHandler = (data: any) => {
-    console.log("\n✅ [EVENT] plan:approved");
-    console.log(`   Team: ${data.teamId}`);
-    console.log(`   Tasks Queued: ${data.tasksQueued}`);
-  };
-
-  // Subscribe to events
-  mgr.events.on("plan:proposed", planProposedHandler);
-  mgr.events.on("plan:approved", planApprovedHandler);
+    },
+    onPlanUpdate: (data) => {
+      if (data.action === "approved") {
+        console.log("\n✅ [EVENT] plan:approved");
+        console.log(`   Tasks Queued: ${data.tasksQueued}`);
+      }
+    },
+  });
 
   // Cleanup function
   const cleanup = async () => {
     if (rlInterface) {
       rlInterface.close();
     }
-    mgr.events.off("plan:proposed", planProposedHandler);
-    mgr.events.off("plan:approved", planApprovedHandler);
     await mgr.dispose();
   };
 
