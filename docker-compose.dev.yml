@@ -1,0 +1,28 @@
+version: "3.9"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Development environment — MongoDB only.
+# Run backend + frontend with `bun run dev:backend` and `bun run dev:frontend`.
+# Usage: docker compose -f docker-compose.dev.yml up -d
+# ─────────────────────────────────────────────────────────────────────────────
+
+services:
+  mongo:
+    image: mongo:7
+    container_name: ping-mongo-dev
+    restart: unless-stopped
+    ports:
+      - "27017:27017"
+    volumes:
+      - ping-mongo-dev-data:/data/db
+    environment:
+      MONGO_INITDB_DATABASE: ping
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+volumes:
+  ping-mongo-dev-data:

@@ -5,13 +5,18 @@
 import dotenv from "dotenv";
 dotenv.config();
 
+import { validateConfig, getConfig } from "./config/index.js";
 import { AgentManagerAPI } from "./api/AgentManagerAPI.js";
 import { Logger } from "tslog";
 import { connectDB, disconnectDB } from "./db/index.js";
 
+// Fail fast if required env vars are missing (before any async work)
+validateConfig();
+
+const config = getConfig();
 const logger = new Logger({ name: "Server" });
 
-const PORT = parseInt(process.env.API_PORT || "3002");
+const PORT = config.port;
 
 async function main() {
   try {
