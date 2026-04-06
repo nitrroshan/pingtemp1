@@ -9,8 +9,6 @@
  * - AiSdkAgent handles both tools (workers) and structured output (builders)
  */
 
-import { EventEmitter } from "events";
-
 // =============================================================================
 // Agent Types
 // =============================================================================

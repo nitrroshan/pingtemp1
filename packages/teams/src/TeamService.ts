@@ -24,6 +24,7 @@ import type {
   TeamFilters,
   AgentConfig,
   AgentStatusUpdate,
+  AgentConfigUpdate,
   MemberRole,
   WorkspaceInfo,
   ITeamService,
@@ -43,6 +44,7 @@ import {
   CannotRemoveManagerError,
   SkillAlreadyAssignedError,
   SkillNotAssignedError,
+  ValidationError,
 } from "./errors.js";
 
 // Default Planner Agent YAML template
@@ -333,6 +335,44 @@ export class TeamService implements ITeamService {
     }
     if (update.errorMessage !== undefined) {
       agent.errorMessage = update.errorMessage;
+    }
+
+    await agent.save();
+    return toAgent(agent);
+  }
+
+  /**
+   * Update an agent's editable configuration (name, role, YAML definition).
+   * Called by the Agent Settings Panel (DetailPanel Settings tab).
+   */
+  async updateAgent(
+    agentId: string,
+    update: AgentConfigUpdate,
+  ): Promise<Agent> {
+    const agent = await AgentModel.findById(agentId);
+    if (!agent) {
+      throw new AgentNotFoundError(agentId);
+    }
+
+    if (update.name !== undefined) {
+      if (typeof update.name !== "string" || !update.name.trim()) {
+        throw new ValidationError("Agent name must be a non-empty string");
+      }
+      agent.name = update.name.trim();
+    }
+
+    if (update.role !== undefined) {
+      if (typeof update.role !== "string" || !update.role.trim()) {
+        throw new ValidationError("Agent role must be a non-empty string");
+      }
+      agent.role = update.role.trim().toLowerCase();
+    }
+
+    if (update.yaml !== undefined) {
+      if (typeof update.yaml !== "string" || !update.yaml.trim()) {
+        throw new ValidationError("Agent YAML definition must be a non-empty string");
+      }
+      agent.definitionYaml = update.yaml.trim();
     }
 
     await agent.save();

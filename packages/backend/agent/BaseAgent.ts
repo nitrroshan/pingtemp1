@@ -5,10 +5,13 @@
  * - TaskList management
  * - Status tracking
  * - Conversation history
- * - Event emission
+ *
+ * Note: EventEmitter was removed in Phase 3B cleanup. No external code
+ * listens to BaseAgent events — lifecycle notifications flow through
+ * WorkerPool typed callbacks (onDone, onError, onStream). If you need to
+ * observe agent state changes, subscribe to WorkerPool callbacks instead.
  */
 
-import { EventEmitter } from "events";
 import { TaskList } from "./TaskList.js";
 import type {
   IAgent,
@@ -32,7 +35,6 @@ export abstract class BaseAgent implements IAgent {
   protected _status: AgentStatus = "idle";
   protected _tasks: TaskList = new TaskList();
   protected _conversationHistory: Message[] = [];
-  protected _emitter: EventEmitter = new EventEmitter();
 
   constructor(definition: AgentDefinition) {
     this.definition = definition;
@@ -40,20 +42,6 @@ export abstract class BaseAgent implements IAgent {
     this.name = definition.name;
     this.type = definition.type;
     this.role = definition.role;
-
-    // Forward task events
-    this._tasks.on("task:added", (task) =>
-      this._emitter.emit("task:added", { agentId: this.id, task }),
-    );
-    this._tasks.on("task:started", (task) =>
-      this._emitter.emit("task:started", { agentId: this.id, task }),
-    );
-    this._tasks.on("task:completed", (task) =>
-      this._emitter.emit("task:completed", { agentId: this.id, task }),
-    );
-    this._tasks.on("task:failed", (task) =>
-      this._emitter.emit("task:failed", { agentId: this.id, task }),
-    );
   }
 
   // ==========================================================================
@@ -117,7 +105,6 @@ export abstract class BaseAgent implements IAgent {
    */
   async stop(): Promise<void> {
     this._status = "stopped";
-    this._emitter.emit("stopped", { agentId: this.id });
   }
 
   /**
@@ -126,7 +113,6 @@ export abstract class BaseAgent implements IAgent {
   async reset(): Promise<void> {
     this._status = "idle";
     this._conversationHistory = [];
-    this._emitter.emit("reset", { agentId: this.id });
   }
 
   // ==========================================================================
@@ -153,25 +139,7 @@ export abstract class BaseAgent implements IAgent {
   // ==========================================================================
 
   protected setStatus(status: AgentStatus): void {
-    const previous = this._status;
     this._status = status;
-    this._emitter.emit("status:changed", {
-      agentId: this.id,
-      previous,
-      current: status,
-    });
-  }
-
-  // ==========================================================================
-  // Event Methods
-  // ==========================================================================
-
-  on(event: string, handler: Function): void {
-    this._emitter.on(event, handler as any);
-  }
-
-  off(event: string, handler: Function): void {
-    this._emitter.off(event, handler as any);
   }
 
   // ==========================================================================
@@ -179,7 +147,6 @@ export abstract class BaseAgent implements IAgent {
   // ==========================================================================
 
   protected *emitEvent(event: AgentEvent): Generator<AgentEvent> {
-    this._emitter.emit("event", event);
     yield event;
   }
 
@@ -250,3 +217,4 @@ export abstract class BaseAgent implements IAgent {
     return { type: "error", error, recoverable };
   }
 }
+

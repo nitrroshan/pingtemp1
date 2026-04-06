@@ -3,14 +3,17 @@
  *
  * Every agent has a TaskList to track assigned work.
  * Handles dependency resolution and cascading failures.
+ *
+ * Note: EventEmitter was removed in Phase 3B cleanup. No external code
+ * listened to TaskList events — the only subscriber was BaseAgent, which
+ * itself emitted those events on its own _emitter (also removed).
+ * Task lifecycle is now observable through WorkerPool typed callbacks.
  */
 
-import { EventEmitter } from "events";
 import type { Task, TaskStatus, ITaskList } from "./types.js";
 
 export class TaskList implements ITaskList {
   private _tasks: Map<string, Task> = new Map();
-  private emitter: EventEmitter = new EventEmitter();
 
   // ==========================================================================
   // Query Methods
@@ -50,7 +53,6 @@ export class TaskList implements ITaskList {
    */
   getReady(): Task[] {
     const completedIds = new Set(this.completed().map((t) => t.id));
-    const failedIds = new Set(this.failed().map((t) => t.id));
 
     return this.pending().filter((task) => {
       if (!task.dependencies || task.dependencies.length === 0) {
@@ -158,14 +160,6 @@ export class TaskList implements ITaskList {
       throw new Error(`Task ${task.id} already exists`);
     }
 
-    // Validate dependencies exist (if referencing existing tasks)
-    if (task.dependencies) {
-      for (const depId of task.dependencies) {
-        // Only validate if the dependency should already exist
-        // (allows adding tasks in any order, validated at execution time)
-      }
-    }
-
     const newTask: Task = {
       ...task,
       status: task.status || "pending",
@@ -181,8 +175,6 @@ export class TaskList implements ITaskList {
       this._tasks.delete(task.id);
       throw new Error(`Circular dependency detected for task ${task.id}`);
     }
-
-    this.emitter.emit("task:added", newTask);
   }
 
   /**
@@ -190,7 +182,7 @@ export class TaskList implements ITaskList {
    * Validates dependencies across the batch and detects circular dependencies
    */
   addBatch(tasks: Task[]): void {
-    // First pass: add all tasks (skip individual circular check)
+    // First pass: add all tasks
     const addedIds: string[] = [];
     for (const task of tasks) {
       if (this._tasks.has(task.id)) {
@@ -227,13 +219,6 @@ export class TaskList implements ITaskList {
     // Third pass: detect circular dependencies
     const circularTasks = this.findCircularDependencies(addedIds);
     if (circularTasks.length > 0) {
-      // Emit event with details about the circular dependency
-      this.emitter.emit("task:circular-detected", {
-        taskIds: circularTasks,
-        cycle: this.getCircularPath(circularTasks[0]!),
-      });
-
-      // Don't throw - let caller decide what to do
       // Mark circular tasks so they can be identified
       for (const taskId of circularTasks) {
         const task = this._tasks.get(taskId);
@@ -241,11 +226,6 @@ export class TaskList implements ITaskList {
           (task as any).isCircular = true;
         }
       }
-    }
-
-    // Emit added events
-    for (const id of addedIds) {
-      this.emitter.emit("task:added", this._tasks.get(id));
     }
   }
 
@@ -264,44 +244,6 @@ export class TaskList implements ITaskList {
     return Array.from(circular);
   }
 
-  /**
-   * Get the circular path for a task (for debugging/logging)
-   */
-  private getCircularPath(startId: string): string[] {
-    const path: string[] = [];
-    const visited = new Set<string>();
-
-    const traverse = (taskId: string): boolean => {
-      if (visited.has(taskId)) {
-        // Found the cycle - extract it
-        const cycleStart = path.indexOf(taskId);
-        if (cycleStart !== -1) {
-          path.push(taskId); // Close the cycle
-          return true;
-        }
-        return false;
-      }
-
-      visited.add(taskId);
-      path.push(taskId);
-
-      const task = this._tasks.get(taskId);
-      if (task?.dependencies) {
-        for (const depId of task.dependencies) {
-          if (traverse(depId)) {
-            return true;
-          }
-        }
-      }
-
-      path.pop();
-      return false;
-    };
-
-    traverse(startId);
-    return path;
-  }
-
   start(taskId: string): void {
     const task = this._tasks.get(taskId);
     if (!task) {
@@ -313,8 +255,6 @@ export class TaskList implements ITaskList {
 
     task.status = "in_progress";
     task.startedAt = new Date();
-
-    this.emitter.emit("task:started", task);
   }
 
   complete(taskId: string, output: any): void {
@@ -329,8 +269,6 @@ export class TaskList implements ITaskList {
 
     // Update blocked tasks - remove this task from blockedBy lists
     this.updateBlockedTasks(taskId);
-
-    this.emitter.emit("task:completed", task);
   }
 
   fail(taskId: string, error: string): void {
@@ -342,8 +280,6 @@ export class TaskList implements ITaskList {
     task.status = "failed";
     task.completedAt = new Date();
     task.error = error;
-
-    this.emitter.emit("task:failed", task);
 
     // Handle cascading failures for dependent tasks
     this.handleDependencyFailure(taskId);
@@ -365,42 +301,21 @@ export class TaskList implements ITaskList {
           (task as any).skipped = true;
           task.status = "failed";
           task.error = `Skipped: dependency ${failedTaskId} failed`;
-          this.emitter.emit("task:skipped", task);
           break;
 
         case "fail":
           // Cascade the failure
           task.status = "failed";
           task.error = `Dependency failed: ${failedTaskId}`;
-          this.emitter.emit("task:failed", task);
           // Recursively handle tasks depending on this one
           this.handleDependencyFailure(task.id);
           break;
 
         case "replan":
-          // Emit event for orchestrator to re-plan
-          this.emitter.emit("task:replan-needed", {
-            task,
-            failedDependency: failedTaskId,
-          });
+          // Caller observes via WorkerPool callbacks if replan is needed
           break;
       }
     }
-  }
-
-  // ==========================================================================
-  // Event Methods
-  // ==========================================================================
-
-  on(
-    event: "task:added" | "task:started" | "task:completed" | "task:failed",
-    handler: (task: Task) => void,
-  ): void {
-    this.emitter.on(event, handler);
-  }
-
-  off(event: string, handler: Function): void {
-    this.emitter.off(event, handler as any);
   }
 
   // ==========================================================================

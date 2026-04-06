@@ -187,11 +187,8 @@ export class AiSdkAgent extends BaseAgent {
       };
 
       if (input.taskId) {
-        this._emitter.emit("task:failed", {
-          agentId: this.id,
-          taskId: input.taskId,
-          error: error.message,
-        });
+        // Lifecycle notification flows through WorkerPool callbacks (onError)
+        // _emitter removed in Phase 3B cleanup — no external listeners.
       }
 
       throw error;
@@ -230,11 +227,8 @@ export class AiSdkAgent extends BaseAgent {
     this.setStatus("idle");
 
     if (input.taskId) {
-      this._emitter.emit("task:complete", {
-        agentId: this.id,
-        taskId: input.taskId,
-        output: structuredOutput,
-      });
+      // Lifecycle notification flows through WorkerPool callbacks (onDone)
+      // _emitter removed in Phase 3B cleanup — no external listeners.
     }
   }
 

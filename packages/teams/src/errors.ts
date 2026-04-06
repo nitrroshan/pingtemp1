@@ -112,3 +112,10 @@ export class SkillNotAssignedError extends TeamServiceError {
     this.name = 'SkillNotAssignedError'
   }
 }
+
+export class ValidationError extends TeamServiceError {
+  constructor(message: string) {
+    super(message, 'VALIDATION_ERROR')
+    this.name = 'ValidationError'
+  }
+}

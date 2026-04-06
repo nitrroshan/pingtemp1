@@ -469,9 +469,63 @@ export function createTeamRoutes(teamService: TeamService): express.Router {
     },
   );
 
-  // ---------------------------------------------------------------------------
-  // Skill Management
-  // ---------------------------------------------------------------------------
+  // PATCH /teams/:id/agents/:agentId — Update agent config (name, role, yaml)
+  router.patch(
+    "/:id/agents/:agentId",
+    async (req: Request<AgentParams>, res: Response) => {
+      try {
+        const { agentId } = req.params;
+        const { name, role, yaml } = req.body as {
+          name?: unknown;
+          role?: unknown;
+          yaml?: unknown;
+        };
+
+        const update: { name?: string; role?: string; yaml?: string } = {};
+
+        if (name !== undefined) {
+          if (typeof name !== "string" || !name.trim()) {
+            res.status(400).json({ error: "name must be a non-empty string" });
+            return;
+          }
+          update.name = name;
+        }
+
+        if (role !== undefined) {
+          if (typeof role !== "string" || !role.trim()) {
+            res.status(400).json({ error: "role must be a non-empty string" });
+            return;
+          }
+          update.role = role;
+        }
+
+        if (yaml !== undefined) {
+          if (typeof yaml !== "string" || !yaml.trim()) {
+            res.status(400).json({ error: "yaml must be a non-empty string" });
+            return;
+          }
+          update.yaml = yaml;
+        }
+
+        if (Object.keys(update).length === 0) {
+          res.status(400).json({ error: "At least one field (name, role, yaml) is required" });
+          return;
+        }
+
+        const agent = await teamService.updateAgent(agentId, update);
+
+        res.json({ status: "updated", agent: {
+          id: agent._id.toHexString(),
+          name: agent.name,
+          role: agent.role,
+          definitionYaml: agent.definitionYaml,
+          updatedAt: agent.updatedAt,
+        }});
+      } catch (error) {
+        handleTeamServiceError(error, res, "Update agent config");
+      }
+    },
+  );
 
   // GET /teams/:id/agents/:agentId/skills - Get agent skills
   router.get(

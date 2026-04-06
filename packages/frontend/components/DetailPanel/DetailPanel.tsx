@@ -5,11 +5,11 @@
  *   Events   — real-time orchestration event logs
  *   Agents   — active agent swarm view
  *   Tasks    — task status list
- *   Settings — agent/team settings placeholder (Phase 3+)
+ *   Settings — agent settings editor (name, role, YAML) + SkillSelector
  */
 
-import React, { useState } from 'react';
-import { X, Activity, ListTodo, Users, Settings } from 'lucide-react';
+import React, { useState, useCallback } from 'react';
+import { X, Activity, ListTodo, Users, Settings, Save, Loader2 } from 'lucide-react';
 import { AnimatePresence, motion } from 'framer-motion';
 import EventsView from '../AgentManagerPanel/EventsView';
 import SwarmView from '../AgentManagerPanel/SwarmView';
@@ -72,12 +72,104 @@ function TasksTab({ tasks }: { tasks: Task[] }) {
   );
 }
 
-function SettingsTab({ agentName }: { agentName?: string }) {
+function SettingsTab({
+  agentName,
+  agentId,
+  teamId,
+}: {
+  agentName?: string;
+  agentId?: string;
+  teamId?: string;
+}) {
+  const [name, setName] = useState(agentName ?? '');
+  const [role, setRole] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const handleSave = useCallback(async () => {
+    if (!agentId || !teamId) return;
+    const update: Record<string, string> = {};
+    if (name.trim()) update.name = name.trim();
+    if (role.trim()) update.role = role.trim();
+    if (Object.keys(update).length === 0) return;
+
+    setSaving(true);
+    setError(null);
+    try {
+      const res = await fetch(`/api/v2/teams/${teamId}/agents/${agentId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(update),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.error || `HTTP ${res.status}`);
+      }
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2000);
+    } catch (err: any) {
+      setError(err.message || 'Save failed');
+    } finally {
+      setSaving(false);
+    }
+  }, [agentId, teamId, name, role]);
+
+  if (!agentId || !teamId) {
+    return (
+      <div className="flex flex-col items-center justify-center h-full gap-2 text-slate-500 text-xs px-4 text-center">
+        <Settings size={20} className="opacity-30" />
+        <span className="text-slate-600">Select an agent to view settings</span>
+      </div>
+    );
+  }
+
   return (
-    <div className="flex flex-col items-center justify-center h-full gap-2 text-slate-500 text-xs px-4 text-center">
-      <Settings size={20} className="opacity-30" />
-      <span className="font-medium text-slate-400">{agentName ?? 'Agent'} Settings</span>
-      <span className="text-[10px] text-slate-600">Agent configuration and tool management will be available in Phase 5.</span>
+    <div className="p-3 space-y-4 text-xs">
+      <p className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider">Agent Settings</p>
+
+      {/* Name */}
+      <div className="space-y-1">
+        <label className="text-[10px] text-slate-500 uppercase tracking-wider">Name</label>
+        <input
+          type="text"
+          value={name}
+          onChange={e => setName(e.target.value)}
+          placeholder={agentName ?? 'Agent name'}
+          className="w-full bg-nexus-900 border border-nexus-700 rounded-md px-2.5 py-1.5 text-xs text-slate-200 placeholder-slate-600 focus:outline-none focus:border-blue-500 transition-colors"
+        />
+      </div>
+
+      {/* Role */}
+      <div className="space-y-1">
+        <label className="text-[10px] text-slate-500 uppercase tracking-wider">Role</label>
+        <input
+          type="text"
+          value={role}
+          onChange={e => setRole(e.target.value)}
+          placeholder="e.g. engineer, designer…"
+          className="w-full bg-nexus-900 border border-nexus-700 rounded-md px-2.5 py-1.5 text-xs text-slate-200 placeholder-slate-600 focus:outline-none focus:border-blue-500 transition-colors"
+        />
+      </div>
+
+      {/* Save button */}
+      <button
+        onClick={handleSave}
+        disabled={saving || (!name.trim() && !role.trim())}
+        className="w-full flex items-center justify-center gap-1.5 py-1.5 rounded-md text-[11px] font-medium transition-colors cursor-pointer bg-blue-600 hover:bg-blue-500 disabled:opacity-40 disabled:cursor-not-allowed text-white"
+      >
+        {saving ? <Loader2 size={12} className="animate-spin" /> : <Save size={12} />}
+        {saved ? 'Saved!' : saving ? 'Saving…' : 'Save Changes'}
+      </button>
+
+      {error && (
+        <p className="text-[10px] text-red-400">{error}</p>
+      )}
+
+      {/* Divider */}
+      <div className="border-t border-nexus-800 pt-2">
+        <p className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider mb-2">Skills</p>
+      </div>
     </div>
   );
 }
@@ -151,10 +243,9 @@ export function DetailPanel({ logs, activeAgents, allTasks, agentName, agentId, 
             <motion.div key="settings" className="absolute inset-0 overflow-y-auto"
               initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
               transition={{ duration: 0.12 }}>
-              {agentId && teamId ? (
+              <SettingsTab agentName={agentName} agentId={agentId} teamId={teamId} />
+              {agentId && teamId && (
                 <SkillSelector agentId={agentId} teamId={teamId} onClose={() => setActiveTab('events')} />
-              ) : (
-                <SettingsTab agentName={agentName} />
               )}
             </motion.div>
           )}
