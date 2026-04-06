@@ -344,6 +344,10 @@ export class TeamService implements ITeamService {
     agentId: string,
     employeeId: string,
   ): Promise<Agent> {
+    if (typeof employeeId !== "string" || !employeeId.trim()) {
+      throw new Error("employeeId must be a non-empty string");
+    }
+
     const agent = await AgentModel.findById(agentId);
     if (!agent) {
       throw new AgentNotFoundError(agentId);
@@ -362,13 +366,13 @@ export class TeamService implements ITeamService {
     // Verify employee is a team member
     const member = await TeamMemberModel.findOne({
       teamId: new Types.ObjectId(teamId),
-      userId: employeeId,
+      userId: employeeId.trim(),
     });
     if (!member) {
       throw new MemberNotFoundError(employeeId, teamId);
     }
 
-    agent.delegatedTo = employeeId;
+    agent.delegatedTo = employeeId.trim();
     await agent.save();
 
     return toAgent(agent);
@@ -467,6 +471,10 @@ export class TeamService implements ITeamService {
     userId: string,
     role: MemberRole,
   ): Promise<TeamMember> {
+    if (typeof userId !== "string" || !userId.trim()) {
+      throw new Error("userId must be a non-empty string");
+    }
+
     const team = await TeamModel.findById(teamId);
     if (!team) {
       throw new TeamNotFoundError(teamId);
@@ -475,7 +483,7 @@ export class TeamService implements ITeamService {
     // Check if already a member
     const existing = await TeamMemberModel.findOne({
       teamId: new Types.ObjectId(teamId),
-      userId,
+      userId: userId.trim(),
     });
     if (existing) {
       throw new MemberAlreadyExistsError(userId, teamId);
@@ -483,7 +491,7 @@ export class TeamService implements ITeamService {
 
     const member = await TeamMemberModel.create({
       teamId: new Types.ObjectId(teamId),
-      userId,
+      userId: userId.trim(),
       role,
       joinedAt: new Date(),
     });

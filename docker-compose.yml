@@ -1,0 +1,74 @@
+version: "3.9"
+
+services:
+  # ─────────────────────────────────────────────────────────────────────────────
+  # MongoDB
+  # ─────────────────────────────────────────────────────────────────────────────
+  mongo:
+    image: mongo:7
+    container_name: ping-mongo
+    restart: unless-stopped
+    ports:
+      - "27017:27017"
+    volumes:
+      - ping-mongo-data:/data/db
+    environment:
+      MONGO_INITDB_DATABASE: ping
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - ping-net
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Backend API (port 3002)
+  # ─────────────────────────────────────────────────────────────────────────────
+  backend:
+    build:
+      context: .
+      dockerfile: packages/backend/Dockerfile
+    container_name: ping-backend
+    restart: unless-stopped
+    ports:
+      - "3002:3002"
+    env_file:
+      - .env
+    environment:
+      MONGODB_URI: mongodb://mongo:27017/ping
+      NODE_ENV: production
+    depends_on:
+      mongo:
+        condition: service_healthy
+    volumes:
+      - ping-workspaces:/app/data/workspaces
+    networks:
+      - ping-net
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Frontend (port 3000)  — served via nginx in production
+  # ─────────────────────────────────────────────────────────────────────────────
+  frontend:
+    build:
+      context: .
+      dockerfile: packages/frontend/Dockerfile
+    container_name: ping-frontend
+    restart: unless-stopped
+    ports:
+      - "3000:80"
+    environment:
+      VITE_API_URL: http://localhost:3002
+    depends_on:
+      - backend
+    networks:
+      - ping-net
+
+volumes:
+  ping-mongo-data:
+  ping-workspaces:
+
+networks:
+  ping-net:
+    driver: bridge
