@@ -396,7 +396,10 @@ export class TeamService implements ITeamService {
   // ===========================================================================
 
   async assignSkillToAgent(agentId: string, skillId: string): Promise<void> {
-    if (typeof skillId !== "string" || !skillId.trim()) {
+    if (typeof skillId !== "string") {
+      throw new Error("skillId must be a string");
+    }
+    if (!skillId.trim()) {
       throw new Error("skillId must be a non-empty string");
     }
 

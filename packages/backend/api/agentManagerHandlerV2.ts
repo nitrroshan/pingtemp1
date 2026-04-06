@@ -281,7 +281,7 @@ export function createAgentManagerHandlerV2(): express.Router {
         const { agentId } = req.params;
         const { skillId } = req.body;
 
-        if (!skillId || typeof skillId !== "string") {
+        if (!skillId || typeof skillId !== "string" || !skillId.trim()) {
           res.status(400).json({ error: "skillId must be a non-empty string" });
           return;
         }
