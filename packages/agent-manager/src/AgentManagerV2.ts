@@ -23,8 +23,14 @@ import { AiSdkAgent } from "./agent/internal/AiSdkAgent.js";
 import type { AgentDefinition } from "./agent/types.js";
 import type { TaskWithContext } from "./util/RoleTaskQueue.types.js";
 import { OrchestratorService } from "./orchestrator/OrchestratorService.js";
+import { LegacyOrchestratorService } from "./orchestrator/LegacyOrchestratorService.js";
 import type { PlanProposedEvent } from "./orchestrator/types.js";
 import { MemoryManager } from "./memory/MemoryManager.js";
+import { TaskStore } from "./orchestrator/TaskStore.js";
+import { DependencyResolver } from "./orchestrator/DependencyResolver.js";
+import { PlannerAgent } from "./orchestrator/PlannerAgent.js";
+import { UserInteractionManager } from "./orchestrator/UserInteractionManager.js";
+import { createPlannerTools } from "./orchestrator/tools/index.js";
 import { PluginRegistry } from "./plugin/PluginRegistry.js";
 import type { IPlugin } from "./plugin/types.js";
 import { FileTaskStore } from "./persistence/FileTaskStore.js";
@@ -87,9 +93,12 @@ export class AgentManager {
   private streamCallbacks: ManagerStreamCallbacks | null = null;
 
   // Orchestrator mode properties
-  private orchestrator: OrchestratorService | null = null;
+  private orchestrator: OrchestratorService | LegacyOrchestratorService | null = null;
   private memoryManager: MemoryManager | null = null;
-  private taskStore: FileTaskStore | null = null;
+  private taskStoreInstance: TaskStore | null = null;
+  private plannerAgent: PlannerAgent | null = null;
+  private userInteractionManager: UserInteractionManager | null = null;
+  private filePersistence: FileTaskStore | null = null;
   private pluginRegistry: PluginRegistry = new PluginRegistry();
   private teamId: string = "default";
 
@@ -148,11 +157,10 @@ export class AgentManager {
     }
 
     this.teamId = teamId;
-    this.memoryManager = new MemoryManager();
 
     // Initialize file-based task persistence (survives restarts)
-    this.taskStore = new FileTaskStore(teamId);
-    await this.taskStore.load();
+    this.filePersistence = new FileTaskStore(teamId);
+    await this.filePersistence.load();
 
     const workspaceDir = process.env.WORKSPACE_BASE_DIR || "./data/workspaces";
     const teamRepoPath = `${workspaceDir}/${teamId}`;
@@ -283,21 +291,123 @@ Do NOT invent tools you don't have. If unsure, use \`my_tools\` to check.
     const collabStorage = this.pluginRegistry.getPluginStorage("collaboration");
     const planStore = collabStorage?.planStore as any;
 
-    this.orchestrator = new OrchestratorService({
-      teamId,
-      teamRoles,
-      memoryManager: this.memoryManager,
-      workerPool: this.workerPool,
-      planStore,
-      callbacks: {
-        onStream: (data) => this.streamCallbacks?.onStream?.(data),
-        onEvent: (data) => this.streamCallbacks?.onEvent?.(data),
-        onDone: (data) => this.streamCallbacks?.onDone?.(data),
-        onError: (data) => this.streamCallbacks?.onError?.(data),
-        onTaskUpdate: (data) => this.streamCallbacks?.onTaskUpdate?.(data),
-        onPlanProposed: (data) => this.streamCallbacks?.onPlanProposed?.(data),
-      },
-    });
+    const PLANNER_MODE = process.env.PLANNER_MODE || "legacy";
+
+    if (PLANNER_MODE === "agent") {
+      // SOLID architecture — TaskStore + OrchestratorService + PlannerAgent as peers
+      this.taskStoreInstance = new TaskStore();
+      const dagResolver = new DependencyResolver();
+
+      // Session ID for planner conversation thread
+      const sessionId = `team-${teamId}`;
+
+      // Create OrchestratorService (reactive runtime)
+      this.orchestrator = new OrchestratorService({
+        teamId,
+        teamRoles,
+        taskStore: this.taskStoreInstance,
+        workerPool: this.workerPool,
+        dagResolver,
+        planStore,
+        autoExecute: true,
+        callbacks: {
+          onStream: (data) => this.streamCallbacks?.onStream?.(data),
+          onEvent: (data) => this.streamCallbacks?.onEvent?.(data),
+          onDone: (data) => this.streamCallbacks?.onDone?.(data),
+          onError: (data) => this.streamCallbacks?.onError?.(data),
+          onTaskUpdate: (data) => this.streamCallbacks?.onTaskUpdate?.(data),
+          onPlanProposed: (data) => {
+            this.streamCallbacks?.onPlanProposed?.(data);
+            // Auto-approve: planner already consulted user via natural chat
+            this.approveOrchestratorPlan().catch((err) => {
+              console.error("[AgentManager] Auto-approve failed:", err);
+            });
+          },
+          // Wire onPlannerInput → PlannerAgent.execute() (new turn)
+          onPlannerInput: async (message) => {
+            if (!this.plannerAgent) return;
+            try {
+              const agent = this.plannerAgent.getAgent();
+              for await (const event of agent.execute({ message, threadId: sessionId })) {
+                if (event.type === "stream_part") {
+                  this.streamCallbacks?.onStream?.({
+                    taskId: sessionId,
+                    agentId: "planner",
+                    part: event.part,
+                  });
+                }
+              }
+            } catch (err) {
+              console.error("[AgentManager] Planner execution error:", err);
+            }
+          },
+        },
+      });
+
+      await this.orchestrator.initialize();
+
+      // Create PlannerAgent (peer to OrchestratorService)
+      const agentFactory = getAgentFactory();
+
+      this.plannerAgent = new PlannerAgent({
+        agentFactory,
+        teamRoles,
+        teamId,
+      });
+      await this.plannerAgent.initialize();
+
+      // Create and inject planner tools (close over shared services)
+      const orchestratorContext = {
+        memoryManager: this.taskStoreInstance as any, // TaskStore satisfies the interface
+        callbacks: (this.orchestrator as OrchestratorService).getCallbacks(),
+        planStore,
+        teamId,
+        currentGoalId: null,
+        teamRoles,
+        planBuilder: { invoke: async () => { throw new Error("PlanBuilder not used in agent mode"); } },
+        getState: () => this.orchestrator!.getState(),
+        setState: (state: any) => (this.orchestrator as OrchestratorService).setState(state),
+        getPendingPlan: () => this.orchestrator!.getPendingPlan(),
+        setPendingPlan: (plan: any) => (this.orchestrator as OrchestratorService).setPendingPlan(plan),
+      };
+
+      const tools = createPlannerTools({
+        orchestratorContext,
+        agentFactory,
+        dagResolver,
+        onMutation: (event) => {
+          this.streamCallbacks?.onTaskUpdate?.({
+            taskId: "plan",
+            status: "mutation",
+            ...event,
+          });
+        },
+      });
+      await this.plannerAgent.setTools(tools);
+
+      logger.info(`[AgentManager] PLANNER_MODE=agent: PlannerAgent + OrchestratorService + TaskStore initialized`);
+    } else {
+      // LEGACY: original dual-agent orchestrator
+      this.memoryManager = new MemoryManager();
+
+      this.orchestrator = new LegacyOrchestratorService({
+        teamId,
+        teamRoles,
+        memoryManager: this.memoryManager,
+        workerPool: this.workerPool,
+        planStore,
+        callbacks: {
+          onStream: (data) => this.streamCallbacks?.onStream?.(data),
+          onEvent: (data) => this.streamCallbacks?.onEvent?.(data),
+          onDone: (data) => this.streamCallbacks?.onDone?.(data),
+          onError: (data) => this.streamCallbacks?.onError?.(data),
+          onTaskUpdate: (data) => this.streamCallbacks?.onTaskUpdate?.(data),
+          onPlanProposed: (data) => this.streamCallbacks?.onPlanProposed?.(data),
+        },
+      });
+
+      logger.info(`[AgentManager] PLANNER_MODE=legacy: using LegacyOrchestratorService`);
+    }
 
     await this.orchestrator.initialize();
     logger.info(`[AgentManager] Orchestrator initialized for team ${teamId}`);
@@ -521,10 +631,24 @@ Do NOT invent tools you don't have. If unsure, use \`my_tools\` to check.
   }
 
   /**
-   * Get memory manager (for task execution monitoring)
+   * Get memory manager (for task execution monitoring — legacy mode only)
    */
   getMemoryManager(): MemoryManager | null {
     return this.memoryManager;
+  }
+
+  /**
+   * Get TaskStore (for task execution monitoring — agent mode)
+   */
+  getTaskStore(): TaskStore | null {
+    return this.taskStoreInstance;
+  }
+
+  /**
+   * Get UserInteractionManager (for routing user responses to pending ask_user calls)
+   */
+  getUserInteractionManager(): UserInteractionManager | null {
+    return this.userInteractionManager;
   }
 
   /**
@@ -577,7 +701,7 @@ Do NOT invent tools you don't have. If unsure, use \`my_tools\` to check.
 
     // Update status to ready (approved, awaiting user to start chat)
     this.memoryManager.updateTaskStatus(taskId, "ready");
-    this.taskStore?.updateStatus(taskId, "ready");
+    this.filePersistence?.updateStatus(taskId, "ready");
     logger.info(
       `Task ${taskId} approved for chat with role: ${task.assigned_role}`,
     );
@@ -629,7 +753,7 @@ Do NOT invent tools you don't have. If unsure, use \`my_tools\` to check.
     // Mark as in_progress (may already be if auto-dispatched without response yet)
     if (task.status !== "in_progress") {
       this.memoryManager.updateTaskStatus(taskId, "in_progress");
-      this.taskStore?.updateStatus(taskId, "in_progress");
+      this.filePersistence?.updateStatus(taskId, "in_progress");
     }
     logger.info(`Task ${taskId} execution started`);
 
@@ -738,8 +862,8 @@ Do NOT invent tools you don't have. If unsure, use \`my_tools\` to check.
 
     // Complete task via MemoryManager
     this.memoryManager.completeTask(taskId, finalOutput);
-    this.taskStore?.updateStatus(taskId, "completed");
-    this.taskStore?.setOutput(taskId, finalOutput);
+    this.filePersistence?.updateStatus(taskId, "completed");
+    this.filePersistence?.setOutput(taskId, finalOutput);
 
     logger.info(
       `Task ${taskId} completed by user${mergeResult.error ? " (merge failed)" : ""}`,
@@ -957,7 +1081,7 @@ Do NOT invent tools you don't have. If unsure, use \`my_tools\` to check.
 
     // Remove from MemoryManager
     this.memoryManager.updateTaskStatus(taskId, "failed");
-    this.taskStore?.updateStatus(taskId, "failed");
+    this.filePersistence?.updateStatus(taskId, "failed");
 
     // Also try to remove from RoleTaskQueue if present
     try {

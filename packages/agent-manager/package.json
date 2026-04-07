@@ -5,7 +5,7 @@
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "scripts": {
-    "build": "tsc && node -e \"const fs=require('fs');const p=require('path');const s='src/agent/agents';const d='dist/agent/agents';fs.mkdirSync(d,{recursive:true});fs.readdirSync(s).filter(f=>f.endsWith('.yaml')).forEach(f=>fs.copyFileSync(p.join(s,f),p.join(d,f)))\"",
+    "build": "tsc && node -e \"const fs=require('fs');const p=require('path');const s='src/agent/agents';const d='dist/agent/agents';fs.mkdirSync(d,{recursive:true});fs.readdirSync(s).filter(f=>f.endsWith('.yaml')).forEach(f=>fs.copyFileSync(p.join(s,f),p.join(d,f)));const ps='src/agent/prompts';const pd='dist/agent/prompts';function cpDir(src,dst){if(!fs.existsSync(src))return;fs.mkdirSync(dst,{recursive:true});fs.readdirSync(src,{withFileTypes:true}).forEach(e=>{const sp=p.join(src,e.name);const dp=p.join(dst,e.name);e.isDirectory()?cpDir(sp,dp):fs.copyFileSync(sp,dp)})}cpDir(ps,pd)\"",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

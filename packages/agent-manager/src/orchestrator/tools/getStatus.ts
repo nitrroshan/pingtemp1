@@ -17,19 +17,8 @@ export function createGetStatusTool(context: OrchestratorContext) {
   return tool(
     async (): Promise<TaskStatusSummary> => {
       try {
-        const roles = context.teamRoles;
-        const taskMap = new Map<string, any>();
-
-        // Collect all tasks across roles
-        // v1.0 workaround: call getTasks for each role
-        for (const role of roles) {
-          const roleTasks = context.memoryManager.getTasks(role.toLowerCase());
-          for (const task of roleTasks) {
-            taskMap.set(task.id, task);
-          }
-        }
-
-        const allTasks = Array.from(taskMap.values());
+        // Get all tasks from provider (works with both MemoryManager and TaskStore)
+        const allTasks = context.memoryManager.getAllTasks();
 
         // Count by status
         const counts = {
@@ -65,7 +54,7 @@ export function createGetStatusTool(context: OrchestratorContext) {
 
           return {
             id: task.id,
-            title: task.title || task.id,
+            title: (task as any).title || (task.context as any)?.title || task.id,
             status,
             assignedRole: task.assigned_role || "unknown",
           };

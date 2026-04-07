@@ -26,6 +26,24 @@ const TOOL_LABELS: Record<string, string> = {
   get_context: '📂 Retrieving context',
   report_status: '📡 Reporting status',
   complete_task: '✔️ Completing task',
+  ask_user: '💬 Question for you',
+  tell_user: '📢 Update',
+  discuss_approach: '🤔 Decision needed',
+  submit_plan: '📋 Submitting plan',
+  request_approval: '✅ Requesting approval',
+  research_domain: '🔍 Researching',
+  analyze_requirements: '📐 Analyzing requirements',
+  get_team_capabilities: '👥 Checking team',
+  cancel_task: '⛔ Cancelling task',
+  get_blocked: '🚫 Checking blocked tasks',
+  get_critical_path: '📈 Critical path',
+  search_agents: '🔎 Searching agents',
+  update_task: '✏️ Updating task',
+  add_tasks: '➕ Adding tasks',
+  remove_task: '🗑️ Removing task',
+  reprioritize: '🔄 Reprioritizing',
+  reassign_task: '↪️ Reassigning task',
+  replan: '🔄 Replanning',
 };
 
 function getToolLabel(toolName: string): string {
@@ -55,15 +73,49 @@ function tryParseJson(text: string): string {
   }
 }
 
+/** Tools that should auto-expand and show user-friendly content */
+const USER_INTERACTION_TOOLS = new Set(['ask_user', 'tell_user', 'discuss_approach']);
+
+/** Extract question/message from tool args JSON */
+function extractUserContent(toolName: string, argsText: string): string | null {
+  if (!USER_INTERACTION_TOOLS.has(toolName)) return null;
+  try {
+    const args = JSON.parse(argsText);
+    if (toolName === 'ask_user') return args.question;
+    if (toolName === 'tell_user') return args.message;
+    if (toolName === 'discuss_approach') {
+      let text = args.summary || '';
+      if (args.options?.length) {
+        text += '\n\n' + args.options.map((o: any, i: number) =>
+          `${i + 1}. **${o.label}**${o.description ? `: ${o.description}` : ''}`
+        ).join('\n');
+      }
+      if (args.recommendation) text += `\n\n_Recommendation: ${args.recommendation}_`;
+      return text;
+    }
+  } catch {
+    // Args still streaming, try partial parse
+    const match = argsText.match(/"(?:question|message|summary)"\s*:\s*"([^"]*)/);
+    if (match) return match[1] + (argsText.endsWith('"') ? '' : '…');
+  }
+  return null;
+}
+
 const ToolCard: React.FC<ToolCardProps> = ({ card }) => {
-  const [expanded, setExpanded] = useState(false);
+  const isUserTool = USER_INTERACTION_TOOLS.has(card.toolName);
+  const [expanded, setExpanded] = useState(isUserTool); // Auto-expand user interaction tools
 
   const label = getToolLabel(card.toolName);
   const hasOutput = card.status === 'complete' && card.result !== undefined;
   const hasArgs = card.argsText.length > 0;
+  const userContent = extractUserContent(card.toolName, card.argsText);
 
   return (
-    <div className="my-1 border border-border rounded-lg bg-muted/40 text-xs overflow-hidden">
+    <div className={`my-1 border rounded-lg text-xs overflow-hidden ${
+      isUserTool
+        ? 'border-primary/30 bg-primary/5'
+        : 'border-border bg-muted/40'
+    }`}>
       {/* Header */}
       <button
         onClick={() => setExpanded(!expanded)}
@@ -83,8 +135,23 @@ const ToolCard: React.FC<ToolCardProps> = ({ card }) => {
       {/* Expanded content */}
       {expanded && (
         <div className="border-t border-border divide-y divide-border">
-          {/* Args */}
-          {hasArgs && (
+          {/* User interaction tools: show question/message as readable text */}
+          {isUserTool && userContent && (
+            <div className="px-3 py-2">
+              <p className="text-sm text-foreground whitespace-pre-wrap leading-relaxed">
+                {userContent}
+                {card.status === 'streaming-args' && <span className="animate-pulse ml-1">▍</span>}
+              </p>
+              {card.toolName === 'ask_user' && card.status !== 'complete' && (
+                <p className="text-[10px] text-muted-foreground mt-2 italic">
+                  Type your answer in the chat input below
+                </p>
+              )}
+            </div>
+          )}
+
+          {/* Non-user tools OR user tools without parsed content: show raw args */}
+          {!isUserTool && hasArgs && (
             <div className="px-3 py-2">
               <p className="text-[10px] text-muted-foreground mb-1 uppercase tracking-wide font-semibold">Input</p>
               <pre className="text-[11px] text-foreground/70 font-mono overflow-x-auto max-h-32 whitespace-pre-wrap">

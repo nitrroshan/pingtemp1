@@ -1,0 +1,21 @@
+<!-- 
+  team-config.xml — INJECTED AT RUNTIME by PlannerAgent.ts
+  
+  {{teamId}}, {{teamRoles}}, and {{teamMembers}} are replaced at initialization.
+  Each member has a summary here. Use `get_team_capabilities` to pull full details.
+-->
+<team-config>
+
+<team-id>{{teamId}}</team-id>
+
+<team-members>
+{{teamMembers}}
+</team-members>
+
+<how-to-learn-more>
+The summaries above are brief. To see a member's full capabilities, skills, 
+and system prompt, use `get_team_capabilities` or `search_agents`.
+Only assign tasks to roles listed above. Do not invent new roles.
+</how-to-learn-more>
+
+</team-config>

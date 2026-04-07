@@ -277,11 +277,50 @@ export class MemoryManager {
     return this.tasks.get(taskId);
   }
 
+  /** Alias for getTask() — satisfies ITaskProvider interface. */
+  get(taskId: string): Task | undefined {
+    return this.getTask(taskId);
+  }
+
   /**
    * Get all tasks regardless of status (v1.1 helper)
    */
   getAllTasks(): Task[] {
     return Array.from(this.tasks.values());
+  }
+
+  /** Alias for getAllTasks() — satisfies ITaskProvider interface. */
+  getAll(): Task[] {
+    return this.getAllTasks();
+  }
+
+  /**
+   * Remove a task by ID (v1.2 — supports plan mutations)
+   * Also removes the task from the queue if it's there.
+   * Updates dependants of other tasks that reference this one.
+   */
+  removeTask(taskId: string): boolean {
+    const task = this.tasks.get(taskId);
+    if (!task) return false;
+
+    // Remove from internal map
+    this.tasks.delete(taskId);
+
+    // Remove from queue if present
+    this.taskQueue.removeTask(taskId);
+
+    // Clean up references in other tasks' prerequisites
+    for (const other of this.tasks.values()) {
+      if (other.prerequisites?.has(taskId)) {
+        other.prerequisites.delete(taskId);
+      }
+      if (Array.isArray((other as any).dependants)) {
+        (other as any).dependants = (other as any).dependants.filter((d: string) => d !== taskId);
+      }
+    }
+
+    log.info("Task removed", { taskId });
+    return true;
   }
 
   /**
