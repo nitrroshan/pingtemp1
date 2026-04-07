@@ -4,6 +4,7 @@
  * Type definitions for the Orchestrator module.
  */
 
+import type { ITaskProvider } from "./ITaskProvider.js";
 import type { MemoryManager } from "../memory/MemoryManager.js";
 import type { WorkerPool } from "../services/WorkerPool.js";
 import type { AgentPlanOutput } from "./schemas.js";
@@ -26,6 +27,19 @@ export interface OrchestratorCallbacks {
   onPlanApproved?: (data: { planId: string; teamId: string; tasksQueued: number; timestamp: string }) => void;
   onTaskUpdate?: (data: { taskId: string; status: string; role?: string; output?: any; timestamp?: number }) => void;
   onProgress?: (data: { teamId: string; state: string; message: string; [key: string]: any }) => void;
+
+  // Planner-as-Agent callbacks (used when PLANNER_MODE=agent)
+  // NOTE: ask_user and tell_user are just tool calls — they flow through onStream
+  // as tool-input-*/tool-output-* stream parts (rendered as ToolCards in frontend).
+  // No separate events needed. User responses come via the existing message event.
+  /** Plan was mutated mid-flight (add/remove/update tasks) — needs state refresh */
+  onPlanMutation?: (data: { type: string; data: any }) => void;
+  /**
+   * Orchestrator needs the planner to make a decision (task failed, all done, etc.)
+   * AgentManager wires this to start a new PlannerAgent turn.
+   * OrchestratorService does NOT reference PlannerAgent directly — they are peers.
+   */
+  onPlannerInput?: (message: string) => Promise<void>;
 }
 
 /**
@@ -34,7 +48,7 @@ export interface OrchestratorCallbacks {
  */
 export interface OrchestratorContext {
   // Core dependencies
-  memoryManager: MemoryManager;
+  memoryManager: ITaskProvider;
   callbacks: OrchestratorCallbacks;
   planStore: any;
 

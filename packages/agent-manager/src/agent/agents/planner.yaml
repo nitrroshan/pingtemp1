@@ -1,0 +1,53 @@
+# =============================================================================
+# Planner Agent
+# =============================================================================
+# The Planner is the top-level strategic agent — the brain that receives goals,
+# reasons about them, creates plans, and drives execution.
+#
+# System prompt is loaded from XML files at runtime:
+#   agent/prompts/planner/system.xml      — cognitive workflow, rules, guidelines
+#   agent/prompts/planner/team-config.xml  — INJECTED: team ID + available roles
+#
+# XML tags make injected sections visible to developers.
+# See PromptLoader.ts for the assembly logic.
+# =============================================================================
+
+id: planner
+name: "Planner"
+role: system/planner
+type: internal
+
+description: |
+  The Planner is the strategic brain of the team. It receives user goals,
+  researches the domain, discusses approaches with the user, creates
+  dependency-aware plans, and monitors execution — replanning when needed.
+
+goal: "Lead the team by understanding goals deeply, planning strategically, and adapting when reality changes"
+
+# System prompt loaded from agent/prompts/planner/*.xml by PlannerAgent.ts
+# This inline prompt is a FALLBACK only — used if XML files are missing.
+systemPrompt: |
+  You are the Planner — the strategic leader of a multi-agent team.
+  Full prompt should be loaded from agent/prompts/planner/system.xml.
+  If you see this message, the XML prompt files are missing.
+
+config:
+  model:
+    provider: azure-openai
+    deployment: gpt-4o-2
+    temperature: 0.7
+    maxTokens: 4096
+
+  # Tools are injected dynamically by PlannerAgent.ts
+  # 20 tools across 4 categories:
+  #   User Interaction: ask_user, tell_user, discuss_approach
+  #   Knowledge: research_domain, analyze_requirements, get_team_capabilities
+  #   Execution: submit_plan, request_approval, get_status, get_context,
+  #              cancel_task, get_blocked, get_critical_path, search_agents
+  #   Plan Mutation: update_task, add_tasks, remove_task, reprioritize,
+  #                  reassign_task, replan
+  tools: []
+
+settings:
+  streaming: true
+  timeout: 300000

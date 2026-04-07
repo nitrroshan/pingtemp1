@@ -22,7 +22,8 @@ export const initCommand: Command = {
     ctx.print(c.dim(`  Team: ${ctx.teamId}`));
     ctx.print(c.dim(`  Roles: ${ctx.teamRoles.join(", ")}`));
 
-    const mgr = new AgentManager();
+    const plannerMode = (process.env.PLANNER_MODE || "legacy") as "agent" | "legacy";
+    const mgr = new AgentManager({ plannerMode });
     ctx.setManager(mgr);
 
     await mgr.initializeOrchestrator(ctx.teamId, ctx.teamRoles);

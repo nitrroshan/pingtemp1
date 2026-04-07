@@ -464,8 +464,10 @@ export class SocketServerV2 {
    * Build plan array from MemoryManager tasks
    */
   private buildPlanFromTasks(manager: AgentManager): PlanTask[] {
+    // Try TaskStore first (PLANNER_MODE=agent), fall back to MemoryManager (legacy)
+    const taskStore = manager.getTaskStore();
     const memoryManager = manager.getMemoryManager();
-    const allTasks = memoryManager?.getAllTasks() || [];
+    const allTasks = taskStore?.getAllTasks() || memoryManager?.getAllTasks() || [];
     return allTasks.map((t) => this.toPlanTask(t));
   }
 
@@ -637,9 +639,10 @@ export class SocketServerV2 {
       };
       socket.emit("state", stateResponse);
     } else {
-      // Check if tasks exist in MemoryManager (plan was approved via chat)
+      // Check if tasks exist (plan was approved)
+      const taskStore = manager.getTaskStore();
       const memoryManager = manager.getMemoryManager();
-      const allTasks = memoryManager?.getAllTasks() || [];
+      const allTasks = taskStore?.getAllTasks() || memoryManager?.getAllTasks() || [];
 
       if (allTasks.length > 0) {
         socket.emit("state", this.buildStateResponse(manager, sessionId));
@@ -811,11 +814,21 @@ export class SocketServerV2 {
     }
 
     // Get task info before completing (for role)
+    const taskStore = manager.getTaskStore();
     const memoryManager = manager.getMemoryManager();
-    const task = memoryManager?.getTask(taskId);
+    const task = taskStore?.getTask(taskId) || memoryManager?.getTask(taskId);
     const agentRole = task?.assigned_role || "unknown";
 
-    await manager.completeTaskByUser(taskId, output);
+    // Complete task in TaskStore (agent mode) or MemoryManager (legacy)
+    if (taskStore) {
+      try {
+        taskStore.completeTask(taskId, output || { completedBy: "user" });
+      } catch (err) {
+        logger.warn(`[SocketServerV2] Failed to complete task ${taskId} in TaskStore:`, err);
+      }
+    } else {
+      await manager.completeTaskByUser(taskId, output);
+    }
 
     // Broadcast updated state
     socket.emit("state", this.buildStateResponse(manager));

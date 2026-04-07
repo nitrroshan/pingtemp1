@@ -338,6 +338,36 @@ export class RoleTaskQueue {
   }
 
   // ==========================================================================
+  // Task Removal (Plan Mutations)
+  // ==========================================================================
+
+  /**
+   * Remove a task from the queue entirely.
+   * Used by plan mutation tools (remove_task, replan).
+   * Only removes queued/pending tasks — completed/in_progress are left as-is.
+   */
+  removeTask(taskId: string): boolean {
+    const task = this.tasks.get(taskId);
+    if (!task) return false;
+
+    // Remove from lookup
+    this.tasks.delete(taskId);
+
+    // Remove from role queue if still queued
+    if (task.status === "queued") {
+      const role = task.assigned_role.toLowerCase();
+      const queue = this.queues.get(role);
+      if (queue) {
+        queue.remove(task);
+        this.updateQueueSizeMetrics();
+      }
+    }
+
+    logger.debug(`Task ${taskId} removed from queue`);
+    return true;
+  }
+
+  // ==========================================================================
   // Utility
   // ==========================================================================
 }

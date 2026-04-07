@@ -18,8 +18,13 @@ export type { ManagerStreamCallbacks } from "./AgentManagerV2.js";
 export { WorkerPool } from "./services/WorkerPool.js";
 export type { WorkerCallbacks } from "./services/WorkerPool.js";
 
-// OrchestratorService
+// OrchestratorService (new SOLID design — planner mode)
 export { OrchestratorService } from "./orchestrator/OrchestratorService.js";
+export type { OrchestratorServiceConfig } from "./orchestrator/OrchestratorService.js";
+
+// Legacy OrchestratorService (for PLANNER_MODE=legacy rollback)
+export { LegacyOrchestratorService } from "./orchestrator/LegacyOrchestratorService.js";
+
 export type {
   OrchestratorState,
   OrchestratorContext,
@@ -30,6 +35,32 @@ export type {
   PlanApprovedEvent,
   TaskPlan,
 } from "./orchestrator/types.js";
+
+// Planner-as-Agent (Phase 1)
+export { PlannerAgent } from "./orchestrator/PlannerAgent.js";
+export { UserInteractionManager } from "./orchestrator/UserInteractionManager.js";
+export { DependencyResolver } from "./orchestrator/DependencyResolver.js";
+export { NotificationQueue } from "./orchestrator/NotificationQueue.js";
+export type { NotificationQueueConfig } from "./orchestrator/NotificationQueue.js";
+export { TaskStore } from "./orchestrator/TaskStore.js";
+export type { TaskStoreCallbacks } from "./orchestrator/TaskStore.js";
+export { createPlannerTools } from "./orchestrator/tools/index.js";
+export type { PlannerToolsContext } from "./orchestrator/tools/index.js";
+export { classifyError } from "./orchestrator/types/workerTypes.js";
+export { PromptLoader } from "./orchestrator/PromptLoader.js";
+export { PromptBuilder } from "./agent/prompts/PromptBuilder.js";
+export { buildWorkerPrompt } from "./agent/prompts/worker/WorkerPromptFactory.js";
+export type {
+  Plan,
+  PlanTask,
+  TaskPatch,
+  UserQuestion,
+  UserChoice,
+} from "./orchestrator/types/plannerTypes.js";
+export type {
+  WorkerFailureReport,
+  ErrorCategory,
+} from "./orchestrator/types/workerTypes.js";
 
 // Agent system
 export { AiSdkAgent } from "./agent/internal/AiSdkAgent.js";

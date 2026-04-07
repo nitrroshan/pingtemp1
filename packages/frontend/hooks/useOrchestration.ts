@@ -221,7 +221,7 @@ export function useOrchestration(): OrchestrationState & OrchestrationActions {
       const { part, agentId: streamAgentId } = payload;
 
       // Map role-based agentId to MongoDB agent ID
-      const isOrchestrator = streamAgentId === 'manager' || streamAgentId === 'orchestrator';
+      const isOrchestrator = streamAgentId === 'manager' || streamAgentId === 'orchestrator' || streamAgentId === 'planner';
       const resolved = isOrchestrator ? null : findAgentByRole(streamAgentId, selectedTeamIdRef.current);
 
       // Skip events from unknown agent roles (e.g. legacy "worker" fallback)

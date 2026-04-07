@@ -109,6 +109,31 @@ export class PriorityQueue<T> {
   }
 
   /**
+   * Remove a specific item from the queue.
+   * Returns true if the item was found and removed.
+   */
+  remove(item: T): boolean {
+    const index = this.itemToIndex.get(item);
+    if (index === undefined) return false;
+
+    this.itemToIndex.delete(item);
+
+    // If it's the last element, just pop
+    if (index === this.heap.length - 1) {
+      this.heap.pop();
+      return true;
+    }
+
+    // Replace with last element and re-heapify
+    const last = this.heap.pop()!;
+    this.heap[index] = last;
+    this.itemToIndex.set(last.item, index);
+    this.bubbleUp(index);
+    this.sinkDown(index);
+    return true;
+  }
+
+  /**
    * Clear all items from queue
    */
   clear(): void {
