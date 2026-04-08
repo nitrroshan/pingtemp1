@@ -320,7 +320,7 @@ ${agents.length === 0 ? c.dim("  None") : agents.map((a) => `  • [${a.status}]
   private async listTasks() {
     if (!this.requireInit()) return;
 
-    const mm = this.mgr!.getMemoryManager();
+    const mm = this.mgr!.getTaskStore();
     if (!mm) {
       this.print(c.error("MemoryManager not available."));
       return;
@@ -375,7 +375,7 @@ ${agents.length === 0 ? c.dim("  None") : agents.map((a) => `  • [${a.status}]
   private async showTask(taskId: string) {
     if (!this.requireInit()) return;
 
-    const mm = this.mgr!.getMemoryManager();
+    const mm = this.mgr!.getTaskStore();
     if (!mm) {
       this.print(c.error("MemoryManager not available."));
       return;
@@ -415,7 +415,7 @@ ${agents.length === 0 ? c.dim("  None") : agents.map((a) => `  • [${a.status}]
   private async startTask(taskId: string) {
     if (!this.requireInit()) return;
 
-    const mm = this.mgr!.getMemoryManager();
+    const mm = this.mgr!.getTaskStore();
     if (!mm) return;
 
     // Find task by partial ID
@@ -522,7 +522,7 @@ ${agents.length === 0 ? c.dim("  None") : agents.map((a) => `  • [${a.status}]
   private async showMemoryStats() {
     if (!this.requireInit()) return;
 
-    const mm = this.mgr!.getMemoryManager();
+    const mm = this.mgr!.getTaskStore();
     if (!mm) {
       this.print(c.error("MemoryManager not available."));
       return;
@@ -626,7 +626,7 @@ ${agents.length === 0 ? c.dim("  None") : agents.map((a) => `  • [${a.status}]
     }
 
     // Try to start first task and verify workspace
-    const mm = this.mgr?.getMemoryManager();
+    const mm = this.mgr?.getTaskStore();
     if (mm) {
       const tasks = mm.getAllTasks();
       if (tasks.length > 0) {
@@ -944,9 +944,11 @@ ${agents.length === 0 ? c.dim("  None") : agents.map((a) => `  • [${a.status}]
             break;
           case "memtasks":
             if (!this.requireInit()) break;
-            const mm = this.mgr!.getMemoryManager();
+            const mm = this.mgr!.getTaskStore();
             if (mm) {
-              const tasks = arg ? mm.getTasks(arg) : mm.getAllTasks();
+              const tasks = arg
+                ? mm.getAllTasks().filter((t: any) => t.assigned_role === arg.toLowerCase())
+                : mm.getAllTasks();
               this.print(`\nTasks${arg ? ` for ${arg}` : ""}:`);
               for (const t of tasks) {
                 this.print(

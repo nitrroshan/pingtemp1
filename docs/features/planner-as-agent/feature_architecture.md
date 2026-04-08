@@ -1,9 +1,13 @@
 # Planner as Agent — Feature Architecture
 
-**Status:** New  
-**Date:** March 29, 2026  
+**Status:** ✅ Complete (Phases 1-3)  
+**Date:** March 29, 2026 (created) · April 8, 2026 (completed)  
 **ID:** A5  
 **Priority:** **CRITICAL** — The planner is the most important component in the system.
+
+> **Implementation Status:** Core planner-as-agent architecture fully implemented. Legacy orchestrator removed. PlannerAgent + OrchestratorService (reactive) + TaskStore + DependencyResolver + NotificationQueue (wired with debounce). 14 planner tools across 4 categories. Natural language user interaction (structured ask_user/tell_user deferred — natural chat works better).  
+> **Deferred to sandbox phase:** cockatiel retry/circuit-breaker, AbortController worker cancellation, watchdog.  
+> **Deferred to L3 phase:** Real LLM research calls (GPT Researcher MCP or Stanford STORM).
 
 ---
 

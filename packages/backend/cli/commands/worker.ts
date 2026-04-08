@@ -33,7 +33,7 @@ export const workerCommand: Command = {
     }
 
     // Find an active task for this role
-    const mm = ctx.mgr!.getMemoryManager();
+    const mm = ctx.mgr!.getTaskStore();
     if (!mm) {
       ctx.print(c.error("MemoryManager not available."));
       return;

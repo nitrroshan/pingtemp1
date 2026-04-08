@@ -18,12 +18,9 @@ export type { ManagerStreamCallbacks } from "./AgentManagerV2.js";
 export { WorkerPool } from "./services/WorkerPool.js";
 export type { WorkerCallbacks } from "./services/WorkerPool.js";
 
-// OrchestratorService (new SOLID design — planner mode)
+// OrchestratorService
 export { OrchestratorService } from "./orchestrator/OrchestratorService.js";
 export type { OrchestratorServiceConfig } from "./orchestrator/OrchestratorService.js";
-
-// Legacy OrchestratorService (for PLANNER_MODE=legacy rollback)
-export { LegacyOrchestratorService } from "./orchestrator/LegacyOrchestratorService.js";
 
 export type {
   OrchestratorState,

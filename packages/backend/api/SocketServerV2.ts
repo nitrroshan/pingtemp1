@@ -461,13 +461,11 @@ export class SocketServerV2 {
   }
 
   /**
-   * Build plan array from MemoryManager tasks
+   * Build plan array from TaskStore tasks
    */
   private buildPlanFromTasks(manager: AgentManager): PlanTask[] {
-    // Try TaskStore first (PLANNER_MODE=agent), fall back to MemoryManager (legacy)
     const taskStore = manager.getTaskStore();
-    const memoryManager = manager.getMemoryManager();
-    const allTasks = taskStore?.getAllTasks() || memoryManager?.getAllTasks() || [];
+    const allTasks = taskStore?.getAllTasks() || [];
     return allTasks.map((t) => this.toPlanTask(t));
   }
 
@@ -641,8 +639,7 @@ export class SocketServerV2 {
     } else {
       // Check if tasks exist (plan was approved)
       const taskStore = manager.getTaskStore();
-      const memoryManager = manager.getMemoryManager();
-      const allTasks = taskStore?.getAllTasks() || memoryManager?.getAllTasks() || [];
+      const allTasks = taskStore?.getAllTasks() || [];
 
       if (allTasks.length > 0) {
         socket.emit("state", this.buildStateResponse(manager, sessionId));
@@ -776,7 +773,7 @@ export class SocketServerV2 {
       return;
     }
 
-    // If there's a pending plan, approve it first to add tasks to MemoryManager
+    // If there's a pending plan, approve it first to add tasks to TaskStore
     const pendingPlan = manager.getOrchestratorPendingPlan();
     if (pendingPlan) {
       logger.info(
@@ -791,15 +788,13 @@ export class SocketServerV2 {
       }
     }
 
-    // First approve the task if not already approved
-    const approval = manager.approveTaskForChat(taskId);
-
-    // Then actually start execution
-    // Note: Task status updates (in_progress, completed) are handled by
-    // onTaskUpdate callback — don't send stale status here.
-    const result = await manager.startTaskExecution(taskId);
-
-    logger.info(`[SocketServerV2] Task ${taskId} started and executing`);
+    try {
+      // Use manualDispatch which routes through OrchestratorService → WorkerPool
+      await manager.manualDispatchTask(taskId);
+      logger.info(`[SocketServerV2] Task ${taskId} manually dispatched`);
+    } catch (err: any) {
+      this.emitError(socket, { error: err.message || "Failed to start task" });
+    }
   }
 
   private async handleCompleteTask(
@@ -815,19 +810,16 @@ export class SocketServerV2 {
 
     // Get task info before completing (for role)
     const taskStore = manager.getTaskStore();
-    const memoryManager = manager.getMemoryManager();
-    const task = taskStore?.getTask(taskId) || memoryManager?.getTask(taskId);
+    const task = taskStore?.getTask(taskId);
     const agentRole = task?.assigned_role || "unknown";
 
-    // Complete task in TaskStore (agent mode) or MemoryManager (legacy)
+    // Complete task in TaskStore
     if (taskStore) {
       try {
         taskStore.completeTask(taskId, output || { completedBy: "user" });
       } catch (err) {
         logger.warn(`[SocketServerV2] Failed to complete task ${taskId} in TaskStore:`, err);
       }
-    } else {
-      await manager.completeTaskByUser(taskId, output);
     }
 
     // Broadcast updated state
@@ -875,13 +867,9 @@ export class SocketServerV2 {
       logger.info(`[SocketServerV2] AutoExecute set to ${enabled}`);
     }
 
-    // Always return current state
+    // Return full state with autoExecute flag
     const current = manager.getAutoExecute();
-    const stateResponse: StateResponse = {
-      sessionId: "default",
-      sessionState: current ? "executing" : "ready",
-      timestamp: Date.now(),
-    };
+    const stateResponse = this.buildStateResponse(manager);
     (stateResponse as any).autoExecute = current;
     socket.emit("state", stateResponse);
   }

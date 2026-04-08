@@ -28,7 +28,7 @@
 | A2 | **Agentic Streaming** | 📋 Planned | [agentic-streaming](agentic-streaming/) | Real-time token/tool-call/reasoning streaming via `streamText` + Socket.IO. |
 | A3 | **Tools as MCP Servers** | 🆕 New | [tools-as-mcp](tools-as-mcp/) | Refactor all built-in tools into MCP servers. Exportable as npm packages. Any agent (internal or external) can plug in. |
 | A4 | **Worker Sandboxing** | 🆕 New | [worker-sandboxing](worker-sandboxing/) | Run worker agents in isolated containers/sandboxes (E2B, Daytona, Docker, or Mastra LocalSandbox). |
-| A5 | **Planner as Agent** | 🆕 New | [planner-as-agent](planner-as-agent/) | Decouple planner from orchestrator. Planner is just another agent the orchestrator calls via tool/MCP. Swappable planners. |
+| A5 | **Planner as Agent** | ✅ Done | [planner-as-agent](planner-as-agent/) | PlannerAgent as top-level brain with 14 tools (knowledge, execution, mutation). OrchestratorService as reactive runtime. TaskStore, DependencyResolver, NotificationQueue. Legacy orchestrator removed. |
 | A6 | **Task Orchestration Redesign** | 🆕 New | [task-orchestration](task-orchestration/) | Research & redesign task lifecycle: DAG-based deps, parallel execution, retry, replan, context passing. |
 | A7 | **External Agent Invocation** | 🆕 New | [external-agent-invocation](external-agent-invocation/) | Worker agents can call external agents (via MCP, HTTP, A2A protocol). Research best interop method. |
 | A8 | **Git-Based Task Context** | 🆕 New | [git-task-context](git-task-context/) | Preserve agent work as git commits. Branch-per-task. New sessions can pull branches. Branches persist until project completes. |

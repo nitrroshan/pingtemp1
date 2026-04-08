@@ -24,8 +24,7 @@ export class AgentManagerAPI {
     logger.info("[AgentManagerAPI] Initializing API services...");
 
     // Initialize AgentManager
-    const plannerMode = (process.env.PLANNER_MODE || "legacy") as "agent" | "legacy";
-    this.agentManager = new AgentManager({ plannerMode });
+    this.agentManager = new AgentManager();
 
     // Initialize TeamService
     this.teamService = new TeamService();

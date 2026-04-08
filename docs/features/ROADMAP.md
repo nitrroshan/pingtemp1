@@ -25,11 +25,10 @@ Every phase MUST pass this end-to-end flow before shipping:
 
 ---
 
-## Current State (Updated April 6, 2026)
+## Current State (Updated April 8, 2026)
 
-- AgentManagerV2 with OrchestratorService (4 tools: create_plan, approve_plan, get_status, get_context)
-- MemoryManager with task DAG dependencies + RoleTaskQueue
-- WorkerPool with AiSdkAgent (AI SDK v6 `streamText()` + `stopWhen`)
+- **Planner-as-Agent (A5):** PlannerAgent as top-level brain with 14 tools across 4 categories (knowledge, execution, mutation, worker). OrchestratorService is a reactive runtime driven by planner tool calls. TaskStore (single writer), DependencyResolver (DAG), NotificationQueue (debounced batching). Legacy orchestrator removed.
+- AiSdkAgent with AI SDK v6 `streamText()` + `stopWhen: stepCountIs()`
 - LangChain→AI SDK tool converter (`toAiSdkTool()` with `inputSchema`)
 - Full streaming pipeline: `stream_part` events → `worker:stream` → Socket.IO → frontend `processStreamPart()`
 - L1 Workspace (git, scratchpad/todo, file CRUD, grep/glob, keyword search, identity, code intel, 31 tools per agent)
@@ -38,9 +37,11 @@ Every phase MUST pass this end-to-end flow before shipping:
 - SkillRegistry + SkillResolver (10 seeded skills, per-request DB loading, SkillSelector UI)
 - SocketServerV2 with declarative `WORKER_EVENT_ROUTES` map
 - Frontend: React Router, useOrchestration/useChat hooks, StreamMessage/ToolCard/ReasoningSection rendering
+- Plugin architecture: IPlugin, PluginRegistry, WorkspacePlugin, CollaborationPlugin, KnowledgePlugin
+- Package structure: `@ping/agent-manager`, `@ping/workspace`, `@ping/collaboration`, `@ping/knowledge`
 - Dev tooling: `bun run seed` (3 teams, 10 agents, 10 skills), `bun run db:reset`, `start.ps1` dev options
 
-**What's remaining:** Plan approval UI end-to-end test, Docker setup, CLI.
+**What's remaining:** Docker setup, CLI.
 
 ---
 
@@ -49,9 +50,9 @@ Every phase MUST pass this end-to-end flow before shipping:
 
 | Feature | What | Status |
 |---|---|---|
-| **Planner as Agent** | OrchestratorService with 4 tools (create_plan, approve_plan, get_status, get_context) | ✅ Done |
-| **Task Orchestration** | MemoryManager with prerequisite Map, DAG ready-task detection, RoleTaskQueue | ✅ Done |
-| **Frontend Orchestrator Integration** | PlanApproval, TaskDashboard, GoalInput components, useOrchestration hook | ✅ Done |
+| **Planner as Agent (A5)** | PlannerAgent as top-level brain with 14 tools (knowledge 3, execution 6, mutation 5). OrchestratorService as reactive runtime. TaskStore, DependencyResolver, NotificationQueue. Legacy orchestrator removed. | ✅ Done |
+| **Task Orchestration** | TaskStore with state machine enforcement, DependencyResolver (DAG, cycle detection, critical path), RoleTaskQueue with priority dispatch | ✅ Done |
+| **Frontend Orchestrator Integration** | ToolCard with labels for all 19 tools, useOrchestration hook with planner stream routing, plan approval via auto-approve | ✅ Done |
 | **Seed Data** | `bun run seed` — 3 teams, 10 agents, 10 skills. `bun run db:reset`. `start.ps1` options 20-22 | ✅ Done |
 
 #### Frontend in Phase 1
@@ -68,8 +69,10 @@ Every phase MUST pass this end-to-end flow before shipping:
 
 **After Phase 1 (backend):**
 ```
-User types goal → Planner creates plan → User approves in UI → 
-Workers execute in parallel → Tasks complete → User sees results
+User types goal → PlannerAgent (cognitive workflow: research → plan → submit) →
+OrchestratorService auto-approves → TaskStore creates tasks with DAG deps →
+DependencyResolver resolves ready tasks → WorkerPool dispatches →
+NotificationQueue batches completion events → Planner notified → Goal completes
 ```
 The core collaboration loop works. Planner decides what, orchestrator executes how, user controls flow.
 
@@ -85,7 +88,8 @@ Plan approval enhanced → Task dashboard live → Error toasts
 |---|---|---|
 | Golden path (goal → plan → execute → done) | ✅ **Established here** | This IS the golden path. All future phases layer on top. |
 | Agent runtime | ✅ Migrated → Phase 2 | AiSdkAgent with `streamText()`. LangGraph fully removed. |
-| MemoryManager task state | ✅ Stays | Task lifecycle via MemoryManager. Phase 1 adds DAG on top, keeps MemoryManager for storage. |
+| TaskStore + DAG | ✅ Stays | Task lifecycle via TaskStore (single writer). DependencyResolver for DAG. |
+| Legacy orchestrator | ✅ Removed | LegacyOrchestratorService deleted. PLANNER_MODE flag removed. Only planner mode exists. |
 | Existing frontend chat | ⚠️ Refactored | App.tsx refactored but same Socket.IO events. Old message flow preserved through new hooks. |
 | WorkerPool execution | ✅ Stays | Same `runTask()` flow. Workers execute tasks, emit events. |
 
@@ -518,7 +522,7 @@ bun run dev:backend && bun run dev:frontend
 
 **Goal:** Sandbox visibility for ops/admin.
 
-**Note:** Worker health monitoring (heartbeat, stall detection, kill) already exists via Phase 1's Watchdog (A5). SwarmView + AgentCard already show worker status. Phase 6 frontend only **extends** existing components with sandbox-specific data.
+**Note:** Worker health monitoring (heartbeat, stall detection, watchdog) is deferred to this phase alongside sandboxing. Includes: cockatiel retry/circuit-breaker for transient errors, AbortController worker cancellation, watchdog heartbeat loop. Error classification (`classifyError()` with 10 categories) is already written — just needs wiring.
 
 | What | Effort | Details |
 |---|---|---|

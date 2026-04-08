@@ -99,12 +99,8 @@ export class AgentManagerRegistry {
       `[Registry] Team ${team.teamName} has ${teamRoles.length} roles: ${teamRoles.map((r) => r.role).join(", ")}`,
     );
 
-    // Create AgentManager with config
-    const plannerMode = (process.env.PLANNER_MODE || "legacy") as "agent" | "legacy";
-    const manager = new AgentManager({
-      plannerMode,
-      autoExecute: plannerMode === "agent",
-    });
+    // Create AgentManager
+    const manager = new AgentManager();
 
     // Compute workspace/collab paths
     const workspaceDir = process.env.WORKSPACE_BASE_DIR || "./data/workspaces";

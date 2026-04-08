@@ -60,7 +60,7 @@ export function useOrchestration(): OrchestrationState & OrchestrationActions {
   const [sessionState, setSessionState] = useState<string | null>(null);
   const [currentPlan, setCurrentPlan] = useState<BackendTask[] | null>(null);
   const [tasks, setTasks] = useState<Record<string, Task[]>>({});
-  const [autoExecuteEnabled, setAutoExecuteEnabled] = useState(true);
+  const [autoExecuteEnabled, setAutoExecuteEnabled] = useState(false);
   const [orchestrationLogs, setOrchestrationLogs] = useState<OrchestrationEvent[]>([]);
 
   const addOrchestrationLog = useCallback((

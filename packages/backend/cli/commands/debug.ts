@@ -37,7 +37,7 @@ export const memoryCommand: Command = {
   category: "debug",
   requiresInit: true,
   async execute(_args, ctx) {
-    const mm = ctx.mgr!.getMemoryManager();
+    const mm = ctx.mgr!.getTaskStore();
     if (!mm) {
       ctx.print(c.error("MemoryManager not available."));
       return;
@@ -81,12 +81,14 @@ export const memTasksCommand: Command = {
   category: "debug",
   requiresInit: true,
   async execute(args, ctx) {
-    const mm = ctx.mgr!.getMemoryManager();
+    const mm = ctx.mgr!.getTaskStore();
     if (!mm) {
-      ctx.print(c.error("MemoryManager not available."));
+      ctx.print(c.error("TaskStore not available."));
       return;
     }
-    const tasks = args ? mm.getTasks(args) : mm.getAllTasks();
+    const tasks = args
+      ? mm.getAllTasks().filter((t: any) => t.assigned_role === args.toLowerCase())
+      : mm.getAllTasks();
     ctx.print(`\nTasks${args ? ` for ${args}` : ""}:`);
     for (const t of tasks) {
       ctx.print(

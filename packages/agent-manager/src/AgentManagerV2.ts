@@ -1,18 +1,13 @@
 /**
- * AgentManager - Simplified orchestrator using DefinitionBuilder + WorkerPool
+ * AgentManager - Orchestrator using PlannerAgent + TaskStore + WorkerPool
  *
  * Flow:
- * 1. configureWorkflow(taskDescription) → DefinitionBuilder → AgentDefinition[]
- * 2. createPlan(taskDescription) → PlanBuilder → TaskPlan
- * 3. startTask(role, message) → WorkerPool.runTask() → { taskId, response }
- * 4. continueTask(taskId, message) → Continue conversation with same worker
+ * 1. User sends goal → PlannerAgent (cognitive workflow)
+ * 2. PlannerAgent calls submit_plan → OrchestratorService (reactive runtime)
+ * 3. OrchestratorService dispatches tasks → WorkerPool → AiSdkAgent workers
+ * 4. Workers stream results → SocketServerV2 → Frontend
  *
  * Events are forwarded from WorkerPool for Socket.IO integration.
- *
- * Orchestrator Mode (USE_ORCHESTRATOR=true):
- * - Uses OrchestratorService for conversational planning
- * - Supports plan approval flow via events
- * - Integrates with MemoryCoordinator for full memory (tasks + knowledge)
  */
 
 import { Logger } from "tslog";
@@ -23,13 +18,12 @@ import { AiSdkAgent } from "./agent/internal/AiSdkAgent.js";
 import type { AgentDefinition } from "./agent/types.js";
 import type { TaskWithContext } from "./util/RoleTaskQueue.types.js";
 import { OrchestratorService } from "./orchestrator/OrchestratorService.js";
-import { LegacyOrchestratorService } from "./orchestrator/LegacyOrchestratorService.js";
 import type { PlanProposedEvent } from "./orchestrator/types.js";
-import { MemoryManager } from "./memory/MemoryManager.js";
 import { TaskStore } from "./orchestrator/TaskStore.js";
 import { DependencyResolver } from "./orchestrator/DependencyResolver.js";
 import { PlannerAgent } from "./orchestrator/PlannerAgent.js";
 import { UserInteractionManager } from "./orchestrator/UserInteractionManager.js";
+import { NotificationQueue } from "./orchestrator/NotificationQueue.js";
 import { createPlannerTools } from "./orchestrator/tools/index.js";
 import { PluginRegistry } from "./plugin/PluginRegistry.js";
 import type { IPlugin } from "./plugin/types.js";
@@ -45,17 +39,6 @@ export interface ManagerStreamCallbacks {
   onTaskUpdate?: (data: { taskId: string; status: string; role?: string; output?: any }) => void;
   onPlanUpdate?: (data: { action: string; tasksQueued?: number; timestamp: number }) => void;
   onPlanProposed?: (data: PlanProposedEvent) => void;
-}
-
-// Feature flag for orchestrator mode - defaulting to true as orchestrator is now the primary path
-// Setting USE_ORCHESTRATOR=false is deprecated and will be removed in next version
-const USE_ORCHESTRATOR = process.env.USE_ORCHESTRATOR !== "false"; // Default to true
-
-// Warn if explicitly disabled
-if (process.env.USE_ORCHESTRATOR === "false") {
-  console.warn(
-    "[DEPRECATED] USE_ORCHESTRATOR=false is deprecated. The legacy path will be removed in the next version.",
-  );
 }
 
 /**
@@ -93,8 +76,7 @@ export class AgentManager {
   private streamCallbacks: ManagerStreamCallbacks | null = null;
 
   // Orchestrator mode properties
-  private orchestrator: OrchestratorService | LegacyOrchestratorService | null = null;
-  private memoryManager: MemoryManager | null = null;
+  private orchestrator: OrchestratorService | null = null;
   private taskStoreInstance: TaskStore | null = null;
   private plannerAgent: PlannerAgent | null = null;
   private userInteractionManager: UserInteractionManager | null = null;
@@ -111,9 +93,7 @@ export class AgentManager {
     this.workerPool = new WorkerPool();
     this.setupCompletionHandler();
 
-    logger.info(
-      `AgentManager initialized (orchestrator mode: ${USE_ORCHESTRATOR})`,
-    );
+    logger.info(`AgentManager initialized`);
   }
 
   /**
@@ -149,13 +129,6 @@ export class AgentManager {
     teamRoles: string[],
     roleAgentIdMap?: Record<string, string>,
   ): Promise<void> {
-    if (!USE_ORCHESTRATOR) {
-      logger.warn(
-        "[AgentManager] Orchestrator mode disabled. Set USE_ORCHESTRATOR=true to enable.",
-      );
-      return;
-    }
-
     this.teamId = teamId;
 
     // Initialize file-based task persistence (survives restarts)
@@ -291,126 +264,109 @@ Do NOT invent tools you don't have. If unsure, use \`my_tools\` to check.
     const collabStorage = this.pluginRegistry.getPluginStorage("collaboration");
     const planStore = collabStorage?.planStore as any;
 
-    const PLANNER_MODE = process.env.PLANNER_MODE || "legacy";
+    // SOLID architecture — TaskStore + OrchestratorService + PlannerAgent as peers
+    this.taskStoreInstance = new TaskStore();
+    const dagResolver = new DependencyResolver();
 
-    if (PLANNER_MODE === "agent") {
-      // SOLID architecture — TaskStore + OrchestratorService + PlannerAgent as peers
-      this.taskStoreInstance = new TaskStore();
-      const dagResolver = new DependencyResolver();
+    // Session ID for planner conversation thread
+    const sessionId = `team-${teamId}`;
 
-      // Session ID for planner conversation thread
-      const sessionId = `team-${teamId}`;
-
-      // Create OrchestratorService (reactive runtime)
-      this.orchestrator = new OrchestratorService({
-        teamId,
-        teamRoles,
-        taskStore: this.taskStoreInstance,
-        workerPool: this.workerPool,
-        dagResolver,
-        planStore,
-        autoExecute: true,
-        callbacks: {
-          onStream: (data) => this.streamCallbacks?.onStream?.(data),
-          onEvent: (data) => this.streamCallbacks?.onEvent?.(data),
-          onDone: (data) => this.streamCallbacks?.onDone?.(data),
-          onError: (data) => this.streamCallbacks?.onError?.(data),
-          onTaskUpdate: (data) => this.streamCallbacks?.onTaskUpdate?.(data),
-          onPlanProposed: (data) => {
-            this.streamCallbacks?.onPlanProposed?.(data);
-            // Auto-approve: planner already consulted user via natural chat
-            this.approveOrchestratorPlan().catch((err) => {
-              console.error("[AgentManager] Auto-approve failed:", err);
+    // Planner callback — extracted so NotificationQueue and direct callbacks share it
+    const executePlannerTurn = async (message: string) => {
+      if (!this.plannerAgent) return;
+      try {
+        const agent = this.plannerAgent.getAgent();
+        for await (const event of agent.execute({ message, threadId: sessionId })) {
+          if (event.type === "stream_part") {
+            this.streamCallbacks?.onStream?.({
+              taskId: sessionId,
+              agentId: "planner",
+              part: event.part,
             });
-          },
-          // Wire onPlannerInput → PlannerAgent.execute() (new turn)
-          onPlannerInput: async (message) => {
-            if (!this.plannerAgent) return;
-            try {
-              const agent = this.plannerAgent.getAgent();
-              for await (const event of agent.execute({ message, threadId: sessionId })) {
-                if (event.type === "stream_part") {
-                  this.streamCallbacks?.onStream?.({
-                    taskId: sessionId,
-                    agentId: "planner",
-                    part: event.part,
-                  });
-                }
-              }
-            } catch (err) {
-              console.error("[AgentManager] Planner execution error:", err);
-            }
-          },
-        },
-      });
+          }
+        }
+      } catch (err) {
+        console.error("[AgentManager] Planner execution error:", err);
+      }
+    };
 
-      await this.orchestrator.initialize();
+    // NotificationQueue: batches rapid task events (5 completions in 100ms → 1 planner turn)
+    const notificationQueue = new NotificationQueue({
+      debounceMs: 100,
+      onFlush: (batchedMessage) => executePlannerTurn(batchedMessage),
+    });
 
-      // Create PlannerAgent (peer to OrchestratorService)
-      const agentFactory = getAgentFactory();
-
-      this.plannerAgent = new PlannerAgent({
-        agentFactory,
-        teamRoles,
-        teamId,
-      });
-      await this.plannerAgent.initialize();
-
-      // Create and inject planner tools (close over shared services)
-      const orchestratorContext = {
-        memoryManager: this.taskStoreInstance as any, // TaskStore satisfies the interface
-        callbacks: (this.orchestrator as OrchestratorService).getCallbacks(),
-        planStore,
-        teamId,
-        currentGoalId: null,
-        teamRoles,
-        planBuilder: { invoke: async () => { throw new Error("PlanBuilder not used in agent mode"); } },
-        getState: () => this.orchestrator!.getState(),
-        setState: (state: any) => (this.orchestrator as OrchestratorService).setState(state),
-        getPendingPlan: () => this.orchestrator!.getPendingPlan(),
-        setPendingPlan: (plan: any) => (this.orchestrator as OrchestratorService).setPendingPlan(plan),
-      };
-
-      const tools = createPlannerTools({
-        orchestratorContext,
-        agentFactory,
-        dagResolver,
-        onMutation: (event) => {
-          this.streamCallbacks?.onTaskUpdate?.({
-            taskId: "plan",
-            status: "mutation",
-            ...event,
+    // Create OrchestratorService (reactive runtime)
+    this.orchestrator = new OrchestratorService({
+      teamId,
+      teamRoles,
+      taskStore: this.taskStoreInstance,
+      workerPool: this.workerPool,
+      dagResolver,
+      notificationQueue,
+      planStore,
+      autoExecute: false,
+      callbacks: {
+        onStream: (data) => this.streamCallbacks?.onStream?.(data),
+        onEvent: (data) => this.streamCallbacks?.onEvent?.(data),
+        onDone: (data) => this.streamCallbacks?.onDone?.(data),
+        onError: (data) => this.streamCallbacks?.onError?.(data),
+        onTaskUpdate: (data) => this.streamCallbacks?.onTaskUpdate?.(data),
+        onPlanProposed: (data) => {
+          this.streamCallbacks?.onPlanProposed?.(data);
+          // Auto-approve: planner already consulted user via natural chat
+          this.approveOrchestratorPlan().catch((err) => {
+            console.error("[AgentManager] Auto-approve failed:", err);
           });
         },
-      });
-      await this.plannerAgent.setTools(tools);
-
-      logger.info(`[AgentManager] PLANNER_MODE=agent: PlannerAgent + OrchestratorService + TaskStore initialized`);
-    } else {
-      // LEGACY: original dual-agent orchestrator
-      this.memoryManager = new MemoryManager();
-
-      this.orchestrator = new LegacyOrchestratorService({
-        teamId,
-        teamRoles,
-        memoryManager: this.memoryManager,
-        workerPool: this.workerPool,
-        planStore,
-        callbacks: {
-          onStream: (data) => this.streamCallbacks?.onStream?.(data),
-          onEvent: (data) => this.streamCallbacks?.onEvent?.(data),
-          onDone: (data) => this.streamCallbacks?.onDone?.(data),
-          onError: (data) => this.streamCallbacks?.onError?.(data),
-          onTaskUpdate: (data) => this.streamCallbacks?.onTaskUpdate?.(data),
-          onPlanProposed: (data) => this.streamCallbacks?.onPlanProposed?.(data),
-        },
-      });
-
-      logger.info(`[AgentManager] PLANNER_MODE=legacy: using LegacyOrchestratorService`);
-    }
+        // Wire onPlannerInput → PlannerAgent.execute() (new turn)
+        // Used for user messages (bypasses NotificationQueue for immediate response)
+        onPlannerInput: (message) => executePlannerTurn(message),
+      },
+    });
 
     await this.orchestrator.initialize();
-    logger.info(`[AgentManager] Orchestrator initialized for team ${teamId}`);
+
+    // Create PlannerAgent (peer to OrchestratorService)
+    const agentFactory = getAgentFactory();
+
+    this.plannerAgent = new PlannerAgent({
+      agentFactory,
+      teamRoles,
+      teamId,
+    });
+    await this.plannerAgent.initialize();
+
+    // Create and inject planner tools (close over shared services)
+    const orchestratorContext = {
+      memoryManager: this.taskStoreInstance as any, // TaskStore satisfies the interface
+      callbacks: this.orchestrator.getCallbacks(),
+      planStore,
+      teamId,
+      currentGoalId: null,
+      teamRoles,
+      planBuilder: { invoke: async () => { throw new Error("PlanBuilder not used"); } },
+      getState: () => this.orchestrator!.getState(),
+      setState: (state: any) => this.orchestrator!.setState(state),
+      getPendingPlan: () => this.orchestrator!.getPendingPlan(),
+      setPendingPlan: (plan: any) => this.orchestrator!.setPendingPlan(plan),
+    };
+
+    const tools = createPlannerTools({
+      orchestratorContext,
+      agentFactory,
+      dagResolver,
+      onMutation: (event) => {
+        this.streamCallbacks?.onTaskUpdate?.({
+          taskId: "plan",
+          status: "mutation",
+          ...event,
+        });
+      },
+    });
+    await this.plannerAgent.setTools(tools);
+
+    logger.info(`[AgentManager] PlannerAgent + OrchestratorService + TaskStore initialized`);
   }
 
   /**
@@ -436,6 +392,16 @@ Do NOT invent tools you don't have. If unsure, use \`my_tools\` to check.
    */
   getAutoExecute(): boolean {
     return this.orchestrator?.getAutoExecute() ?? true;
+  }
+
+  /**
+   * Manually dispatch a ready task (used when autoExecute is OFF)
+   */
+  async manualDispatchTask(taskId: string): Promise<void> {
+    if (!this.orchestrator) {
+      throw new Error("Orchestrator not initialized");
+    }
+    await this.orchestrator.manualDispatch(taskId);
   }
 
   // ===========================================================================
@@ -498,9 +464,9 @@ Do NOT invent tools you don't have. If unsure, use \`my_tools\` to check.
    * @returns true if task was auto-started, false if manual approval required
    */
   private async tryAutoApproveTask(taskId: string): Promise<boolean> {
-    if (!this.memoryManager) return false;
+    if (!this.taskStoreInstance) return false;
 
-    const task = this.memoryManager.getTask(taskId);
+    const task = this.taskStoreInstance.get(taskId);
     if (!task) return false;
 
     // Check if auto-approve is enabled for this role
@@ -552,7 +518,7 @@ Do NOT invent tools you don't have. If unsure, use \`my_tools\` to check.
   }
 
   /**
-   * Approve the pending plan (triggers task creation in MemoryManager)
+   * Approve the pending plan (triggers task creation in TaskStore)
    * After tasks are created, auto-approve will be checked for each task
    */
   async approveOrchestratorPlan(): Promise<{
@@ -589,9 +555,9 @@ Do NOT invent tools you don't have. If unsure, use \`my_tools\` to check.
    * @returns Number of tasks that were auto-started
    */
   private async processAutoApproveTasks(): Promise<number> {
-    if (!this.memoryManager) return 0;
+    if (!this.taskStoreInstance) return 0;
 
-    const allTasks = this.memoryManager.getAllTasks();
+    const allTasks = this.taskStoreInstance.getAllTasks();
     let autoStarted = 0;
 
     for (const task of allTasks) {
@@ -627,14 +593,14 @@ Do NOT invent tools you don't have. If unsure, use \`my_tools\` to check.
    * Check if orchestrator mode is enabled
    */
   get isOrchestratorMode(): boolean {
-    return USE_ORCHESTRATOR;
+    return true;
   }
 
   /**
-   * Get memory manager (for task execution monitoring — legacy mode only)
+   * Get memory manager (deprecated — returns null, use getTaskStore())
    */
-  getMemoryManager(): MemoryManager | null {
-    return this.memoryManager;
+  getMemoryManager(): null {
+    return null;
   }
 
   /**
@@ -690,17 +656,17 @@ Do NOT invent tools you don't have. If unsure, use \`my_tools\` to check.
    * This is the v2 approval that enables direct chat, NOT auto-execution
    */
   approveTaskForChat(taskId: string): { taskId: string; role: string } {
-    if (!this.memoryManager) {
-      throw new Error("MemoryManager not initialized");
+    if (!this.taskStoreInstance) {
+      throw new Error("TaskStore not initialized");
     }
 
-    const task = this.memoryManager.getTask(taskId);
+    const task = this.taskStoreInstance.get(taskId);
     if (!task) {
       throw new Error(`Task ${taskId} not found`);
     }
 
     // Update status to ready (approved, awaiting user to start chat)
-    this.memoryManager.updateTaskStatus(taskId, "ready");
+    this.taskStoreInstance.updateStatus(taskId, "ready");
     this.filePersistence?.updateStatus(taskId, "ready");
     logger.info(
       `Task ${taskId} approved for chat with role: ${task.assigned_role}`,
@@ -716,11 +682,11 @@ Do NOT invent tools you don't have. If unsure, use \`my_tools\` to check.
   async startTaskExecution(
     taskId: string,
   ): Promise<{ taskId: string; role: string; response: string }> {
-    if (!this.memoryManager) {
-      throw new Error("MemoryManager not initialized");
+    if (!this.taskStoreInstance) {
+      throw new Error("TaskStore not initialized");
     }
 
-    const task = this.memoryManager.getTask(taskId);
+    const task = this.taskStoreInstance.get(taskId);
     if (!task) {
       throw new Error(`Task ${taskId} not found`);
     }
@@ -750,38 +716,15 @@ Do NOT invent tools you don't have. If unsure, use \`my_tools\` to check.
       }
     }
 
-    // Mark as in_progress (may already be if auto-dispatched without response yet)
+    // Mark as in_progress
     if (task.status !== "in_progress") {
-      this.memoryManager.updateTaskStatus(taskId, "in_progress");
+      this.taskStoreInstance.updateStatus(taskId, "in_progress");
       this.filePersistence?.updateStatus(taskId, "in_progress");
     }
     logger.info(`Task ${taskId} execution started`);
 
-    // Get context with dependency outputs (basic)
-    const contextData = this.memoryManager.getTaskContext(taskId);
-
-    // Knowledge context is injected via plugin skill instructions at task startup
-    const knowledgeContext = "";
-
-    // Get structured context from task (populated by PlanBuilder)
-    const taskContext = task.context || {};
-
-    // Build structured context string from plan data (preferred over raw conversation)
-    let structuredContext = "";
-    if (taskContext.notes) {
-      structuredContext += `## Task Context\n${taskContext.notes}\n\n`;
-    }
-    if (taskContext.expectedOutput) {
-      structuredContext += `## Expected Output\n${taskContext.expectedOutput}\n\n`;
-    }
-    if (taskContext.goal) {
-      structuredContext += `## Overall Goal\n${taskContext.goal}\n\n`;
-    }
-
-    // Add knowledge context
-    if (knowledgeContext) {
-      structuredContext += `\n${knowledgeContext}\n`;
-    }
+    // Get structured context from task
+    const taskContext = (task.context || {}) as Record<string, any>;
 
     // Create TaskWithContext for WorkerPool
     const taskWithContext = {
@@ -790,21 +733,20 @@ Do NOT invent tools you don't have. If unsure, use \`my_tools\` to check.
       description: task.description,
       priority: (task as any).priority || 0,
       context: {
-        previousOutputs: contextData?.dependencyOutputs || [],
-        artifacts: taskContext.artifacts || [],
-        knowledge: knowledgeContext, // Pass knowledge to worker
+        previousOutputs: Array.isArray(taskContext.upstreamOutputs) ? taskContext.upstreamOutputs : [],
+        artifacts: [
+          ...(Array.isArray(taskContext.files) ? taskContext.files : []),
+          ...(Array.isArray(taskContext.artifacts) ? taskContext.artifacts : []),
+        ],
       },
       createdAt: Date.now(),
       status: "in_progress" as const,
     };
 
-    // Start the task in WorkerPool (async, we'll get the response)
+    // Start the task in WorkerPool
     const output = await this.workerPool.runTask(taskWithContext);
 
-    // Register task-role mapping for continueTask() to use
     this.taskRoles.set(taskId, task.assigned_role);
-
-    // WorkerPool stores the response internally via lastResponses Map
 
     this.streamCallbacks?.onTaskUpdate?.({
       taskId,
@@ -828,11 +770,11 @@ Do NOT invent tools you don't have. If unsure, use \`my_tools\` to check.
     taskId: string,
     output?: any,
   ): Promise<{ success: boolean; mergeError?: string }> {
-    if (!this.memoryManager) {
-      throw new Error("MemoryManager not initialized");
+    if (!this.taskStoreInstance) {
+      throw new Error("TaskStore not initialized");
     }
 
-    const task = this.memoryManager.getTask(taskId);
+    const task = this.taskStoreInstance.get(taskId);
     if (!task) {
       throw new Error(`Task ${taskId} not found`);
     }
@@ -860,8 +802,8 @@ Do NOT invent tools you don't have. If unsure, use \`my_tools\` to check.
       }
     }
 
-    // Complete task via MemoryManager
-    this.memoryManager.completeTask(taskId, finalOutput);
+    // Complete task via TaskStore
+    this.taskStoreInstance.completeTask(taskId, finalOutput);
     this.filePersistence?.updateStatus(taskId, "completed");
     this.filePersistence?.setOutput(taskId, finalOutput);
 
@@ -1023,11 +965,11 @@ Do NOT invent tools you don't have. If unsure, use \`my_tools\` to check.
       assignedRole?: string;
     },
   ): void {
-    if (!this.memoryManager) {
-      throw new Error("MemoryManager not initialized");
+    if (!this.taskStoreInstance) {
+      throw new Error("TaskStore not initialized");
     }
 
-    const task = this.memoryManager.getTask(taskId);
+    const task = this.taskStoreInstance.get(taskId);
     if (!task) {
       throw new Error(`Task ${taskId} not found`);
     }
@@ -1060,11 +1002,11 @@ Do NOT invent tools you don't have. If unsure, use \`my_tools\` to check.
    * @param taskId - ID of task to discard
    */
   discardTask(taskId: string): void {
-    if (!this.memoryManager) {
-      throw new Error("MemoryManager not initialized");
+    if (!this.taskStoreInstance) {
+      throw new Error("TaskStore not initialized");
     }
 
-    const task = this.memoryManager.getTask(taskId);
+    const task = this.taskStoreInstance.get(taskId);
     if (!task) {
       throw new Error(`Task ${taskId} not found`);
     }
@@ -1079,8 +1021,8 @@ Do NOT invent tools you don't have. If unsure, use \`my_tools\` to check.
       throw new Error(`Cannot discard task ${taskId}: already completed`);
     }
 
-    // Remove from MemoryManager
-    this.memoryManager.updateTaskStatus(taskId, "failed");
+    // Remove from TaskStore
+    this.taskStoreInstance.updateStatus(taskId, "failed");
     this.filePersistence?.updateStatus(taskId, "failed");
 
     // Also try to remove from RoleTaskQueue if present
@@ -1145,10 +1087,10 @@ Do NOT invent tools you don't have. If unsure, use \`my_tools\` to check.
     dependencies?: string[];
     output?: any;
   } | null {
-    if (!this.memoryManager) {
+    if (!this.taskStoreInstance) {
       return null;
     }
-    const task = this.memoryManager.getTask(taskId);
+    const task = this.taskStoreInstance.get(taskId);
     if (!task) {
       return null;
     }
@@ -1674,7 +1616,7 @@ Do NOT invent tools you don't have. If unsure, use \`my_tools\` to check.
     }
     const result = await this.orchestrator.resetPlan();
     // Also clear tasks and workers
-    this.memoryManager?.clearAllTasks();
+    this.taskStoreInstance?.clear();
     await this.workerPool.disposeAll();
     this.plan = null;
     return result;

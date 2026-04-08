@@ -13,7 +13,7 @@ export const tasksCommand: Command = {
   category: "tasks",
   requiresInit: true,
   async execute(_args, ctx) {
-    const mm = ctx.mgr!.getMemoryManager();
+    const mm = ctx.mgr!.getTaskStore();
     if (!mm) {
       ctx.print(c.error("MemoryManager not available."));
       return;
@@ -68,7 +68,7 @@ export const taskCommand: Command = {
       return;
     }
 
-    const mm = ctx.mgr!.getMemoryManager();
+    const mm = ctx.mgr!.getTaskStore();
     if (!mm) {
       ctx.print(c.error("MemoryManager not available."));
       return;
@@ -118,7 +118,7 @@ export const startCommand: Command = {
       return;
     }
 
-    const mm = ctx.mgr!.getMemoryManager();
+    const mm = ctx.mgr!.getTaskStore();
     if (!mm) return;
 
     const allTasks = mm.getAllTasks();

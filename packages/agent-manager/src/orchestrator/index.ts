@@ -5,12 +5,9 @@
  * Includes Planner-as-Agent components (Steps 1-10).
  */
 
-// Main service (new SOLID design — planner mode)
+// Main service
 export { OrchestratorService } from "./OrchestratorService.js";
 export type { OrchestratorServiceConfig } from "./OrchestratorService.js";
-
-// Legacy service (for PLANNER_MODE=legacy rollback)
-export { LegacyOrchestratorService } from "./LegacyOrchestratorService.js";
 
 // Planner-as-Agent components
 export { PlannerAgent } from "./PlannerAgent.js";
@@ -70,5 +67,5 @@ export {
 } from "./schemas.js";
 
 // Tools (for testing/extension)
-export { createOrchestratorTools, createPlannerTools } from "./tools/index.js";
+export { createPlannerTools } from "./tools/index.js";
 export type { PlannerToolsContext } from "./tools/index.js";
