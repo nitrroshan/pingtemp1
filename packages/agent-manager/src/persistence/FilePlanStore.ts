@@ -3,6 +3,8 @@
  *
  * Simple JSON-on-disk store. Used as default when no plugin provides a PlanStore.
  * Directory structure: data/plans/{teamId}/{goalId}/{planId}.json
+ *
+ * Accepts an optional StorageProvider for cloud storage.
  */
 
 import { promises as fs } from "fs";
@@ -10,6 +12,14 @@ import path from "path";
 import { rootLogger } from "../logging.js";
 
 const logger = rootLogger.child({ module: "FilePlanStore" });
+
+/** Minimal storage interface — matches @ping/backend AppStateStorage */
+export interface StorageProvider {
+  read(path: string): Promise<string | null>;
+  write(path: string, data: string): Promise<void>;
+  delete(path: string): Promise<void>;
+  list(prefix: string): Promise<string[]>;
+}
 
 export type PlanStatus = "pending" | "approved" | "executing" | "completed" | "failed" | "archived";
 
@@ -32,9 +42,13 @@ export interface StoredPlan {
 
 export class FilePlanStore {
   private baseDir: string;
+  private relativeBase: string;
+  private storage: StorageProvider | null;
 
-  constructor(teamId: string, repoPath: string = ".") {
+  constructor(teamId: string, repoPath: string = ".", storage?: StorageProvider) {
     this.baseDir = path.join(repoPath, "data", "plans", teamId);
+    this.relativeBase = path.join("plans", teamId);
+    this.storage = storage || null;
   }
 
   private goalDir(goalId: string): string {
@@ -49,8 +63,12 @@ export class FilePlanStore {
     return path.join(this.goalDir(goalId), `${planId}.json`);
   }
 
+  private relPath(goalId: string, planId: string): string {
+    return path.join(this.relativeBase, goalId, `${planId}.json`);
+  }
+
   private async ensureDir(dir: string): Promise<void> {
-    await fs.mkdir(dir, { recursive: true });
+    if (!this.storage) await fs.mkdir(dir, { recursive: true });
   }
 
   async savePlan(
@@ -77,13 +95,21 @@ export class FilePlanStore {
       savedAt: new Date().toISOString(),
     };
 
-    await fs.writeFile(this.planPath(goalId, plan.planId), JSON.stringify(storedPlan, null, 2), "utf8");
+    const data = JSON.stringify(storedPlan, null, 2);
+    if (this.storage) {
+      await this.storage.write(this.relPath(goalId, plan.planId), data);
+    } else {
+      await fs.writeFile(this.planPath(goalId, plan.planId), data, "utf8");
+    }
     logger.info(`Plan saved: ${plan.planId} (goal: ${goalId}, v${version})`);
   }
 
   async loadPlan(planId: string, goalId: string): Promise<StoredPlan | null> {
     try {
-      const content = await fs.readFile(this.planPath(goalId, planId), "utf8");
+      const content = this.storage
+        ? await this.storage.read(this.relPath(goalId, planId))
+        : await fs.readFile(this.planPath(goalId, planId), "utf8");
+      if (!content) return null;
       return JSON.parse(content);
     } catch (e: any) {
       if (e.code === "ENOENT") return null;
@@ -93,6 +119,17 @@ export class FilePlanStore {
 
   async listPlansByGoal(goalId: string): Promise<StoredPlan[]> {
     try {
+      if (this.storage) {
+        const files = await this.storage.list(path.join(this.relativeBase, goalId));
+        const plans: StoredPlan[] = [];
+        for (const f of files) {
+          if (f.endsWith(".json") && !path.basename(f).startsWith("_")) {
+            const content = await this.storage.read(f);
+            if (content) plans.push(JSON.parse(content));
+          }
+        }
+        return plans;
+      }
       const dir = this.goalDir(goalId);
       const files = await fs.readdir(dir);
       const plans: StoredPlan[] = [];
@@ -128,14 +165,23 @@ export class FilePlanStore {
     if (status === "completed" || status === "failed") {
       stored.metadata.completedAt = new Date().toISOString();
     }
-    await fs.writeFile(this.planPath(goalId, planId), JSON.stringify(stored, null, 2), "utf8");
+    const data = JSON.stringify(stored, null, 2);
+    if (this.storage) {
+      await this.storage.write(this.relPath(goalId, planId), data);
+    } else {
+      await fs.writeFile(this.planPath(goalId, planId), data, "utf8");
+    }
     logger.info(`Plan ${planId} status → ${status}`);
     return true;
   }
 
   async deletePlan(goalId: string, planId: string): Promise<void> {
     try {
-      await fs.unlink(this.planPath(goalId, planId));
+      if (this.storage) {
+        await this.storage.delete(this.relPath(goalId, planId));
+      } else {
+        await fs.unlink(this.planPath(goalId, planId));
+      }
     } catch { /* ignore */ }
   }
 }

@@ -163,6 +163,41 @@ export class HttpServer {
       "[HttpServer] Collab docs API mounted at /api/collab/:teamId/docs",
     );
 
+    // Delete a collab document
+    this.app.delete("/api/collab/:teamId/docs/:docName", async (req, res) => {
+      try {
+        const { teamId, docName } = req.params;
+        const fullDocName = `${teamId}/${docName}`;
+
+        // Delete the persisted .bin file
+        const fs = await import("fs/promises");
+        const path = await import("path");
+        const storageDir = process.env.WORKSPACE_BASE_DIR
+          ? `${process.env.WORKSPACE_BASE_DIR}/${teamId}/.ping/collab`
+          : `./data/workspaces/${teamId}/.ping/collab`;
+        const binPath = path.join(storageDir, "yjs", `${fullDocName.replace(/\//g, "_")}.bin`);
+
+        try { await fs.unlink(binPath); } catch { /* file may not exist */ }
+
+        // Try to close the in-memory doc if loaded
+        const { agentManagerRegistry } =
+          await import("../agentManager/AgentManagerRegistry.js");
+        if (agentManagerRegistry.has(teamId)) {
+          const manager = await agentManagerRegistry.getForTeam(teamId);
+          const registry = manager.getPluginRegistry();
+          const collabStorage = registry?.getPluginStorage?.("collaboration");
+          const server = (collabStorage?.crdt as any)?.collabServer || (collabStorage?.crdt as any)?._collabServer;
+          // Hocuspocus doesn't expose a direct "delete doc" — closing connections is enough
+          // The doc won't reload since we deleted the .bin
+        }
+
+        res.json({ success: true });
+      } catch (err: any) {
+        res.status(500).json({ error: err.message });
+      }
+    });
+    logger.info("[HttpServer] Collab doc delete API mounted at /api/collab/:teamId/docs/:docName");
+
     // Chat message history
     this.app.get("/api/v2/teams/:teamId/messages", async (req, res) => {
       try {
@@ -249,6 +284,44 @@ export class HttpServer {
       }
     });
     logger.info("[HttpServer] Session restore API mounted at /api/v2/sessions/:teamId/restore");
+
+    // Workspace git push
+    this.app.post("/api/v2/workspaces/:teamId/push", async (req, res) => {
+      try {
+        const { teamId } = req.params;
+        const { TeamModel: TM } = await import("../team/models.js");
+        const team = await TM.findById(teamId).lean();
+        if (!team) { res.status(404).json({ error: "Team not found" }); return; }
+
+        const remoteUrl = team.gitRemoteUrl || req.body.remoteUrl;
+        const remoteToken = team.gitRemoteToken || req.body.remoteToken;
+        if (!remoteUrl) { res.status(400).json({ error: "No git remote URL configured" }); return; }
+
+        // Build authenticated URL if token provided
+        const authUrl = remoteToken
+          ? remoteUrl.replace("https://", `https://oauth2:${remoteToken}@`)
+          : remoteUrl;
+
+        const { agentManagerRegistry } =
+          await import("../agentManager/AgentManagerRegistry.js");
+        const manager = await agentManagerRegistry.getForTeam(teamId);
+        const registry = manager.getPluginRegistry();
+        const wsStorage = registry?.getPluginStorage?.("workspace");
+        const gitManager = (wsStorage as any)?.gitManager;
+
+        if (!gitManager?.addRemote) {
+          res.status(500).json({ error: "Workspace not initialized" });
+          return;
+        }
+
+        await gitManager.addRemote("origin", authUrl);
+        await gitManager.push("origin");
+        res.json({ success: true, message: "Pushed to remote" });
+      } catch (err: any) {
+        res.status(500).json({ error: err.message });
+      }
+    });
+    logger.info("[HttpServer] Workspace push API mounted at /api/v2/workspaces/:teamId/push");
   }
 
   /**

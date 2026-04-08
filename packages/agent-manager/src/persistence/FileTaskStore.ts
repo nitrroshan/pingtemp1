@@ -4,8 +4,8 @@
  * Persists task state to JSON on disk. Used as default when no plugin provides a TaskStore.
  * Directory structure: data/tasks/{teamId}/tasks.json
  *
- * Works alongside MemoryManager (in-memory DAG) — FileTaskStore adds persistence
- * so task state survives restarts. MemoryManager remains the runtime source of truth.
+ * Accepts an optional StorageProvider for cloud storage (Azure Blob, S3).
+ * Falls back to direct fs when no provider is given.
  */
 
 import { promises as fs } from "fs";
@@ -14,6 +14,12 @@ import { rootLogger } from "../logging.js";
 import type { ITaskStore } from "../plugin/types.js";
 
 const logger = rootLogger.child({ module: "FileTaskStore" });
+
+/** Minimal storage interface — matches @ping/backend AppStateStorage */
+export interface StorageProvider {
+  read(path: string): Promise<string | null>;
+  write(path: string, data: string): Promise<void>;
+}
 
 export interface StoredTask {
   id: string;
@@ -28,19 +34,26 @@ export interface StoredTask {
 }
 
 export class FileTaskStore implements ITaskStore {
+  private relativePath: string;
   private filePath: string;
+  private storage: StorageProvider | null;
   private tasks = new Map<string, StoredTask>();
   private dirty = false;
   private saveTimer: ReturnType<typeof setTimeout> | null = null;
 
-  constructor(teamId: string, repoPath: string = ".") {
+  constructor(teamId: string, repoPath: string = ".", storage?: StorageProvider) {
+    this.relativePath = path.join("tasks", teamId, "tasks.json");
     this.filePath = path.join(repoPath, "data", "tasks", teamId, "tasks.json");
+    this.storage = storage || null;
   }
 
   /** Load tasks from disk (call once at startup) */
   async load(): Promise<void> {
     try {
-      const content = await fs.readFile(this.filePath, "utf8");
+      const content = this.storage
+        ? await this.storage.read(this.relativePath)
+        : await fs.readFile(this.filePath, "utf8");
+      if (!content) return;
       const tasks: StoredTask[] = JSON.parse(content);
       this.tasks.clear();
       for (const t of tasks) {
@@ -49,7 +62,6 @@ export class FileTaskStore implements ITaskStore {
       logger.info(`Loaded ${tasks.length} tasks from disk`);
     } catch (e: any) {
       if (e.code !== "ENOENT") throw e;
-      // No file yet — start empty
     }
   }
 
@@ -122,13 +134,19 @@ export class FileTaskStore implements ITaskStore {
     }, 2000);
   }
 
-  /** Force write to disk */
+  /** Force write to disk (or storage provider) */
   async flush(): Promise<void> {
     this.dirty = false;
-    const dir = path.dirname(this.filePath);
-    await fs.mkdir(dir, { recursive: true });
     const tasks = Array.from(this.tasks.values());
-    await fs.writeFile(this.filePath, JSON.stringify(tasks, null, 2), "utf8");
+    const data = JSON.stringify(tasks, null, 2);
+
+    if (this.storage) {
+      await this.storage.write(this.relativePath, data);
+    } else {
+      const dir = path.dirname(this.filePath);
+      await fs.mkdir(dir, { recursive: true });
+      await fs.writeFile(this.filePath, data, "utf8");
+    }
     logger.debug(`Saved ${tasks.length} tasks to disk`);
   }
 }

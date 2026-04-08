@@ -338,25 +338,29 @@ PhaseHeader "Phase 4: File Storage"
 
 if (ShouldRun 4 1) {
     Section "Step 4.1: StorageProvider interface"
-    # TODO: Uncomment when storage provider is created
-    # FileExists "$BE/storage/StorageProvider.ts"    "StorageProvider interface"
-    # FileExists "$BE/storage/FsStorageProvider.ts"  "FsStorageProvider"
+    FileExists "$BE/storage/AppStateStorage.ts"     "AppStateStorage interface"
+    FileExists "$BE/storage/WorkspaceStorage.ts"    "WorkspaceStorage interface"
+    FileExists "$BE/storage/index.ts"               "Storage factory"
 }
 
 if (ShouldRun 4 2) {
     Section "Step 4.2: Wire into existing stores"
-    # TODO: Check FileTaskStore uses StorageProvider
+    FileContains "$AM/src/persistence/FileTaskStore.ts" "StorageProvider"  "FileTaskStore: accepts StorageProvider"
+    FileContains "$AM/src/persistence/FilePlanStore.ts" "StorageProvider"  "FilePlanStore: accepts StorageProvider"
 }
 
 if (ShouldRun 4 3) {
     Section "Step 4.3: Azure Blob StorageProvider"
-    # TODO: Uncomment when Azure provider is created
-    # FileExists "$BE/storage/AzureBlobStorageProvider.ts"  "AzureBlobStorageProvider"
+    FileExists "$BE/storage/AzureBlobStorageProvider.ts"  "AzureBlobStorageProvider"
+    FileContains "$BE/storage/index.ts" "azure"           "Storage factory: azure support"
+    FileContains $ENV_EX "AZURE_STORAGE_CONNECTION_STRING" "Azure env vars documented"
 }
 
 if (ShouldRun 4 4) {
     Section "Step 4.4: Git remote push"
-    # TODO: Check GitBranchManager.addRemote and push endpoint
+    FileContains "packages/workspace/src/L1/workspace/GitBranchManager.ts" "addRemote"  "GitBranchManager: addRemote"
+    FileContains "packages/workspace/src/L1/workspace/GitBranchManager.ts" "async push"  "GitBranchManager: push"
+    FileContains "$BE/api/HttpServer.ts" "workspaces.*push"  "Push endpoint"
 }
 
 } # end Phase 4

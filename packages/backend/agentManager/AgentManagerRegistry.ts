@@ -19,6 +19,7 @@ import { AgentModel } from "./team/schema/agentSchema.js";
 import { WorkspacePlugin } from "./plugins/WorkspacePlugin.js";
 import { CollaborationPlugin } from "./plugins/CollaborationPlugin.js";
 import { KnowledgePlugin } from "./plugins/KnowledgePlugin.js";
+import { getConfig } from "../config/index.js";
 
 const logger = rootLogger.child({ module: "AgentManagerRegistry" });
 
@@ -114,12 +115,24 @@ export class AgentManagerRegistry {
     const collabPort = process.env.COLLAB_PORT
       ? parseInt(process.env.COLLAB_PORT, 10)
       : undefined;
+
+    const config = getConfig();
+    let collabProvider: any = undefined;
+
+    if (config.collabMode === "external") {
+      // External mode — connect to standalone collab server via WebSocket
+      const { RemoteCollabClient } = await import("@ping/collaboration");
+      collabProvider = new RemoteCollabClient(config.collabUrl);
+      logger.info(`[Registry] Using external collab server: ${config.collabUrl}`);
+    }
+
     manager.registerPlugin(
       new CollaborationPlugin({
         teamId,
         collabStorageDir: `${teamRepoPath}/.ping/collab`,
         repoPath: teamRepoPath,
-        collabPort,
+        collabPort: collabProvider ? undefined : collabPort,
+        collabProvider,
       }),
     );
 

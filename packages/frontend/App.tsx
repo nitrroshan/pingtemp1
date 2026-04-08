@@ -57,15 +57,31 @@ function CollabFileTree({ teamId, activeDoc, onSelectDoc }: {
   const [docs, setDocs] = React.useState<string[]>([]);
   const [newDocName, setNewDocName] = React.useState('');
 
+  const loadDocs = React.useCallback(() => {
+    if (!teamId) return;
+    fetch(`http://localhost:3002/api/collab/${teamId}/docs`)
+      .then(r => r.json()).then(d => setDocs(d.docs || [])).catch(() => {});
+  }, [teamId]);
+
   React.useEffect(() => {
     if (!teamId) return;
-    const load = () =>
-      fetch(`http://localhost:3002/api/collab/${teamId}/docs`)
-        .then(r => r.json()).then(d => setDocs(d.docs || [])).catch(() => {});
-    load();
-    const iv = setInterval(load, 10000);
+    loadDocs();
+    const iv = setInterval(loadDocs, 10000);
     return () => clearInterval(iv);
-  }, [teamId]);
+  }, [teamId, loadDocs]);
+
+  const [confirmDelete, setConfirmDelete] = React.useState<string | null>(null);
+
+  const deleteDoc = (doc: string) => {
+    if (!teamId) return;
+    fetch(`http://localhost:3002/api/collab/${teamId}/docs/${encodeURIComponent(doc)}`, { method: 'DELETE' })
+      .then(() => {
+        setDocs(prev => prev.filter(d => d !== doc));
+        if (activeDoc === doc) onSelectDoc('');
+        setConfirmDelete(null);
+      })
+      .catch(() => { setConfirmDelete(null); });
+  };
 
   return (
     <div className="w-60 border-r border-border bg-card flex flex-col shrink-0">
@@ -76,10 +92,28 @@ function CollabFileTree({ teamId, activeDoc, onSelectDoc }: {
         {docs.length === 0
           ? <div className="text-muted-foreground text-xs p-2">No documents yet.</div>
           : docs.map(doc => (
-            <button key={doc} onClick={() => onSelectDoc(doc)}
-              className={`w-full text-left px-3 py-1.5 rounded text-xs truncate transition-colors cursor-pointer ${doc === activeDoc ? 'bg-primary/10 text-primary' : 'text-foreground/80 hover:bg-accent'}`}>
-              📄 {doc}
-            </button>
+            <div key={doc} className="flex items-center group">
+              {confirmDelete === doc ? (
+                <div className="flex items-center gap-1 w-full px-2 py-1 bg-red-500/10 rounded text-xs">
+                  <span className="flex-1 truncate text-red-400">Delete?</span>
+                  <button onClick={() => deleteDoc(doc)}
+                    className="px-1.5 py-0.5 rounded bg-red-500 text-white text-[10px] font-medium hover:bg-red-600 cursor-pointer">Yes</button>
+                  <button onClick={() => setConfirmDelete(null)}
+                    className="px-1.5 py-0.5 rounded bg-muted text-foreground text-[10px] font-medium hover:bg-accent cursor-pointer">No</button>
+                </div>
+              ) : (
+                <>
+                  <button onClick={() => onSelectDoc(doc)}
+                    className={`flex-1 text-left px-3 py-1.5 rounded-l text-xs truncate transition-colors cursor-pointer ${doc === activeDoc ? 'bg-primary/10 text-primary' : 'text-foreground/80 hover:bg-accent'}`}>
+                    📄 {doc}
+                  </button>
+                  <button onClick={() => setConfirmDelete(doc)} title="Delete document"
+                    className="px-1.5 py-1.5 rounded-r text-xs text-muted-foreground opacity-0 group-hover:opacity-100 hover:text-red-400 hover:bg-accent transition-all cursor-pointer">
+                    ✕
+                  </button>
+                </>
+              )}
+            </div>
           ))}
       </div>
       <div className="p-2 border-t border-border flex gap-1">
