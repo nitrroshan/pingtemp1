@@ -426,7 +426,7 @@ Direction: AgentManager → everything (no reverse deps)
 | 2 | RoleTaskQueue ownership | MemoryManager | TaskStore | A6 Step 1 |
 | 3 | Dependency tracking | MemoryManager (prerequisite maps) | DependencyResolver | A5 Step 4 (done ✅) |
 | 4 | Workspace publish/merge | OrchestratorService | WorkspaceManager (plugin) | A6 Step 2 |
-| 5 | Legacy API removal | AgentManager | deleted | After PLANNER_MODE=agent stable |
+| 5 | Legacy API removal | AgentManager | deleted | ✅ Done (legacy orchestrator removed) |
 | 6 | Auto-approve logic | AgentManager | OrchestratorService config | A5 Step 10 |
 | 7 | Team management | AgentManager | TeamService (exists) | Phase 3 |
 | 8 | Task context | MemoryManager | ContextBuilder (new) | A6 Step 3 |
@@ -703,46 +703,36 @@ RoleTaskQueue                    OrchestratorService
 
 ## 6. Planner-as-Agent Architecture
 
-### Two Modes: Legacy vs Planner
+### Current Architecture (legacy orchestrator removed)
 
 ```
-PLANNER_MODE=legacy (current default):
-  ┌──────────────┐     ┌──────────────┐
-  │ Orchestrator │────→│ PlanBuilder  │
-  │ Agent (tool) │     │ Agent (struct)│
-  │  4 tools:    │     │              │
-  │  create_plan │     │ Returns JSON │
-  │  approve_plan│     │ plan         │
-  │  get_status  │     └──────────────┘
-  │  get_context │
-  └──────────────┘
-
-PLANNER_MODE=agent (new):
   ┌────────────────────────────────────────┐
   │            Planner Agent               │
   │                                        │
-  │  21 tools in 5 categories:             │
-  │                                        │
-  │  USER INTERACTION (3):                 │
-  │    ask_user, tell_user, discuss_approach│
+  │  14 tools in 4 categories:             │
   │                                        │
   │  KNOWLEDGE (3):                        │
   │    research_domain, analyze_requirements│
   │    get_team_capabilities               │
   │                                        │
-  │  EXECUTION (8):                        │
-  │    submit_plan, request_approval       │
-  │    get_status, get_context             │
-  │    cancel_task, get_blocked            │
-  │    get_critical_path, search_agents    │
+  │  EXECUTION (6):                        │
+  │    submit_plan, get_status, get_context │
+  │    cancel_task, get_blocked             │
+  │    get_critical_path, search_agents     │
   │                                        │
-  │  PLAN MUTATION (6):                    │
-  │    update_task, add_tasks, remove_task │
-  │    reprioritize, reassign_task, replan │
+  │  PLAN MUTATION (5):                    │
+  │    update_task, add_tasks, remove_task  │
+  │    reprioritize, replan                │
   │                                        │
-  │  NOTIFICATIONS (1):                    │
-  │    check_notifications                 │
-  │                                        │
+  │  Cognitive Loop (natural language):     │
+  │  CLARIFY → RESEARCH → PLAN → MONITOR   │
+  └────────────────────────────────────────┘
+```
+
+> **Note:** Legacy dual-agent mode (orchestrator agent + plan-builder agent with 4 tools) has been removed. `PLANNER_MODE` feature flag deleted. Only planner mode exists.
+> 
+> **Deferred to sandbox phase:** cockatiel auto-retry + circuit-breaker, AbortController worker cancellation, watchdog heartbeat loop.  
+> **Deferred to L3 phase:** Real LLM research via GPT Researcher MCP or Stanford STORM.
   │  Cognitive Loop:                       │
   │  CLARIFY → RESEARCH → ANALYSE →        │
   │  DISCUSS → ASSESS → REASON →           │
@@ -777,9 +767,9 @@ Turn 3: All tasks complete (OrchestratorService sends message)
 when something needs a planner decision. Same handleMessage pattern as the 
 user's initial goal. No special infrastructure.
 
-**Phase 2 (production — with NotificationQueue, Step 7):**
-If 5 tasks fail in 100ms, we don't want 5 separate LLM calls.
-NotificationQueue batches events (100ms debounce), sends ONE message:
+**Current implementation (NotificationQueue wired):**
+NotificationQueue batches events (100ms debounce), sends ONE message
+when multiple events occur rapidly:
 "3 tasks failed, 2 completed since last check. Details: ..."
 
 ```
@@ -811,16 +801,7 @@ NotificationQueue batches events (100ms debounce), sends ONE message:
 ```
              ┌──────────────────────────────────────────────┐
              │                                              │
-             │  LEGACY MODE (4 states)                      │
-             │                                              │
-             │  idle ──→ gathering ──→ awaiting_approval    │
-             │   ↑                           │              │
-             │   │                           ▼              │
-             │   └────────── idle ←── executing             │
-             │                                              │
-             ├──────────────────────────────────────────────┤
-             │                                              │
-             │  PLANNER MODE (2 states) — simpler           │
+             │  OrchestratorService (2 states)              │
              │  Planner manages its own phases via tools    │
              │                                              │
              │  idle ──→ executing                          │
@@ -997,30 +978,19 @@ plan-proposed, plan-approved                 (plan lifecycle)
 | **Collaboration (L2)** | `collab` (discover, list, read, read-block, write, write-block) |
 | **Identity** | `who_am_i`, `my_progress`, `my_tools`, `my_context` |
 
-### Legacy Orchestrator Tools (PLANNER_MODE=legacy)
+### Planner Tools — 14 tools
 
-| Tool | Purpose |
-|---|---|
-| `create_plan` | Invoke PlanBuilder agent to generate plan |
-| `approve_plan` | Start execution of approved plan |
-| `get_status` | Query task status counts |
-| `get_context` | Retrieve output manifests |
-
-### Planner Tools (PLANNER_MODE=agent) — 21 tools [NEW]
+> Legacy orchestrator tools (`create_plan`, `approve_plan`) have been removed. User interaction tools (`ask_user`, `tell_user`, `discuss_approach`) are implemented but intentionally excluded — planner uses natural language chat instead.
 
 | Category | Tool | Purpose |
 |---|---|---|
-| **User Interaction** | `ask_user` | Ask user a question (blocks) |
-| | `tell_user` | Send informational update (fire-and-forget) |
-| | `discuss_approach` | Present options, wait for selection |
-| **Knowledge** | `research_domain` | Deep-dive research on topic |
-| | `analyze_requirements` | Decompose goal into requirements |
+| **Knowledge** | `research_domain` | Deep-dive research on topic (stub — planner reasons directly) |
+| | `analyze_requirements` | Decompose goal into requirements (stub) |
 | | `get_team_capabilities` | Query available roles/skills |
 | **Execution** | `submit_plan` | Submit plan with DAG validation |
-| | `request_approval` | Pause for user approval |
-| | `get_status` | Query task status (reused from legacy) |
-| | `get_context` | Retrieve output manifests (reused) |
-| | `cancel_task` | Abort running task |
+| | `get_status` | Query task status |
+| | `get_context` | Retrieve output manifests |
+| | `cancel_task` | Cancel a running/pending task |
 | | `get_blocked` | Query stuck tasks and reasons |
 | | `get_critical_path` | Longest dependency chain |
 | | `search_agents` | Find roles by capability |
@@ -1028,9 +998,7 @@ plan-proposed, plan-approved                 (plan lifecycle)
 | | `add_tasks` | Inject new tasks into plan |
 | | `remove_task` | Remove pending task |
 | | `reprioritize` | Change task priority |
-| | `reassign_task` | Move task to different role |
 | | `replan` | Replace remaining plan entirely |
-| **Notifications** | `check_notifications` | Drain accumulated events |
 
 ---
 
@@ -1136,7 +1104,7 @@ type PlannerNotification =
 | 7 | **Tools use AI SDK format** | `tool()` from `ai` + Zod schema with `inputSchema` |
 | 8 | **DAG must be validated** | DependencyResolver rejects cycles with path |
 | 9 | **Guard rails on mutations** | Can't mutate in_progress/completed, can't create cycles |
-| 10 | **Planner mode is feature-flagged** | `PLANNER_MODE=agent\|legacy`, legacy must still work |
+| 10 | **Planner is the brain** | PlannerAgent is top-level agent. OrchestratorService is reactive runtime. Legacy orchestrator removed. |
 | 11 | **No file creation without need** | Update existing, don't create duplicates |
 | 12 | **Branching from dev** | Never push to main. Feature branches from dev. |
 

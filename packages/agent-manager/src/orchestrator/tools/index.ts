@@ -1,41 +1,20 @@
 /**
  * Orchestrator Tools Factory
  *
- * Creates all orchestrator tools with injected context.
- * Uses closure pattern for dependency injection.
- *
- * Supports two modes:
- * - "legacy": Original 4 tools (create_plan, approve_plan, get_status, get_context)
- * - "planner": Full planner toolkit (21 tools for planner-as-agent)
+ * Creates the planner toolkit (14 tools for planner-as-agent).
  */
 
 import type { OrchestratorContext } from "../types.js";
 import type { AgentFactory } from "../../agent/AgentFactory.js";
 import type { DependencyResolver } from "../DependencyResolver.js";
 
-// Legacy tools
-import { createCreatePlanTool } from "./createPlan.js";
-import { createApprovePlanTool } from "./approvePlan.js";
-import { createGetStatusTool } from "./getStatus.js";
-import { createGetContextTool } from "./getContext.js";
-
 // Planner tools (no user interaction tools — planner talks naturally via text)
 import { createResearchDomainTool, createAnalyzeRequirementsTool, createGetTeamCapabilitiesTool, type KnowledgeToolContext } from "./knowledgeTools.js";
 import { createSubmitPlanTool } from "./submitPlan.js";
+import { createGetStatusTool } from "./getStatus.js";
+import { createGetContextTool } from "./getContext.js";
 import { createCancelTaskTool, createGetBlockedTool, createGetCriticalPathTool, createSearchAgentsTool, type ExecutionToolContext } from "./executionTools.js";
 import { createUpdateTaskTool, createAddTasksTool, createRemoveTaskTool, createReprioritizeTool, createReassignTaskTool, createReplanTool, type PlanMutationContext } from "./planMutationTools.js";
-
-/**
- * Creates the legacy 4-tool set (for PLANNER_MODE=legacy)
- */
-export function createOrchestratorTools(context: OrchestratorContext) {
-  return [
-    createCreatePlanTool(context),
-    createApprovePlanTool(context),
-    createGetStatusTool(context),
-    createGetContextTool(context),
-  ];
-}
 
 /**
  * Extended context required for planner-mode tools.
@@ -103,8 +82,7 @@ export function createPlannerTools(ctx: PlannerToolsContext) {
 }
 
 // Re-export individual tool creators for testing
-export { createCreatePlanTool } from "./createPlan.js";
-export { createApprovePlanTool } from "./approvePlan.js";
+// Re-export individual tool creators for testing
 export { createGetStatusTool } from "./getStatus.js";
 export { createGetContextTool } from "./getContext.js";
 export { createSubmitPlanTool } from "./submitPlan.js";

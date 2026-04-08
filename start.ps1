@@ -196,13 +196,13 @@ while ($true) {
             Write-Host ""
             Set-Location $root; bun install 2>$null
             Start-MongoDB
-            Build-Package "Backend" "$root\packages\backend" "bun run build"
+            Build-Package "All Packages" "$root" "bun run build"
             Start-Service "Backend"  "$root\packages\backend"  "bun dist/server.js" "Ping - Backend"
             Start-Sleep -Seconds 2
             Start-Service "Frontend" "$root\packages\frontend" "bun run dev"       "Ping - Frontend"
         }
         "2" {
-            Build-Package "Backend" "$root\packages\backend" "bun run build"
+            Build-Package "All Packages" "$root" "bun run build"
             Start-Service "Backend" "$root\packages\backend" "bun dist/server.js" "Ping - Backend"
         }
         "3" {
@@ -225,11 +225,9 @@ while ($true) {
         "9"  { Stop-ServiceByPort "Registry" 3001 }
         "10" { Stop-MongoDB }
         "11" {
-            Build-Package "Backend"  "$root\packages\backend"  "bun run build"
-            Build-Package "Frontend" "$root\packages\frontend" "bun run build"
-            Build-Package "Registry" "$root\packages\registry" "bun run build"
+            Build-Package "All Packages" "$root" "bun run build"
         }
-        "12" { Build-Package "Backend" "$root\packages\backend" "bun run build" }
+        "12" { Build-Package "All Packages" "$root" "bun run build" }
         "13" { Set-Location $root; bun install }
         "14" { Show-Status }
         "20" {
@@ -240,7 +238,7 @@ while ($true) {
             Start-Sleep -Seconds 2
             Reset-Database
             Seed-Database
-            Build-Package "Backend" "$root\packages\backend" "bun run build"
+            Build-Package "All Packages" "$root" "bun run build"
             Start-Service "Backend"  "$root\packages\backend"  "bun dist/server.js" "Ping - Backend"
             Start-Sleep -Seconds 2
             Start-Service "Frontend" "$root\packages\frontend" "bun run dev"       "Ping - Frontend"

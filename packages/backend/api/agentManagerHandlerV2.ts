@@ -301,8 +301,8 @@ export function createAgentManagerHandlerV2(): express.Router {
       }
 
       const manager = await agentManagerRegistry.getForTeam(teamId);
-      const memoryManager = manager.getMemoryManager();
-      const tasks = memoryManager?.getAllTasks() || [];
+      const taskStore = manager.getTaskStore();
+      const tasks = taskStore?.getAllTasks() || [];
 
       res.json({
         tasks: tasks.map((t) => ({

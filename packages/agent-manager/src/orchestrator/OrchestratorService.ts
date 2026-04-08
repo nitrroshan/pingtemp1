@@ -10,8 +10,6 @@
  * - PlannerAgent calls tools → tools call TaskStore directly
  * - OrchestratorService reacts to callbacks from RoleTaskQueue
  * - AgentManager (composition root) wires both to shared services
- *
- * For PLANNER_MODE=legacy rollback, see LegacyOrchestratorService.ts
  */
 
 import type { WorkerPool } from "../services/WorkerPool.js";
@@ -78,9 +76,10 @@ export class OrchestratorService {
   private messages: OrchestratorMessage[] = [];
   private autoExecute: boolean;
 
-  // Serialization chains (prevent race conditions)
-  private dispatchChain: Promise<void> = Promise.resolve();
-  private messageChain: Promise<string> = Promise.resolve("");
+  // Dispatch tracking
+  private activeDispatches = new Set<string>();   // taskIds currently being dispatched (prevent double-dispatch)
+  private manualDispatchChain: Promise<void> = Promise.resolve(); // serialized manual dispatches only
+  private messageChain: Promise<string> = Promise.resolve(""); // serialized user messages
 
   // Pending plan (between submit_plan and approve)
   private pendingPlan: any = null;
@@ -268,15 +267,51 @@ export class OrchestratorService {
   // TASK LIFECYCLE CALLBACKS (wired from RoleTaskQueue via TaskStore)
   // ═══════════════════════════════════════════════════════════════════
 
-  /** Task became ready → dispatch to WorkerPool (if autoExecute ON) */
+  /** Task became ready → dispatch to WorkerPool (if autoExecute ON), else notify frontend */
   private async onTaskReady({ taskId, role }: { taskId: string; role: string }): Promise<void> {
     console.log(`[OrchestratorService] onTaskReady: ${taskId} (${role})`);
 
+    // Always notify frontend that the task is ready
+    this.callbacks.onTaskUpdate?.({
+      taskId, status: "ready", role, timestamp: Date.now(),
+    });
+
     if (!this.autoExecute) return;
 
-    this.dispatchChain = this.dispatchChain
+    // Fire-and-forget: dispatch immediately in parallel (don't block other tasks).
+    // Guard against double-dispatch (onTaskReady can fire from both create() and completeTask()).
+    if (this.activeDispatches.has(taskId)) return;
+    this.activeDispatches.add(taskId);
+
+    this.dispatchTask(taskId, role).catch((err) => {
+      console.error(`[OrchestratorService] Auto-dispatch error for ${taskId}:`, err);
+    }).finally(() => {
+      this.activeDispatches.delete(taskId);
+    });
+  }
+
+  /**
+   * Manually dispatch a ready task. Used when autoExecute is OFF and the user
+   * triggers start-task from the frontend.
+   */
+  async manualDispatch(taskId: string): Promise<void> {
+    const task = this.taskStore.get(taskId);
+    if (!task) throw new Error(`Task ${taskId} not found`);
+    if (task.status !== "ready" && task.status !== "pending") {
+      throw new Error(`Task ${taskId} is not ready (status: ${task.status})`);
+    }
+    if (this.activeDispatches.has(taskId)) {
+      throw new Error(`Task ${taskId} is already being dispatched`);
+    }
+    this.activeDispatches.add(taskId);
+
+    const role = task.assigned_role;
+    // Manual dispatch is serialized (caller awaits) so UI gets immediate feedback
+    this.manualDispatchChain = this.manualDispatchChain
       .then(() => this.dispatchTask(taskId, role))
-      .catch((err) => console.error(`[OrchestratorService] Dispatch error for ${taskId}:`, err));
+      .catch((err) => console.error(`[OrchestratorService] Dispatch error for ${taskId}:`, err))
+      .finally(() => this.activeDispatches.delete(taskId));
+    await this.manualDispatchChain;
   }
 
   /** Task completed → check if all done, notify planner */
@@ -338,17 +373,12 @@ export class OrchestratorService {
     }
 
     // Mark complete in TaskStore → triggers onTaskComplete via RoleTaskQueue
-    const newlyReady = this.taskStore.completeTask(data.taskId, {
+    // Newly ready dependants are queued → onTaskReady fires → auto-dispatch if enabled
+    this.taskStore.completeTask(data.taskId, {
       summary: data.summary + (mergeWarning ? `\n${mergeWarning}` : ""),
       deliverables: data.deliverables,
       nextSteps: data.nextSteps, completedBy: "agent", timestamp: data.timestamp,
     });
-
-    for (const readyTask of newlyReady) {
-      this.callbacks.onTaskUpdate?.({
-        taskId: readyTask.id, status: "ready", role: readyTask.assigned_role, timestamp: Date.now(),
-      });
-    }
   }
 
   // ═══════════════════════════════════════════════════════════════════
@@ -361,6 +391,10 @@ export class OrchestratorService {
     if (!task || task.status === "completed" || task.status === "failed") return;
 
     this.taskStore.updateStatus(taskId, "in_progress");
+
+    this.callbacks.onTaskUpdate?.({
+      taskId, status: "in_progress", role, timestamp: Date.now(),
+    });
 
     this.callbacks.onProgress?.({
       teamId: this.teamId, state: "executing",
@@ -407,16 +441,13 @@ export class OrchestratorService {
       const afterTask = this.taskStore.get(taskId);
       if (afterTask && afterTask.status === "in_progress") {
         console.log(`[OrchestratorService] Worker finished without complete_task, auto-completing ${taskId}`);
-        const newlyReady = this.taskStore.completeTask(taskId, {
+        this.taskStore.completeTask(taskId, {
           summary: "Task completed (auto-completed — worker finished without calling complete_task)",
           completedBy: "auto",
           timestamp: Date.now(),
         });
-        for (const readyTask of newlyReady) {
-          this.callbacks.onTaskUpdate?.({
-            taskId: readyTask.id, status: "ready", role: readyTask.assigned_role, timestamp: Date.now(),
-          });
-        }
+        // Newly ready tasks are handled by RoleTaskQueue → onTaskReady callback.
+        // No need to emit onTaskUpdate(ready) here — onTaskReady does it.
       }
     } catch (error: any) {
       if (this.taskStore.get(taskId)?.status !== "completed") {

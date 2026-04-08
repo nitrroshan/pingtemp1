@@ -3,7 +3,11 @@
 **Parent:** [Feature Architecture](feature_architecture.md)  
 **Phase:** 1 (Core Loop)  
 **ID:** A5  
-**Priority:** CRITICAL
+**Priority:** CRITICAL  
+**Status:** ✅ Complete (Phases 1-3)
+
+> **Completed April 8, 2026:** Core architecture done. Legacy orchestrator removed. NotificationQueue wired with debounce batching.  
+> **Deferred items:** cockatiel + classifyError wiring (sandbox phase), AbortController cancellation (sandbox phase), real research LLM calls (L3 Knowledge Base phase).
 
 ---
 
@@ -133,28 +137,29 @@ Audit of every existing file that this feature touches. Each tagged:
 
 ## Package Dependencies: Build vs Buy
 
-Research across npm for each implementation area. Verdict: **2 new packages (`cockatiel`, `emittery`), rest uses built-ins or is trivial custom code.**
+Research across npm for each implementation area. Verdict: **2 packages planned (`cockatiel`, `emittery`), cockatiel deferred to sandbox phase, emittery not needed (NotificationQueue is simpler). Rest uses built-ins.**
 
 | Step | Component | Candidate Packages | Verdict |
 |------|-----------|-------------------|--------|
 | 1 | Types/schemas | `zod` (already installed) | **Use existing** |
 | 2 | UserInteractionManager | `p-defer` (10.5M/wk), `p-timeout` (30.9M/wk) | **Skip both** — use `Promise.withResolvers()` + `AbortSignal.timeout()` (built into Bun/Node 22+) |
 | 4 | DAG resolver | `graphlib` (3.2M/wk, last updated 6 years ago) | **Skip** — our DAGs have 10-50 nodes. Topo sort + cycle detection is ~50 lines. Not worth a stale dependency |
-| 7 | NotificationQueue + Events | **`emittery`** (42M/wk, typed async events) | **Install `emittery`** — we're already gutting the 7-EventEmitter spaghetti (A5 notifications + A6 event wiring). Adopting emittery now avoids building on EventEmitter then migrating again. Typed generics, async-first, AbortSignal support, `clearListeners()`. NotificationQueue becomes a thin wrapper over typed emittery events |
-| 8 | Retry/backoff | **`cockatiel`** (1.3M/wk), `async-retry` (21.9M/wk) | **Install `cockatiel`** — retry with `handleType()` for error classification, `ExponentialBackoff`, circuit breaker for external services, timeout with AbortSignal, bulkhead for worker concurrency. All composable via `wrap()`. Zero deps. Replaces ~150 lines of custom retry logic |
-| 9 | CancellationToken | None needed | **Use native `AbortController/AbortSignal`** — this IS the JS standard CancellationToken. `signal.aborted`, `controller.abort(reason)`, `signal.throwIfAborted()`, `signal.addEventListener('abort', cb)`. Our custom `CancellationToken` maps 1:1 to it |
+| 7 | NotificationQueue + Events | ~~`emittery`~~ | **Skipped** — NotificationQueue is 80 LOC with setTimeout debounce. Simpler than adding a package. No EventEmitter spaghetti to replace — OrchestratorService uses direct callbacks |
+| 8 | Retry/backoff | **`cockatiel`** (1.3M/wk) | **Deferred to sandbox phase** — `classifyError()` is written (10 error categories). cockatiel adds auto-retry (exponential backoff) + circuit-breaker for transient errors. Install when worker sandboxing is ready: `bun add cockatiel` |
+| 9 | CancellationToken | None needed | **Deferred to sandbox phase** — use native `AbortController/AbortSignal`. Thread through `streamText()` when containers are ready |
 
 ### Action Items
 ```bash
-bun add cockatiel emittery
+# Deferred to sandbox phase:
+# bun add cockatiel
 ```
 
 ### Why Not More Packages?
 - **`p-defer`**: `Promise.withResolvers()` is now standard JS. Same API (`{ promise, resolve, reject }`), zero deps.
-- **`p-timeout`**: `AbortSignal.timeout(ms)` does the same thing natively. Wrap with `Promise.race()` if needed.
-- **`graphlib`**: 6 years unmaintained. Our DAG is tiny. Custom is safer and debuggable.
-- **`async-retry`**: `cockatiel` subsumes it and adds circuit breaker, timeout, bulkhead, fallback.
-- **`emittery`**: Install now — we're redesigning the event architecture in A5 Step 7 + A6 Step 4. Building on EventEmitter then migrating to emittery later is pointless double work.
+- **`p-timeout`**: `AbortSignal.timeout(ms)` does the same thing natively.
+- **`graphlib`**: 6 years unmaintained. Our DAG is tiny. Custom `DependencyResolver` is 200 LOC and debuggable.
+- **`emittery`**: Skipped — NotificationQueue is 80 LOC with setTimeout, OrchestratorService uses direct callbacks. No EventEmitter spaghetti to replace.
+- **`cockatiel`**: Deferred to sandbox phase. `classifyError()` is 100% written (10 error categories). Wire cockatiel's `retry()` + `circuitBreaker()` around WorkerPool when sandboxing enables safe retries.
 
 ---
 
