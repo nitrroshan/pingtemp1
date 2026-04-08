@@ -16,9 +16,9 @@ import { Logger } from "tslog";
 import { AgentManager } from "./AgentManagerV2.js";
 import { TeamModel } from "./team/schema/teamSchema.js";
 import { AgentModel } from "./team/schema/agentSchema.js";
-import { WorkspacePlugin } from "@ping/workspace";
-import { CollaborationPlugin } from "@ping/collaboration";
-import { KnowledgePlugin } from "@ping/knowledge";
+import { WorkspacePlugin } from "./plugins/WorkspacePlugin.js";
+import { CollaborationPlugin } from "./plugins/CollaborationPlugin.js";
+import { KnowledgePlugin } from "./plugins/KnowledgePlugin.js";
 
 const logger = new Logger({ name: "AgentManagerRegistry" });
 

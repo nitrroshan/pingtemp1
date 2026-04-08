@@ -224,6 +224,7 @@ export class AiSdkAgent extends BaseAgent {
       ...(this.definition.systemPrompt
         ? { system: this.definition.systemPrompt }
         : {}),
+      maxRetries: 5,
     });
 
     const structuredOutput = result.output;
@@ -268,6 +269,9 @@ export class AiSdkAgent extends BaseAgent {
       ...(hasTools ? { tools: this.loadedTools, stopWhen: stepCountIs(this.maxSteps) } : {}),
       ...(this.temperature !== undefined ? { temperature: this.temperature } : {}),
       ...(this.maxTokens !== undefined ? { maxTokens: this.maxTokens } : {}),
+      // Increase retries for transient errors (429, 5xx). AI SDK uses exponential backoff.
+      // Default is 2, which is too low for rate-limited Azure deployments.
+      maxRetries: 5,
       onStepFinish: ({ finishReason }) => {
         logger.debug(`AiSdkAgent step finished: ${finishReason}`);
       },

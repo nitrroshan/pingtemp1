@@ -4,6 +4,11 @@
  * Adapts the existing L3 knowledge layer to the plugin architecture.
  * Delegates all real work to L3KnowledgePlugin — zero behavior change.
  *
+ * Lives in backend because:
+ *   - @ping/knowledge (L3) is a standalone library usable by anyone
+ *   - The plugin adapter bridges L3 into the agent-manager plugin system
+ *   - "Plugin should be where it is being used" (backend)
+ *
  * Provides:
  *   - KnowledgeMcpServer (knowledge query/add tools)
  *   - KnowledgeGuideSkill (always-mode prompt playbook)
@@ -18,8 +23,8 @@ import type {
   ToolContext,
   SkillContext,
 } from "@ping/agent-manager";
-import { L3KnowledgePlugin } from "../L3/L3KnowledgePlugin.js";
-import type { KnowledgeBaseConfig } from "../types/index.js";
+import { L3KnowledgePlugin } from "@ping/knowledge";
+import type { KnowledgeBaseConfig } from "@ping/knowledge";
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // MCP SERVER — Knowledge tool provider

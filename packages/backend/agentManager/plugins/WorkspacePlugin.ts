@@ -4,6 +4,11 @@
  * Adapts the existing L1 workspace layer to the plugin architecture.
  * Delegates all real work to L1WorkspacePlugin — zero behavior change.
  *
+ * Lives in backend because:
+ *   - @ping/workspace (L1) is a standalone library usable by anyone
+ *   - The plugin adapter bridges L1 into the agent-manager plugin system
+ *   - "Plugin should be where it is being used" (backend)
+ *
  * Provides:
  *   - WorkspaceMcpServer (32 workspace tools via createWorkspaceTools)
  *   - WorkspaceGuideSkill (always-mode prompt playbook)
@@ -18,8 +23,8 @@ import type {
   ToolContext,
   SkillContext,
 } from "@ping/agent-manager";
-import { L1WorkspacePlugin } from "../L1/L1WorkspacePlugin.js";
-import type { WorkspaceConfig } from "../types/index.js";
+import { L1WorkspacePlugin } from "@ping/workspace";
+import type { WorkspaceConfig } from "@ping/workspace";
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // MCP SERVER — Tool provider for workspace operations

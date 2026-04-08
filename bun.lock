@@ -79,7 +79,6 @@
         "@hocuspocus/extension-database": "^3.4.4",
         "@hocuspocus/server": "^3.4.4",
         "@langchain/core": "^1.1.0",
-        "@ping/agent-manager": "workspace:*",
         "ai": "^6.0.143",
         "fast-glob": "^3.3.3",
         "minisearch": "^7.2.0",
@@ -138,7 +137,6 @@
       "version": "0.1.0",
       "dependencies": {
         "@langchain/core": "^1.1.0",
-        "@ping/agent-manager": "workspace:*",
         "mongoose": "^9.0.2",
         "tslog": "^4.10.2",
       },
@@ -165,7 +163,6 @@
       "version": "0.1.0",
       "dependencies": {
         "@langchain/core": "^1.1.0",
-        "@ping/agent-manager": "workspace:*",
         "@vscode/ripgrep": "^1.17.1",
         "fast-glob": "^3.3.3",
         "minisearch": "^7.2.0",

@@ -4,6 +4,11 @@
  * Adapts the existing L2 collaboration layer to the plugin architecture.
  * Delegates all real work to L2CollaborationPlugin — zero behavior change.
  *
+ * Lives in backend because:
+ *   - @ping/collaboration (L2) is a standalone library usable by anyone
+ *   - The plugin adapter bridges L2 into the agent-manager plugin system
+ *   - "Plugin should be where it is being used" (backend)
+ *
  * Provides:
  *   - CollabMcpServer (unified collab tool via createCollabTool)
  *   - CollabGuideSkill (always-mode prompt playbook)
@@ -20,9 +25,9 @@ import type {
 } from "@ping/agent-manager";
 import {
   L2CollaborationPlugin,
-  type L2CollaborationPluginConfig,
-} from "../L2/L2CollaborationPlugin.js";
-import { createCollabTool } from "../L2/tools/index.js";
+  createCollabTool,
+} from "@ping/collaboration";
+import type { L2CollaborationPluginConfig } from "@ping/collaboration";
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // MCP SERVER — Collab tool provider
