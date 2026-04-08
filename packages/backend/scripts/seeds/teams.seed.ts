@@ -5,10 +5,10 @@
  * Idempotent — safe to run multiple times (upserts by teamName).
  */
 
-import { Logger } from "tslog";
+import { rootLogger } from "../../logging/index.js";
 import { TeamModel } from "../../agentManager/team/schema/teamSchema.js";
 
-const logger = new Logger({ name: "seed:teams" });
+const logger = rootLogger.child({ module: "seed:teams" });
 
 export interface SeededTeam {
   id: string;

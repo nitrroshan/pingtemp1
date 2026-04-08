@@ -5,13 +5,13 @@
  */
 
 import { createServer } from "http";
-import { Logger } from "tslog";
+import { rootLogger } from "../logging/index.js";
 import { AgentManager } from "../agentManager/AgentManagerV2.js";
 import { HttpServer } from "./HttpServer.js";
 import { SocketServerV2 } from "./SocketServerV2.js";
 import { TeamService } from "../team/index.js";
 
-const logger = new Logger({ name: "AgentManagerAPI" });
+const logger = rootLogger.child({ module: "AgentManagerAPI" });
 
 export class AgentManagerAPI {
   private agentManager: AgentManager;

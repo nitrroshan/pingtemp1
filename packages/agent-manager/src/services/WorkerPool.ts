@@ -8,7 +8,7 @@
  * - Clean up workers when done
  */
 
-import { Logger } from "tslog";
+import { rootLogger } from "../logging.js";
 import { AiSdkAgent } from "../agent/internal/AiSdkAgent.js";
 import {
   createReportStatusTool,
@@ -27,7 +27,7 @@ import dotenv from "dotenv";
 
 dotenv.config();
 
-const logger = new Logger({ name: "WorkerPool" });
+const logger = rootLogger.child({ module: "WorkerPool" });
 
 export interface WorkerCallbacks {
   onStream?: (data: { taskId: string; agentId: string; part: any }) => void;

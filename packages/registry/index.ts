@@ -1,5 +1,5 @@
 import express, { Request, Response } from "express";
-import { Logger } from "tslog";
+import { rootLogger } from "./logging.js";
 import { Agent, IAgent } from "./types/agent";
 import { AgentCapability, IAgentCapability } from "./types/agentCapability";
 import { AgentModel } from "./schema/agentSchema";
@@ -11,7 +11,7 @@ import { agentSearchIndex } from "./schema/searchIndex/agentSearchIndex";
 const app = express();
 const port = process.env.PORT || 3000;
 
-const logger = new Logger({ name: "agentRegistry/server" });
+const logger = rootLogger.child({ module: "agentRegistry/server" });
 app.use(express.json()); // for parsing application/json
 
 app.get("/", (req: Request, res: Response) => {
@@ -27,7 +27,7 @@ app.post("/agent/register", async (req: Request, res: Response) => {
     const agentCapabilities: AgentCapability[] = agentData.capabilities.map(
       (cap: IAgentCapability) => {
         if (!cap.name || !cap.description || !cap.level) {
-          logger.error("Invalid capability data:", cap);
+          logger.error({ cap }, "Invalid capability data");
           res.status(400).json({ error: "Invalid capability data" });
         }
         return new AgentCapability(cap.name, cap.description, cap.level);
@@ -61,10 +61,10 @@ app.post("/agent/register", async (req: Request, res: Response) => {
       res.status(500).json({ error: "Failed to create new agent" });
     }
 
-    logger.info("Agent registered:", savedAgent?._id);
+    logger.info({ agentId: savedAgent?._id }, "Agent registered");
     res.status(201).json({ agent: savedAgent });
   } catch (error) {
-    logger.error("Error registering agent:", error);
+    logger.error({ err: error }, "Error registering agent");
     res.status(400).json({ error: error });
   }
 });

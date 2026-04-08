@@ -12,9 +12,9 @@
 import * as Y from "yjs";
 import type { ICollabProvider } from "./types/collab-provider.types.js";
 import { CollabDocument } from "./CollabDocument.js";
-import { Logger } from "tslog";
+import { rootLogger } from "../../logging.js";
 
-const logger = new Logger({ name: "CollaborationSpace" });
+const logger = rootLogger.child({ module: "CollaborationSpace" });
 
 /**
  * Well-known document names within a CollaborationSpace.

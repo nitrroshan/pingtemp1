@@ -14,7 +14,7 @@
 import fs from "fs";
 import path from "path";
 import fg from "fast-glob";
-import { Logger } from "tslog";
+import { rootLogger } from "../../../logging.js";
 import {
   TreeSitterService,
   type LanguageName,
@@ -22,7 +22,7 @@ import {
 } from "./TreeSitterService.js";
 import { type SymbolKind } from "./RepoMapBuilder.js";
 
-const logger = new Logger({ name: "SymbolIndex" });
+const logger = rootLogger.child({ module: "SymbolIndex" });
 
 // =============================================================================
 // Types

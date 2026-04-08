@@ -8,6 +8,10 @@
 import defaultConfig from "./default.js";
 import developmentConfig from "./development.js";
 import productionConfig from "./production.js";
+import type { FeatureFlags } from "./featureFlags.js";
+import { FF_ENV_MAP } from "./featureFlags.js";
+
+export type { FeatureFlags } from "./featureFlags.js";
 
 // ── Types ────────────────────────────────────────────────────
 
@@ -30,8 +34,13 @@ export interface AppConfig {
   useOrchestrator: boolean;
   useApiV2: boolean;
 
+  featureFlags: FeatureFlags;
+
   workspaceBaseDir: string;
   collabPort: number;
+  collabMode: "embedded" | "external";
+  collabUrl: string;
+  storageType: "fs" | "azure" | "s3";
   agentsDir: string | undefined;
 }
 
@@ -115,7 +124,28 @@ function buildConfig(): AppConfig {
   config.collabPort = process.env.COLLAB_PORT
     ? parseInt(process.env.COLLAB_PORT, 10)
     : config.collabPort;
+  config.collabMode =
+    (process.env.COLLAB_MODE as "embedded" | "external") || config.collabMode;
+  config.collabUrl = process.env.COLLAB_URL || config.collabUrl;
+  config.storageType =
+    (process.env.STORAGE_TYPE as "fs" | "azure" | "s3") || config.storageType;
   config.agentsDir = process.env.AGENTS_DIR || config.agentsDir;
+
+  // Apply FF_* env overrides to featureFlags
+  for (const [envKey, flagKey] of Object.entries(FF_ENV_MAP)) {
+    const val = process.env[envKey];
+    if (val !== undefined) {
+      if (val === "true" || val === "false") {
+        (config.featureFlags as any)[flagKey] = val === "true";
+      } else {
+        (config.featureFlags as any)[flagKey] = val;
+      }
+    }
+  }
+
+  // Sync legacy top-level flags with featureFlags
+  config.featureFlags.useOrchestrator = config.useOrchestrator;
+  config.featureFlags.useApiV2 = config.useApiV2;
 
   return Object.freeze(config);
 }

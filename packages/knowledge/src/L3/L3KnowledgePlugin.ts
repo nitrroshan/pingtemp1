@@ -5,13 +5,13 @@
  * Instantiated externally and registered with MemoryCoordinator.
  */
 
-import { Logger } from "tslog";
+import { rootLogger } from "../logging.js";
 import type { StructuredToolInterface } from "@langchain/core/tools";
 import type { IL3KnowledgePlugin } from "../types/plugins.js";
 import type { KnowledgeBaseConfig } from "../types/index.js";
 import { KnowledgeBase } from "./knowledge/KnowledgeBase.js";
 
-const logger = new Logger({ name: "L3Plugin" });
+const logger = rootLogger.child({ module: "L3Plugin" });
 
 export class L3KnowledgePlugin implements IL3KnowledgePlugin {
   readonly layerId = "L3" as const;

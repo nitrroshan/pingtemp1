@@ -15,7 +15,7 @@
 import { simpleGit, type SimpleGit, type LogResult } from "simple-git";
 import fs from "fs";
 import path from "path";
-import { Logger } from "tslog";
+import { rootLogger } from "../../logging.js";
 import type {
   BranchInfo,
   BranchStatusInfo,
@@ -24,7 +24,7 @@ import type {
   WorkspaceError,
 } from "../types/index.js";
 
-const logger = new Logger({ name: "GitBranchManager" });
+const logger = rootLogger.child({ module: "GitBranchManager" });
 
 /**
  * Simple async mutex — serializes git operations to prevent index.lock conflicts.

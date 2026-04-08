@@ -1,7 +1,7 @@
 import mongoose from "mongoose";
-import { Logger } from "tslog";
+import { rootLogger } from "../logging.js";
 
-const logger = new Logger({ name: "agentRegistry/vectorQuery" });
+const logger = rootLogger.child({ module: "agentRegistry/vectorQuery" });
 
 interface VectorSearchStage {
   exact?: boolean;
@@ -102,7 +102,7 @@ export default async function performVectorQuery(
     logger.info(`Vector query returned ${results.length} documents`);
     return results;
   } catch (err) {
-    logger.error("Vector query error:", err);
+    logger.error({ err }, "Vector query error");
     throw err;
   }
 }

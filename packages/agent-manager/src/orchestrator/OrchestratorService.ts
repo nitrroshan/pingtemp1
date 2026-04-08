@@ -19,14 +19,14 @@ import type { NotificationQueue } from "./NotificationQueue.js";
 import type { UserInteractionManager } from "./UserInteractionManager.js";
 import { toGoalId } from "../plugin/utils.js";
 import { classifyError } from "./types/workerTypes.js";
-import { Logger } from "tslog";
+import { rootLogger } from "../logging.js";
 import type {
   OrchestratorState,
   OrchestratorCallbacks,
   OrchestratorMessage,
 } from "./types.js";
 
-const log = new Logger({ name: "OrchestratorService" });
+const log = rootLogger.child({ module: "OrchestratorService" });
 
 /** Max auto-retry attempts for retriable errors (429, timeout, external_service) */
 const MAX_TASK_RETRIES = 3;

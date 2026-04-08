@@ -16,24 +16,59 @@ Six cross-cutting concerns in a single feature branch:
 
 ---
 
-## Phase 0: Production Storage & Session Persistence
+## Phase 0: Production Infrastructure & Session Persistence
 
-### Step 0.1: Docker volume mount for backend data
-- [ ] Add `ping-backend-data` named volume to `docker-compose.yml`
-- [ ] Mount as `/app/data` in backend service
+### Step 0.1: Production Docker Compose + volumes
+- [ ] Rewrite `docker-compose.yml` with: collab container, backend container, frontend container
+- [ ] Three named volumes: `ping-app-state`, `ping-collab`, `ping-workspaces`
+- [ ] No MongoDB container in prod (MongoDB Atlas)
+- [ ] Update `docker-compose.dev.yml` — MongoDB only (unchanged)
+- [ ] Add `COLLAB_MODE` env var support: `embedded` (dev) / `external` (prod)
 
 **Files to modify:**
-- `docker-compose.yml`
+- `docker-compose.yml` (full rewrite)
+- `docker-compose.dev.yml` (verify/update)
 
-### Step 0.2: Graceful shutdown flush
+**Files to create:**
+- `packages/collaboration/Dockerfile` (standalone collab service)
+
+### Step 0.2: MongoDB Atlas setup
+- [ ] Create MongoDB Atlas free tier cluster (512MB)
+- [ ] Update `.env.example` with Atlas connection string template
+- [ ] Test: switch `MONGODB_URI` to Atlas → backend connects, all collections work
+- [ ] Document Atlas setup in README or setup guide
+
+**Files to modify:**
+- `packages/backend/.env.example`
+
+### Step 0.3: Graceful shutdown flush
 - [ ] Add `flushAll()` method to `AgentManagerRegistry` — iterates cached managers, calls `FileTaskStore.flush()` on each
-- [ ] Call `agentManagerRegistry.flushAll()` in SIGTERM/SIGINT handlers in `server.ts` before `api.stop()`
+- [ ] Add `CollaborationService.flush()` call to shutdown sequence
+- [ ] Call both in SIGTERM/SIGINT handlers in `server.ts` before `api.stop()`
 
 **Files to modify:**
 - `packages/backend/server.ts` (shutdown handlers)
 - `packages/backend/agentManager/AgentManagerRegistry.ts` (add `flushAll()`)
 
-### Step 0.3: Production auth with better-auth
+### Step 0.4: Storage interfaces (AppState + Workspace + Collaboration)
+- [ ] Create `AppStateStorage` interface + `FsAppStateStorage` implementation (wraps existing `fs` calls)
+- [ ] Create `WorkspaceStorage` interface + `FsWorkspaceStorage` implementation (wraps existing `GitBranchManager`)
+- [ ] Formalize `CollaborationService` interface (wraps existing `HocuspocusServer`)
+- [ ] Add `COLLAB_MODE` to config — embedded Hocuspocus or external WebSocket client
+- [ ] Add `gitRemoteUrl` + `gitRemoteToken` fields to Team MongoDB schema (for future git remote)
+
+**Files to create:**
+- `packages/backend/storage/AppStateStorage.ts` (interface + Fs impl)
+- `packages/backend/storage/WorkspaceStorage.ts` (interface + Fs impl)
+- `packages/backend/storage/index.ts` (factory + re-exports)
+
+**Files to modify:**
+- `packages/collaboration/src/L2/collaboration/HocuspocusServer.ts` (implement CollaborationService interface)
+- `packages/backend/config/index.ts` (add `collabMode`, `collabUrl`, `storageType`)
+- `packages/backend/config/default.ts` (defaults: `collabMode: 'embedded'`, `storageType: 'fs'`)
+- `packages/backend/team/models.ts` (add `gitRemoteUrl`, `gitRemoteToken`)
+
+### Step 0.5: Production auth with better-auth
 - [ ] Install `better-auth` in backend and frontend packages
 - [ ] Create `packages/backend/auth/index.ts` — configure betterAuth with MongoDB adapter, email/password
 - [ ] Mount better-auth handler at `/api/auth/*` in HttpServer.ts
@@ -63,9 +98,8 @@ Six cross-cutting concerns in a single feature branch:
 **Files to remove:**
 - `packages/backend/api/UserManager.ts` (replaced by better-auth)
 
-### Step 0.4: Server-side chat history
-- [ ] Create `ChatMessage` Mongoose schema: `{ teamId, userId, role, content, agentId, goalId, metadata, createdAt }`
-- [ ] Indexes: `{ teamId, createdAt }`, `{ teamId, goalId }`
+### Step 0.6: Server-side chat history
+- [ ] Create `ChatMessage` Mongoose schema
 - [ ] Save user messages on receive (in socket handler)
 - [ ] Save assistant messages on stream completion
 - [ ] Add `GET /api/v2/teams/:teamId/messages?limit=50&before=<timestamp>` endpoint
@@ -75,38 +109,35 @@ Six cross-cutting concerns in a single feature branch:
 - `packages/backend/db/models/ChatMessage.ts`
 
 **Files to modify:**
-- `packages/backend/api/SocketServerV2.ts` (save messages on send/receive)
+- `packages/backend/api/SocketServerV2.ts` (save messages)
 - `packages/backend/api/HttpServer.ts` (add messages endpoint)
-- `packages/frontend/hooks/useChat.ts` (load from API, keep localStorage as cache)
-- `packages/frontend/services/AgentServiceV2.ts` (add getMessages method)
+- `packages/frontend/hooks/useChat.ts` (load from API)
+- `packages/frontend/services/AgentServiceV2.ts` (add getMessages)
 
-### Step 0.5: Goal & execution history
-- [ ] Create `Goal` Mongoose schema: `{ goalId, teamId, userId, description, status, planId, taskCount, tasksCompleted, tasksFailed, submittedAt, completedAt, durationMs, summary }`
-- [ ] Indexes: `{ teamId, submittedAt: -1 }`, `{ userId, submittedAt: -1 }`
-- [ ] Create goal doc when user submits a goal
-- [ ] Update goal status as plan progresses (planning → approved → executing → completed/failed)
+### Step 0.7: Goal & execution history
+- [ ] Create `Goal` Mongoose schema
+- [ ] Create goal doc on goal submission, update status through lifecycle
 - [ ] Add `GET /api/v2/teams/:teamId/goals` endpoint
-- [ ] Frontend: show goal history in sidebar or dedicated panel
 
 **Files to create:**
 - `packages/backend/db/models/Goal.ts`
 
 **Files to modify:**
-- `packages/backend/api/agentManagerHandlerV2.ts` (create/update Goal on orchestration events)
-- `packages/backend/api/HttpServer.ts` (add goals endpoint)
+- `packages/backend/api/agentManagerHandlerV2.ts`
+- `packages/backend/api/HttpServer.ts`
 
-### Step 0.6: Session recovery API
+### Step 0.8: Session recovery API
 - [ ] Add `GET /api/v2/sessions/:teamId/restore` endpoint
-- [ ] Returns: `{ team, goals (recent), messages (last 50), tasks (current), plan (current) }`
-- [ ] Frontend: call on team select → single API call restores full UI state
+- [ ] Returns: `{ team, goals, messages, tasks, plan }`
+- [ ] Frontend: call on team select → one API call restores full UI
 
 **Files to modify:**
-- `packages/backend/api/HttpServer.ts` (add restore endpoint)
-- `packages/frontend/services/AgentServiceV2.ts` (add restoreSession method)
-- `packages/frontend/App.tsx` (call restore on team select)
+- `packages/backend/api/HttpServer.ts`
+- `packages/frontend/services/AgentServiceV2.ts`
+- `packages/frontend/App.tsx`
 
-### Step 0.7: Extended health check
-- [ ] Update `/api/v2/health` to check MongoDB + `data/` writable + uptime
+### Step 0.9: Extended health check
+- [ ] Check: MongoDB connected, `data/` writable, collab service reachable, uptime
 
 **Files to modify:**
 - `packages/backend/api/HttpServer.ts`
@@ -455,9 +486,9 @@ Phase 0 (Infra + Sessions) ──→ Phase 4 (StorageProvider) ──→ Phase 1
 
 | Phase | Files to Create | Files to Modify | Files to Remove | Deps to Change |
 |-------|-----------------|-----------------|-----------------|----------------|
-| Phase 0 | 5 (auth config, auth client, login page, ChatMessage, Goal) | ~10 (server, socket, HTTP, handlers, AgentServiceV2, App, .env.example) + docker-compose.yml | 1 (UserManager.ts) | +better-auth |
+| Phase 0 | 9 (Collab Dockerfile, storage interfaces x3, auth x3, ChatMessage, Goal) | ~15 (server, socket, HTTP, handlers, config, Team model, AgentServiceV2, App, useChat, .env.example, docker-compose x2, HocuspocusServer) | 1 (UserManager.ts) | +better-auth |
 | Phase 1 | 1 | 58 + 6 package.json | 0 | +pino, +pino-pretty, -tslog |
 | Phase 2 | 1 | 3 | 0 | None |
 | Phase 3 | 2 | 5 + .env.example | 0 | None |
-| Phase 4 | 6 (StorageProvider, FsProvider, AzureProvider, S3Provider, storage index, PushToGitHub) | ~8 (FileTaskStore, FilePlanStore, PlanStore, HocuspocusServer, GitBranchManager, Team model, HttpServer, .env.example) | 0 | +@azure/storage-blob, +@aws-sdk/client-s3 (optional) |
-| **Total** | **15** | **~91** | **1** | **5-6 dep changes** |
+| Phase 4 | 3 (AzureBlobProvider, S3Provider, PushToGitHub component) | ~8 (storage index, FileTaskStore, FilePlanStore, PlanStore, GitBranchManager, HttpServer, .env.example) | 0 | +@azure/storage-blob, +@aws-sdk/client-s3 (optional) |
+| **Total** | **16** | **~96** | **1** | **5-6 dep changes** |

@@ -7,10 +7,10 @@
  * v2.0: Full implementation with vector store, embeddings, and retrieval.
  */
 
-import { Logger } from "tslog";
+import { rootLogger } from "../../logging.js";
 import type { KnowledgeBaseConfig } from "../../types/index.js";
 
-const logger = new Logger({ name: "KnowledgeBase" });
+const logger = rootLogger.child({ module: "KnowledgeBase" });
 
 // Re-export the config type for convenience
 export type { KnowledgeBaseConfig };

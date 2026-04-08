@@ -6,9 +6,9 @@
  */
 
 import { OAIEmbeddingClient } from "./embeddingClient.js";
-import { Logger } from "tslog";
+import { rootLogger } from "../../logging/index.js";
 
-const logger = new Logger({ name: "EmbeddingService" });
+const logger = rootLogger.child({ module: "EmbeddingService" });
 
 /**
  * Get embeddings instance (singleton)

@@ -5,14 +5,19 @@
 import express from "express";
 import cors from "cors";
 import swaggerUi from "swagger-ui-express";
-import { Logger } from "tslog";
+import { rootLogger } from "../logging/index.js";
 import { AgentManager } from "../agentManager/AgentManagerV2.js";
 import { createAgentManagerHandlerV2 } from "./agentManagerHandlerV2.js";
 import { TeamService } from "../team/index.js";
 import { swaggerSpec } from "./swagger.js";
 import { skillsRouter } from "../skills/index.js";
+import { getAuthHandler } from "../auth/index.js";
+import { FRONTEND_FLAG_KEYS } from "../config/featureFlags.js";
+import { getConfig } from "../config/index.js";
+import { ChatMessageModel } from "../db/models/ChatMessage.js";
+import { GoalModel } from "../db/models/Goal.js";
 
-const logger = new Logger({ name: "HttpServer" });
+const logger = rootLogger.child({ module: "HttpServer" });
 
 export interface HttpServerOptions {
   agentManager: AgentManager;
@@ -33,7 +38,7 @@ export class HttpServer {
    * Setup Express middleware
    */
   private setupMiddleware() {
-    this.app.use(cors());
+    this.app.use(cors({ origin: true, credentials: true }));
     this.app.use(express.json());
   }
 
@@ -41,7 +46,7 @@ export class HttpServer {
    * Setup HTTP routes
    */
   private setupRoutes(options: HttpServerOptions) {
-    // Health check
+    // Health check (unauthenticated)
     this.app.get("/health", (req, res) => {
       logger.info("[HttpServer] Health check requested");
       res.json({
@@ -50,6 +55,59 @@ export class HttpServer {
         service: "AgentManager API",
       });
     });
+
+    // Extended health check — includes dependency status
+    this.app.get("/api/v2/health", async (req, res) => {
+      const checks: Record<string, string> = {};
+
+      // MongoDB
+      try {
+        const mongoose = (await import("mongoose")).default;
+        checks.mongodb = mongoose.connection.readyState === 1 ? "connected" : "disconnected";
+      } catch {
+        checks.mongodb = "error";
+      }
+
+      // Data directory writable
+      try {
+        const fs = await import("fs/promises");
+        const testFile = "./data/.health-check";
+        await fs.writeFile(testFile, "ok");
+        await fs.unlink(testFile);
+        checks.dataDir = "writable";
+      } catch {
+        checks.dataDir = "not-writable";
+      }
+
+      const allOk = Object.values(checks).every(
+        (v) => v === "connected" || v === "writable",
+      );
+
+      res.status(allOk ? 200 : 503).json({
+        status: allOk ? "ok" : "degraded",
+        timestamp: Date.now(),
+        uptime: process.uptime(),
+        checks,
+      });
+    });
+
+    // Mount better-auth routes (lazy init — after MongoDB is connected)
+    this.app.all("/api/auth/*splat", (req, res, next) => {
+      const handler = getAuthHandler();
+      return handler(req, res, next);
+    });
+    logger.info("[HttpServer] Auth routes mounted at /api/auth/*");
+
+    // Feature flags endpoint (frontend-safe subset)
+    this.app.get("/api/v2/feature-flags", (req, res) => {
+      const config = getConfig();
+      const flags: Record<string, any> = {};
+      for (const key of FRONTEND_FLAG_KEYS) {
+        flags[key] = config.featureFlags[key];
+      }
+      res.json(flags);
+    });
+    logger.info("[HttpServer] Feature flags API mounted at /api/v2/feature-flags");
 
     // Mount V2 API routes
     const v2Routes = createAgentManagerHandlerV2();
@@ -104,6 +162,93 @@ export class HttpServer {
     logger.info(
       "[HttpServer] Collab docs API mounted at /api/collab/:teamId/docs",
     );
+
+    // Chat message history
+    this.app.get("/api/v2/teams/:teamId/messages", async (req, res) => {
+      try {
+        const { teamId } = req.params;
+        const limit = Math.min(parseInt(req.query.limit as string) || 50, 200);
+        const before = req.query.before ? new Date(req.query.before as string) : new Date();
+
+        const messages = await ChatMessageModel.find({
+          teamId,
+          timestamp: { $lt: before },
+        })
+          .sort({ timestamp: -1 })
+          .limit(limit)
+          .lean();
+
+        res.json({ messages: messages.reverse() });
+      } catch (err: any) {
+        res.status(500).json({ error: err.message });
+      }
+    });
+    logger.info("[HttpServer] Messages API mounted at /api/v2/teams/:teamId/messages");
+
+    // Goal history
+    this.app.get("/api/v2/teams/:teamId/goals", async (req, res) => {
+      try {
+        const { teamId } = req.params;
+        const limit = Math.min(parseInt(req.query.limit as string) || 20, 100);
+
+        const goals = await GoalModel.find({ teamId })
+          .sort({ createdAt: -1 })
+          .limit(limit)
+          .lean();
+
+        res.json({ goals });
+      } catch (err: any) {
+        res.status(500).json({ error: err.message });
+      }
+    });
+    logger.info("[HttpServer] Goals API mounted at /api/v2/teams/:teamId/goals");
+
+    // Session restore — returns everything needed to rebuild UI in one call
+    this.app.get("/api/v2/sessions/:teamId/restore", async (req, res) => {
+      try {
+        const { teamId } = req.params;
+
+        const [messages, goals] = await Promise.all([
+          ChatMessageModel.find({ teamId })
+            .sort({ timestamp: -1 })
+            .limit(50)
+            .lean(),
+          GoalModel.find({ teamId })
+            .sort({ createdAt: -1 })
+            .limit(10)
+            .lean(),
+        ]);
+
+        // Try to get current plan/tasks from AgentManager if cached
+        let plan = null;
+        let tasks: any[] = [];
+        try {
+          const { agentManagerRegistry } =
+            await import("../agentManager/AgentManagerRegistry.js");
+          if (agentManagerRegistry.has(teamId)) {
+            const manager = await agentManagerRegistry.getForTeam(teamId);
+            const state = manager.getState?.();
+            if (state) {
+              plan = state.plan || null;
+              tasks = state.tasks || [];
+            }
+          }
+        } catch {
+          // Manager not initialized — return empty plan/tasks
+        }
+
+        res.json({
+          teamId,
+          messages: messages.reverse(),
+          goals,
+          plan,
+          tasks,
+        });
+      } catch (err: any) {
+        res.status(500).json({ error: err.message });
+      }
+    });
+    logger.info("[HttpServer] Session restore API mounted at /api/v2/sessions/:teamId/restore");
   }
 
   /**

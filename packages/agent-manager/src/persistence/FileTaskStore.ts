@@ -10,10 +10,10 @@
 
 import { promises as fs } from "fs";
 import path from "path";
-import { Logger } from "tslog";
+import { rootLogger } from "../logging.js";
 import type { ITaskStore } from "../plugin/types.js";
 
-const logger = new Logger({ name: "FileTaskStore" });
+const logger = rootLogger.child({ module: "FileTaskStore" });
 
 export interface StoredTask {
   id: string;

@@ -7,14 +7,14 @@
  */
 
 import dotenv from "dotenv";
-import { Logger } from "tslog";
+import { rootLogger } from "../../logging/index.js";
 import connectDB, { disconnectDB } from "../../db/config.js";
 import { SkillModel } from "../schema/skillSchema.js";
 import { generateEmbedding } from "../services/EmbeddingService.js";
 import type { Skill } from "../types/Skill.js";
 
 dotenv.config();
-const logger = new Logger({ name: "seed:skills" });
+const logger = rootLogger.child({ module: "seed:skills" });
 
 /**
  * 10 Official Skills

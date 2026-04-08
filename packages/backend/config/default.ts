@@ -4,6 +4,7 @@
  */
 
 import type { AppConfig } from "./index.js";
+import { DEV_DEFAULTS } from "./featureFlags.js";
 
 const defaultConfig: AppConfig = {
   // Server
@@ -28,10 +29,14 @@ const defaultConfig: AppConfig = {
   // Feature flags
   useOrchestrator: true,
   useApiV2: true,
+  featureFlags: { ...DEV_DEFAULTS },
 
   // Agent runtime
   workspaceBaseDir: "./data/workspaces",
   collabPort: 1234,
+  collabMode: "embedded",
+  collabUrl: "ws://localhost:1234",
+  storageType: "fs",
   agentsDir: undefined,
 };
 

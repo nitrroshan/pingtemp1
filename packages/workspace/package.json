@@ -10,8 +10,8 @@
     "fast-glob": "^3.3.3",
     "minisearch": "^7.2.0",
     "mongoose": "^9.0.2",
+    "pino": "^10.3.1",
     "simple-git": "^3.31.1",
-    "tslog": "^4.10.2",
     "zod": "^3.23.0"
   }
 }

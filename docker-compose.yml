@@ -1,17 +1,27 @@
-# docker-compose.yml — Full production stack
+# docker-compose.yml — Production stack (no MongoDB — use Atlas)
 # Usage: docker compose up -d --build
+#
+# Prerequisites:
+#   - MongoDB Atlas connection string in packages/backend/.env (MONGODB_URI)
+#   - Azure OpenAI credentials in packages/backend/.env
 
 services:
-  mongodb:
-    image: mongo:7
-    container_name: ping-mongo
+  collab:
+    build:
+      context: .
+      dockerfile: packages/collaboration/Dockerfile
+    container_name: ping-collab
     restart: unless-stopped
     ports:
-      - "${MONGO_PORT:-27017}:27017"
+      - "${COLLAB_PORT:-1234}:1234"
     volumes:
-      - ping-mongo-data:/data/db
+      - ping-collab:/app/data/collab
+      - ping-workspaces:/app/data/workspaces
+    environment:
+      - NODE_ENV=production
+      - COLLAB_PORT=1234
     healthcheck:
-      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      test: ["CMD", "bun", "-e", "fetch('http://localhost:1234').then(()=>process.exit(0)).catch(()=>process.exit(1))"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -29,10 +39,14 @@ services:
       - ./packages/backend/.env
     environment:
       - NODE_ENV=production
-      - MONGODB_URI=mongodb://mongodb:27017/ping
       - API_PORT=3002
+      - COLLAB_MODE=external
+      - COLLAB_URL=ws://collab:1234
+    volumes:
+      - ping-app-state:/app/data/plans
+      - ping-workspaces:/app/data/workspaces
     depends_on:
-      mongodb:
+      collab:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3002/api/v2/health"]
@@ -56,5 +70,9 @@ services:
         condition: service_healthy
 
 volumes:
-  ping-mongo-data:
-    name: ping-mongo-data
+  ping-app-state:
+    name: ping-app-state
+  ping-collab:
+    name: ping-collab
+  ping-workspaces:
+    name: ping-workspaces

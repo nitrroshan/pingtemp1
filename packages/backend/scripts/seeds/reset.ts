@@ -9,11 +9,11 @@
 import dotenv from "dotenv";
 dotenv.config();
 
-import { Logger } from "tslog";
+import { rootLogger } from "../../logging/index.js";
 import { assertSeedAllowed } from "./guard.js";
 import { connectDB, disconnectDB, resetDB } from "../../db/index.js";
 
-const logger = new Logger({ name: "db:reset" });
+const logger = rootLogger.child({ module: "db:reset" });
 
 async function run(): Promise<void> {
   assertSeedAllowed();

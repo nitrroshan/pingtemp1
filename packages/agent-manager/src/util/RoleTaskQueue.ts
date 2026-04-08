@@ -20,9 +20,9 @@ import type {
   QueueMetrics,
   TaskCallbacks,
 } from "./RoleTaskQueue.types.js";
-import { Logger } from "tslog";
+import { rootLogger } from "../logging.js";
 
-const logger = new Logger({ name: "RoleTaskQueue" });
+const logger = rootLogger.child({ module: "RoleTaskQueue" });
 
 export class RoleTaskQueue {
   /** Priority queues by role */

@@ -13,7 +13,7 @@
 import React, { useState, useEffect, useRef, lazy, Suspense, useCallback } from 'react';
 import { BrowserRouter, Routes, Route } from 'react-router-dom';
 import { v4 as uuidv4 } from 'uuid';
-import { Menu, PanelRight, Search, Zap, Sun, Moon } from 'lucide-react';
+import { Menu, PanelRight, Search, Zap, Sun, Moon, LogOut } from 'lucide-react';
 import { AnimatePresence, motion } from 'framer-motion';
 
 import Sidebar from './components/Sidebar';
@@ -42,6 +42,8 @@ import { useChat } from './hooks/useChat';
 import { useAgentTree } from './hooks/useAgentTree';
 import { agentServiceV2, type Task as BackendTask } from './services/AgentServiceV2';
 import type { Agent, Message } from './types';
+import { useSession, signOut } from './lib/auth-client';
+import { LoginPage } from './components/Auth/LoginPage';
 import { Skeleton } from './components/ui/skeleton';
 import { TeamsPage } from './components/TeamsPage/TeamsPage';
 
@@ -406,7 +408,7 @@ function InnerApp() {
           <div className="w-6 h-6 rounded-md bg-gradient-to-br from-blue-500 to-violet-600 flex items-center justify-center shadow-md shadow-blue-500/20">
             <Zap size={13} className="text-white" />
           </div>
-          <span className="text-sm font-bold tracking-tight text-white hidden sm:inline">Ping</span>
+          <span className="text-sm font-bold tracking-tight text-foreground hidden sm:inline">Ping</span>
         </div>
 
         {/* Center: search / command palette trigger */}
@@ -422,7 +424,7 @@ function InnerApp() {
           </button>
         </div>
 
-        {/* Right: theme toggle */}
+        {/* Right: theme toggle + sign out */}
         <button
           onClick={() => setTheme(t => t === 'dark' ? 'light' : 'dark')}
           className="p-1.5 rounded-md text-muted-foreground hover:text-foreground hover:bg-accent transition-colors cursor-pointer"
@@ -430,6 +432,14 @@ function InnerApp() {
           title={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
         >
           {theme === 'dark' ? <Sun size={15} /> : <Moon size={15} />}
+        </button>
+        <button
+          onClick={() => signOut().then(() => window.location.reload())}
+          className="p-1.5 rounded-md text-muted-foreground hover:text-red-400 hover:bg-accent transition-colors cursor-pointer"
+          aria-label="Sign out"
+          title="Sign out"
+        >
+          <LogOut size={15} />
         </button>
       </div>
 
@@ -666,12 +676,28 @@ function InnerApp() {
 // App root
 // ─────────────────────────────────────────────────────────────────────────────
 
-const App: React.FC = () => (
-  <BrowserRouter>
-    <Routes>
-      <Route path="/*" element={<InnerApp />} />
-    </Routes>
-  </BrowserRouter>
-);
+const App: React.FC = () => {
+  const { data: session, isPending } = useSession();
+
+  if (isPending) {
+    return (
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '100vh', background: '#0f172a' }}>
+        <Skeleton className="w-[200px] h-[40px]" />
+      </div>
+    );
+  }
+
+  if (!session) {
+    return <LoginPage />;
+  }
+
+  return (
+    <BrowserRouter>
+      <Routes>
+        <Route path="/*" element={<InnerApp />} />
+      </Routes>
+    </BrowserRouter>
+  );
+};
 
 export default App;

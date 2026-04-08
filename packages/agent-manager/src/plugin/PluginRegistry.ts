@@ -7,7 +7,7 @@
  * - Skill resolution for system prompt injection
  */
 
-import { Logger } from "tslog";
+import { rootLogger } from "../logging.js";
 import type {
   IPlugin,
   IPluginStorage,
@@ -16,7 +16,7 @@ import type {
   ISkill,
 } from "./types.js";
 
-const logger = new Logger({ name: "PluginRegistry" });
+const logger = rootLogger.child({ module: "PluginRegistry" });
 
 export class PluginRegistry {
   private plugins = new Map<string, IPlugin>();

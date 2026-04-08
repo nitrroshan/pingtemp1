@@ -13,9 +13,9 @@
 
 import fs from "fs";
 import path from "path";
-import { Logger } from "tslog";
+import { rootLogger } from "../../../logging.js";
 
-const logger = new Logger({ name: "TreeSitterService" });
+const logger = rootLogger.child({ module: "TreeSitterService" });
 
 // =============================================================================
 // Types

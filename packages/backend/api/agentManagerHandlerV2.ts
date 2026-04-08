@@ -14,14 +14,14 @@
 
 import express from "express";
 import type { Request, Response, NextFunction } from "express";
-import { Logger } from "tslog";
+import { rootLogger } from "../logging/index.js";
 import { agentManagerRegistry } from "../agentManager/AgentManagerRegistry.js";
 import { TeamModel } from "../agentManager/team/schema/teamSchema.js";
 import { AgentModel } from "../agentManager/team/schema/agentSchema.js";
 import { AgentManager } from "../agentManager/AgentManagerV2.js";
 import { randomUUID } from "crypto";
 
-const logger = new Logger({ name: "AgentManagerHandlerV2" });
+const logger = rootLogger.child({ module: "AgentManagerHandlerV2" });
 
 /**
  * Create V2 router (no dependencies injected)

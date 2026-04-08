@@ -13,10 +13,10 @@
 
 import { promises as fs } from "fs";
 import path from "path";
-import { Logger } from "tslog";
+import { rootLogger } from "../../logging.js";
 import type { AgentPlanOutput } from "./types/plan.types.js";
 
-const logger = new Logger({ name: "PlanStore" });
+const logger = rootLogger.child({ module: "PlanStore" });
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // TYPES

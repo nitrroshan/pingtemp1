@@ -1,10 +1,10 @@
 import mongoose from "mongoose";
 import dotenv from "dotenv";
-import { Logger } from "tslog";
+import { rootLogger } from "../logging.js";
 import { agentSchema, AgentModel } from "../schema/agentSchema";
 import { agentSearchIndex } from "../schema/searchIndex/agentSearchIndex";
 
-const logger = new Logger({ name: "agentRegistry/database" });
+const logger = rootLogger.child({ module: "agentRegistry/database" });
 dotenv.config();
 
 async function connectDB(): Promise<void> {
@@ -19,7 +19,7 @@ async function connectDB(): Promise<void> {
 
     logger.info("Connected to MongoDB");
   } catch (err) {
-    logger.error("MongoDB connection error:", err);
+    logger.error({ err }, "MongoDB connection error");
     process.exit(1); // Exit process with failure
   } finally {
     // mongoose.connection.close();
@@ -33,7 +33,7 @@ async function registerSearchIndex(): Promise<void> {
     await AgentModel.createSearchIndexes();
     logger.info("Registered Search Index");
   } catch (err) {
-    logger.error("Error registering search index:", err);
+    logger.error({ err }, "Error registering search index");
   }
 }
 

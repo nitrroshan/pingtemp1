@@ -12,7 +12,7 @@
  */
 
 import mongoose from "mongoose";
-import { Logger } from "tslog";
+import { rootLogger } from "../logging/index.js";
 import { AgentManager } from "./AgentManagerV2.js";
 import { TeamModel } from "./team/schema/teamSchema.js";
 import { AgentModel } from "./team/schema/agentSchema.js";
@@ -20,7 +20,7 @@ import { WorkspacePlugin } from "./plugins/WorkspacePlugin.js";
 import { CollaborationPlugin } from "./plugins/CollaborationPlugin.js";
 import { KnowledgePlugin } from "./plugins/KnowledgePlugin.js";
 
-const logger = new Logger({ name: "AgentManagerRegistry" });
+const logger = rootLogger.child({ module: "AgentManagerRegistry" });
 
 export interface TeamData {
   id: string;
@@ -176,6 +176,27 @@ export class AgentManagerRegistry {
    */
   getCachedTeamIds(): string[] {
     return Array.from(this.managers.keys());
+  }
+
+  /**
+   * Flush all cached managers (persist buffered data to disk).
+   * Call before shutdown to ensure no pending writes are lost.
+   */
+  async flushAll(): Promise<void> {
+    logger.info(`[Registry] Flushing ${this.managers.size} cached managers`);
+    const results = await Promise.allSettled(
+      Array.from(this.managers.entries()).map(async ([teamId, manager]) => {
+        try {
+          await manager.flush();
+        } catch (err) {
+          logger.warn(`[Registry] Flush failed for team ${teamId}:`, err);
+        }
+      }),
+    );
+    const failed = results.filter((r) => r.status === "rejected").length;
+    if (failed > 0) {
+      logger.warn(`[Registry] ${failed} manager(s) failed to flush`);
+    }
   }
 
   /**

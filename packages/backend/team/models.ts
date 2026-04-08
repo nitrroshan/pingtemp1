@@ -16,6 +16,8 @@ export interface ITeam extends Document {
   description?: string;
   ownerId: string;
   workspaceId: string;
+  gitRemoteUrl?: string | null;
+  gitRemoteToken?: string | null;
   settings: {
     executionMode: "sequential" | "parallel" | "hybrid";
     maxConcurrency: number;
@@ -42,6 +44,8 @@ const teamSchema = new Schema<ITeam>(
     description: { type: String, trim: true },
     ownerId: { type: String, required: true, index: true },
     workspaceId: { type: String, required: true, unique: true },
+    gitRemoteUrl: { type: String, default: null },
+    gitRemoteToken: { type: String, default: null },
     settings: { type: teamSettingsSchema, default: () => ({}) },
   },
   { timestamps: true },

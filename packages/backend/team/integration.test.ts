@@ -16,9 +16,9 @@ import {
   TeamMemberModel,
   AgentSkillModel,
 } from "./index.js";
-import { Logger } from "tslog";
+import { rootLogger } from "../logging/index.js";
 
-const logger = new Logger({ name: "integration-test" });
+const logger = rootLogger.child({ module: "integration-test" });
 
 async function runTests() {
   logger.info("Starting TeamService integration tests (Mongoose)...");

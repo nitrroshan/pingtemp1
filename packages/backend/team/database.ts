@@ -6,10 +6,10 @@
  */
 
 import mongoose from "mongoose";
-import { Logger } from "tslog";
+import { rootLogger } from "../logging/index.js";
 import connectDB, { disconnectDB } from "../db/config.js";
 
-const logger = new Logger({ name: "teamService/database" });
+const logger = rootLogger.child({ module: "teamService/database" });
 
 /**
  * Initialize TeamService database connection.

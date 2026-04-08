@@ -7,9 +7,9 @@
 
 import { promises as fs } from "fs";
 import path from "path";
-import { Logger } from "tslog";
+import { rootLogger } from "../logging.js";
 
-const logger = new Logger({ name: "FilePlanStore" });
+const logger = rootLogger.child({ module: "FilePlanStore" });
 
 export type PlanStatus = "pending" | "approved" | "executing" | "completed" | "failed" | "archived";
 

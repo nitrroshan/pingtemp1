@@ -37,7 +37,7 @@ Updates context when an agent completes a task.
 Updates dependent tasks when prerequisite tasks are done. */
 
 import { randomUUID } from "crypto";
-import { Logger } from "tslog";
+import { rootLogger } from "../logging.js";
 import type { Task, TaskStatus } from "./types/index.js";
 import { RoleTaskQueue } from "../util/RoleTaskQueue.js";
 import type {
@@ -45,7 +45,7 @@ import type {
   QueueMetrics,
 } from "../util/RoleTaskQueue.types.js";
 
-const log = new Logger({ name: "MemoryManager" });
+const log = rootLogger.child({ module: "MemoryManager" });
 
 export class MemoryManager {
   private tasks: Map<string, Task>;
@@ -63,11 +63,11 @@ export class MemoryManager {
       task.id = randomUUID();
     }
     this.tasks.set(task.id, task);
-    log.info("Task added", {
+    log.info({
       id: task.id,
       description: task.description,
       assigned_role: task.assigned_role,
-    });
+    }, "Task added");
 
     // Auto-queue if ready (v1.1: event-driven execution)
     if (this.checkTaskReady(task.id)) {
@@ -77,20 +77,20 @@ export class MemoryManager {
 
   getTasks(role: string): Task[] {
     const readyTasks: Task[] = [];
-    log.info("Fetching tasks for role", { role });
+    log.info({ role }, "Fetching tasks for role");
     for (const task of Array.from(this.tasks.values())) {
-      log.debug("Checking task readiness", {
+      log.debug({
         taskId: task.id,
         assigned_role: task.assigned_role,
-      });
+      }, "Checking task readiness");
       if (this.checkTaskReady(task.id) && task.assigned_role === role) {
         readyTasks.push(task);
       }
     }
-    log.debug("Fetched tasks for role", {
+    log.debug({
       role,
       readyTasksCount: readyTasks.length,
-    });
+    }, "Fetched tasks for role");
 
     return readyTasks;
   }
@@ -98,12 +98,12 @@ export class MemoryManager {
   updateTaskStatus(taskId: string, status: TaskStatus): void {
     const task = this.tasks.get(taskId);
     if (!task) {
-      log.error("updateTaskStatus: Task not found", { taskId });
+      log.error({ taskId }, "updateTaskStatus: Task not found");
       return;
     }
 
     task.status = status;
-    log.info("Task status updated", { taskId, status });
+    log.info({ taskId, status }, "Task status updated");
     this.tasks.set(task.id, task);
   }
 
@@ -113,21 +113,21 @@ export class MemoryManager {
   completeTask(taskId: string, outputData: any): Task[] {
     const task = this.tasks.get(taskId);
     if (!task) {
-      log.error("completeTask: Task not found", { taskId });
+      log.error({ taskId }, "completeTask: Task not found");
       return [];
     }
     task.output = outputData;
     this.updateTaskStatus(taskId, "completed");
     this.updateDependantTasks(task);
     this.tasks.set(taskId, task);
-    log.info("Task status updated", { taskId, status: "completed" });
+    log.info({ taskId, status: "completed" }, "Task status updated");
 
     // Complete in queue (v1.1)
     try {
       this.taskQueue.completeTask(taskId, outputData);
     } catch (error) {
       // Task might not be in queue (backward compatibility)
-      log.debug("Task not in queue", { taskId, error });
+      log.debug({ taskId, error }, "Task not in queue");
     }
 
     // Auto-queue ready dependents (0ms latency) and track them
@@ -158,22 +158,22 @@ export class MemoryManager {
   private checkTaskReady(taskId: string): boolean {
     const task = this.tasks.get(taskId);
     if (!task) {
-      log.error("checkTaskReady: Task not found", { taskId });
+      log.error({ taskId }, "checkTaskReady: Task not found");
       return false;
     }
     // Task with no prerequisites is ready
     if (task.prerequisites.size === 0) {
-      log.debug("Task is ready (no prerequisites)", { taskId });
+      log.debug({ taskId }, "Task is ready (no prerequisites)");
       return true;
     }
     // Check if all prerequisites are completed
     for (const completed of Array.from(task.prerequisites.values())) {
       if (completed === false) {
-        log.debug("Task not ready (pending prerequisites)", { taskId });
+        log.debug({ taskId }, "Task not ready (pending prerequisites)");
         return false;
       }
     }
-    log.debug("Task is ready (all prerequisites completed)", { taskId });
+    log.debug({ taskId }, "Task is ready (all prerequisites completed)");
     return true;
   }
 
@@ -189,10 +189,10 @@ export class MemoryManager {
 
   private updateContext(task: Task | undefined, completedTask: Task): void {
     if (!task || !completedTask.output) {
-      log.warn("updateContext: Missing task or output_data", {
+      log.warn({
         task,
         completedTask,
-      });
+      }, "updateContext: Missing task or output_data");
       return;
     }
 
@@ -206,10 +206,10 @@ export class MemoryManager {
         status: completedTask.status,
       },
     };
-    log.debug("Context updated for task", {
+    log.debug({
       taskId: task.id,
       completedTaskId: completedTask.id,
-    });
+    }, "Context updated for task");
   }
 
   // ==========================================================================
@@ -254,7 +254,7 @@ export class MemoryManager {
       // Check if task already exists in queue (avoid duplicate queue errors)
       const existingInQueue = this.taskQueue.getTask(task.id);
       if (existingInQueue) {
-        log.debug("Task already in queue, skipping", { taskId: task.id, status: existingInQueue.status });
+        log.debug({ taskId: task.id, status: existingInQueue.status }, "Task already in queue, skipping");
         return;
       }
       
@@ -264,9 +264,9 @@ export class MemoryManager {
       
       const taskWithContext = this.toTaskWithContext(task);
       this.taskQueue.queueTask(taskWithContext);
-      log.debug("Task queued", { taskId: task.id, role: task.assigned_role });
+      log.debug({ taskId: task.id, role: task.assigned_role }, "Task queued");
     } catch (error) {
-      log.error("Failed to queue task", { taskId: task.id, error });
+      log.error({ taskId: task.id, error }, "Failed to queue task");
     }
   }
 
@@ -319,7 +319,7 @@ export class MemoryManager {
       }
     }
 
-    log.info("Task removed", { taskId });
+    log.info({ taskId }, "Task removed");
     return true;
   }
 
@@ -330,7 +330,7 @@ export class MemoryManager {
     for (const task of tasks) {
       this.addTask(task);
     }
-    log.info("Bulk tasks stored", { count: tasks.length });
+    log.info({ count: tasks.length }, "Bulk tasks stored");
   }
 
   /**

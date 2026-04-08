@@ -11,10 +11,10 @@
 
 import * as Y from "yjs";
 import { HocuspocusProvider } from "@hocuspocus/provider";
-import { Logger } from "tslog";
+import { rootLogger } from "../../logging.js";
 import type { ICollabProvider } from "./types/collab-provider.types.js";
 
-const logger = new Logger({ name: "RemoteCollabClient" });
+const logger = rootLogger.child({ module: "RemoteCollabClient" });
 
 export class RemoteCollabClient implements ICollabProvider {
   /** Active WebSocket providers by document name */

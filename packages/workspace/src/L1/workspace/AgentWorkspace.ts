@@ -16,7 +16,7 @@ import { EventEmitter } from "events";
 import { execFile } from "child_process";
 import fs from "fs";
 import path from "path";
-import { Logger } from "tslog";
+import { rootLogger } from "../../logging.js";
 import fg from "fast-glob";
 import { rgPath } from "@vscode/ripgrep";
 import { GitBranchManager } from "./GitBranchManager.js";
@@ -40,7 +40,7 @@ import type {
   OutputEntry,
 } from "../../types/output-manifest.types.js";
 
-const logger = new Logger({ name: "AgentWorkspace" });
+const logger = rootLogger.child({ module: "AgentWorkspace" });
 
 /**
  * Generate a URL-safe slug from a task description or ID

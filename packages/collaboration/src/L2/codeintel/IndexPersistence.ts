@@ -23,11 +23,11 @@ import {
 } from "./models/IndexSnapshot.model.js";
 import type { SymbolIndex } from "../../L1/workspace/codeintel/SymbolIndex.js";
 import type { WorkspaceSearchIndex } from "../../L1/workspace/search/WorkspaceSearchIndex.js";
-import { Logger } from "tslog";
+import { rootLogger } from "../../logging.js";
 
 const gzipAsync = promisify(gzip);
 const gunzipAsync = promisify(gunzip);
-const logger = new Logger({ name: "IndexPersistence" });
+const logger = rootLogger.child({ module: "IndexPersistence" });
 
 /** Debounce delay for auto-save (ms) */
 const SAVE_DEBOUNCE_MS = 5000;

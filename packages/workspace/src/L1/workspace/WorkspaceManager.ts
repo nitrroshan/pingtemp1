@@ -13,7 +13,7 @@
 
 import { EventEmitter } from "events";
 import path from "path";
-import { Logger } from "tslog";
+import { rootLogger } from "../../logging.js";
 import { GitBranchManager } from "./GitBranchManager.js";
 import { AgentWorkspace } from "./AgentWorkspace.js";
 import type {
@@ -26,7 +26,7 @@ import type {
   Artifact,
 } from "../../types/index.js";
 
-const logger = new Logger({ name: "WorkspaceManager" });
+const logger = rootLogger.child({ module: "WorkspaceManager" });
 
 /**
  * Generate a unique workspace ID

@@ -1,9 +1,9 @@
 import { OAIEmbeddingClient } from "./embeddingClient/oaiembedding";
-import { Logger } from "tslog";
+import { rootLogger } from "./logging.js";
 import { EmbeddingsClient } from "./embeddingClient/embeddingClient";
 import mongoose from "mongoose";
 const embeddingsClient: EmbeddingsClient = OAIEmbeddingClient.getInstance();
-const logger = new Logger({ name: "agentRegistry/util" });
+const logger = rootLogger.child({ module: "agentRegistry/util" });
 /**
  * Generates embeddings for a given text string
  * @param text The text to generate embeddings for
@@ -19,7 +19,7 @@ export const TryGenerateEmbedding = async (
     }
     return { result: true, value: embedding };
   } catch (error) {
-    logger.error("Error generating embedding:", error);
+    logger.error({ err: error }, "Error generating embedding");
     return { result: false, value: [] };
   }
 };
@@ -39,7 +39,7 @@ export const TryGenerateBatchEmbeddings = async (
     }
     return { result: true, value: embeddings };
   } catch (error) {
-    logger.error("Error generating batch embeddings:", error);
+    logger.error({ err: error }, "Error generating batch embeddings");
     return { result: false, value: [] };
   }
 };

@@ -5,14 +5,14 @@
  * Instantiated externally and registered with MemoryCoordinator.
  */
 
-import { Logger } from "tslog";
+import { rootLogger } from "../logging.js";
 import type { StructuredToolInterface } from "@langchain/core/tools";
 import type { IL1WorkspacePlugin } from "../types/plugins.js";
 import type { WorkspaceConfig, WorkspaceFilter } from "../types/index.js";
 import { WorkspaceManager } from "./workspace/WorkspaceManager.js";
 import { createWorkspaceTools } from "./workspace/tools/workspace-tools.js";
 
-const logger = new Logger({ name: "L1Plugin" });
+const logger = rootLogger.child({ module: "L1Plugin" });
 
 export class L1WorkspacePlugin implements IL1WorkspacePlugin {
   readonly layerId = "L1" as const;

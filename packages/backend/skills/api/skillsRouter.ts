@@ -7,7 +7,7 @@
 
 import { Router } from "express";
 import type { Request, Response } from "express";
-import { Logger } from "tslog";
+import { rootLogger } from "../../logging/index.js";
 import { skillRegistry } from "../services/SkillRegistryService.js";
 import {
   readSkillMd,
@@ -18,7 +18,7 @@ import {
 } from "../services/SkillFileReader.js";
 import type { SkillSource } from "../types/Skill.js";
 
-const logger = new Logger({ name: "SkillsAPI" });
+const logger = rootLogger.child({ module: "SkillsAPI" });
 const router = Router();
 
 // Helper to safely get param (Express params are always strings when route matches)

@@ -16,10 +16,10 @@ import * as fs from "fs/promises";
 import * as path from "path";
 import * as Y from "yjs";
 import crypto from "crypto";
-import { Logger } from "tslog";
+import { rootLogger } from "../../logging.js";
 import type { ICollabProvider } from "./types/collab-provider.types.js";
 
-const logger = new Logger({ name: "CollabServer" });
+const logger = rootLogger.child({ module: "CollabServer" });
 
 /**
  * Convert Yjs doc name (may contain slashes) to a safe filename

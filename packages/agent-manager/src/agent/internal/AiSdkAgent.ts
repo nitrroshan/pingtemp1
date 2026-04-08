@@ -11,7 +11,7 @@
 import { streamText, generateText, Output, tool, stepCountIs } from "ai";
 import type { ModelMessage } from "ai";
 import { z } from "zod";
-import { Logger } from "tslog";
+import { rootLogger } from "../../logging.js";
 import { BaseAgent } from "../BaseAgent.js";
 import { getModel } from "../providers/ModelProvider.js";
 import { SmoothStream } from "../streaming/smoothStream.js";
@@ -29,7 +29,7 @@ import {
   AgentPlanSchema,
   AgentDefinitionListSchema,
 } from "./schemas/index.js";
-const logger = new Logger({ name: "AiSdkAgent" });
+const logger = rootLogger.child({ module: "AiSdkAgent" });
 
 /** Map of schema names to Zod schemas for structured output mode */
 const SCHEMAS: Record<string, z.ZodSchema> = {

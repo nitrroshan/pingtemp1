@@ -11,13 +11,13 @@
  * - ContextBuilder = prompt assembly (A6 Step 3, future)
  */
 
-import { Logger } from "tslog";
+import { rootLogger } from "../logging.js";
 import type { Task, TaskStatus } from "../memory/types/Task.types.js";
 import type { ITaskProvider } from "./ITaskProvider.js";
 import { RoleTaskQueue } from "../util/RoleTaskQueue.js";
 import type { TaskCallbacks, TaskWithContext } from "../util/RoleTaskQueue.types.js";
 
-const log = new Logger({ name: "TaskStore" });
+const log = rootLogger.child({ module: "TaskStore" });
 
 /**
  * Valid state transitions. Any transition not listed here throws.

@@ -2,6 +2,7 @@
 import React, { useState, useEffect } from 'react';
 import { Agent, Message, Task } from '../../types';
 import { agentServiceV2 } from '../../services/AgentServiceV2';
+import { logger } from '../../utils/logger';
 import { Header, MessageList, ChatInput, TaskList } from '.';
 import { AnimatePresence, motion } from 'framer-motion';
 import { Skeleton } from '../ui/skeleton';
@@ -168,7 +169,7 @@ const ChatArea: React.FC<ChatAreaProps> = ({
         );
       }
     } catch (error: any) {
-      console.error("AgentManager Error:", error);
+      logger.error("AgentManager Error:", error);
       const errorMsg: Message = {
         id: Date.now().toString(),
         role: 'model',

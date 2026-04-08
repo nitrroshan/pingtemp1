@@ -9,7 +9,7 @@
 import * as fs from "fs/promises";
 import * as path from "path";
 import fg from "fast-glob";
-import { Logger } from "tslog";
+import { rootLogger } from "../logging.js";
 import type { StructuredToolInterface } from "@langchain/core/tools";
 import type { IL2CollaborationPlugin } from "../types/plugins.js";
 import { CollabServer } from "./collaboration/HocuspocusServer.js";
@@ -23,7 +23,7 @@ import type {
   OutputEntry,
 } from "./collaboration/types/output-manifest.types.js";
 
-const logger = new Logger({ name: "L2Plugin" });
+const logger = rootLogger.child({ module: "L2Plugin" });
 
 export interface L2CollaborationPluginConfig {
   teamId: string;

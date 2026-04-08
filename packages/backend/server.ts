@@ -6,11 +6,12 @@ import dotenv from "dotenv";
 dotenv.config();
 
 import { AgentManagerAPI } from "./api/AgentManagerAPI.js";
-import { Logger } from "tslog";
+import { rootLogger } from "./logging/index.js";
 import { connectDB, disconnectDB } from "./db/index.js";
 import { getConfig, validateConfig } from "./config/index.js";
+import { agentManagerRegistry } from "./agentManager/AgentManagerRegistry.js";
 
-const logger = new Logger({ name: "Server" });
+const logger = rootLogger.child({ module: "Server" });
 
 // Validate required env vars before doing anything else
 try {
@@ -43,6 +44,7 @@ async function main() {
     // Graceful shutdown
     process.on("SIGINT", async () => {
       logger.info("\nShutting down gracefully...");
+      await agentManagerRegistry.flushAll();
       await api.stop();
       await disconnectDB();
       process.exit(0);
@@ -50,6 +52,7 @@ async function main() {
 
     process.on("SIGTERM", async () => {
       logger.info("\nReceived SIGTERM, shutting down gracefully...");
+      await agentManagerRegistry.flushAll();
       await api.stop();
       await disconnectDB();
       process.exit(0);

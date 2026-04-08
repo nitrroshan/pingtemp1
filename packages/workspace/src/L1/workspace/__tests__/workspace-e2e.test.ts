@@ -20,12 +20,12 @@
 
 import fs from "fs";
 import path from "path";
-import { Logger } from "tslog";
+import { rootLogger } from "../../../logging.js";
 import { WorkspaceManager } from "../WorkspaceManager.js";
 import { createWorkspaceTools } from "../tools/workspace-tools.js";
 import { GitBranchManager } from "../GitBranchManager.js";
 
-const logger = new Logger({ name: "workspace-e2e", minLevel: 3 }); // warn+
+const logger = rootLogger.child({ module: "workspace-e2e", level: "warn" });
 
 // ════════════════════════════════════════════════════════════════════════════
 // Test Infrastructure
