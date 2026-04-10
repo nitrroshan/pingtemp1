@@ -264,6 +264,16 @@ export interface InternalConfig {
   // Builder agent structured output (replaces BuilderConfig)
   // When set, agent uses providerStrategy(schema) for structured responses
   responseFormat?: string; // Schema name: 'AgentRoleSchema' | 'AgentConfigSchema' | 'AgentPlanSchema' | etc.
+
+  // Agentic loop config
+  /** Max tool-use steps per turn. 0 = unlimited (autonomous mode). Default: 0 */
+  maxSteps?: number;
+  /** Token budget safety cap. Stops execution if cumulative tokens exceed this. Default: 500000 */
+  maxTotalTokens?: number;
+  /** Enable extended thinking/reasoning. Works across providers:
+   *  - Anthropic: thinking tokens with budgetTokens
+   *  - OpenAI/Azure: reasoningEffort (low/medium/high) for o-series models */
+  thinking?: { enabled: boolean; budgetTokens?: number; reasoningEffort?: "low" | "medium" | "high" };
 }
 
 export interface ExternalConfig {
@@ -292,9 +302,20 @@ export interface BuilderConfig {
 }
 
 export interface ModelConfig {
-  provider: "anthropic" | "openai" | "azure-openai";
+  provider:
+    | "anthropic"
+    | "openai"
+    | "azure-openai"
+    | "ollama"
+    | "google"
+    | "groq"
+    | "mistral"
+    | "deepseek"
+    | "xai"
+    | "openai-compatible"; // Any OpenAI-compatible API (LM Studio, vLLM, etc.)
   model?: string;
-  deployment?: string;
+  deployment?: string; // Azure-specific
+  baseUrl?: string; // Custom endpoint (Ollama, OpenAI-compatible, self-hosted)
   temperature?: number;
   maxTokens?: number;
 }

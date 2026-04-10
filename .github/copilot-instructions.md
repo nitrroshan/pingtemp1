@@ -10,7 +10,7 @@ These rules orient AI coding agents to be productive in this multi-agent orchest
   - `agentManager/AgentManagerV2.ts`: top-level orchestrator. Creates plans, assigns tasks to workers, coordinates lifecycle.
   - `orchestrator/OrchestratorService.ts`: LLM-powered planning engine with 4 tools (create_plan, approve_plan, get_status, get_context).
   - `services/WorkerPool.ts`: manages agent workers per task. Creates AiSdkAgent instances, injects tools (workspace, collab, skills), iterates execute() generator.
-  - `agent/internal/AiSdkAgent.ts`: AI SDK `streamText()` agent. Yields `AgentEvent` stream (stream_part, message, done). Multi-step tool execution via `stopWhen: stepCountIs(10)`.
+  - `agent/internal/AiSdkAgent.ts`: AI SDK `streamText()` agent. Yields `AgentEvent` stream (stream_part, message, done). Autonomous tool loop via `stopWhen: [isLoopFinished(), stepCountIs(200)]`. Context trimming via `prepareStep`. Extended thinking via `buildProviderOptions()`.
   - `agent/AgentFactory.ts`: creates agent instances from YAML definitions.
   - `memoryManager/MemoryManager.ts`: stores tasks, prerequisites, status, outputs. DAG-based ready-task detection.
   - `api/SocketServerV2.ts`: Socket.IO server. Broadcasts `stream` events to frontend. Declarative `WORKER_EVENT_ROUTES` map.
@@ -36,7 +36,7 @@ Deprecated files (kept for compatibility):
   - `status`: one of `ready | pending | in_progress | completed | failed`
   - `assigned_role`: lowercase role key to match worker registry keys
   - `prerequisites`: `Map<string, boolean>`; tasks are ready when all are true or empty.
-- Agent runtime uses AI SDK `streamText()` with `stopWhen: stepCountIs(10)` for multi-step tool execution.
+- Agent runtime uses AI SDK `streamText()` with `stopWhen: [isLoopFinished(), stepCountIs(200)]` for autonomous tool execution (no artificial step limits).
 - Tools are converted from LangChain format via `toAiSdkTool()` which uses `inputSchema` (AI SDK v6 property).
 - Structured output uses `generateText({ output: Output.object({ schema }) })` — `generateObject` is deprecated.
 - Azure OpenAI configured via `ModelProvider.ts` with `useDeploymentBasedUrls: true` and `azure.chat()` for Chat Completions API.
@@ -112,13 +112,18 @@ Deprecated files (kept for compatibility):
 - Common pitfalls:
   - Role/worker key mismatch → use lowercase for `assigned_role` and worker registry.
   - Azure API version ⇒ must match deployment. `useDeploymentBasedUrls: true` required.
-  - `maxSteps` ignored in AI SDK v6 ⇒ use `stopWhen: stepCountIs(N)` instead.
+  - Agent uses `isLoopFinished()` by default (autonomous mode). Set `maxSteps > 0` in config to override.
   - React double-render in StrictMode ⇒ all state updates must be immutable (no `.push()` or `obj.prop = val`).
 
 ## External integrations
-- Azure OpenAI via `@ai-sdk/azure` with env vars:
-  - `AZURE_OPENAI_ENDPOINT_URL`, `AZURE_OPENAI_API_KEY`, `AZURE_OPENAI_INSTANCE_NAME`.
-  - Model provider configured in `agent/providers/ModelProvider.ts` with `azure.chat()` + `useDeploymentBasedUrls`.
+- **Model Providers** — `ModelProvider.ts` supports 10 providers via `ModelConfig.provider`:
+  - `azure-openai` — `@ai-sdk/azure` with `azure.chat()` + `useDeploymentBasedUrls`. Env: `AZURE_OPENAI_ENDPOINT_URL`, `AZURE_OPENAI_API_KEY`.
+  - `anthropic` — `@ai-sdk/anthropic`. Env: `ANTHROPIC_API_KEY`.
+  - `openai` — `@ai-sdk/openai`. Env: `OPENAI_API_KEY`.
+  - `ollama` — `@ai-sdk/openai` with `baseURL: http://localhost:11434/v1`. No API key needed.
+  - `google`, `groq`, `mistral`, `deepseek`, `xai` — All use `@ai-sdk/openai` with custom `baseURL`. Each needs its own `*_API_KEY` env var.
+  - `openai-compatible` — Any `/v1/chat/completions` endpoint. Needs `baseUrl` in config or `OPENAI_COMPATIBLE_BASE_URL` env var.
+- **Agent loop** — `AiSdkAgent` uses `streamText()` with `isLoopFinished()` (autonomous mode) + `stepCountIs(200)` safety cap. `prepareStep` trims context. Extended thinking via `buildProviderOptions()` (Anthropic thinking + OpenAI reasoningEffort).
 - LangChain tools converted to AI SDK via `toAiSdkTool()` in `AiSdkAgent.ts`.
 - Socket.IO for real-time frontend-backend communication.
 

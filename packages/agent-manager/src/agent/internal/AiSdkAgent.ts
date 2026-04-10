@@ -8,8 +8,8 @@
  *   2. Structured Output Mode — generateText() with Output.object() schema
  */
 
-import { streamText, generateText, Output, tool, stepCountIs } from "ai";
-import type { ModelMessage } from "ai";
+import { streamText, generateText, Output, tool, stepCountIs, isLoopFinished } from "ai";
+import type { ModelMessage, StopCondition, ToolSet } from "ai";
 import { z } from "zod";
 import { rootLogger } from "../../logging.js";
 import { BaseAgent } from "../BaseAgent.js";
@@ -49,8 +49,14 @@ export class AiSdkAgent extends BaseAgent {
   /** Conversation messages for this thread (full AI SDK format to preserve tool calls/results) */
   private messages: Array<ModelMessage> = [];
 
-  /** Max steps for multi-step tool calls */
-  private maxSteps = 10;
+  /** Max tool-use steps. 0 = unlimited (uses isLoopFinished). Default: 0 for autonomous mode. */
+  private maxSteps = 0;
+
+  /** Extended thinking/reasoning config (Anthropic thinking + OpenAI reasoningEffort) */
+  private thinking?: { enabled: boolean; budgetTokens?: number; reasoningEffort?: "low" | "medium" | "high" };
+
+  /** Token budget safety cap — stops execution if cumulative tokens exceed this */
+  private maxTotalTokens = 500_000;
 
   /** Model parameters from config */
   private temperature?: number;
@@ -69,7 +75,9 @@ export class AiSdkAgent extends BaseAgent {
     // Read model parameters from config
     if (config.model?.temperature !== undefined) this.temperature = config.model.temperature;
     if (config.model?.maxTokens !== undefined) this.maxTokens = config.model.maxTokens;
-    if ((config as any).maxSteps) this.maxSteps = (config as any).maxSteps;
+    if (config.maxSteps !== undefined) this.maxSteps = config.maxSteps;
+    if (config.maxTotalTokens !== undefined) this.maxTotalTokens = config.maxTotalTokens;
+    if (config.thinking?.enabled) this.thinking = config.thinking;
   }
 
   // ─────────────────────────────────────────────────────────────────────────
@@ -260,20 +268,58 @@ export class AiSdkAgent extends BaseAgent {
   ): AsyncGenerator<AgentEvent> {
     const hasTools = Object.keys(this.loadedTools).length > 0;
 
+    // Build provider options for extended thinking/reasoning
+    const providerOptions = this.buildProviderOptions();
+
+    // Build stop conditions: autonomous by default, with safety caps
+    const stopConditions: StopCondition<ToolSet>[] = [];
+    if (this.maxSteps > 0) {
+      // Explicit step limit configured
+      stopConditions.push(stepCountIs(this.maxSteps));
+    } else {
+      // Autonomous mode: run until model naturally stops + safety cap
+      stopConditions.push(isLoopFinished());
+      stopConditions.push(stepCountIs(200)); // absolute safety cap
+    }
+
+    const agentId = this.id;
+
     const result = await streamText({
       model: this.model,
       messages: this.buildMessages(),
       ...(this.definition.systemPrompt
         ? { system: this.definition.systemPrompt }
         : {}),
-      ...(hasTools ? { tools: this.loadedTools, stopWhen: stepCountIs(this.maxSteps) } : {}),
+      ...(hasTools ? { tools: this.loadedTools, stopWhen: stopConditions } : {}),
       ...(this.temperature !== undefined ? { temperature: this.temperature } : {}),
       ...(this.maxTokens !== undefined ? { maxTokens: this.maxTokens } : {}),
+      ...(providerOptions ? { providerOptions } : {}),
       // Increase retries for transient errors (429, 5xx). AI SDK uses exponential backoff.
-      // Default is 2, which is too low for rate-limited Azure deployments.
       maxRetries: 5,
-      onStepFinish: ({ finishReason }) => {
-        logger.debug(`AiSdkAgent step finished: ${finishReason}`);
+
+      // --- prepareStep: Context management for long-running autonomous loops ---
+      prepareStep: async ({ stepNumber, messages }) => {
+        // Trim context when conversation grows too long to prevent context window overflow
+        if (messages.length > 50) {
+          const first = messages[0]!;
+          const recent = messages.slice(-30);
+          logger.info(`AiSdkAgent ${agentId} trimming context: ${messages.length} messages → keeping first + last 30`);
+          return {
+            messages: [first, ...recent] as ModelMessage[],
+          };
+        }
+        return {};
+      },
+
+      // --- Lifecycle callbacks for observability ---
+      onStepFinish: ({ finishReason, usage }) => {
+        logger.info(`AiSdkAgent ${agentId} step finished: ${finishReason} (tokens: ${(usage as any)?.totalTokens ?? '?'})`);
+      },
+      experimental_onToolCallStart: ({ toolCall }: any) => {
+        logger.debug(`AiSdkAgent ${agentId} tool start: ${toolCall?.toolName}`);
+      },
+      experimental_onToolCallFinish: ({ toolCall, durationMs, success }: any) => {
+        logger.info(`AiSdkAgent ${agentId} tool done: ${toolCall?.toolName} (${durationMs}ms, ${success ? 'ok' : 'fail'})`);
       },
     });
 
@@ -518,6 +564,39 @@ export class AiSdkAgent extends BaseAgent {
   // ─────────────────────────────────────────────────────────────────────────
   // Helpers
   // ─────────────────────────────────────────────────────────────────────────
+
+  /**
+   * Build provider-specific options for extended thinking/reasoning.
+   * - Anthropic: thinking tokens with budget (claude-sonnet-4, etc.)
+   * - OpenAI/Azure: reasoningEffort for o-series models (o1, o3, o3-mini, o4-mini)
+   */
+  private buildProviderOptions(): Record<string, any> | undefined {
+    if (!this.thinking?.enabled) return undefined;
+
+    const config = this.definition.config as InternalConfig;
+    const provider = config.model?.provider;
+
+    switch (provider) {
+      case "anthropic":
+        return {
+          anthropic: {
+            thinking: { type: "enabled" as const, budgetTokens: this.thinking.budgetTokens ?? 10000 },
+          },
+        };
+
+      case "openai":
+      case "azure-openai":
+        return {
+          openai: {
+            reasoningEffort: this.thinking.reasoningEffort ?? "medium",
+          },
+        };
+
+      default:
+        logger.warn(`AiSdkAgent ${this.id}: thinking not supported for provider "${provider}"`);
+        return undefined;
+    }
+  }
 
   /**
    * Build the messages array for this call (conversation history + new message).

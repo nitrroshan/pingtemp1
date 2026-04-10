@@ -1,8 +1,8 @@
 # Agentic Streaming — Feature Architecture
 
-**Status:** Planning  
-**Date:** March 29, 2026  
-**Depends on:** [Mastra Migration](../mastra-migration/feature_architecture.md) (Option B — AI SDK adoption)
+**Status:** ✅ Complete (Phase 1: Streaming) + 🔄 Phase 2: Autonomous Loop  
+**Date:** March 29, 2026 (updated April 10, 2026)  
+**Depends on:** Vercel AI SDK v6 (`ai` ^6.0.143)
 
 ---
 
