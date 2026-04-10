@@ -12,6 +12,7 @@
 
 import React, { useState, useEffect, useCallback } from 'react';
 import { X, Search, Tag, Loader2 } from 'lucide-react';
+import { API_BASE_URL } from '../constants';
 
 interface Skill {
   skillId: string;
@@ -27,7 +28,7 @@ interface SkillSelectorProps {
   onClose: () => void;
 }
 
-const API_BASE = 'http://localhost:3002';
+const API_BASE = API_BASE_URL;
 
 const SkillSelector: React.FC<SkillSelectorProps> = ({ agentId, teamId, onClose }) => {
   const [skills, setSkills] = useState<Skill[]>([]);

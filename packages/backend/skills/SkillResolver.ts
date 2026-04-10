@@ -16,12 +16,12 @@
 
 import { tool } from "ai";
 import { z } from "zod";
-import { Logger } from "tslog";
+import { rootLogger } from "../logging/index.js";
 import { skillRegistry } from "./services/index.js";
 import { readSkillMd, parseSkillMd } from "./services/SkillFileReader.js";
 import type { Skill } from "./types/Skill.js";
 
-const logger = new Logger({ name: "SkillResolver" });
+const logger = rootLogger.child({ module: "SkillResolver" });
 
 export interface ResolvedSkills {
   /** AI SDK tool objects ready to pass to streamText() */

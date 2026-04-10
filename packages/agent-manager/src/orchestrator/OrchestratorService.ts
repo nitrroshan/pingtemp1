@@ -18,11 +18,20 @@ import type { DependencyResolver } from "./DependencyResolver.js";
 import type { NotificationQueue } from "./NotificationQueue.js";
 import type { UserInteractionManager } from "./UserInteractionManager.js";
 import { toGoalId } from "../plugin/utils.js";
+import { classifyError } from "./types/workerTypes.js";
+import { rootLogger } from "../logging.js";
 import type {
   OrchestratorState,
   OrchestratorCallbacks,
   OrchestratorMessage,
 } from "./types.js";
+
+const log = rootLogger.child({ module: "OrchestratorService" });
+
+/** Max auto-retry attempts for retriable errors (429, timeout, external_service) */
+const MAX_TASK_RETRIES = 3;
+/** Max concurrent task dispatches to avoid overwhelming the LLM provider */
+const MAX_CONCURRENT_DISPATCHES = 2;
 
 // ═══════════════════════════════════════════════════════════════════
 // CONFIG
@@ -80,6 +89,11 @@ export class OrchestratorService {
   private activeDispatches = new Set<string>();   // taskIds currently being dispatched (prevent double-dispatch)
   private manualDispatchChain: Promise<void> = Promise.resolve(); // serialized manual dispatches only
   private messageChain: Promise<string> = Promise.resolve(""); // serialized user messages
+
+  // Retry tracking: taskId → attempt count
+  private taskAttempts = new Map<string, number>();
+  // Deferred dispatch queue (when concurrency limit reached)
+  private deferredDispatches: Array<{ taskId: string; role: string }> = [];
 
   // Pending plan (between submit_plan and approve)
   private pendingPlan: any = null;
@@ -269,7 +283,7 @@ export class OrchestratorService {
 
   /** Task became ready → dispatch to WorkerPool (if autoExecute ON), else notify frontend */
   private async onTaskReady({ taskId, role }: { taskId: string; role: string }): Promise<void> {
-    console.log(`[OrchestratorService] onTaskReady: ${taskId} (${role})`);
+    log.info(`onTaskReady: ${taskId} (${role})`);
 
     // Always notify frontend that the task is ready
     this.callbacks.onTaskUpdate?.({
@@ -278,16 +292,47 @@ export class OrchestratorService {
 
     if (!this.autoExecute) return;
 
-    // Fire-and-forget: dispatch immediately in parallel (don't block other tasks).
     // Guard against double-dispatch (onTaskReady can fire from both create() and completeTask()).
     if (this.activeDispatches.has(taskId)) return;
+
+    // Concurrency limit: defer if too many active dispatches
+    if (this.activeDispatches.size >= MAX_CONCURRENT_DISPATCHES) {
+      log.info(`Concurrency limit reached (${this.activeDispatches.size}/${MAX_CONCURRENT_DISPATCHES}), deferring ${taskId}`);
+      this.deferredDispatches.push({ taskId, role });
+      return;
+    }
+
     this.activeDispatches.add(taskId);
 
     this.dispatchTask(taskId, role).catch((err) => {
-      console.error(`[OrchestratorService] Auto-dispatch error for ${taskId}:`, err);
+      log.error(`Auto-dispatch error for ${taskId}:`, err);
     }).finally(() => {
       this.activeDispatches.delete(taskId);
+      this.drainDeferredDispatches();
     });
+  }
+
+  /** Drain deferred dispatches when a slot opens up */
+  private drainDeferredDispatches(): void {
+    while (
+      this.deferredDispatches.length > 0 &&
+      this.activeDispatches.size < MAX_CONCURRENT_DISPATCHES
+    ) {
+      const next = this.deferredDispatches.shift()!;
+      if (this.activeDispatches.has(next.taskId)) continue;
+
+      // Re-check task state (may have been cancelled/completed while waiting)
+      const task = this.taskStore.get(next.taskId);
+      if (!task || task.status === "completed" || task.status === "failed") continue;
+
+      this.activeDispatches.add(next.taskId);
+      this.dispatchTask(next.taskId, next.role).catch((err) => {
+        log.error(`Deferred dispatch error for ${next.taskId}:`, err);
+      }).finally(() => {
+        this.activeDispatches.delete(next.taskId);
+        this.drainDeferredDispatches();
+      });
+    }
   }
 
   /**
@@ -309,14 +354,15 @@ export class OrchestratorService {
     // Manual dispatch is serialized (caller awaits) so UI gets immediate feedback
     this.manualDispatchChain = this.manualDispatchChain
       .then(() => this.dispatchTask(taskId, role))
-      .catch((err) => console.error(`[OrchestratorService] Dispatch error for ${taskId}:`, err))
+      .catch((err) => { log.error(`Dispatch error for ${taskId}:`, err); })
       .finally(() => this.activeDispatches.delete(taskId));
     await this.manualDispatchChain;
   }
 
   /** Task completed → check if all done, notify planner */
   private onTaskComplete({ taskId, output }: { taskId: string; output: any }): void {
-    console.log(`[OrchestratorService] onTaskComplete: ${taskId}`);
+    log.info(`onTaskComplete: ${taskId}`);
+    this.taskAttempts.delete(taskId); // Clean up retry tracking
     const task = this.taskStore.get(taskId);
 
     this.callbacks.onTaskUpdate?.({
@@ -336,7 +382,7 @@ export class OrchestratorService {
 
   /** Task failed → notify planner for decision */
   private onTaskFailed({ taskId, error }: { taskId: string; error: string }): void {
-    console.error(`[OrchestratorService] onTaskFailed: ${taskId}: ${error}`);
+    log.error(`onTaskFailed: ${taskId}: ${error}`);
     const task = this.taskStore.get(taskId);
 
     this.callbacks.onTaskUpdate?.({
@@ -450,7 +496,50 @@ export class OrchestratorService {
         // No need to emit onTaskUpdate(ready) here — onTaskReady does it.
       }
     } catch (error: any) {
-      if (this.taskStore.get(taskId)?.status !== "completed") {
+      if (this.taskStore.get(taskId)?.status === "completed") return;
+
+      // Classify the error to determine if auto-retry is safe
+      const attempt = this.taskAttempts.get(taskId) || 1;
+      const report = classifyError(taskId, role, error, attempt);
+
+      log.warn(`Task ${taskId} failed (attempt ${attempt}/${MAX_TASK_RETRIES}): [${report.errorCategory}] ${report.message.slice(0, 200)}`);
+
+      if (report.retriable && attempt < MAX_TASK_RETRIES) {
+        // Exponential backoff: 10s, 30s, 60s (generous for 429 retry-after)
+        const backoffMs = Math.min(10_000 * Math.pow(2, attempt - 1), 60_000);
+        log.info(`Auto-retrying task ${taskId} in ${backoffMs / 1000}s (attempt ${attempt + 1}/${MAX_TASK_RETRIES})`);
+
+        this.taskAttempts.set(taskId, attempt + 1);
+
+        this.callbacks.onTaskUpdate?.({
+          taskId, status: "ready", role, timestamp: Date.now(),
+        });
+
+        // Reset to ready so state machine allows re-dispatch
+        try { this.taskStore.updateStatus(taskId, "failed"); } catch { /* already failed */ }
+        try { this.taskStore.updateStatus(taskId, "ready"); } catch { /* guard */ }
+
+        // Schedule retry after backoff
+        setTimeout(() => {
+          const retryTask = this.taskStore.get(taskId);
+          if (!retryTask || retryTask.status !== "ready") return;
+
+          if (this.activeDispatches.has(taskId)) return;
+          this.activeDispatches.add(taskId);
+
+          this.dispatchTask(taskId, role).catch((err) => {
+            log.error(`Retry dispatch error for ${taskId}:`, err);
+          }).finally(() => {
+            this.activeDispatches.delete(taskId);
+            this.drainDeferredDispatches();
+          });
+        }, backoffMs);
+      } else {
+        // Non-retriable or max retries exceeded — fail permanently
+        if (attempt >= MAX_TASK_RETRIES) {
+          log.error(`Task ${taskId} exhausted all ${MAX_TASK_RETRIES} retry attempts, failing permanently`);
+        }
+        this.taskAttempts.delete(taskId);
         try { this.taskStore.updateStatus(taskId, "failed"); } catch { /* already failed */ }
         this.taskStore.queue.failTask(taskId, error.message);
       }

@@ -1,5 +1,6 @@
 import React from 'react';
 import { Bot, Workflow } from 'lucide-react';
+import { DialogTitle } from '../ui/dialog';
 
 interface ModalHeaderProps {
   isSubAgentMode: boolean;
@@ -12,9 +13,9 @@ const ModalHeader: React.FC<ModalHeaderProps> = ({ isSubAgentMode, parentName })
         {isSubAgentMode ? <Bot size={16} /> : <Workflow size={16} />}
       </div>
       <div>
-        <h3 className="text-base font-semibold text-foreground leading-tight">
+        <DialogTitle className="text-base font-semibold text-foreground leading-tight">
           {isSubAgentMode ? 'Add Agent' : 'New Team'}
-        </h3>
+        </DialogTitle>
         <p className="text-xs text-muted-foreground">
           {isSubAgentMode ? `Reporting to: ${parentName}` : 'Create an orchestration team'}
         </p>

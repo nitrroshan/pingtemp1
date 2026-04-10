@@ -6,10 +6,10 @@
  * - TODO: Migrate to MongoDB/PostgreSQL/Redis for persistence
  */
 
-import { Logger } from "tslog";
+import { rootLogger } from "../logging/index.js";
 import type { User } from "./types/index.js";
 
-const logger = new Logger({ name: "UserManager" });
+const logger = rootLogger.child({ module: "UserManager" });
 
 export type { User };
 

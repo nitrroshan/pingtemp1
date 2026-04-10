@@ -6,6 +6,7 @@
     "moduleResolution": "bundler",
     "lib": ["esnext"],
     "types": ["node"],
+    "typeRoots": ["../../node_modules/.bun/node_modules/@types", "../../node_modules/@types"],
     "esModuleInterop": true,
     "allowSyntheticDefaultImports": true,
     "resolveJsonModule": true,

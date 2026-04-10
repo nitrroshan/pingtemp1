@@ -68,7 +68,7 @@ const AgentModal: React.FC<AgentModalProps> = ({ isOpen, onClose, onSave, parent
 
   return (
     <Dialog open={isOpen} onOpenChange={open => { if (!open) onClose(); }}>
-      <DialogContent className="max-w-lg p-0 gap-0 overflow-hidden flex flex-col max-h-[85vh]">
+      <DialogContent className="max-w-lg p-0 gap-0 overflow-hidden flex flex-col max-h-[85vh]" aria-describedby={undefined}>
         {/* Header */}
         <UIDialogHeader className="px-5 py-4 border-b border-border shrink-0">
           <ModalHeader isSubAgentMode={isSubAgentMode} parentName={parentName} />

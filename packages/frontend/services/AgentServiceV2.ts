@@ -12,6 +12,8 @@
  */
 
 import { io, Socket } from "socket.io-client";
+import { logger } from "../utils/logger";
+import { API_BASE_URL } from "../constants";
 
 // ============================================================================
 // Types
@@ -139,7 +141,7 @@ export class AgentServiceV2 {
   private errorCallbacks: Set<(error: ErrorInfo) => void> = new Set();
   private streamCallbacks: Set<(payload: any) => void> = new Set();
 
-  constructor(baseUrl: string = "http://localhost:3002") {
+  constructor(baseUrl: string = API_BASE_URL) {
     this.baseUrl = baseUrl;
     this.userId = `user-${Math.random().toString(36).substring(7)}`;
   }
@@ -175,25 +177,26 @@ export class AgentServiceV2 {
         reconnection: true,
         reconnectionAttempts: 3,
         reconnectionDelay: 2000,
+        withCredentials: true,
       });
 
       this.socket.on("connect", () => {
-        console.log("[AgentServiceV2] Connected, registering...");
+        logger.info("[AgentServiceV2] Connected, registering...");
         this.socket!.emit("register", { userId: this.userId });
       });
 
       this.socket.on("disconnect", (reason) => {
-        console.warn("[AgentServiceV2] Disconnected:", reason);
+        logger.warn("[AgentServiceV2] Disconnected:", reason);
         this.clientId = null;
       });
 
       this.socket.on("registered", (data: { clientId: string }) => {
         this.clientId = data.clientId;
-        console.log(`[AgentServiceV2] Registered: ${data.clientId}`);
+        logger.info(`[AgentServiceV2] Registered: ${data.clientId}`);
 
         // Request current state after registration to restore UI on refresh
         setTimeout(() => {
-          console.log("[AgentServiceV2] Requesting initial state...");
+          logger.info("[AgentServiceV2] Requesting initial state...");
           this.getState();
         }, 100);
 
@@ -201,7 +204,7 @@ export class AgentServiceV2 {
       });
 
       this.socket.on("connect_error", (error) => {
-        console.error("[AgentServiceV2] Connection error:", error);
+        logger.error("[AgentServiceV2] Connection error:", error);
         reject(error);
       });
 
@@ -218,7 +221,7 @@ export class AgentServiceV2 {
 
     // Message event (bidirectional - this is incoming from server)
     this.socket.on("message", (data: AgentMessage) => {
-      console.log(
+      logger.info(
         `[AgentServiceV2] Message from ${data.agentId}:`,
         data.content.substring(0, 100),
       );
@@ -227,7 +230,7 @@ export class AgentServiceV2 {
 
     // State event
     this.socket.on("state", (data: SessionState) => {
-      console.log(
+      logger.info(
         `[AgentServiceV2] State update:`,
         data.sessionState || "tasks updated",
       );
@@ -236,7 +239,7 @@ export class AgentServiceV2 {
 
     // Output event
     this.socket.on("output", (data: AgentOutput) => {
-      console.log(
+      logger.info(
         `[AgentServiceV2] Output from ${data.agentId}:`,
         data.output.contentType,
       );
@@ -245,7 +248,7 @@ export class AgentServiceV2 {
 
     // Progress event (real-time updates during task execution)
     this.socket.on("progress", (data: Progress) => {
-      console.log(
+      logger.info(
         `[AgentServiceV2] Progress [${data.type}]:`,
         data.content.substring(0, 50),
       );
@@ -254,7 +257,7 @@ export class AgentServiceV2 {
 
     // Error event
     this.socket.on("error", (data: ErrorInfo) => {
-      console.error(`[AgentServiceV2] Error:`, data.error);
+      logger.error(`[AgentServiceV2] Error:`, data.error);
       this.errorCallbacks.forEach((cb) => cb(data));
     });
 
@@ -291,11 +294,11 @@ export class AgentServiceV2 {
 
   sendToManager(content: string): void {
     if (!this.isReady()) {
-      console.error("[AgentServiceV2] Cannot send: socket =", !!this.socket, "clientId =", this.clientId, "teamId =", this.teamId);
+      logger.error("[AgentServiceV2] Cannot send: socket =", !!this.socket, "clientId =", this.clientId, "teamId =", this.teamId);
       throw new Error("Not connected or no team selected");
     }
 
-    console.log("[AgentServiceV2] sendToManager:", content.substring(0, 50));
+    logger.info("[AgentServiceV2] sendToManager:", content.substring(0, 50));
     this.socket!.emit("message", {
       teamId: this.teamId,
       agentId: "manager",
@@ -309,11 +312,11 @@ export class AgentServiceV2 {
    */
   sendToWorker(agentId: string, content: string, taskId?: string): void {
     if (!this.isReady()) {
-      console.error("[AgentServiceV2] Cannot send: socket =", !!this.socket, "clientId =", this.clientId, "teamId =", this.teamId);
+      logger.error("[AgentServiceV2] Cannot send: socket =", !!this.socket, "clientId =", this.clientId, "teamId =", this.teamId);
       throw new Error("Not connected or no team selected");
     }
 
-    console.log("[AgentServiceV2] sendToWorker:", {
+    logger.info("[AgentServiceV2] sendToWorker:", {
       teamId: this.teamId,
       agentId,
       taskId,
@@ -391,7 +394,7 @@ export class AgentServiceV2 {
     data?: { taskId?: string; output?: any; enabled?: boolean },
   ): void {
     if (!this.isReady()) {
-      console.warn("[AgentServiceV2] emitAction skipped (not ready):", type);
+      logger.warn("[AgentServiceV2] emitAction skipped (not ready):", type);
       return;
     }
 
@@ -598,6 +601,29 @@ export class AgentServiceV2 {
 
     if (!response.ok) {
       throw new Error("Failed to fetch tasks");
+    }
+
+    return response.json();
+  }
+
+  /**
+   * Get chat message history for a team
+   */
+  async getMessages(
+    teamId: string,
+    options?: { limit?: number; before?: string },
+  ): Promise<{ messages: AgentMessage[] }> {
+    const params = new URLSearchParams();
+    if (options?.limit) params.set("limit", String(options.limit));
+    if (options?.before) params.set("before", options.before);
+
+    const response = await fetch(
+      `${this.baseUrl}/api/v2/teams/${teamId}/messages?${params}`,
+      { credentials: "include" },
+    );
+
+    if (!response.ok) {
+      throw new Error("Failed to fetch messages");
     }
 
     return response.json();

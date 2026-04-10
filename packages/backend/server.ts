@@ -6,11 +6,13 @@ import dotenv from "dotenv";
 dotenv.config();
 
 import { AgentManagerAPI } from "./api/AgentManagerAPI.js";
-import { Logger } from "tslog";
+import { rootLogger } from "./logging/index.js";
 import { connectDB, disconnectDB } from "./db/index.js";
 import { getConfig, validateConfig } from "./config/index.js";
+import { agentManagerRegistry } from "./agentManager/AgentManagerRegistry.js";
+import { createServiceRegistry } from "./services/ServiceRegistry.js";
 
-const logger = new Logger({ name: "Server" });
+const logger = rootLogger.child({ module: "Server" });
 
 // Validate required env vars before doing anything else
 try {
@@ -29,11 +31,20 @@ async function main() {
   try {
     logger.info("Starting AgentManager API Server...");
 
-    // Connect to database
-    logger.info("Connecting to MongoDB...");
-    await connectDB();
+    // Connect to database (skip in file mode)
+    if (config.mongodbUri) {
+      logger.info("Connecting to MongoDB...");
+      await connectDB();
+    } else {
+      logger.info("File-based storage mode — skipping MongoDB connection");
+    }
 
-    const api = new AgentManagerAPI(PORT);
+    // Create ServiceRegistry (file-based or MongoDB adapters)
+    const dataDir = process.env.DATA_DIR || "./data";
+    const services = await createServiceRegistry(dataDir);
+    logger.info(`ServiceRegistry created (mode: ${services.mode})`);
+
+    const api = new AgentManagerAPI(PORT, services);
     await api.start();
 
     logger.info(`Server running on:`);
@@ -43,15 +54,17 @@ async function main() {
     // Graceful shutdown
     process.on("SIGINT", async () => {
       logger.info("\nShutting down gracefully...");
+      await agentManagerRegistry.flushAll();
       await api.stop();
-      await disconnectDB();
+      if (config.mongodbUri) await disconnectDB();
       process.exit(0);
     });
 
     process.on("SIGTERM", async () => {
       logger.info("\nReceived SIGTERM, shutting down gracefully...");
+      await agentManagerRegistry.flushAll();
       await api.stop();
-      await disconnectDB();
+      if (config.mongodbUri) await disconnectDB();
       process.exit(0);
     });
   } catch (error) {

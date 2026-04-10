@@ -12,6 +12,7 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
 import { v4 as uuidv4 } from 'uuid';
 import { agentServiceV2 } from '../services/AgentServiceV2';
+import { logger } from '../utils/logger';
 import { getIconForRole } from '../assets/icons';
 import { INITIAL_AGENTS } from '../dummyData/constants';
 import type { Agent } from '../types';
@@ -107,7 +108,7 @@ export function useAgentTree() {
 
       return teamAgents;
     } catch (err) {
-      console.error('[useAgentTree] Failed to load teams:', err);
+      logger.error('[useAgentTree] Failed to load teams:', err);
       return [];
     } finally {
       setIsLoadingTeams(false);
@@ -160,7 +161,7 @@ export function useAgentTree() {
 
       return orchestratorAgent;
     } catch (err) {
-      console.error('[useAgentTree] Failed to create team:', err);
+      logger.error('[useAgentTree] Failed to create team:', err);
       throw err;
     }
   }, []);

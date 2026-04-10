@@ -15,7 +15,7 @@ import { exec } from "child_process";
 import { promisify } from "util";
 import { existsSync } from "fs";
 import { join } from "path";
-import { Logger } from "tslog";
+import { rootLogger } from "../../logging/index.js";
 import { skillRegistry } from "../services/index.js";
 import {
   readSkillMd,
@@ -26,7 +26,7 @@ import {
 } from "../services/SkillFileReader.js";
 import type { Skill, SkillMetadata } from "../types/Skill.js";
 
-const logger = new Logger({ name: "SkillTools" });
+const logger = rootLogger.child({ module: "SkillTools" });
 const execAsync = promisify(exec);
 
 /**

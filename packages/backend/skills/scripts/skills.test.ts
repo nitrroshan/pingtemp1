@@ -7,10 +7,10 @@
  */
 
 import dotenv from "dotenv";
-import { Logger } from "tslog";
+import { rootLogger } from "../../logging/index.js";
 import connectDB, { disconnectDB } from "../../db/config.js";
-import { SkillModel } from "../schema/skillSchema.js";
-import { AgentSkillModel } from "../schema/agentSkillSchema.js";
+import { SkillModel } from "../../services/mongo/schemas/SkillSchema.js";
+import { AgentSkillModel } from "../../services/mongo/schemas/AgentSkillSchema.js";
 import {
   generateEmbedding,
   generateEmbeddings,
@@ -18,7 +18,7 @@ import {
 } from "../services/EmbeddingService.js";
 
 dotenv.config();
-const logger = new Logger({ name: "skills:test" });
+const logger = rootLogger.child({ module: "skills:test" });
 
 interface TestResult {
   name: string;

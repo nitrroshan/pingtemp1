@@ -13,7 +13,7 @@
  * @see feature_implementation_planning.md Phase 4a
  */
 
-import { Logger } from "tslog";
+import { rootLogger } from "../../logging.js";
 import { CollaborationSpace, WELL_KNOWN_DOCS } from "./CollaborationSpace.js";
 import type {
   GroupChatOutcome,
@@ -24,7 +24,7 @@ import type {
 
 export { type GroupChatOutcome, type ActionItem, type GroupMessage };
 
-const logger = new Logger({ name: "GroupChatManager" });
+const logger = rootLogger.child({ module: "GroupChatManager" });
 
 /**
  * Options for starting a group chat session.

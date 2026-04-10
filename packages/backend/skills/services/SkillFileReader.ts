@@ -9,10 +9,10 @@ import { readFile, readdir, stat, mkdir, writeFile } from "fs/promises";
 import { existsSync } from "fs";
 import { join, dirname } from "path";
 import { homedir } from "os";
-import { Logger } from "tslog";
+import { rootLogger } from "../../logging/index.js";
 import type { SkillWithInstructions } from "../types/Skill.js";
 
-const logger = new Logger({ name: "SkillFileReader" });
+const logger = rootLogger.child({ module: "SkillFileReader" });
 
 /**
  * Default skills directory

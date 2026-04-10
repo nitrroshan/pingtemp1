@@ -1,5 +1,8 @@
 import { Agent } from "./types";
 
+/** Base URL for backend API — configurable via VITE_API_URL env var */
+export const API_BASE_URL = import.meta.env.VITE_API_URL || "http://localhost:3002";
+
 export const INITIAL_AGENTS: Agent[] = [
   {
     id: "root-1",

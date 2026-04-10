@@ -15,13 +15,13 @@
 import dotenv from "dotenv";
 dotenv.config();
 
-import { Logger } from "tslog";
+import { rootLogger } from "../../logging/index.js";
 import { assertSeedAllowed } from "./guard.js";
 import { connectDB, disconnectDB } from "../../db/index.js";
 import { seedTeams } from "./teams.seed.js";
 import { seedAgents } from "./agents.seed.js";
 
-const logger = new Logger({ name: "seed" });
+const logger = rootLogger.child({ module: "seed" });
 
 async function runSeeds(): Promise<void> {
   // Safety guard — never seeds in production

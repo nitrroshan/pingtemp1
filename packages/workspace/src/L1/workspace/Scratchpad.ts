@@ -16,9 +16,9 @@
 
 import fs from "fs";
 import path from "path";
-import { Logger } from "tslog";
+import { rootLogger } from "../../logging.js";
 
-const logger = new Logger({ name: "Scratchpad" });
+const logger = rootLogger.child({ module: "Scratchpad" });
 
 export interface Todo {
   id: string;

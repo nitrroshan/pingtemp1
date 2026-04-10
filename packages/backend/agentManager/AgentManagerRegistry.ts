@@ -11,16 +11,15 @@
  *   await manager.chatWithWorker(agentId, content)
  */
 
-import mongoose from "mongoose";
-import { Logger } from "tslog";
+import { rootLogger } from "../logging/index.js";
 import { AgentManager } from "./AgentManagerV2.js";
-import { TeamModel } from "./team/schema/teamSchema.js";
-import { AgentModel } from "./team/schema/agentSchema.js";
-import { WorkspacePlugin } from "@ping/workspace";
-import { CollaborationPlugin } from "@ping/collaboration";
-import { KnowledgePlugin } from "@ping/knowledge";
+import { WorkspacePlugin } from "./plugins/WorkspacePlugin.js";
+import { CollaborationPlugin } from "./plugins/CollaborationPlugin.js";
+import { KnowledgePlugin } from "./plugins/KnowledgePlugin.js";
+import { getConfig } from "../config/index.js";
+import type { ServiceRegistry } from "../services/ServiceRegistry.js";
 
-const logger = new Logger({ name: "AgentManagerRegistry" });
+const logger = rootLogger.child({ module: "AgentManagerRegistry" });
 
 export interface TeamData {
   id: string;
@@ -38,6 +37,15 @@ export interface TeamData {
 export class AgentManagerRegistry {
   private managers: Map<string, AgentManager> = new Map();
   private loadingPromises: Map<string, Promise<AgentManager>> = new Map();
+  private services: ServiceRegistry | null = null;
+
+  /**
+   * Inject ServiceRegistry for file-mode support.
+   * Must be called before getForTeam() in file mode.
+   */
+  setServices(services: ServiceRegistry) {
+    this.services = services;
+  }
 
   /**
    * Get or create AgentManager for a team
@@ -69,34 +77,36 @@ export class AgentManagerRegistry {
   }
 
   /**
-   * Load team from MongoDB and create AgentManager
+   * Load team data and create AgentManager.
+   * Uses ServiceRegistry (file or mongo adapters) — no direct Mongoose access.
    */
   private async loadTeam(teamId: string): Promise<AgentManager> {
-    logger.info(`[Registry] Loading team ${teamId} from database`);
-
-    if (!mongoose.Types.ObjectId.isValid(teamId)) {
-      throw new Error(`Invalid team ID "${teamId}" — not a valid ObjectId. Use a real team ID from the database.`);
+    if (!this.services) {
+      throw new Error(
+        "[Registry] ServiceRegistry not set — call setServices() before getForTeam(). " +
+        "This is a startup wiring bug."
+      );
     }
 
-    // Find team with populated members
-    const team = await TeamModel.findById(teamId).lean();
+    logger.info(`[Registry] Loading team ${teamId}`);
+
+    const team = await this.services.teams.getTeam(teamId);
     if (!team) {
       throw new Error(`Team ${teamId} not found`);
     }
 
-    // Get agents for this team
-    const agents = await AgentModel.find({ teamId }).lean();
+    const agents = await this.services.agents.getTeamAgents(teamId);
 
     const teamRoles = agents.map((agent) => ({
-      id: agent._id.toString(),
-      role: agent.role.toLowerCase(), // Normalize to lowercase for consistent matching
+      id: agent.id,
+      role: agent.role.toLowerCase(),
       name: agent.name,
-      goal: agent.goal,
-      systemPrompt: agent.systemPrompt,
+      goal: (agent as any).goal ?? "",
+      systemPrompt: (agent as any).systemPrompt,
     }));
 
     logger.info(
-      `[Registry] Team ${team.teamName} has ${teamRoles.length} roles: ${teamRoles.map((r) => r.role).join(", ")}`,
+      `[Registry] Team "${team.name}" has ${teamRoles.length} roles: ${teamRoles.map((r) => r.role).join(", ")}`,
     );
 
     // Create AgentManager
@@ -114,19 +124,30 @@ export class AgentManagerRegistry {
     const collabPort = process.env.COLLAB_PORT
       ? parseInt(process.env.COLLAB_PORT, 10)
       : undefined;
+
+    const config = getConfig();
+    let collabProvider: any = undefined;
+
+    if (config.collabMode === "external") {
+      const { RemoteCollabClient } = await import("@ping/collaboration");
+      collabProvider = new RemoteCollabClient(config.collabUrl);
+      logger.info(`[Registry] Using external collab server: ${config.collabUrl}`);
+    }
+
     manager.registerPlugin(
       new CollaborationPlugin({
         teamId,
         collabStorageDir: `${teamRepoPath}/.ping/collab`,
         repoPath: teamRepoPath,
-        collabPort,
+        collabPort: collabProvider ? undefined : collabPort,
+        collabProvider,
       }),
     );
 
-    if (process.env.MONGODB_URI) {
+    if (config.mongodbUri) {
       manager.registerPlugin(
         new KnowledgePlugin({
-          mongoUri: process.env.MONGODB_URI,
+          mongoUri: config.mongodbUri,
           promotion: {
             autoApproveFromTrusted: true,
             trustedProposers: ["system", "orchestrator"],
@@ -135,7 +156,7 @@ export class AgentManagerRegistry {
       );
     }
 
-    // Initialize orchestrator with team data (include MongoDB agent IDs for skill resolution)
+    // Initialize orchestrator with team data
     await manager.initializeOrchestrator(
       teamId,
       teamRoles.map((r) => r.role),
@@ -176,6 +197,27 @@ export class AgentManagerRegistry {
    */
   getCachedTeamIds(): string[] {
     return Array.from(this.managers.keys());
+  }
+
+  /**
+   * Flush all cached managers (persist buffered data to disk).
+   * Call before shutdown to ensure no pending writes are lost.
+   */
+  async flushAll(): Promise<void> {
+    logger.info(`[Registry] Flushing ${this.managers.size} cached managers`);
+    const results = await Promise.allSettled(
+      Array.from(this.managers.entries()).map(async ([teamId, manager]) => {
+        try {
+          await manager.flush();
+        } catch (err) {
+          logger.warn(`[Registry] Flush failed for team ${teamId}:`, err);
+        }
+      }),
+    );
+    const failed = results.filter((r) => r.status === "rejected").length;
+    if (failed > 0) {
+      logger.warn(`[Registry] ${failed} manager(s) failed to flush`);
+    }
   }
 
   /**

@@ -10,7 +10,7 @@
  * Events are forwarded from WorkerPool for Socket.IO integration.
  */
 
-import { Logger } from "tslog";
+import { rootLogger } from "./logging.js";
 import { getAgentFactory } from "./agent/AgentFactory.js";
 import { WorkerPool } from "./services/WorkerPool.js";
 import { RoleTaskQueue } from "./util/RoleTaskQueue.js";
@@ -29,7 +29,7 @@ import { PluginRegistry } from "./plugin/PluginRegistry.js";
 import type { IPlugin } from "./plugin/types.js";
 import { FileTaskStore } from "./persistence/FileTaskStore.js";
 
-const logger = new Logger({ name: "AgentManager" });
+const logger = rootLogger.child({ module: "AgentManager" });
 
 export interface ManagerStreamCallbacks {
   onStream?: (data: { taskId: string; agentId: string; part: any }) => void;
@@ -992,7 +992,7 @@ Do NOT invent tools you don't have. If unsure, use \`my_tools\` to check.
       (task as any).assigned_role = changes.assignedRole.toLowerCase();
     }
 
-    logger.info(`Modified task ${taskId}:`, changes);
+    logger.info({ taskId, changes }, `Modified task ${taskId}`);
   }
 
   /**
@@ -1360,7 +1360,7 @@ Do NOT invent tools you don't have. If unsure, use \`my_tools\` to check.
             completed.add(task.id);
             logger.info(`Completed: ${taskId}`);
           } catch (error) {
-            logger.error(`Failed: ${task.id}`, error);
+            logger.error({ err: error, taskId: task.id }, `Failed: ${task.id}`);
             results.set(task.id, { error: String(error) });
             completed.add(task.id); // Mark as done even if failed
           }
@@ -1632,6 +1632,16 @@ Do NOT invent tools you don't have. If unsure, use \`my_tools\` to check.
     this.definitions = [];
     this.plan = null;
     logger.info("AgentManager disposed");
+  }
+
+  /**
+   * Flush buffered data to disk without disposing.
+   * Call during graceful shutdown to persist pending writes.
+   */
+  async flush(): Promise<void> {
+    if (this.filePersistence) {
+      await this.filePersistence.flush();
+    }
   }
 }
 

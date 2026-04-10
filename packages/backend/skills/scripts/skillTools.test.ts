@@ -27,7 +27,7 @@ import {
   buildSkillSystemPrompt,
 } from "../tools/index.js";
 import { skillRegistry } from "../services/index.js";
-import { SkillModel } from "../schema/skillSchema.js";
+import { SkillModel } from "../../services/mongo/schemas/SkillSchema.js";
 import { generateEmbedding } from "../services/index.js";
 
 dotenv.config();

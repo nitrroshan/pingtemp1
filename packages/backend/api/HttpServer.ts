@@ -5,18 +5,21 @@
 import express from "express";
 import cors from "cors";
 import swaggerUi from "swagger-ui-express";
-import { Logger } from "tslog";
+import { rootLogger } from "../logging/index.js";
 import { AgentManager } from "../agentManager/AgentManagerV2.js";
 import { createAgentManagerHandlerV2 } from "./agentManagerHandlerV2.js";
-import { TeamService } from "../team/index.js";
 import { swaggerSpec } from "./swagger.js";
 import { skillsRouter } from "../skills/index.js";
+import { getAuthHandler } from "../auth/index.js";
+import { FRONTEND_FLAG_KEYS } from "../config/featureFlags.js";
+import { getConfig } from "../config/index.js";
+import type { ServiceRegistry } from "../services/ServiceRegistry.js";
 
-const logger = new Logger({ name: "HttpServer" });
+const logger = rootLogger.child({ module: "HttpServer" });
 
 export interface HttpServerOptions {
   agentManager: AgentManager;
-  teamService?: TeamService;
+  services?: ServiceRegistry;
 }
 
 export class HttpServer {
@@ -33,15 +36,19 @@ export class HttpServer {
    * Setup Express middleware
    */
   private setupMiddleware() {
-    this.app.use(cors());
-    this.app.use(express.json());
+    this.app.use(cors({ origin: true, credentials: true }));
+    // Skip express.json() for auth routes — better-auth's toNodeHandler() reads the raw body
+    this.app.use((req, res, next) => {
+      if (req.path.startsWith("/api/auth")) return next();
+      express.json()(req, res, next);
+    });
   }
 
   /**
    * Setup HTTP routes
    */
   private setupRoutes(options: HttpServerOptions) {
-    // Health check
+    // Health check (unauthenticated)
     this.app.get("/health", (req, res) => {
       logger.info("[HttpServer] Health check requested");
       res.json({
@@ -51,8 +58,69 @@ export class HttpServer {
       });
     });
 
-    // Mount V2 API routes
-    const v2Routes = createAgentManagerHandlerV2();
+    // Extended health check — includes dependency status
+    this.app.get("/api/v2/health", async (req, res) => {
+      const checks: Record<string, string> = {};
+      const config = (await import("../config/index.js")).getConfig();
+      const isFileMode = !config.mongodbUri;
+
+      // MongoDB (skip check in file mode)
+      if (isFileMode) {
+        checks.storage = "file";
+      } else {
+        try {
+          const mongoose = (await import("mongoose")).default;
+          checks.mongodb = mongoose.connection.readyState === 1 ? "connected" : "disconnected";
+        } catch {
+          checks.mongodb = "error";
+        }
+      }
+
+      // Data directory writable
+      try {
+        const fs = await import("fs/promises");
+        const testFile = "./data/.health-check";
+        await fs.writeFile(testFile, "ok");
+        await fs.unlink(testFile);
+        checks.dataDir = "writable";
+      } catch {
+        checks.dataDir = "not-writable";
+      }
+
+      const allOk = Object.values(checks).every(
+        (v) => v === "connected" || v === "writable" || v === "file",
+      );
+
+      res.status(allOk ? 200 : 503).json({
+        status: allOk ? "ok" : "degraded",
+        timestamp: Date.now(),
+        uptime: process.uptime(),
+        checks,
+      });
+    });
+
+    // Mount better-auth routes (lazy init — after MongoDB is connected)
+    this.app.all("/api/auth/*splat", (req, res, next) => {
+      const handler = getAuthHandler();
+      return handler(req, res, next);
+    });
+    logger.info("[HttpServer] Auth routes mounted at /api/auth/*");
+
+    // Feature flags endpoint (frontend-safe subset)
+    this.app.get("/api/v2/feature-flags", (req, res) => {
+      const config = getConfig();
+      const flags: Record<string, any> = {};
+      for (const key of FRONTEND_FLAG_KEYS) {
+        flags[key] = config.featureFlags[key];
+      }
+      res.json(flags);
+    });
+    logger.info("[HttpServer] Feature flags API mounted at /api/v2/feature-flags");
+
+    // Mount V2 API routes (ServiceRegistry required)
+    const v2Routes = options.services
+      ? createAgentManagerHandlerV2(options.services)
+      : createAgentManagerHandlerV2(undefined as any); // legacy — should not happen
     this.app.use("/api/v2", v2Routes);
     // Also mount at /api for backward compat
     this.app.use("/api", v2Routes);
@@ -104,6 +172,168 @@ export class HttpServer {
     logger.info(
       "[HttpServer] Collab docs API mounted at /api/collab/:teamId/docs",
     );
+
+    // Delete a collab document
+    this.app.delete("/api/collab/:teamId/docs/:docName", async (req, res) => {
+      try {
+        const { teamId, docName } = req.params;
+        const fullDocName = `${teamId}/${docName}`;
+
+        // Delete the persisted .bin file
+        const fs = await import("fs/promises");
+        const path = await import("path");
+        const storageDir = process.env.WORKSPACE_BASE_DIR
+          ? `${process.env.WORKSPACE_BASE_DIR}/${teamId}/.ping/collab`
+          : `./data/workspaces/${teamId}/.ping/collab`;
+        const binPath = path.join(storageDir, "yjs", `${fullDocName.replace(/\//g, "_")}.bin`);
+
+        try { await fs.unlink(binPath); } catch { /* file may not exist */ }
+
+        // Try to close the in-memory doc if loaded
+        const { agentManagerRegistry } =
+          await import("../agentManager/AgentManagerRegistry.js");
+        if (agentManagerRegistry.has(teamId)) {
+          const manager = await agentManagerRegistry.getForTeam(teamId);
+          const registry = manager.getPluginRegistry();
+          const collabStorage = registry?.getPluginStorage?.("collaboration");
+          const server = (collabStorage?.crdt as any)?.collabServer || (collabStorage?.crdt as any)?._collabServer;
+          // Hocuspocus doesn't expose a direct "delete doc" — closing connections is enough
+          // The doc won't reload since we deleted the .bin
+        }
+
+        res.json({ success: true });
+      } catch (err: any) {
+        res.status(500).json({ error: err.message });
+      }
+    });
+    logger.info("[HttpServer] Collab doc delete API mounted at /api/collab/:teamId/docs/:docName");
+
+    // Chat message history
+    this.app.get("/api/v2/teams/:teamId/messages", async (req, res) => {
+      try {
+        const { teamId } = req.params;
+        const limit = Math.min(parseInt(req.query.limit as string) || 50, 200);
+        const before = req.query.before as string | undefined;
+
+        if (options.services) {
+          const messages = await options.services.chat.getMessages(teamId, { limit, before });
+          res.json({ messages });
+        } else {
+          res.json({ messages: [] });
+        }
+      } catch (err: any) {
+        res.status(500).json({ error: err.message });
+      }
+    });
+    logger.info("[HttpServer] Messages API mounted at /api/v2/teams/:teamId/messages");
+
+    // Goal history
+    this.app.get("/api/v2/teams/:teamId/goals", async (req, res) => {
+      try {
+        const { teamId } = req.params;
+        const limit = Math.min(parseInt(req.query.limit as string) || 20, 100);
+
+        if (options.services) {
+          const goals = await options.services.goals.getGoals(teamId, { limit });
+          res.json({ goals });
+        } else {
+          res.json({ goals: [] });
+        }
+      } catch (err: any) {
+        res.status(500).json({ error: err.message });
+      }
+    });
+    logger.info("[HttpServer] Goals API mounted at /api/v2/teams/:teamId/goals");
+
+    // Session restore — returns everything needed to rebuild UI in one call
+    this.app.get("/api/v2/sessions/:teamId/restore", async (req, res) => {
+      try {
+        const { teamId } = req.params;
+
+        let messages: any[] = [];
+        let goals: any[] = [];
+
+        if (options.services) {
+          [messages, goals] = await Promise.all([
+            options.services.chat.getMessages(teamId, { limit: 50 }),
+            options.services.goals.getGoals(teamId, { limit: 10 }),
+          ]);
+        }
+
+        // Try to get current plan/tasks from AgentManager if cached
+        let plan = null;
+        let tasks: any[] = [];
+        try {
+          const { agentManagerRegistry } =
+            await import("../agentManager/AgentManagerRegistry.js");
+          if (agentManagerRegistry.has(teamId)) {
+            const manager = await agentManagerRegistry.getForTeam(teamId);
+            const state = manager.getState?.();
+            if (state) {
+              plan = state.plan || null;
+              tasks = state.tasks || [];
+            }
+          }
+        } catch {
+          // Manager not initialized — return empty plan/tasks
+        }
+
+        res.json({
+          teamId,
+          messages,
+          goals,
+          plan,
+          tasks,
+        });
+      } catch (err: any) {
+        res.status(500).json({ error: err.message });
+      }
+    });
+    logger.info("[HttpServer] Session restore API mounted at /api/v2/sessions/:teamId/restore");
+
+    // Workspace git push
+    this.app.post("/api/v2/workspaces/:teamId/push", async (req, res) => {
+      try {
+        const { teamId } = req.params;
+
+        let remoteUrl = req.body.remoteUrl;
+        let remoteToken = req.body.remoteToken;
+
+        // Try to get team's stored git config via services
+        if (options.services) {
+          const team = await options.services.teams.getTeam(teamId);
+          if (!team) { res.status(404).json({ error: "Team not found" }); return; }
+          remoteUrl = remoteUrl || team.gitRemoteUrl;
+          remoteToken = remoteToken || team.gitRemoteToken;
+        }
+
+        if (!remoteUrl) { res.status(400).json({ error: "No git remote URL configured" }); return; }
+
+        // Build authenticated URL if token provided
+        const authUrl = remoteToken
+          ? remoteUrl.replace("https://", `https://oauth2:${remoteToken}@`)
+          : remoteUrl;
+
+        const { agentManagerRegistry } =
+          await import("../agentManager/AgentManagerRegistry.js");
+        const manager = await agentManagerRegistry.getForTeam(teamId);
+        const registry = manager.getPluginRegistry();
+        const wsStorage = registry?.getPluginStorage?.("workspace");
+        const gitManager = (wsStorage as any)?.gitManager;
+
+        if (!gitManager?.addRemote) {
+          res.status(500).json({ error: "Workspace not initialized" });
+          return;
+        }
+
+        await gitManager.addRemote("origin", authUrl);
+        await gitManager.push("origin");
+        res.json({ success: true, message: "Pushed to remote" });
+      } catch (err: any) {
+        res.status(500).json({ error: err.message });
+      }
+    });
+    logger.info("[HttpServer] Workspace push API mounted at /api/v2/workspaces/:teamId/push");
   }
 
   /**

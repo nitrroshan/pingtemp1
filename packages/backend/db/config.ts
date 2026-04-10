@@ -1,10 +1,10 @@
 import mongoose from "mongoose";
 import dotenv from "dotenv";
-import { Logger } from "tslog";
+import { rootLogger } from "../logging/index.js";
 import { resolve, dirname } from "path";
 import { fileURLToPath } from "url";
 
-const logger = new Logger({ name: "worker/database" });
+const logger = rootLogger.child({ module: "worker/database" });
 
 // Load .env from src/worker directory
 const __dirname = dirname(fileURLToPath(import.meta.url));

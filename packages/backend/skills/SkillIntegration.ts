@@ -22,12 +22,12 @@
  * ```
  */
 
-import { Logger } from "tslog";
+import { rootLogger } from "../logging/index.js";
 import { skillRegistry } from "./services/index.js";
 import { getSkillTools, buildSkillSystemPrompt } from "./tools/index.js";
 import type { Skill, SkillMetadata } from "./types/Skill.js";
 
-const logger = new Logger({ name: "SkillIntegration" });
+const logger = rootLogger.child({ module: "SkillIntegration" });
 
 /**
  * Configuration for skill-enabled agents

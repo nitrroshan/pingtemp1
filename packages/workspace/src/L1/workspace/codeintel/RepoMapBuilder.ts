@@ -15,14 +15,14 @@
 import fs from "fs";
 import path from "path";
 import fg from "fast-glob";
-import { Logger } from "tslog";
+import { rootLogger } from "../../../logging.js";
 import {
   TreeSitterService,
   type LanguageName,
   type TagCapture,
 } from "./TreeSitterService.js";
 
-const logger = new Logger({ name: "RepoMapBuilder" });
+const logger = rootLogger.child({ module: "RepoMapBuilder" });
 
 // =============================================================================
 // Types

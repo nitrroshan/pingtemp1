@@ -16,7 +16,9 @@
     "moduleDetection": "force",
     "sourceMap": true,
     "noUncheckedIndexedAccess": true,
-    "noUncheckedSideEffectImports": true
+    "noUncheckedSideEffectImports": true,
+    // Bun on Windows doesn't hoist @types to node_modules/@types — point TS at the actual location
+    "typeRoots": ["node_modules/.bun/node_modules/@types", "node_modules/@types"]
   },
   "exclude": ["node_modules", "dist"]
 }

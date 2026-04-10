@@ -15,7 +15,7 @@
 import { simpleGit, type SimpleGit, type LogResult } from "simple-git";
 import fs from "fs";
 import path from "path";
-import { Logger } from "tslog";
+import { rootLogger } from "../../logging.js";
 import type {
   BranchInfo,
   BranchStatusInfo,
@@ -24,7 +24,7 @@ import type {
   WorkspaceError,
 } from "../types/index.js";
 
-const logger = new Logger({ name: "GitBranchManager" });
+const logger = rootLogger.child({ module: "GitBranchManager" });
 
 /**
  * Simple async mutex — serializes git operations to prevent index.lock conflicts.
@@ -716,6 +716,47 @@ export class GitBranchManager {
       return stats.isDirectory();
     } catch {
       return false;
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // REMOTE OPERATIONS
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  /**
+   * Add or update a git remote.
+   * If the remote already exists, updates its URL.
+   */
+  async addRemote(name: string, url: string): Promise<void> {
+    await this.mutex.acquire();
+    try {
+      const remotes = await this.git.getRemotes(true);
+      const existing = remotes.find((r) => r.name === name);
+      if (existing) {
+        await this.git.remote(["set-url", name, url]);
+        logger.info(`Remote "${name}" URL updated`);
+      } else {
+        await this.git.addRemote(name, url);
+        logger.info(`Remote "${name}" added: ${url}`);
+      }
+    } finally {
+      this.mutex.release();
+    }
+  }
+
+  /**
+   * Push a branch to a remote.
+   * @param remote - Remote name (default: "origin")
+   * @param branch - Branch to push (default: current branch)
+   */
+  async push(remote: string = "origin", branch?: string): Promise<void> {
+    await this.mutex.acquire();
+    try {
+      const branchName = branch || (await this.git.revparse(["--abbrev-ref", "HEAD"]));
+      await this.git.push(remote, branchName, ["--set-upstream"]);
+      logger.info(`Pushed ${branchName} to ${remote}`);
+    } finally {
+      this.mutex.release();
     }
   }
 }

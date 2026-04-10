@@ -7,10 +7,10 @@
  */
 
 import { Socket } from "socket.io";
-import { Logger } from "tslog";
+import { rootLogger } from "../logging/index.js";
 import type { SocketConnection } from "./types/index.js";
 
-const logger = new Logger({ name: "SocketConnectionManager" });
+const logger = rootLogger.child({ module: "SocketConnectionManager" });
 
 export type { SocketConnection };
 

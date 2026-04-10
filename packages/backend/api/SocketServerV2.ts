@@ -30,7 +30,7 @@
  */
 
 import { Server as SocketIOServer, Socket } from "socket.io";
-import { Logger } from "tslog";
+import { rootLogger } from "../logging/index.js";
 import { randomUUID } from "crypto";
 import { agentManagerRegistry } from "../agentManager/AgentManagerRegistry.js";
 import {
@@ -38,10 +38,12 @@ import {
   type SocketConnection,
 } from "./SocketConnectionManager.js";
 import { userManager } from "./UserManager.js";
+import { getAuth } from "../auth/index.js";
+import type { ServiceRegistry } from "../services/ServiceRegistry.js";
 import type { AgentManager } from "../agentManager/AgentManagerV2.js";
 import type { StreamPayload } from "./types/streamTypes.js";
 
-const logger = new Logger({ name: "SocketServerV2" });
+const logger = rootLogger.child({ module: "SocketServerV2" });
 
 // ============================================================================
 // Types
@@ -194,17 +196,20 @@ interface ErrorResponse {
 
 export class SocketServerV2 {
   private io: SocketIOServer;
+  private services: ServiceRegistry | null;
 
   /** Track teams that have event listeners attached */
   private attachedTeams = new Set<string>();
 
-  constructor(httpServer: any) {
+  constructor(httpServer: any, services?: ServiceRegistry) {
+    this.services = services ?? null;
     // Initialize Socket.IO
     this.io = new SocketIOServer(httpServer, {
       path: "/socket.io/v2", // V2 path to coexist with V1
       cors: {
-        origin: "*",
+        origin: ["http://localhost:3000", "http://localhost:3002"],
         methods: ["GET", "POST"],
+        credentials: true,
       },
       pingTimeout: 60000,
       pingInterval: 25000,
@@ -232,8 +237,28 @@ export class SocketServerV2 {
     }, 5000);
   }
 
-  private handleRegister(socket: Socket, data: { userId: string }) {
-    const { userId } = data;
+  private async handleRegister(socket: Socket, data: { userId: string; token?: string }) {
+    let userId = data.userId;
+
+    // If a session token is provided, validate it via better-auth
+    if (data.token) {
+      try {
+        const auth = getAuth();
+        const session = await auth.api.getSession({
+          headers: new Headers({ authorization: `Bearer ${data.token}` }),
+        });
+        if (session?.user) {
+          userId = session.user.id;
+        } else {
+          this.emitError(socket, { error: "Invalid session token" });
+          socket.disconnect();
+          return;
+        }
+      } catch {
+        // Auth not initialized yet (e.g. first run before DB tables) — fall through
+        logger.warn("[SocketServerV2] Auth validation failed, using provided userId");
+      }
+    }
 
     if (!userId) {
       this.emitError(socket, { error: "userId is required" });
@@ -573,6 +598,19 @@ export class SocketServerV2 {
         sessionId,
       });
       return;
+    }
+
+    // Persist user message via ServiceRegistry
+    if (this.services) {
+      this.services.chat.addMessage({
+        teamId,
+        sessionId: sessionId || "default",
+        role: "user",
+        agentId,
+        taskId: taskId || undefined,
+        content,
+        timestamp: new Date().toISOString(),
+      }).catch((err) => logger.warn("[SocketServerV2] Failed to save user message:", err));
     }
 
     try {

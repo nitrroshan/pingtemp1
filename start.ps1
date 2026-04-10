@@ -29,8 +29,9 @@ function Show-Menu {
     Write-Host ""
     Write-Host "  --- Dev ---" -ForegroundColor DarkCyan
     Write-Host "  [20] Dev Start (Reset DB + Seed + Start All)" -ForegroundColor Green
-    Write-Host "  [21] Seed DB (teams + agents)" -ForegroundColor Green
+    Write-Host "  [21] Seed DB (teams + agents + admin)" -ForegroundColor Green
     Write-Host "  [22] Reset DB (drop all data)" -ForegroundColor Red
+    Write-Host "  [23] Seed Admin User only" -ForegroundColor Green
     Write-Host ""
     Write-Host "  [0] Exit" -ForegroundColor DarkGray
     Write-Host ""
@@ -182,8 +183,10 @@ function Seed-Database {
     Write-Host "  Seeding database..." -ForegroundColor Yellow
     Push-Location "$root\packages\backend"
     bun run seed
+    Write-Host "  Seeding admin user..." -ForegroundColor Yellow
+    bun run seed:admin
     Pop-Location
-    Write-Host "  Database seeded" -ForegroundColor Green
+    Write-Host "  Database seeded (including admin user)" -ForegroundColor Green
 }
 
 # Main loop
@@ -259,6 +262,15 @@ while ($true) {
             } else {
                 Write-Host "  Cancelled" -ForegroundColor DarkGray
             }
+        }
+        "23" {
+            Start-MongoDB
+            Start-Sleep -Seconds 2
+            Write-Host "  Seeding admin user..." -ForegroundColor Yellow
+            Push-Location "$root\packages\backend"
+            bun run seed:admin
+            Pop-Location
+            Write-Host "  Admin user seeded" -ForegroundColor Green
         }
         "0"  { Write-Host "  Bye!" -ForegroundColor DarkGray; break }
         default { Write-Host "  Invalid option" -ForegroundColor Red }

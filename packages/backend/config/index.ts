@@ -8,6 +8,10 @@
 import defaultConfig from "./default.js";
 import developmentConfig from "./development.js";
 import productionConfig from "./production.js";
+import type { FeatureFlags } from "./featureFlags.js";
+import { FF_ENV_MAP } from "./featureFlags.js";
+
+export type { FeatureFlags } from "./featureFlags.js";
 
 // ── Types ────────────────────────────────────────────────────
 
@@ -30,8 +34,13 @@ export interface AppConfig {
   useOrchestrator: boolean;
   useApiV2: boolean;
 
+  featureFlags: FeatureFlags;
+
   workspaceBaseDir: string;
   collabPort: number;
+  collabMode: "embedded" | "external";
+  collabUrl: string;
+  storageType: "fs" | "azure" | "s3";
   agentsDir: string | undefined;
 }
 
@@ -86,7 +95,13 @@ function buildConfig(): AppConfig {
   // 3. Apply process.env overrides (highest priority)
   config.port = parseInt(process.env.API_PORT || String(config.port), 10);
   config.nodeEnv = process.env.NODE_ENV || config.nodeEnv;
-  config.mongodbUri = process.env.MONGODB_URI || config.mongodbUri;
+
+  // LOCAL_FIRST=true forces file-based storage (ignores MONGODB_URI from .env)
+  if (process.env.LOCAL_FIRST === "true") {
+    config.mongodbUri = "";
+  } else {
+    config.mongodbUri = process.env.MONGODB_URI || config.mongodbUri;
+  }
 
   config.azureOpenAi = {
     apiKey: process.env.AZURE_OPENAI_API_KEY || config.azureOpenAi.apiKey,
@@ -115,7 +130,28 @@ function buildConfig(): AppConfig {
   config.collabPort = process.env.COLLAB_PORT
     ? parseInt(process.env.COLLAB_PORT, 10)
     : config.collabPort;
+  config.collabMode =
+    (process.env.COLLAB_MODE as "embedded" | "external") || config.collabMode;
+  config.collabUrl = process.env.COLLAB_URL || config.collabUrl;
+  config.storageType =
+    (process.env.STORAGE_TYPE as "fs" | "azure" | "s3") || config.storageType;
   config.agentsDir = process.env.AGENTS_DIR || config.agentsDir;
+
+  // Apply FF_* env overrides to featureFlags
+  for (const [envKey, flagKey] of Object.entries(FF_ENV_MAP)) {
+    const val = process.env[envKey];
+    if (val !== undefined) {
+      if (val === "true" || val === "false") {
+        (config.featureFlags as any)[flagKey] = val === "true";
+      } else {
+        (config.featureFlags as any)[flagKey] = val;
+      }
+    }
+  }
+
+  // Sync legacy top-level flags with featureFlags
+  config.featureFlags.useOrchestrator = config.useOrchestrator;
+  config.featureFlags.useApiV2 = config.useApiV2;
 
   return Object.freeze(config);
 }
@@ -139,16 +175,28 @@ export function validateConfig(): void {
   const config = getConfig();
   const missing: string[] = [];
 
-  if (!config.mongodbUri) missing.push("MONGODB_URI");
+  // MongoDB is optional — when absent, file-based storage (lowdb) is used
+  if (!config.mongodbUri) {
+    console.info("ℹ  MONGODB_URI not set — using file-based storage (lowdb)");
+  }
+
+  // LLM keys are only required when agents will be invoked
   if (!config.azureOpenAi.endpointUrl)
     missing.push("AZURE_OPENAI_ENDPOINT_URL");
   if (!config.azureOpenAi.apiKey) missing.push("AZURE_OPENAI_API_KEY");
 
   if (missing.length > 0) {
-    throw new Error(
-      `Missing required environment variables:\n` +
-        missing.map((v) => `  - ${v}`).join("\n") +
-        `\n\nSee packages/backend/.env.example for reference.`,
-    );
+    // In desktop/local mode, warn instead of crash — agents just won't work
+    const msg =
+      `Missing environment variables:\n` +
+      missing.map((v) => `  - ${v}`).join("\n") +
+      `\n\nSee packages/backend/.env.example for reference.`;
+
+    if (!config.mongodbUri) {
+      // File mode (desktop/local) — degrade gracefully
+      console.warn(`⚠  ${msg}\n   Agent LLM calls will fail until these are set.`);
+    } else {
+      throw new Error(msg);
+    }
   }
 }

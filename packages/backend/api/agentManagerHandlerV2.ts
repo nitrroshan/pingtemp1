@@ -1,12 +1,14 @@
 /**
  * agentManagerHandlerV2 - Express Router for V2 API
  *
- * Clean REST routes using AgentManagerRegistry (no passed AgentManager)
+ * All data access goes through ServiceRegistry (file or mongo adapters).
+ * No Mongoose model imports — storage mode is transparent.
  *
  * Routes:
  *   POST /api/v2/teams           - Create team
  *   GET  /api/v2/teams           - List teams
  *   GET  /api/v2/teams/:id       - Get team by ID
+ *   DELETE /api/v2/teams/:id     - Delete team
  *   GET  /api/v2/teams/:id/agents - Get agents for team
  *   GET  /api/v2/sessions/:id    - Get session state
  *   GET  /api/v2/sessions/:id/tasks - Get tasks for session
@@ -14,19 +16,18 @@
 
 import express from "express";
 import type { Request, Response, NextFunction } from "express";
-import { Logger } from "tslog";
+import { rootLogger } from "../logging/index.js";
 import { agentManagerRegistry } from "../agentManager/AgentManagerRegistry.js";
-import { TeamModel } from "../agentManager/team/schema/teamSchema.js";
-import { AgentModel } from "../agentManager/team/schema/agentSchema.js";
 import { AgentManager } from "../agentManager/AgentManagerV2.js";
+import type { ServiceRegistry } from "../services/ServiceRegistry.js";
 import { randomUUID } from "crypto";
 
-const logger = new Logger({ name: "AgentManagerHandlerV2" });
+const logger = rootLogger.child({ module: "AgentManagerHandlerV2" });
 
 /**
- * Create V2 router (no dependencies injected)
+ * Create V2 router. ServiceRegistry is REQUIRED — route layer never branches on storage mode.
  */
-export function createAgentManagerHandlerV2(): express.Router {
+export function createAgentManagerHandlerV2(services: ServiceRegistry): express.Router {
   const router = express.Router();
 
   // Request logging middleware
@@ -53,54 +54,52 @@ export function createAgentManagerHandlerV2(): express.Router {
 
       logger.info(`[V2] Creating team: ${name}`);
 
-      // Create team in DB first
-      const team = await TeamModel.create({
-        teamName: name,
-        goal,
-        description: description || "",
-      });
-
       // Create temporary AgentManager for role discovery
       const tempManager = new AgentManager();
       await tempManager.configureNewWorkflow(
         description ? `${goal}. ${description}` : goal,
       );
 
-      // Discover roles
       const roles = await tempManager.getRoles(goal);
       logger.info(
         `[V2] Discovered ${roles.length} roles: ${roles.map((r: any) => r.role).join(", ")}`,
       );
 
-      // Save agents (normalize role to lowercase for consistent matching)
+      // Persist team via ServiceRegistry
+      const team = await services.teams.createTeam({
+        name,
+        description: description || goal,
+        ownerId: "local",
+        workspaceId: randomUUID(),
+        settings: { executionMode: "sequential", maxConcurrency: 1 },
+      });
+
       const agentIds: string[] = [];
       for (const role of roles) {
-        const agent = await AgentModel.create({
+        const agent = await services.agents.addAgent(team.id, {
+          teamId: team.id,
           name: role.name,
-          role: role.role.toLowerCase(), // Normalize to lowercase
-          goal: role.goal,
-          systemPrompt: role.systemPrompt || "",
-          tools: (role as any).config?.tools || [],
-          mcpClientConfigs: (role as any).config?.mcpClientConfigs || {},
-          teamId: team._id,
+          role: role.role.toLowerCase(),
+          type: "worker",
+          ownedBy: "local",
+          delegatedTo: null,
+          definitionYaml: "",
+          status: "pending",
+          lastStartedAt: null,
+          errorMessage: null,
+          isActive: true,
         });
-        agentIds.push(agent._id.toString());
+        agentIds.push(agent.id);
       }
 
-      // Update team with members
-      team.members = agentIds.map((id) => id as any);
-      await team.save();
-
-      // Dispose temp manager - we only needed it for role discovery
-      // Registry will create a fresh manager from DB when workflow starts
       await tempManager.dispose();
 
       res.status(201).json({
         team: {
-          id: team._id.toString(),
-          name: team.teamName,
-          goal: team.goal,
-          description: team.description,
+          id: team.id,
+          name,
+          goal,
+          description: description || "",
           memberCount: agentIds.length,
         },
         agents: roles.map((r: any, i: number) => ({
@@ -111,9 +110,7 @@ export function createAgentManagerHandlerV2(): express.Router {
         })),
       });
 
-      logger.info(
-        `[V2] Team created: ${team._id} with ${agentIds.length} agents`,
-      );
+      logger.info(`[V2] Team created: ${team.id} with ${agentIds.length} agents`);
     } catch (error: any) {
       logger.error("[V2] Error creating team:", error);
       res.status(500).json({ error: error.message || String(error) });
@@ -125,28 +122,19 @@ export function createAgentManagerHandlerV2(): express.Router {
    */
   router.get("/teams", async (req: Request, res: Response) => {
     try {
-      const teams = await TeamModel.find().lean();
-
-      // Count agents per team from AgentModel (more reliable than members array)
-      const teamIds = teams.map((t) => t._id);
-      const agentCounts = await AgentModel.aggregate([
-        { $match: { teamId: { $in: teamIds } } },
-        { $group: { _id: "$teamId", count: { $sum: 1 } } },
-      ]);
-      const countMap = new Map(
-        agentCounts.map((ac: { _id: any; count: number }) => [ac._id.toString(), ac.count]),
-      );
-
-      res.json({
-        teams: teams.map((t) => ({
-          id: t._id.toString(),
-          name: t.teamName,
-          goal: t.goal,
-          description: t.description,
-          memberCount: countMap.get(t._id.toString()) || 0,
-        })),
-        count: teams.length,
-      });
+      const teams = await services.teams.listTeams();
+      const teamList = [];
+      for (const t of teams) {
+        const agents = await services.agents.getTeamAgents(t.id);
+        teamList.push({
+          id: t.id,
+          name: t.name,
+          goal: t.description ?? "",
+          description: t.description ?? "",
+          memberCount: agents.length,
+        });
+      }
+      res.json({ teams: teamList, count: teamList.length });
     } catch (error: any) {
       logger.error("[V2] Error listing teams:", error);
       res.status(500).json({ error: error.message || String(error) });
@@ -159,23 +147,11 @@ export function createAgentManagerHandlerV2(): express.Router {
   router.get("/teams/:id", async (req: Request, res: Response) => {
     try {
       const teamId = req.params.id as string;
-      const team = await TeamModel.findById(teamId).lean();
-
-      if (!team) {
-        res.status(404).json({ error: "Team not found" });
-        return;
-      }
-
-      const agentCount = await AgentModel.countDocuments({ teamId: team._id });
-
+      const team = await services.teams.getTeam(teamId);
+      if (!team) { res.status(404).json({ error: "Team not found" }); return; }
+      const agents = await services.agents.getTeamAgents(teamId);
       res.json({
-        team: {
-          id: team._id.toString(),
-          name: team.teamName,
-          goal: team.goal,
-          description: team.description,
-          memberCount: agentCount,
-        },
+        team: { id: team.id, name: team.name, goal: team.description ?? "", description: team.description ?? "", memberCount: agents.length },
       });
     } catch (error: any) {
       logger.error("[V2] Error getting team:", error);
@@ -189,25 +165,18 @@ export function createAgentManagerHandlerV2(): express.Router {
   router.delete("/teams/:id", async (req: Request, res: Response) => {
     try {
       const teamId = req.params.id as string;
-
       if (!teamId) {
         res.status(400).json({ error: "Team ID is required" });
         return;
       }
 
-      // Remove from registry cache (disposes manager)
       await agentManagerRegistry.remove(teamId);
 
-      // Delete agents
-      await AgentModel.deleteMany({ teamId });
-
-      // Delete team
-      const result = await TeamModel.findByIdAndDelete(teamId);
-
-      if (!result) {
-        res.status(404).json({ error: "Team not found" });
-        return;
+      const agents = await services.agents.getTeamAgents(teamId);
+      for (const agent of agents) {
+        await services.agents.removeAgent(teamId, agent.id);
       }
+      await services.teams.deleteTeam(teamId);
 
       res.json({ deleted: true, teamId });
       logger.info(`[V2] Team deleted: ${teamId}`);
@@ -227,15 +196,15 @@ export function createAgentManagerHandlerV2(): express.Router {
   router.get("/teams/:id/agents", async (req: Request, res: Response) => {
     try {
       const teamId = req.params.id as string;
-      const agents = await AgentModel.find({ teamId }).lean();
+      const agents = await services.agents.getTeamAgents(teamId);
 
       res.json({
         agents: agents.map((a) => ({
-          id: a._id.toString(),
+          id: a.id,
           role: a.role,
           name: a.name,
-          goal: a.goal,
-          teamId: a.teamId?.toString(),
+          goal: (a as any).goal ?? "",
+          teamId: a.teamId,
         })),
         count: agents.length,
       });

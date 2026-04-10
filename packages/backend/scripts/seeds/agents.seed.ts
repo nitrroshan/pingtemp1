@@ -5,11 +5,11 @@
  * Idempotent — safe to run multiple times (upserts by name+teamId).
  */
 
-import { Logger } from "tslog";
-import { AgentModel } from "../../agentManager/team/schema/agentSchema.js";
+import { rootLogger } from "../../logging/index.js";
+import { AgentRoleModel as AgentModel } from "../../services/mongo/schemas/AgentRoleSchema.js";
 import type { SeededTeam } from "./teams.seed.js";
 
-const logger = new Logger({ name: "seed:agents" });
+const logger = rootLogger.child({ module: "seed:agents" });
 
 /**
  * Agent definitions for each team type (matched by team goal keyword)

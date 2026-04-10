@@ -5,14 +5,14 @@
  * Uses MongoDB Atlas Vector Search for similarity matching.
  */
 
-import { Logger } from "tslog";
-import { SkillModel } from "../schema/skillSchema.js";
-import { AgentSkillModel } from "../schema/agentSkillSchema.js";
+import { rootLogger } from "../../logging/index.js";
+import { SkillModel } from "../../services/mongo/schemas/SkillSchema.js";
+import { AgentSkillModel } from "../../services/mongo/schemas/AgentSkillSchema.js";
 import { generateEmbedding, cosineSimilarity } from "./EmbeddingService.js";
 import type { Skill, SkillSource } from "../types/Skill.js";
 import type { AgentSkill } from "../types/AgentSkill.js";
 
-const logger = new Logger({ name: "SkillRegistryService" });
+const logger = rootLogger.child({ module: "SkillRegistryService" });
 
 /**
  * Search options for finding skills

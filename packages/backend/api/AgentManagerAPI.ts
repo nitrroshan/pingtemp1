@@ -5,34 +5,36 @@
  */
 
 import { createServer } from "http";
-import { Logger } from "tslog";
+import { rootLogger } from "../logging/index.js";
 import { AgentManager } from "../agentManager/AgentManagerV2.js";
 import { HttpServer } from "./HttpServer.js";
 import { SocketServerV2 } from "./SocketServerV2.js";
-import { TeamService } from "../team/index.js";
+import type { ServiceRegistry } from "../services/ServiceRegistry.js";
+import { agentManagerRegistry } from "../agentManager/AgentManagerRegistry.js";
 
-const logger = new Logger({ name: "AgentManagerAPI" });
+const logger = rootLogger.child({ module: "AgentManagerAPI" });
 
 export class AgentManagerAPI {
   private agentManager: AgentManager;
-  private teamService: TeamService;
   private httpServer: HttpServer;
   private socketServerV2: SocketServerV2;
   private server: any;
 
-  constructor(port: number = 3002) {
+  constructor(port: number = 3002, services?: ServiceRegistry) {
     logger.info("[AgentManagerAPI] Initializing API services...");
 
     // Initialize AgentManager
     this.agentManager = new AgentManager();
 
-    // Initialize TeamService
-    this.teamService = new TeamService();
+    // Wire ServiceRegistry into AgentManagerRegistry singleton
+    if (services) {
+      agentManagerRegistry.setServices(services);
+    }
 
-    // Initialize HTTP Server
+    // Initialize HTTP Server with ServiceRegistry
     this.httpServer = new HttpServer({
       agentManager: this.agentManager,
-      teamService: this.teamService,
+      services,
     });
 
     // Create HTTP server and start listening
@@ -41,10 +43,10 @@ export class AgentManagerAPI {
       logger.info(`[AgentManagerAPI] HTTP server listening on port ${port}`);
     });
 
-    // Initialize Socket.IO Server V2
-    this.socketServerV2 = new SocketServerV2(this.server);
+    // Initialize Socket.IO Server V2 with ServiceRegistry
+    this.socketServerV2 = new SocketServerV2(this.server, services);
 
-    logger.info("[AgentManagerAPI] All services initialized successfully");
+    logger.info(`[AgentManagerAPI] All services initialized (mode: ${services?.mode ?? "legacy"})`);
   }
 
   /**
@@ -60,8 +62,6 @@ export class AgentManagerAPI {
   async stop() {
     logger.info("[AgentManagerAPI] Stopping all services...");
 
-    // Close Socket.IO connections (V1 and V2)
-    this.socketServer.close();
     this.socketServerV2.close();
 
     // Close HTTP server

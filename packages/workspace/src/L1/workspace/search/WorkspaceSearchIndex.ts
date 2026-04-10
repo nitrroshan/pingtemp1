@@ -16,9 +16,9 @@ import fs from "fs";
 import path from "path";
 import MiniSearch, { type SearchResult } from "minisearch";
 import fg from "fast-glob";
-import { Logger } from "tslog";
+import { rootLogger } from "../../../logging.js";
 
-const logger = new Logger({ name: "WorkspaceSearchIndex" });
+const logger = rootLogger.child({ module: "WorkspaceSearchIndex" });
 
 export interface SearchHit {
   /** Relative file path */

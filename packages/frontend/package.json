@@ -22,6 +22,7 @@
     "@radix-ui/react-slot": "^1.2.4",
     "@radix-ui/react-tooltip": "^1.2.8",
     "autoprefixer": "^10.4.27",
+    "better-auth": "^1.6.0",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "cmdk": "^1.1.1",
@@ -36,11 +37,14 @@
     "tailwind-merge": "^3.5.0",
     "tailwindcss": "^3.4.19",
     "uuid": "^13.0.0",
+    "y-protocols": "^1.0.7",
     "yjs": "^13.6.29"
   },
   "devDependencies": {
     "@types/cors": "^2.8.19",
     "@types/node": "^22.14.0",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
     "@types/ws": "^8.18.1",
     "@vitejs/plugin-react": "^5.0.0",
     "electron": "^39.2.6",
