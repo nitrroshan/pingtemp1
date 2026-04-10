@@ -9,7 +9,7 @@
 import dotenv from "dotenv";
 import { rootLogger } from "../../logging/index.js";
 import connectDB, { disconnectDB } from "../../db/config.js";
-import { SkillModel } from "../schema/skillSchema.js";
+import { SkillModel } from "../../services/mongo/schemas/SkillSchema.js";
 import { generateEmbedding } from "../services/EmbeddingService.js";
 import type { Skill } from "../types/Skill.js";
 

@@ -13,6 +13,7 @@
 
 import { io, Socket } from "socket.io-client";
 import { logger } from "../utils/logger";
+import { API_BASE_URL } from "../constants";
 
 // ============================================================================
 // Types
@@ -140,7 +141,7 @@ export class AgentServiceV2 {
   private errorCallbacks: Set<(error: ErrorInfo) => void> = new Set();
   private streamCallbacks: Set<(payload: any) => void> = new Set();
 
-  constructor(baseUrl: string = "http://localhost:3002") {
+  constructor(baseUrl: string = API_BASE_URL) {
     this.baseUrl = baseUrl;
     this.userId = `user-${Math.random().toString(36).substring(7)}`;
   }

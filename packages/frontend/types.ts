@@ -153,11 +153,26 @@ export type SessionState =
   | 'awaiting_approval'
   | null;
 
-// Global declarations for Electron
+// Global declarations for Electron desktop
 declare global {
   interface Window {
     electronAPI?: {
       isElectron: boolean;
     };
+    ping?: {
+      isDesktop: boolean;
+      platform: string;
+      versions: {
+        electron: string;
+        node: string;
+        chrome: string;
+      };
+      minimize: () => void;
+      maximize: () => void;
+      close: () => void;
+    };
   }
 }
+
+/** True when running inside Electron desktop shell */
+export const isDesktop = Boolean(window.ping?.isDesktop);

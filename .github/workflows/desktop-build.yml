@@ -1,0 +1,96 @@
+name: Build Desktop App
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: 'Publish to GitHub Releases'
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            platform: win
+            artifact: Ping-*-Setup.exe
+          - os: macos-latest
+            platform: mac
+            artifact: Ping-*.dmg
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install dependencies
+        run: bun install
+
+      - name: Build frontend
+        run: cd packages/frontend && npx vite build
+
+      - name: Build desktop (compile + bundle)
+        working-directory: packages/desktop
+        run: |
+          npx tsc
+          node scripts/copy-frontend.js
+          node scripts/bundle-backend.js
+
+      - name: Build Electron app
+        working-directory: packages/desktop
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: npx electron-builder --${{ matrix.platform }} --publish never
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ping-desktop-${{ matrix.platform }}
+          path: |
+            packages/desktop/out/*.exe
+            packages/desktop/out/*.dmg
+            packages/desktop/out/*.zip
+            packages/desktop/out/*.AppImage
+            packages/desktop/out/*.yml
+            packages/desktop/out/*.blockmap
+          if-no-files-found: warn
+
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v') || inputs.publish
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          prerelease: true
+          files: artifacts/*
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

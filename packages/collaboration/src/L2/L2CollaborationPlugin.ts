@@ -18,6 +18,7 @@ import { PlanStore } from "./collaboration/PlanStore.js";
 import { GroupChatManager } from "./collaboration/GroupChatManager.js";
 import { createCollabTool } from "./tools/index.js";
 import type { ICollabProvider } from "./collaboration/types/collab-provider.types.js";
+import type { BlobStorageProvider } from "./collaboration/types/blob-storage.types.js";
 import type {
   OutputManifest,
   OutputEntry,
@@ -33,6 +34,8 @@ export interface L2CollaborationPluginConfig {
   collabPort?: number;
   /** External collab provider (e.g., RemoteCollabClient for remote server). If set, no embedded server is created. */
   collabProvider?: ICollabProvider;
+  /** Pluggable blob storage for CRDT state (S3, Azure, GCS). Default: filesystem. */
+  blobStorage?: BlobStorageProvider;
 }
 
 export class L2CollaborationPlugin implements IL2CollaborationPlugin {
@@ -60,6 +63,7 @@ export class L2CollaborationPlugin implements IL2CollaborationPlugin {
       this._collabServer = new CollabServer(
         config.collabStorageDir || "./data/collab",
         config.repoPath,
+        config.blobStorage,
       );
       this._collabProvider = this._collabServer;
     }

@@ -95,7 +95,13 @@ function buildConfig(): AppConfig {
   // 3. Apply process.env overrides (highest priority)
   config.port = parseInt(process.env.API_PORT || String(config.port), 10);
   config.nodeEnv = process.env.NODE_ENV || config.nodeEnv;
-  config.mongodbUri = process.env.MONGODB_URI || config.mongodbUri;
+
+  // LOCAL_FIRST=true forces file-based storage (ignores MONGODB_URI from .env)
+  if (process.env.LOCAL_FIRST === "true") {
+    config.mongodbUri = "";
+  } else {
+    config.mongodbUri = process.env.MONGODB_URI || config.mongodbUri;
+  }
 
   config.azureOpenAi = {
     apiKey: process.env.AZURE_OPENAI_API_KEY || config.azureOpenAi.apiKey,
@@ -169,16 +175,28 @@ export function validateConfig(): void {
   const config = getConfig();
   const missing: string[] = [];
 
-  if (!config.mongodbUri) missing.push("MONGODB_URI");
+  // MongoDB is optional — when absent, file-based storage (lowdb) is used
+  if (!config.mongodbUri) {
+    console.info("ℹ  MONGODB_URI not set — using file-based storage (lowdb)");
+  }
+
+  // LLM keys are only required when agents will be invoked
   if (!config.azureOpenAi.endpointUrl)
     missing.push("AZURE_OPENAI_ENDPOINT_URL");
   if (!config.azureOpenAi.apiKey) missing.push("AZURE_OPENAI_API_KEY");
 
   if (missing.length > 0) {
-    throw new Error(
-      `Missing required environment variables:\n` +
-        missing.map((v) => `  - ${v}`).join("\n") +
-        `\n\nSee packages/backend/.env.example for reference.`,
-    );
+    // In desktop/local mode, warn instead of crash — agents just won't work
+    const msg =
+      `Missing environment variables:\n` +
+      missing.map((v) => `  - ${v}`).join("\n") +
+      `\n\nSee packages/backend/.env.example for reference.`;
+
+    if (!config.mongodbUri) {
+      // File mode (desktop/local) — degrade gracefully
+      console.warn(`⚠  ${msg}\n   Agent LLM calls will fail until these are set.`);
+    } else {
+      throw new Error(msg);
+    }
   }
 }

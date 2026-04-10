@@ -10,7 +10,7 @@ import dotenv from "dotenv";
 import { rootLogger } from "../../logging/index.js";
 import connectDB, { disconnectDB } from "../../db/config.js";
 import { skillRegistry } from "../services/SkillRegistryService.js";
-import { SkillModel } from "../schema/skillSchema.js";
+import { SkillModel } from "../../services/mongo/schemas/SkillSchema.js";
 
 dotenv.config();
 const logger = rootLogger.child({ module: "registry:test" });

@@ -74,6 +74,6 @@ export {
 export type { SkillAgentConfig, SkillEnhancedConfig } from "./SkillIntegration.js";
 
 // Models (for direct DB access if needed)
-export { SkillModel } from "./schema/skillSchema.js";
-export { AgentSkillModel } from "./schema/agentSkillSchema.js";
+export { SkillModel } from "../services/mongo/schemas/SkillSchema.js";
+export { AgentSkillModel } from "../services/mongo/schemas/AgentSkillSchema.js";
 

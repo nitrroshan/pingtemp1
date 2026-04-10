@@ -1,30 +1,8 @@
 /**
- * Team Service
+ * Team types barrel export.
  *
- * Manages teams with Planner Agent, manager ownership, and delegation model.
- * Uses Mongoose ODM for MongoDB persistence.
+ * The TeamService (Mongoose-based) has been replaced by ServiceRegistry.
+ * Only type definitions remain here for backward compatibility.
  */
 
-// Main service
-export { TeamService } from "./TeamService.js";
-
-// Mongoose models
-export {
-  TeamModel,
-  AgentModel,
-  TeamMemberModel,
-  AgentSkillModel,
-} from "./models.js";
-export type { ITeam, IAgent, ITeamMember, IAgentSkill } from "./models.js";
-
-// Types and errors
 export * from "./types/index.js";
-export * from "./errors.js";
-
-// Database utilities
-export {
-  initTeamServiceDb,
-  closeDb,
-  isConnected,
-  getConnection,
-} from "./database.js";

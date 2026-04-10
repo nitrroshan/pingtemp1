@@ -13,7 +13,7 @@
 import React, { useState, useEffect, useRef, lazy, Suspense, useCallback } from 'react';
 import { BrowserRouter, Routes, Route } from 'react-router-dom';
 import { v4 as uuidv4 } from 'uuid';
-import { Menu, PanelRight, Search, Zap, Sun, Moon, LogOut } from 'lucide-react';
+import { Menu, PanelRight, Search, Sun, Moon, LogOut } from 'lucide-react';
 import { AnimatePresence, motion } from 'framer-motion';
 
 import Sidebar from './components/Sidebar';
@@ -42,6 +42,7 @@ import { useChat } from './hooks/useChat';
 import { useAgentTree } from './hooks/useAgentTree';
 import { agentServiceV2, type Task as BackendTask } from './services/AgentServiceV2';
 import type { Agent, Message } from './types';
+import { API_BASE_URL } from './constants';
 import { useSession, signOut } from './lib/auth-client';
 import { LoginPage } from './components/Auth/LoginPage';
 import { Skeleton } from './components/ui/skeleton';
@@ -59,7 +60,7 @@ function CollabFileTree({ teamId, activeDoc, onSelectDoc }: {
 
   const loadDocs = React.useCallback(() => {
     if (!teamId) return;
-    fetch(`http://localhost:3002/api/collab/${teamId}/docs`)
+    fetch(`${API_BASE_URL}/api/collab/${teamId}/docs`)
       .then(r => r.json()).then(d => setDocs(d.docs || [])).catch(() => {});
   }, [teamId]);
 
@@ -74,7 +75,7 @@ function CollabFileTree({ teamId, activeDoc, onSelectDoc }: {
 
   const deleteDoc = (doc: string) => {
     if (!teamId) return;
-    fetch(`http://localhost:3002/api/collab/${teamId}/docs/${encodeURIComponent(doc)}`, { method: 'DELETE' })
+    fetch(`${API_BASE_URL}/api/collab/${teamId}/docs/${encodeURIComponent(doc)}`, { method: 'DELETE' })
       .then(() => {
         setDocs(prev => prev.filter(d => d !== doc));
         if (activeDoc === doc) onSelectDoc('');
@@ -179,6 +180,20 @@ function InnerApp() {
   const [viewMode, setViewMode] = useState<'chat' | 'tasks' | 'collaborate'>('chat');
   const [collabDocId, setCollabDocId] = useState('doc-shared');
   const [isCommandPaletteOpen, setIsCommandPaletteOpen] = useState(false);
+  const [activeMenu, setActiveMenu] = useState<string | null>(null);
+
+  // Close menu on click outside
+  useEffect(() => {
+    if (!activeMenu) return;
+    const handler = (e: MouseEvent) => {
+      const target = e.target as HTMLElement;
+      if (!target.closest('[data-menu-bar]')) {
+        setActiveMenu(null);
+      }
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [activeMenu]);
   const [currentPath, setCurrentPath] = useState(() => window.location.pathname);
 
   const parseRouteState = useCallback((pathname: string) => {
@@ -428,9 +443,10 @@ function InnerApp() {
 
   return (
     <div className="flex flex-col h-screen w-full bg-background font-sans text-foreground">
-      {/* ── Command Bar (top-level, full width) ── */}
-      <div className="flex items-center gap-3 px-3 h-11 border-b border-border bg-card shrink-0 z-30">
-        {/* Left: hamburger (mobile) + brand */}
+      {/* ── Title Bar ── */}
+      <div className="flex items-center h-9 border-b border-border bg-card shrink-0 z-30">
+        {/* Left section: logo + menus */}
+        <div className="flex items-center gap-1 px-2 shrink-0">
         <button
           onClick={() => setIsMobileSidebarOpen(v => !v)}
           className="lg:hidden p-1.5 rounded-md text-muted-foreground hover:text-foreground hover:bg-accent transition-colors cursor-pointer"
@@ -439,17 +455,96 @@ function InnerApp() {
           <Menu size={16} />
         </button>
         <div className="flex items-center gap-2 select-none">
-          <div className="w-6 h-6 rounded-md bg-gradient-to-br from-blue-500 to-violet-600 flex items-center justify-center shadow-md shadow-blue-500/20">
-            <Zap size={13} className="text-white" />
-          </div>
-          <span className="text-sm font-bold tracking-tight text-foreground hidden sm:inline">Ping</span>
+          <svg viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg" className="w-6 h-6">
+            <defs>
+              <linearGradient id="ping-gradient" x1="0%" y1="100%" x2="100%" y2="0%">
+                <stop offset="0%" stopColor="#0ea5e9" />
+                <stop offset="50%" stopColor="#3b82f6" />
+                <stop offset="100%" stopColor="#06b6d4" />
+              </linearGradient>
+              <radialGradient id="ping-glow" cx="50%" cy="50%" r="15%">
+                <stop offset="0%" stopColor="#ffffff" stopOpacity="1" />
+                <stop offset="50%" stopColor="#7dd3fc" stopOpacity="0.8" />
+                <stop offset="100%" stopColor="#3b82f6" stopOpacity="0" />
+              </radialGradient>
+            </defs>
+            <rect x="2" y="2" width="96" height="96" rx="22" fill="#0c1425" />
+            <circle cx="50" cy="50" r="42" stroke="url(#ping-gradient)" strokeWidth="3.5" strokeLinecap="round" strokeDasharray="60 20" opacity="0.9" />
+            <circle cx="50" cy="50" r="33" stroke="url(#ping-gradient)" strokeWidth="3.5" strokeLinecap="round" strokeDasharray="50 18" opacity="0.8" />
+            <circle cx="50" cy="50" r="24" stroke="url(#ping-gradient)" strokeWidth="3" strokeLinecap="round" strokeDasharray="38 16" opacity="0.7" />
+            <circle cx="50" cy="50" r="15" stroke="url(#ping-gradient)" strokeWidth="2.5" strokeLinecap="round" strokeDasharray="24 14" opacity="0.6" />
+            <circle cx="50" cy="50" r="6" fill="url(#ping-glow)" />
+            <circle cx="50" cy="50" r="3" fill="white" opacity="0.95" />
+          </svg>
         </div>
 
-        {/* Center: search / command palette trigger */}
-        <div className="flex-1 flex justify-center">
+        {/* Menu bar */}
+        <div data-menu-bar className="hidden sm:flex items-center gap-0">
+          {[
+            { label: 'File', items: [
+              { label: 'New Team', action: () => { setActiveMenu(null); document.querySelector<HTMLButtonElement>('[aria-label="New Team"]')?.click(); } },
+              { label: 'separator' },
+              { label: theme === 'dark' ? 'Light Mode' : 'Dark Mode', action: () => { setActiveMenu(null); setTheme(t => t === 'dark' ? 'light' : 'dark'); }, shortcut: '⌘,' },
+              { label: 'separator' },
+              { label: 'Sign Out', action: () => { setActiveMenu(null); signOut().then(() => window.location.reload()); } },
+            ]},
+            { label: 'Edit', items: [
+              { label: 'Undo', action: () => { setActiveMenu(null); document.execCommand('undo'); }, shortcut: 'Ctrl+Z' },
+              { label: 'Redo', action: () => { setActiveMenu(null); document.execCommand('redo'); }, shortcut: 'Ctrl+Y' },
+              { label: 'separator' },
+              { label: 'Cut', action: () => { setActiveMenu(null); document.execCommand('cut'); }, shortcut: 'Ctrl+X' },
+              { label: 'Copy', action: () => { setActiveMenu(null); document.execCommand('copy'); }, shortcut: 'Ctrl+C' },
+              { label: 'Paste', action: () => { setActiveMenu(null); document.execCommand('paste'); }, shortcut: 'Ctrl+V' },
+              { label: 'Select All', action: () => { setActiveMenu(null); document.execCommand('selectAll'); }, shortcut: 'Ctrl+A' },
+            ]},
+            { label: 'View', items: [
+              { label: 'Command Palette', action: () => { setActiveMenu(null); setIsCommandPaletteOpen(true); }, shortcut: '⌘K' },
+              { label: 'separator' },
+              { label: 'Toggle Sidebar', action: () => { setActiveMenu(null); setIsMobileSidebarOpen(v => !v); } },
+              { label: 'separator' },
+              { label: 'Zoom In', action: () => { setActiveMenu(null); document.body.style.zoom = String(parseFloat(document.body.style.zoom || '1') + 0.1); }, shortcut: 'Ctrl+=' },
+              { label: 'Zoom Out', action: () => { setActiveMenu(null); document.body.style.zoom = String(Math.max(0.5, parseFloat(document.body.style.zoom || '1') - 0.1)); }, shortcut: 'Ctrl+-' },
+              { label: 'Reset Zoom', action: () => { setActiveMenu(null); document.body.style.zoom = '1'; }, shortcut: 'Ctrl+0' },
+            ]},
+            { label: 'Help', items: [
+              { label: 'About Ping', action: () => { setActiveMenu(null); alert('Ping Desktop\nAI Agent Orchestration Platform'); } },
+            ]},
+          ].map(menu => (
+            <div key={menu.label} className="relative">
+              <button
+                className={`px-2.5 py-1 text-xs transition-colors cursor-pointer rounded-sm ${activeMenu === menu.label ? 'bg-accent text-foreground' : 'text-muted-foreground hover:text-foreground hover:bg-accent/50'}`}
+                onClick={() => setActiveMenu(activeMenu === menu.label ? null : menu.label)}
+                onMouseEnter={() => activeMenu && setActiveMenu(menu.label)}
+              >
+                {menu.label}
+              </button>
+              {activeMenu === menu.label && (
+                <div className="absolute left-0 top-full bg-popover border border-border rounded-md shadow-xl py-1 min-w-[220px] z-50">
+                  {menu.items.map((item, i) => 
+                    item.label === 'separator' 
+                      ? <div key={i} className="h-px bg-border my-1 mx-2" />
+                      : <button
+                          key={item.label}
+                          onClick={() => item.action?.()}
+                          className="w-full text-left px-3 py-1.5 text-xs text-popover-foreground hover:bg-accent flex items-center justify-between cursor-pointer transition-colors"
+                        >
+                          <span>{item.label}</span>
+                          {'shortcut' in item && item.shortcut && <span className="text-muted-foreground text-[10px] ml-6 font-mono">{item.shortcut}</span>}
+                        </button>
+                  )}
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+        </div>
+
+        {/* Center: draggable area with search */}
+        <div className="flex-1 flex justify-center items-center min-w-0" style={(window as any).ping?.isDesktop ? { WebkitAppRegion: 'drag' } as React.CSSProperties : undefined}>
           <button
             onClick={() => setIsCommandPaletteOpen(true)}
-            className="flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs text-muted-foreground hover:text-foreground bg-muted/50 hover:bg-muted border border-border hover:border-border transition-all cursor-pointer w-full max-w-xs"
+            className="flex items-center gap-2 px-3 py-1 rounded-lg text-xs text-muted-foreground hover:text-foreground bg-muted/50 hover:bg-muted border border-border transition-all cursor-pointer w-full max-w-xs"
+            style={(window as any).ping?.isDesktop ? { WebkitAppRegion: 'no-drag' } as React.CSSProperties : undefined}
             aria-label="Open command palette"
           >
             <Search size={13} className="shrink-0 text-muted-foreground/60" />
@@ -458,23 +553,39 @@ function InnerApp() {
           </button>
         </div>
 
-        {/* Right: theme toggle + sign out */}
-        <button
-          onClick={() => setTheme(t => t === 'dark' ? 'light' : 'dark')}
-          className="p-1.5 rounded-md text-muted-foreground hover:text-foreground hover:bg-accent transition-colors cursor-pointer"
-          aria-label="Toggle theme"
-          title={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
-        >
-          {theme === 'dark' ? <Sun size={15} /> : <Moon size={15} />}
-        </button>
-        <button
-          onClick={() => signOut().then(() => window.location.reload())}
-          className="p-1.5 rounded-md text-muted-foreground hover:text-red-400 hover:bg-accent transition-colors cursor-pointer"
-          aria-label="Sign out"
-          title="Sign out"
-        >
-          <LogOut size={15} />
-        </button>
+        {/* Right: app controls + window controls */}
+        <div className="flex items-center shrink-0">
+          <button
+            onClick={() => setTheme(t => t === 'dark' ? 'light' : 'dark')}
+            className="p-1.5 rounded-md text-muted-foreground hover:text-foreground hover:bg-accent transition-colors cursor-pointer"
+            aria-label="Toggle theme"
+            title={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
+          >
+            {theme === 'dark' ? <Sun size={15} /> : <Moon size={15} />}
+          </button>
+          <button
+            onClick={() => signOut().then(() => window.location.reload())}
+            className="p-1.5 mr-1 rounded-md text-muted-foreground hover:text-red-400 hover:bg-accent transition-colors cursor-pointer"
+            aria-label="Sign out"
+            title="Sign out"
+          >
+            <LogOut size={15} />
+          </button>
+          {/* Window controls — only in Electron desktop */}
+          {(window as any).ping?.isDesktop && (
+            <div className="flex items-center h-9 ml-1">
+              <button onClick={() => (window as any).ping.minimize()} className="h-9 w-12 flex items-center justify-center text-muted-foreground hover:bg-muted-foreground/10 transition-colors" title="Minimize">
+                <svg width="10" height="1" viewBox="0 0 10 1"><rect width="10" height="1" fill="currentColor"/></svg>
+              </button>
+              <button onClick={() => (window as any).ping.maximize()} className="h-9 w-12 flex items-center justify-center text-muted-foreground hover:bg-muted-foreground/10 transition-colors" title="Maximize">
+                <svg width="10" height="10" viewBox="0 0 10 10" fill="none"><rect x="0.5" y="0.5" width="9" height="9" stroke="currentColor" strokeWidth="1"/></svg>
+              </button>
+              <button onClick={() => (window as any).ping.close()} className="h-9 w-12 flex items-center justify-center text-muted-foreground hover:bg-red-500 hover:text-white transition-colors" title="Close">
+                <svg width="10" height="10" viewBox="0 0 10 10"><line x1="0" y1="0" x2="10" y2="10" stroke="currentColor" strokeWidth="1.2"/><line x1="10" y1="0" x2="0" y2="10" stroke="currentColor" strokeWidth="1.2"/></svg>
+              </button>
+            </div>
+          )}
+        </div>
       </div>
 
       <div className="flex flex-1 min-h-0">
@@ -711,7 +822,19 @@ function InnerApp() {
 // ─────────────────────────────────────────────────────────────────────────────
 
 const App: React.FC = () => {
+  const isDesktop = !!(window as any).ping?.isDesktop;
   const { data: session, isPending } = useSession();
+
+  // Desktop mode — skip auth, go straight to app
+  if (isDesktop) {
+    return (
+      <BrowserRouter>
+        <Routes>
+          <Route path="/*" element={<InnerApp />} />
+        </Routes>
+      </BrowserRouter>
+    );
+  }
 
   if (isPending) {
     return (

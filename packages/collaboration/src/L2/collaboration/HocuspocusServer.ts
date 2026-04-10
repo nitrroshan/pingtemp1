@@ -18,6 +18,8 @@ import * as Y from "yjs";
 import crypto from "crypto";
 import { rootLogger } from "../../logging.js";
 import type { ICollabProvider } from "./types/collab-provider.types.js";
+import type { BlobStorageProvider } from "./types/blob-storage.types.js";
+import { FsBlobStorage, HocuspocusBlobStorageAdapter } from "./HocuspocusBlobStorageAdapter.js";
 
 const logger = rootLogger.child({ module: "CollabServer" });
 
@@ -212,18 +214,28 @@ function xmlElementText(el: Y.XmlElement): string {
 }
 
 /**
- * CollabServer — Embedded Hocuspocus instance with file-based persistence
+ * CollabServer — Embedded Hocuspocus instance with pluggable blob storage
+ *
+ * Storage backends:
+ * - Default (no blobStorage): filesystem via FsBlobStorage
+ * - Azure: pass AzureBlobStorageProvider
+ * - S3: pass S3BlobStorageProvider
  */
 export class CollabServer implements ICollabProvider {
   /** The Server wraps Hocuspocus + HTTP/WebSocket. We use server.hocuspocus for everything. */
   private server: HocuspocusHTTPServer;
   private storageDir: string;
+  private blobAdapter: HocuspocusBlobStorageAdapter;
   private repoPath?: string;
   private started = false;
 
-  constructor(storageDir = "./data/collab", repoPath?: string) {
+  constructor(storageDir = "./data/collab", repoPath?: string, blobStorage?: BlobStorageProvider) {
     this.storageDir = storageDir;
     this.repoPath = repoPath;
+
+    // Use provided blob storage or default to filesystem
+    const storage = blobStorage ?? new FsBlobStorage(storageDir);
+    this.blobAdapter = new HocuspocusBlobStorageAdapter(storage);
 
     // Create Server — it internally creates ONE Hocuspocus instance
     // We use server.hocuspocus for both WebSocket AND in-process access
@@ -231,33 +243,8 @@ export class CollabServer implements ICollabProvider {
       quiet: true,
       extensions: [
         new Database({
-          fetch: async ({ documentName }: { documentName: string }) => {
-            const filePath = path.join(
-              this.storageDir,
-              "yjs",
-              `${docNameToFilename(documentName)}.bin`,
-            );
-            try {
-              return await fs.readFile(filePath);
-            } catch {
-              return null;
-            }
-          },
-          store: async ({
-            documentName,
-            state,
-          }: {
-            documentName: string;
-            state: Buffer;
-          }) => {
-            const filePath = path.join(
-              this.storageDir,
-              "yjs",
-              `${docNameToFilename(documentName)}.bin`,
-            );
-            await fs.mkdir(path.dirname(filePath), { recursive: true });
-            await fs.writeFile(filePath, state);
-          },
+          fetch: (data) => this.blobAdapter.fetch(data),
+          store: (data) => this.blobAdapter.store(data),
         }),
       ],
 

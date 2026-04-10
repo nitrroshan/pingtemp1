@@ -1,0 +1,11 @@
+node_modules/
+dist/
+out/
+frontend/
+
+# Compiled TypeScript output
+src/*.js
+src/*.js.map
+
+# Bundled backend
+resources/backend-bundle.js

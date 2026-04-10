@@ -1,0 +1,79 @@
+{
+  "name": "@ping/desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Ping Desktop - AI Agent Orchestration Desktop App",
+  "main": "dist/main.js",
+  "scripts": {
+    "dev": "tsc && electron .",
+    "start": "electron .",
+    "prebuild": "node scripts/copy-frontend.js",
+    "build": "tsc",
+    "bundle:backend": "node scripts/bundle-backend.js",
+    "dist": "node -e \"require('child_process').execSync('npx tsc',{stdio:'inherit'})\" && node scripts/copy-frontend.js && node scripts/bundle-backend.js && npx electron-builder --win --config.forceCodeSigning=false",
+    "dist:mac": "npx tsc && node scripts/copy-frontend.js && node scripts/bundle-backend.js && npx electron-builder --mac",
+    "dist:linux": "npx tsc && node scripts/copy-frontend.js && node scripts/bundle-backend.js && npx electron-builder --linux"
+  },
+  "build": {
+    "appId": "com.ping.desktop",
+    "productName": "Ping",
+    "directories": {
+      "output": "out"
+    },
+    "files": [
+      "dist/**/*",
+      "!src",
+      "!scripts",
+      "!**/*.ts",
+      "!**/*.map",
+      "!tsconfig.json",
+      "!forge.config.js"
+    ],
+    "extraResources": [
+      {
+        "from": "resources/backend-bundle.js",
+        "to": "backend-bundle.js"
+      },
+      {
+        "from": "resources/icons",
+        "to": "icons"
+      },
+      {
+        "from": "frontend",
+        "to": "frontend"
+      }
+    ],
+    "win": {
+      "target": ["nsis", "portable"],
+      "icon": "resources/icons/win/icon.ico",
+      "forceCodeSigning": false
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "artifactName": "${productName}-${version}-Setup.${ext}"
+    },
+    "mac": {
+      "target": ["dmg"],
+      "icon": "resources/icons/mac/icon.icns"
+    },
+    "linux": {
+      "target": ["AppImage", "deb"],
+      "icon": "resources/icons/png",
+      "category": "Development"
+    },
+    "publish": {
+      "provider": "github",
+      "owner": "nitrroshan",
+      "repo": "refer-backendjs",
+      "releaseType": "prerelease"
+    }
+  },
+  "devDependencies": {
+    "@types/node": "^25.5.2",
+    "electron": "^41.2.0",
+    "electron-builder": "^26.0.0",
+    "esbuild": "^0.25.0",
+    "typescript": "^5.8.0"
+  }
+}

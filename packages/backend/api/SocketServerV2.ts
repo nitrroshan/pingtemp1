@@ -39,7 +39,7 @@ import {
 } from "./SocketConnectionManager.js";
 import { userManager } from "./UserManager.js";
 import { getAuth } from "../auth/index.js";
-import { ChatMessageModel } from "../db/models/ChatMessage.js";
+import type { ServiceRegistry } from "../services/ServiceRegistry.js";
 import type { AgentManager } from "../agentManager/AgentManagerV2.js";
 import type { StreamPayload } from "./types/streamTypes.js";
 
@@ -196,11 +196,13 @@ interface ErrorResponse {
 
 export class SocketServerV2 {
   private io: SocketIOServer;
+  private services: ServiceRegistry | null;
 
   /** Track teams that have event listeners attached */
   private attachedTeams = new Set<string>();
 
-  constructor(httpServer: any) {
+  constructor(httpServer: any, services?: ServiceRegistry) {
+    this.services = services ?? null;
     // Initialize Socket.IO
     this.io = new SocketIOServer(httpServer, {
       path: "/socket.io/v2", // V2 path to coexist with V1
@@ -598,15 +600,18 @@ export class SocketServerV2 {
       return;
     }
 
-    // Persist user message
-    ChatMessageModel.create({
-      teamId,
-      sessionId: sessionId || "default",
-      role: "user",
-      agentId,
-      taskId: taskId || undefined,
-      content,
-    }).catch((err) => logger.warn("[SocketServerV2] Failed to save user message:", err));
+    // Persist user message via ServiceRegistry
+    if (this.services) {
+      this.services.chat.addMessage({
+        teamId,
+        sessionId: sessionId || "default",
+        role: "user",
+        agentId,
+        taskId: taskId || undefined,
+        content,
+        timestamp: new Date().toISOString(),
+      }).catch((err) => logger.warn("[SocketServerV2] Failed to save user message:", err));
+    }
 
     try {
       const manager = await agentManagerRegistry.getForTeam(teamId);

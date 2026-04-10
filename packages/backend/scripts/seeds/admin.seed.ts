@@ -14,6 +14,7 @@
 
 import dotenv from "dotenv";
 dotenv.config();
+dotenv.config({ path: ".env.secrets", override: true });
 
 import { rootLogger } from "../../logging/index.js";
 import { connectDB, disconnectDB } from "../../db/index.js";

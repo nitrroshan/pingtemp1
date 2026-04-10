@@ -6,6 +6,7 @@
   "types": "src/index.ts",
   "dependencies": {
     "@hocuspocus/extension-database": "^3.4.4",
+    "@hocuspocus/provider": "^3.4.4",
     "@hocuspocus/server": "^3.4.4",
     "@langchain/core": "^1.1.0",
     "ai": "^6.0.143",

@@ -8,20 +8,18 @@ import swaggerUi from "swagger-ui-express";
 import { rootLogger } from "../logging/index.js";
 import { AgentManager } from "../agentManager/AgentManagerV2.js";
 import { createAgentManagerHandlerV2 } from "./agentManagerHandlerV2.js";
-import { TeamService } from "../team/index.js";
 import { swaggerSpec } from "./swagger.js";
 import { skillsRouter } from "../skills/index.js";
 import { getAuthHandler } from "../auth/index.js";
 import { FRONTEND_FLAG_KEYS } from "../config/featureFlags.js";
 import { getConfig } from "../config/index.js";
-import { ChatMessageModel } from "../db/models/ChatMessage.js";
-import { GoalModel } from "../db/models/Goal.js";
+import type { ServiceRegistry } from "../services/ServiceRegistry.js";
 
 const logger = rootLogger.child({ module: "HttpServer" });
 
 export interface HttpServerOptions {
   agentManager: AgentManager;
-  teamService?: TeamService;
+  services?: ServiceRegistry;
 }
 
 export class HttpServer {
@@ -39,7 +37,11 @@ export class HttpServer {
    */
   private setupMiddleware() {
     this.app.use(cors({ origin: true, credentials: true }));
-    this.app.use(express.json());
+    // Skip express.json() for auth routes — better-auth's toNodeHandler() reads the raw body
+    this.app.use((req, res, next) => {
+      if (req.path.startsWith("/api/auth")) return next();
+      express.json()(req, res, next);
+    });
   }
 
   /**
@@ -59,13 +61,19 @@ export class HttpServer {
     // Extended health check — includes dependency status
     this.app.get("/api/v2/health", async (req, res) => {
       const checks: Record<string, string> = {};
+      const config = (await import("../config/index.js")).getConfig();
+      const isFileMode = !config.mongodbUri;
 
-      // MongoDB
-      try {
-        const mongoose = (await import("mongoose")).default;
-        checks.mongodb = mongoose.connection.readyState === 1 ? "connected" : "disconnected";
-      } catch {
-        checks.mongodb = "error";
+      // MongoDB (skip check in file mode)
+      if (isFileMode) {
+        checks.storage = "file";
+      } else {
+        try {
+          const mongoose = (await import("mongoose")).default;
+          checks.mongodb = mongoose.connection.readyState === 1 ? "connected" : "disconnected";
+        } catch {
+          checks.mongodb = "error";
+        }
       }
 
       // Data directory writable
@@ -80,7 +88,7 @@ export class HttpServer {
       }
 
       const allOk = Object.values(checks).every(
-        (v) => v === "connected" || v === "writable",
+        (v) => v === "connected" || v === "writable" || v === "file",
       );
 
       res.status(allOk ? 200 : 503).json({
@@ -109,8 +117,10 @@ export class HttpServer {
     });
     logger.info("[HttpServer] Feature flags API mounted at /api/v2/feature-flags");
 
-    // Mount V2 API routes
-    const v2Routes = createAgentManagerHandlerV2();
+    // Mount V2 API routes (ServiceRegistry required)
+    const v2Routes = options.services
+      ? createAgentManagerHandlerV2(options.services)
+      : createAgentManagerHandlerV2(undefined as any); // legacy — should not happen
     this.app.use("/api/v2", v2Routes);
     // Also mount at /api for backward compat
     this.app.use("/api", v2Routes);
@@ -203,17 +213,14 @@ export class HttpServer {
       try {
         const { teamId } = req.params;
         const limit = Math.min(parseInt(req.query.limit as string) || 50, 200);
-        const before = req.query.before ? new Date(req.query.before as string) : new Date();
+        const before = req.query.before as string | undefined;
 
-        const messages = await ChatMessageModel.find({
-          teamId,
-          timestamp: { $lt: before },
-        })
-          .sort({ timestamp: -1 })
-          .limit(limit)
-          .lean();
-
-        res.json({ messages: messages.reverse() });
+        if (options.services) {
+          const messages = await options.services.chat.getMessages(teamId, { limit, before });
+          res.json({ messages });
+        } else {
+          res.json({ messages: [] });
+        }
       } catch (err: any) {
         res.status(500).json({ error: err.message });
       }
@@ -226,12 +233,12 @@ export class HttpServer {
         const { teamId } = req.params;
         const limit = Math.min(parseInt(req.query.limit as string) || 20, 100);
 
-        const goals = await GoalModel.find({ teamId })
-          .sort({ createdAt: -1 })
-          .limit(limit)
-          .lean();
-
-        res.json({ goals });
+        if (options.services) {
+          const goals = await options.services.goals.getGoals(teamId, { limit });
+          res.json({ goals });
+        } else {
+          res.json({ goals: [] });
+        }
       } catch (err: any) {
         res.status(500).json({ error: err.message });
       }
@@ -243,16 +250,15 @@ export class HttpServer {
       try {
         const { teamId } = req.params;
 
-        const [messages, goals] = await Promise.all([
-          ChatMessageModel.find({ teamId })
-            .sort({ timestamp: -1 })
-            .limit(50)
-            .lean(),
-          GoalModel.find({ teamId })
-            .sort({ createdAt: -1 })
-            .limit(10)
-            .lean(),
-        ]);
+        let messages: any[] = [];
+        let goals: any[] = [];
+
+        if (options.services) {
+          [messages, goals] = await Promise.all([
+            options.services.chat.getMessages(teamId, { limit: 50 }),
+            options.services.goals.getGoals(teamId, { limit: 10 }),
+          ]);
+        }
 
         // Try to get current plan/tasks from AgentManager if cached
         let plan = null;
@@ -274,7 +280,7 @@ export class HttpServer {
 
         res.json({
           teamId,
-          messages: messages.reverse(),
+          messages,
           goals,
           plan,
           tasks,
@@ -289,12 +295,18 @@ export class HttpServer {
     this.app.post("/api/v2/workspaces/:teamId/push", async (req, res) => {
       try {
         const { teamId } = req.params;
-        const { TeamModel: TM } = await import("../team/models.js");
-        const team = await TM.findById(teamId).lean();
-        if (!team) { res.status(404).json({ error: "Team not found" }); return; }
 
-        const remoteUrl = team.gitRemoteUrl || req.body.remoteUrl;
-        const remoteToken = team.gitRemoteToken || req.body.remoteToken;
+        let remoteUrl = req.body.remoteUrl;
+        let remoteToken = req.body.remoteToken;
+
+        // Try to get team's stored git config via services
+        if (options.services) {
+          const team = await options.services.teams.getTeam(teamId);
+          if (!team) { res.status(404).json({ error: "Team not found" }); return; }
+          remoteUrl = remoteUrl || team.gitRemoteUrl;
+          remoteToken = remoteToken || team.gitRemoteToken;
+        }
+
         if (!remoteUrl) { res.status(400).json({ error: "No git remote URL configured" }); return; }
 
         // Build authenticated URL if token provided

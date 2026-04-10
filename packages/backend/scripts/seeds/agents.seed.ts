@@ -6,7 +6,7 @@
  */
 
 import { rootLogger } from "../../logging/index.js";
-import { AgentModel } from "../../agentManager/team/schema/agentSchema.js";
+import { AgentRoleModel as AgentModel } from "../../services/mongo/schemas/AgentRoleSchema.js";
 import type { SeededTeam } from "./teams.seed.js";
 
 const logger = rootLogger.child({ module: "seed:agents" });

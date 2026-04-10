@@ -6,7 +6,7 @@
  */
 
 import { rootLogger } from "../../logging/index.js";
-import { TeamModel } from "../../agentManager/team/schema/teamSchema.js";
+import { TeamConfigModel as TeamModel } from "../../services/mongo/schemas/TeamConfigSchema.js";
 
 const logger = rootLogger.child({ module: "seed:teams" });
 

@@ -27,6 +27,7 @@
     "fast-glob": "^3.3.3",
     "fastmcp": "^3.25.4",
     "langchain": "^1.1.1",
+    "lowdb": "^7.0.1",
     "minisearch": "^7.2.0",
     "mongoose": "^9.0.2",
     "simple-git": "^3.31.1",

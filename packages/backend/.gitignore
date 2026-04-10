@@ -18,4 +18,10 @@ dist/
 .env
 data/
 
+# Compiled JS output belongs in dist/ only — never commit alongside .ts sources
+*.js
+*.js.map
+!jest.config.js
+!forge.config.js
+
 
