@@ -1,229 +1,249 @@
-# Team Registry — Feature Architecture
+# Ping Platform — Architecture Refactor
 
-## Overview
+## What This Document Covers
 
-When a user creates a team, agents + their skills should auto-load and be ready to run — no manual skill assignment, no seed scripts needed. A discovery layer (RAG-style search over definitions) suggests the right agents and skills when building a new team. A future "meta-team" agent uses this discovery layer to auto-compose teams.
+This is a major refactor of how Ping defines, discovers, loads, and runs **teams**, **agents**, **skills**, **hooks**, and **MCP servers**. It replaces MongoDB-based skill storage, hardcoded seed scripts, and manual skill assignment with a file-based plugin system aligned with Claude Code and agentskills.io standards.
 
-### How Claude Code Does It (Reference Model)
+### Scope of Change
 
-Claude Code has **four primitives** that map to what we're building:
+| Area | Before (current) | After (this refactor) |
+|------|------------------|----------------------|
+| **Teams** | Created via LLM role discovery, agents stored in MongoDB, skills manually assigned | Loaded from plugin folders. Agents + skills auto-assigned from definitions |
+| **Agents** | YAML files for internal builders only. DB records for team agents | Markdown + YAML frontmatter files. Superset of Claude Code format |
+| **Skills** | MongoDB records (`SkillModel`), manual assignment via `SkillSelector` UI, fake tool wrapper (`SkillResolver`) | SKILL.md files in plugin folders. Prompt injection (not tool wrappers). Auto-assigned via `defaultSkills` |
+| **Discovery** | None for teams. MongoDB vector search for skills (disconnected) | Unified `index.json` with embeddings for ALL item types |
+| **External agents** | Type defined (`ExternalConfig`) but not implemented | Ping exposes one MCP server. Any tool (Claude Code, Cursor, etc.) just installs it |
+| **Meta-team** | Doesn't exist | Built-in team with 3 modes (skill/agent/team building) that discovers and composes |
+| **Distribution** | Seed scripts, manual setup | Claude Code-compatible plugins. Future marketplace |
 
-| Claude Code Primitive | What it does | Our equivalent |
-|----------------------|-------------|----------------|
-| **Subagent** (`.claude/agents/*.md`) | Markdown file with YAML frontmatter defining a specialized agent: name, description, tools, model, skills, hooks | **Agent definition** |
-| **Agent Team** | Lead agent + teammates, shared task list, inter-agent messaging. Created at runtime via natural language. Teammates can reference subagent definitions for their role. | **Team** (our core concept) |
-| **Skill** (`.claude/skills/*/SKILL.md`) | On-demand knowledge/procedure. Loaded into agent context when invoked. Progressive loading: description → body → supporting files. | **Skill** (already have this) |
-| **Plugin** (`.claude-plugin/plugin.json`) | Distributable bundle of skills + agents + hooks + MCP servers. Namespaced slash commands. Marketplace installable. | **Plugin** (new — team templates as plugins) |
+### Documents
 
-**Key design insights from Claude Code:**
-- Agents/skills are **Markdown files with YAML frontmatter** (not pure YAML)
-- Skills are **progressively loaded**: only description in context by default, full body on invocation
-- Plugins are the **distribution unit**: a folder with manifest + skills/ + agents/ directories
-- Teams are **runtime-only** — no "team template file". A lead agent spawns teammates from subagent definitions
-- Subagent definitions can be reused as teammate roles via `tools` + `model` + body as system prompt
-
-### Four Sub-Features
-
-| Sub-feature | What it does |
-|-------------|-------------|
-| **Team Loader** | Load team → agents + skills from file-based definitions, ready to run |
-| **Discovery Index** | RAG-style search to suggest agents & skills for a goal |
-| **Meta-Team** | A team of agents that builds teams for users via discovery |
-| **Plugin System** | Distributable bundles of team + agents + skills |
+| Document | What it covers |
+|----------|---------------|
+| **This file** | Overall architecture, decisions, formats, migration plan |
+| [v1.0 Implementation Plan](v1.0/feature_implementation_planning.md) | Plugin loader, discovery index, team creation (8 steps) |
+| [v1.1 Implementation Plan](v1.1/feature_implementation_planning.md) | Meta-team, modes, Team Builder UI, code review UI (9 steps) |
+| [v2.0 Implementation Plan](v2.0/feature_implementation_planning.md) | Remote marketplace, install/publish, ratings (8 steps) |
+| [Ping MCP Server](../ping-mcp-server/feature_architecture.md) | Separate feature: MCP server for external agents (A11) |
+| [Untrusted Code Review](../untrusted-code-review/feature_architecture.md) | Separate feature: sandbox for untrusted code (A10) |
 
 ---
 
-## Current State
+## 1. Industry Research
 
-**What exists:**
-- `packages/registry/` — standalone Express server with MongoDB + embeddings + vector search for agent discovery. Has `AgentModel`, `AgentCapability`, `OAIEmbeddingClient`, `performVectorQuery`. Not wired into backend.
-- Backend seeds have `TEAM_AGENTS` templates (hardcoded JS objects with name, role, systemPrompt per team type)
-- `packages/backend/agent/agents/*.yaml` — YAML agent definitions, but only used by `AgentFactory`
-- Skills are in MongoDB (`SkillModel`), assigned via `AgentSkillModel` — currently manual via UI
+Validated against **CrewAI**, **OpenAI Agents SDK**, **AutoGen**, and **Claude Code**.
 
-**Gaps:**
-- No team-level definition that bundles agents + their skills together
-- No auto-assignment of skills when creating a team
-- Registry exists but is disconnected
-- No discovery/suggestion flow in team creation
-- No plugin concept for distributing team + agent + skill bundles
+| Aspect | Industry standard | Our approach | Status |
+|--------|------------------|-------------|--------|
+| Agent definition format | File-based config (CrewAI YAML, Claude Code .md) | Markdown + YAML frontmatter | ✅ Best of both |
+| Skills | Prompt injection (Claude Code, agentskills.io) | SKILL.md → `appendSystemPrompt()` | ✅ Corrected from fake tool wrapper |
+| Tool discovery | Deferred loading (OpenAI `ToolSearchTool`), description matching (Claude Code) | Vector search via `index.json` embeddings | ✅ Stronger than both |
+| Team orchestration | Crew (CrewAI), handoffs (OpenAI), lead+task list (Claude Code) | OrchestratorService + DAG + modes | ✅ More sophisticated |
+| Agent-as-tool | `agent.as_tool()` (OpenAI), subagents (Claude Code) | External agent via MCP | ✅ Standard protocol |
+| Plugin distribution | Claude Code plugins | Same format + team extensions | ✅ Compatible |
 
----
-
-## Format Decision: YAML vs Markdown
-
-| Format | Pros | Cons |
-|--------|------|------|
-| **Pure YAML** | Machine-readable, easy to parse, existing agent definitions use it | No rich content (system prompts get ugly as multiline strings), not standard |
-| **Markdown + YAML frontmatter** | Claude Code standard, agentskills.io standard, VS Code Copilot standard. Body = rich instructions/system prompt. Frontmatter = structured config. | Slightly more complex parser (need to split frontmatter from body) |
-
-**Decision: Markdown with YAML frontmatter** — aligns with Claude Code agents, Claude Code skills, and agentskills.io. The body becomes the system prompt / instructions. This makes our definitions compatible with the broader ecosystem.
+**What we have that nobody else does:**
+1. **Team modes** — team-level mode switching
+2. **Team stacking** — recursive team composition via MCP
+3. **Plugin-based team distribution** — teams as installable packages
+4. **Unified discovery index** — vector search across skills, agents, MCPs, hooks
 
 ---
 
-## Architecture — Claude Code Plugin Format (Chosen)
+## 2. Migration Plan
 
-Our plugins follow **Claude Code's exact format** with extensions for multi-agent teams. A Claude Code plugin works in Ping; a Ping plugin adds team-specific fields that Claude Code ignores.
+### What We Keep (Runtime Core)
 
-### Plugin Structure
+| Component | Location | Why |
+|-----------|----------|-----|
+| `WorkerPool` | `agent-manager/src/services/WorkerPool.ts` | Agent execution runtime |
+| `AiSdkAgent` | `agent-manager/src/agent/internal/AiSdkAgent.ts` | streamText, tool loop |
+| `AgentFactory` | `agent-manager/src/agent/AgentFactory.ts` | Agent creation (extend to accept .md) |
+| `PluginRegistry` | `agent-manager/src/plugin/PluginRegistry.ts` | Runtime tool injection |
+| `OrchestratorService` | `agent-manager/src/orchestrator/` | LLM task planning |
+| `TaskStore` | `agent-manager/src/orchestrator/TaskStore.ts` | Task lifecycle, DAG |
+| `SocketServerV2` | `backend/api/SocketServerV2.ts` | Real-time streaming |
+| `HttpServer` | `backend/api/HttpServer.ts` | REST API |
+| MongoDB (runtime) | — | Active teams, tasks, chat history |
+
+### What We Replace
+
+| Current | Replaced by | Why |
+|---------|------------|-----|
+| Seed scripts (`teams.seed.ts`, `agents.seed.ts`) | Plugin loader | File-based, not hardcoded JS |
+| YAML agent defs (`agents/*.yaml`) | Markdown `.md` in plugins | Claude Code compatible |
+| `SkillModel` (MongoDB) | `SKILL.md` files in plugins | Files, not DB records |
+| `AgentSkillModel` (MongoDB join table) | `defaultSkills` in agent frontmatter | Auto-assign, no manual step |
+| `SkillRegistryService` (MongoDB + embeddings) | `index.json` + `DiscoveryService` | File-based search |
+| `SkillResolver` (fake tool wrapper) | `appendSystemPrompt()` | Prompt injection (industry standard) |
+| `SkillSelector` (frontend) | Team Builder UI (v1.1) | Auto-populated from plugin |
+| `packages/registry/` (standalone server) | Embedded in backend | Same logic, not separate process |
+
+### What We Remove
+
+| Component | Why |
+|-----------|-----|
+| `AgentSkillSchema` (MongoDB) | Skills in agent frontmatter |
+| `SkillSchema` (MongoDB) | Skills are SKILL.md files |
+| `seeds/teams.seed.ts`, `agents.seed.ts` | Teams come from plugins |
+| `seedOfficialSkills.ts` | Skills bundled in plugins |
+| `SkillSelector.tsx` | Replaced by Team Builder UI |
+
+### Fallbacks (Keep Working)
+
+- Manual skill assignment API still works — user can tweak after creation
+
+### What Replaces LLM Role Discovery
+
+The old `POST /teams` flow used a temporary `AgentManager` to LLM-discover roles. This is replaced by:
+- **v1.0**: `pluginName` field → load agents from plugin (no LLM call)
+- **v1.1**: Meta-team's Agent Builder → discovers agents from registry + composes (smarter than raw LLM role discovery because it uses tested, existing agents)
+
+---
+
+## 3. File Formats
+
+### 3a. Plugin Structure (Claude Code-compatible)
 
 ```
-registry/                            # Local dir or S3 bucket
-├── index.json                       # Embeddings for discovery
-│
-├── plugins/
-│   ├── engineering-team/            # Plugin folder
-│   │   ├── .claude-plugin/
-│   │   │   └── plugin.json          # Claude Code format: manifest here
-│   │   ├── agents/
-│   │   │   ├── backend-developer.md
-│   │   │   ├── frontend-developer.md
-│   │   │   └── qa-engineer.md
-│   │   ├── skills/
-│   │   │   ├── api-design/
-│   │   │   │   └── SKILL.md
-│   │   │   └── security-review/
-│   │   │       └── SKILL.md
-│   │   ├── hooks/
-│   │   │   └── hooks.json           # Optional: lifecycle hooks
-│   │   ├── .mcp.json                # Optional: MCP server configs
-│   │   └── settings.json            # Optional: default settings
-│   │
-│   ├── product-team/
-│   │   ├── .claude-plugin/
-│   │   │   └── plugin.json
-│   │   ├── agents/
-│   │   └── skills/
-│   │
-│   └── research-team/
-│       └── ...
-│
-└── standalone/                      # Shared agents/skills not tied to a plugin
-    ├── agents/
-    │   └── data-scientist.md
-    └── skills/
-        └── code-review/
-            └── SKILL.md
+my-team-plugin/
+├── .claude-plugin/
+│   └── plugin.json                  # Manifest (name, description, version, modes)
+├── agents/
+│   ├── backend-developer.md         # Agent definitions
+│   ├── frontend-developer.md
+│   └── qa-engineer.md
+├── skills/
+│   ├── api-design/SKILL.md          # Skill definitions
+│   └── security-review/SKILL.md
+├── hooks/
+│   └── hooks.json                   # Lifecycle hooks (optional)
+├── .mcp.json                        # MCP server configs (optional)
+└── settings.json                    # Default settings (optional)
 ```
 
-### Plugin Manifest (`.claude-plugin/plugin.json`)
+**Plugin = team.** All agents in `agents/` = team members. No `teamComposition` field.
 
-Follows Claude Code schema exactly, with optional Ping extensions:
-
+**Manifest** (`.claude-plugin/plugin.json`):
 ```json
 {
   "name": "engineering-team",
   "description": "Full-stack engineering team for web applications",
   "version": "1.0.0",
-  "author": {
-    "name": "Ping Official"
-  },
-  "tags": ["engineering", "fullstack", "web"]
+  "tags": ["engineering", "fullstack", "web"],
+  "modes": {
+    "planning": { "description": "Architecture discussions", "activeAgents": ["backend-developer", "frontend-developer"] },
+    "implementation": { "description": "Write code", "activeAgents": ["backend-developer", "frontend-developer", "devops-engineer"] },
+    "review": { "description": "Code review", "activeAgents": ["qa-engineer", "backend-developer"] }
+  }
 }
 ```
 
-No `teamComposition` needed — **the folder structure IS the team**. All agents in `agents/` = team members. Each agent declares its own skills in frontmatter.
+### 3b. Agent Definition (.md) — Superset of Claude Code
 
-### Agent Definition (.md) — Superset of Claude Code
+The agent `.md` file has two parts: YAML frontmatter (config) and body (system prompt with **required XML tags**).
 
-Our agent `.md` format includes **all Claude Code fields** plus Ping-specific extensions:
+**System Prompt XML Schema:**
+
+The body uses XML tags that align with our existing `PromptBuilder` system. At runtime, the plugin body is merged with `WorkerPromptFactory`'s generated sections (capabilities, behaviors, rules) — so the body provides **identity + domain knowledge**, while the system injects **operational instructions**.
+
+| Tag | Required | Purpose | Runtime merge |
+|-----|:--------:|---------|:-----------:|
+| `<agent-identity>` | ✅ | Who the agent is — expertise, specialization, backstory | Replaces default identity |
+| `<domain-instructions>` | ✅ | Domain-specific procedures for this agent's specialty | Appended to behaviors |
+| `<domain-constraints>` | ✅ | Domain-specific rules (security, compliance, etc.) | Appended to rules |
+| `<output-formats>` | Optional | How to format responses (code style, structure) | Appended to output-formats |
+| `<context>` | Optional | Background knowledge the agent should always consider | Prepended to prompt |
+| `<examples>` | Optional | Example inputs/outputs demonstrating expected behavior | Appended after instructions |
+| `<collaboration>` | Optional | How to interact with teammates | Appended to behaviors |
+| `<tools-guidance>` | Optional | When and how to use specific tools | Appended to capabilities |
+
+**Note:** Generic capabilities (`<lifecycle>`, `<workspace>`, `<scratchpad>`), behaviors (`<start-by-understanding>`, `<commit-frequently>`, `<report-progress>`), and rules (`<use-only-available-tools>`, `<no-fabrication>`) are injected by `WorkerPromptFactory` at runtime — NOT in the .md file.
+
+**Example:**
 
 ```markdown
 ---
-# ── Claude Code standard fields ──
 name: backend-developer
-description: Senior backend engineer specializing in Node.js/TypeScript APIs and databases. Use for API design, database work, and server-side logic.
-tools:                                # Tools the agent can use
-  - Read
-  - Write
-  - Bash
-  - Edit
-  - Grep
-  - Glob
-disallowedTools:                      # Tools to deny (removed from inherited/specified)
-  - WebBrowser
-model: sonnet                         # sonnet | opus | haiku | inherit | full model ID
-permissionMode: default               # default | acceptEdits | auto | plan
-maxTurns: 20                          # Max agentic turns before stopping
-hooks:                                # Lifecycle hooks scoped to this agent
-  PreToolUse:
-    - matcher: "Bash"
-      hooks:
-        - type: command
-          command: "./scripts/validate-command.sh"
-  PostToolUse:
-    - matcher: "Edit|Write"
-      hooks:
-        - type: command
-          command: "./scripts/run-linter.sh"
-
-# ── Ping extensions (ignored by Claude Code) ──
-role: backend                         # Lowercase role key for WorkerPool matching
-defaultSkills:                        # Skills auto-assigned when team is created
-  - api-design
-  - security-review
-tags: [backend, node, typescript, api] # For discovery index
-mcpServers:                           # MCP servers scoped to this agent
-  - github
-  - name: custom-db
-    type: stdio
-    command: npx
-    args: ["-y", "@db/mcp-server"]
+description: Senior backend engineer for Node.js/TypeScript APIs
+role: backend
+model: sonnet
+tools: [Read, Write, Bash, Edit, Grep, Glob]
+defaultSkills: [api-design, security-review]
+tags: [backend, node, typescript, api]
 ---
 
-<role>
+<agent-identity>
 You are a senior backend engineer specializing in Node.js and TypeScript.
-</role>
+You have 10+ years of experience building production APIs and microservices.
+</agent-identity>
 
-<instructions>
+<domain-instructions>
 When given a coding task:
 1. Analyze requirements before writing code
 2. Write production-ready TypeScript with proper error handling
 3. Include input validation at API boundaries
 4. Follow RESTful conventions for endpoints
 5. Write tests for critical paths
-</instructions>
+</domain-instructions>
 
-<constraints>
-- Never expose internal errors to clients
-- Always validate user input
-- Use parameterized queries for database access
+<domain-constraints>
+- Never expose internal errors to clients — return generic error messages
+- Always validate user input at system boundaries
+- Use parameterized queries for database access — no string concatenation
 - No secrets in code — use environment variables
-</constraints>
+- Do not modify files outside the assigned workspace
+</domain-constraints>
+
+<output-formats>
+- Write TypeScript with explicit types (no `any`)
+- Include brief inline comments for non-obvious logic
+- One function per concern — keep functions under 50 lines
+</output-formats>
+
+<collaboration>
+- If a task requires frontend changes, report status "blocked" and note the dependency
+- Share API contracts with frontend-developer via collab_write
+- Request security-review skill for auth-related code
+</collaboration>
+
+<tools-guidance>
+- Use workspace_read_file before modifying any file
+- Run tests with Bash after every code change
+- Use workspace_commit after each logical unit of work
+</tools-guidance>
 ```
 
-**Compatibility matrix:**
+**Full frontmatter field compatibility:**
 
 | Field | Claude Code | Ping | Notes |
 |-------|:-----------:|:----:|-------|
-| `name` | ✅ | ✅ | Required. Identifier + slash-command |
+| `name` | ✅ | ✅ | Required |
 | `description` | ✅ | ✅ | Required. Used for discovery |
-| `tools` | ✅ | ✅ | Tool allowlist |
+| `tools` | ✅ | ✅ | Tool allowlist (capabilities) |
 | `disallowedTools` | ✅ | ✅ | Tool denylist |
-| `model` | ✅ | ✅ | Model selection |
-| `permissionMode` | ✅ | ✅ | Permission handling |
+| `model` | ✅ | ✅ | sonnet/opus/haiku/inherit/full ID |
+| `permissionMode` | ✅ | ✅ | default/acceptEdits/auto/plan |
 | `maxTurns` | ✅ | ✅ | Max agentic turns |
 | `hooks` | ✅ | ✅ | Lifecycle hooks |
-| `skills` | ✅ | ✅ | Skills preloaded into context |
-| `mcpServers` | ✅ | ✅ | MCP server configs |
+| `skills` | ✅ | ✅ | Preloaded into context at startup |
+| `mcpServers` | ✅ | ✅ | Per-agent MCP servers |
 | `memory` | ✅ | ✅ | Persistent memory scope |
 | `effort` | ✅ | ✅ | Effort level override |
-| `background` | ✅ | ✅ | Run as background task |
+| `background` | ✅ | — | Removed: use team stacking instead |
 | `isolation` | ✅ | ✅ | Git worktree isolation |
 | `color` | ✅ | ✅ | UI display color |
-| `role` | — | ✅ | Ping extension: WorkerPool key |
-| `defaultSkills` | — | ✅ | Ping extension: auto-assign on team creation |
-| `tags` | — | ✅ | Ping extension: discovery index |
-| Body (Markdown) | System prompt | System prompt | Identical usage |
+| `role` | — | ✅ | Ping: WorkerPool key |
+| `defaultSkills` | — | ✅ | Ping: auto-assign on team creation |
+| `tags` | — | ✅ | Ping: discovery index |
+| Body | System prompt | System prompt | Identical |
 
-### Skill Definition (SKILL.md) — agentskills.io Standard
-
-Identical to Claude Code. No changes needed:
+### 3c. Skill Definition (SKILL.md) — agentskills.io Standard
 
 ```markdown
 ---
 name: api-design
-description: REST API design patterns and conventions. Use when designing endpoints, defining request/response schemas, or reviewing API consistency.
+description: REST API design patterns. Use when designing endpoints or reviewing API consistency.
 argument-hint: '[endpoint-path]'
 disable-model-invocation: false
 user-invocable: true
@@ -232,274 +252,181 @@ tags: [api, rest, design]
 ---
 
 ## API Design Conventions
-
-When designing or reviewing APIs:
 1. Use RESTful naming: plural nouns for resources
-2. Return consistent error formats: `{ error: string, code: number }`
+2. Return consistent error formats: `{ error, code }`
 3. Include request validation with Zod schemas
-4. Version APIs via URL prefix (`/api/v2/`)
-
-## Reference
-- See [openapi-template.yaml](./openapi-template.yaml) for schema template
 ```
 
-### Hooks (`hooks/hooks.json`)
+**Skills are prompt injection, not tools.** SKILL.md body → `agent.appendSystemPrompt()`. Only skills with `scripts/` become real executable tools.
 
-Same format as Claude Code:
+### 3d. Hooks, MCP, Settings
 
-```json
-{
-  "hooks": {
-    "PreToolUse": [
-      {
-        "matcher": "Bash",
-        "hooks": [
-          { "type": "command", "command": "./scripts/validate-command.sh" }
-        ]
-      }
-    ],
-    "PostToolUse": [
-      {
-        "matcher": "Edit|Write",
-        "hooks": [
-          { "type": "command", "command": "./scripts/run-linter.sh" }
-        ]
-      }
-    ]
-  }
-}
-```
+| File | Format | Scope |
+|------|--------|-------|
+| `hooks/hooks.json` | Claude Code format. `PreToolUse`, `PostToolUse` events | Plugin-level (shared) or agent-level (frontmatter override) |
+| `.mcp.json` | Claude Code format. `{ name: { type, command, args } }` | Plugin-level (shared) or agent-level (frontmatter override) |
+| `settings.json` | `{ "agent": "default-agent-name" }` | Plugin defaults |
 
-### MCP Servers (`.mcp.json`)
-
-Same format as Claude Code:
-
-```json
-{
-  "github": {
-    "type": "stdio",
-    "command": "npx",
-    "args": ["-y", "@modelcontextprotocol/server-github"]
-  }
-}
-```
-
-### Discovery Flow
-
-1. On startup (or rebuild command): scan all plugins → generate embeddings for descriptions → write `index.json`
-2. `GET /api/registry/suggest?goal="build e-commerce"` → embed goal → cosine similarity against index → return ranked plugins + agents + skills
-3. User edits suggestions in Team Builder UI → confirms → backend loads plugin files → creates runtime team with agents + skills auto-assigned
-
-**Why this approach:**
-- **Claude Code compatible** — their plugins work in Ping (skills fully, agents with adapter)
-- **Superset, not subset** — our agents have all Claude Code fields plus `role`, `defaultSkills`, `tags`
-- **No `teamComposition`** — folder structure IS the team (all agents in `agents/` = members)
-- **No database for catalog** — files + index.json only
-- Plugins are the natural distribution unit (git repo, npm package, S3 folder)
-- Skills follow agentskills.io SKILL.md standard
-- Hooks, MCP servers, LSP servers supported in the format
+Per-agent config in frontmatter takes priority over plugin-level files.
 
 ---
 
-## Team Modes — A General Concept
+## 4. Discovery Index (`index.json`)
 
-Modes are a **team-level capability**, not specific to the meta-team. Any team can define modes in its plugin manifest. The user selects the mode — the team doesn't auto-route.
-
-### How Modes Work
-
-A mode changes what the team focuses on — which agents are active, what tools are available, how the team behaves. Defined in `plugin.json`:
+Pre-built search index with embeddings for **every discoverable item type**:
 
 ```json
 {
-  "name": "meta-team",
-  "description": "Creates skills, agents, and teams",
-  "version": "1.0.0",
-  "modes": {
-    "skill-building": {
-      "description": "Create and discover skills",
-      "activeAgents": ["skill-builder", "registry-scout"],
-      "icon": "puzzle"
-    },
-    "agent-building": {
-      "description": "Create agents with skills, MCPs, and hooks",
-      "activeAgents": ["agent-builder", "registry-scout"],
-      "icon": "bot"
-    },
-    "team-building": {
-      "description": "Compose teams from agents",
-      "activeAgents": ["team-builder", "registry-scout"],
-      "icon": "users"
-    }
-  }
+  "version": "1.0",
+  "buildTimestamp": "2026-04-11T10:00:00Z",
+  "skills": [{ "name": "...", "description": "...", "tags": [], "embedding": [] }],
+  "agents": [{ "name": "...", "description": "...", "tags": [], "defaultSkills": [], "mcpServers": [], "embedding": [] }],
+  "mcpServers": [{ "name": "...", "description": "...", "tags": [], "config": {}, "embedding": [] }],
+  "hooks": [{ "name": "...", "description": "...", "event": "PreToolUse", "embedding": [] }],
+  "plugins": [{ "name": "...", "description": "...", "tags": [], "embedding": [] }]
 }
 ```
 
-**Frontend**: Mode selector appears as tabs or a dropdown in the chat area. User picks the mode before chatting. Switching modes changes which agents handle the conversation.
-
-**Any team can have modes**, not just the meta-team:
-
-```json
-// engineering-team plugin.json
-{
-  "name": "engineering-team",
-  "modes": {
-    "planning": {
-      "description": "Architecture and design discussions",
-      "activeAgents": ["backend-developer", "frontend-developer"]
-    },
-    "implementation": {
-      "description": "Write code and build features",
-      "activeAgents": ["backend-developer", "frontend-developer", "devops-engineer"]
-    },
-    "review": {
-      "description": "Code review and quality checks",
-      "activeAgents": ["qa-engineer", "backend-developer"]
-    }
-  }
-}
-```
+- Built once when plugins change (not every startup). 1536-dim embeddings from `text-embedding-3-small`
+- API: `GET /api/registry/suggest?goal=<text>` → cosine similarity → ranked results
 
 ---
 
-## Meta-Team Architecture
+## 5. Team Modes
 
-The Meta-Team is a **built-in creation engine**. It's the first team every user interacts with — always available in the sidebar. The **user selects the mode** (skill / agent / team building).
+Any team can define modes in `plugin.json`. User selects mode → only `activeAgents` handle the conversation.
 
-### Three Modes
-
-| Mode | User selects | What happens |
-|------|-------------|-------------|
-| **Skill Building** | "Create a skill for Stripe webhooks" | Searches existing skills for overlap → generates SKILL.md → saves to registry |
-| **Agent Building** | "Create a backend agent for fintech" | Discovers skills + MCP servers + hooks → composes agent .md → saves to registry |
-| **Team Building** | "Build a team for e-commerce" | Discovers agents (already equipped) → composes plugin folder → creates runtime team |
-
-Each mode builds on the previous — skills compose into agents, agents compose into teams:
-
-```
-Skills + MCPs + Hooks → Agent .md → Team plugin
+```json
+"modes": {
+  "planning": { "description": "Design discussions", "activeAgents": ["backend", "frontend"], "icon": "pencil" },
+  "implementation": { "description": "Write code", "activeAgents": ["backend", "frontend", "devops"], "icon": "code" }
+}
 ```
 
-### The Team Composition
+Frontend: tabs/dropdown in chat area. Backend: WorkerPool filters active workers by mode.
 
-```
-Meta-Team (built-in, always available)
-├── Skill Builder                — Creates/discovers skills, checks for duplicates
-├── Agent Builder                — Creates agents, discovers skills/MCPs/hooks for them
-├── Team Builder                 — Composes teams from agents, validates completeness
-└── Registry Scout               — Searches the index across all item types
-```
+---
 
-No Architect agent — the user selects the mode, and the right agents activate.
-├── Agent Builder                — Creates agents, discovers skills/MCPs/hooks for them
-├── Team Builder                 — Composes teams from agents, validates completeness
-└── Registry Scout               — Searches the index across all item types
-```
+## 6. Meta-Team
+
+Built-in team (always in sidebar). **Discovery-first**: search existing → suggest tested items → create new only if gap.
+
+### Modes (layered)
+
+| Mode | Active agents | Flow |
+|------|--------------|------|
+| **Skill Building** | Scout, Skill Builder | Find existing skills → suggest → create only if gap |
+| **Agent Building** | Scout, Skill Builder, Agent Builder | Find agents → suggest with skills/MCPs/hooks → customize or create |
+| **Team Building** | Scout, Skill Builder, Agent Builder, Team Builder | Find agents → compose team → create runtime team |
+
+### Agents (4)
+
+| Agent | Domain |
+|-------|--------|
+| **Registry Scout** | Searches `index.json` across all item types |
+| **Skill Builder** | Creates/discovers SKILL.md files |
+| **Agent Builder** | Creates agent .md with discovered skills/MCPs/hooks |
+| **Team Builder** | Composes plugin from agents → creates runtime team |
+
+Each owns its full domain. Modes layer them: skill mode = 2 agents, agent mode = 3, team mode = 4.
 
 ### Mode 1: Skill Building
 
 ```
-User: "Create a skill for PCI compliance auditing"
+User: "I need a skill for PCI compliance auditing"
                     │
                     ▼
 ┌─────────────────────────────────────────────────┐
-│  User selects: SKILL BUILDING mode               │
-│  Active agents: Skill Builder + Registry Scout  │
+│  REGISTRY SCOUT searches existing skills:        │
+│                                                  │
+│  Found 3 matches:                                │
+│  ├── security-review     (score: 0.88)          │
+│  │   "Reviews code for OWASP vulnerabilities"    │
+│  ├── compliance-checker  (score: 0.82)          │
+│  │   "SOC2 and ISO compliance checks"            │
+│  └── data-privacy        (score: 0.71)          │
+│      "GDPR data handling patterns"               │
+│                                                  │
+│  Gap detected: No PCI-specific skill exists      │
 └──────────────────┬──────────────────────────────┘
                    │
-        ┌──────────┴──────────┐
-        ▼                     ▼
-┌──────────────┐    ┌─────────────────┐
-│ REGISTRY     │    │ SKILL BUILDER    │
-│ SCOUT        │    │                  │
-│              │    │ Generates:       │
-│ Searches for │    │ - SKILL.md with  │
-│ existing     │    │   frontmatter    │
-│ "pci" or     │    │ - description    │
-│ "compliance" │    │ - body with      │
-│ skills       │    │   procedures     │
-│              │    │ - tags           │
-│ Found:       │    │ - supporting     │
-│ security-    │    │   files list     │
-│ review       │    │                  │
-│ (partial     │    │ Avoids overlap   │
-│  overlap)    │    │ with existing    │
-└──────┬───────┘    └────────┬────────┘
-       │                     │
-       └──────────┬──────────┘
-                  ▼
-        User reviews SKILL.md
-        Edits if needed → save
+                   ▼
+         User sees suggestions:
+         ✅ security-review (close match)
+         ✅ compliance-checker (partial)
+         ⚠️ No exact PCI skill found
+         
+         Options:
+         [Use existing] [Create new] [Use existing + Create new]
+                   │
+                   ▼ (user chooses "Create new")
+┌─────────────────────────────────────────────────┐
+│  SKILL BUILDER generates SKILL.md:               │
+│  - Uses security-review as reference             │
+│  - Adds PCI-specific procedures                  │
+│  - Tags: [pci, compliance, payment, security]    │
+└──────────────────┬──────────────────────────────┘
+                   │
+                   ▼
+         User reviews SKILL.md → save to registry
 ```
-
-**Output:** A new `skills/pci-compliance/SKILL.md` in the registry.
 
 ### Mode 2: Agent Building
 
 ```
-User: "Create a backend agent for fintech payment processing"
+User: "I need a backend agent for fintech payment processing"
                     │
                     ▼
 ┌─────────────────────────────────────────────────┐
-│  User selects: AGENT BUILDING mode               │
-│  Active agents: Agent Builder + Registry Scout  │
-└──────────────────┬──────────────────────────────┘
-                   │
-                   ▼
-┌─────────────────────────────────────────────────┐
-│  REGISTRY SCOUT searches for:                    │
+│  REGISTRY SCOUT searches existing agents:        │
 │                                                  │
-│  Skills matching "fintech backend":              │
-│  ├── api-design          (score: 0.92)          │
-│  ├── security-review     (score: 0.88)          │
+│  Found 2 agent matches:                          │
+│  ├── backend-developer   (score: 0.91)          │
+│  │   skills: api-design, security-review         │
+│  │   mcp: @db/postgres-mcp                       │
+│  │   "General backend engineer"                  │
+│  └── payment-engineer    (score: 0.87)          │
+│      skills: stripe-webhooks, api-design         │
+│      mcp: @stripe/mcp-server                     │
+│      "Payment processing specialist"             │
+│                                                  │
+│  Also found relevant skills not on these agents: │
 │  ├── pci-compliance      (score: 0.85)          │
-│  └── stripe-webhooks     (score: 0.81)          │
+│  └── fraud-detection     (score: 0.78)          │
 │                                                  │
-│  MCP servers matching "payment":                 │
-│  ├── @stripe/mcp-server  (score: 0.90)          │
-│  └── @db/postgres-mcp    (score: 0.75)          │
-│                                                  │
-│  Hooks matching "backend security":              │
-│  ├── validate-sql.sh     (score: 0.82)          │
-│  └── run-linter.sh       (score: 0.70)          │
+│  And MCP servers:                                │
+│  └── @stripe/mcp-server  (score: 0.90)          │
 └──────────────────┬──────────────────────────────┘
                    │
                    ▼
+         User sees suggestions:
+         
+         "Use existing agent?"
+         ○ backend-developer (add pci-compliance skill?)
+         ○ payment-engineer (already has Stripe, add pci?)
+         ○ Create new agent
+         
+         "Add these skills?"
+         ☑ pci-compliance
+         ☑ fraud-detection
+         ☐ stripe-webhooks (already on payment-engineer)
+         
+         "Add these MCPs?"
+         ☑ @stripe/mcp-server
+                   │
+                   ▼ (user picks payment-engineer + adds pci-compliance)
 ┌─────────────────────────────────────────────────┐
-│  AGENT BUILDER composes agent .md:               │
-│                                                  │
-│  ---                                             │
-│  name: fintech-backend                           │
-│  description: Backend engineer for fintech...    │
-│  role: backend                                   │
-│  model: sonnet                                   │
-│  tools: [Read, Write, Bash, Edit]                │
-│  defaultSkills:                                  │
-│    - api-design                                  │
-│    - security-review                             │
-│    - pci-compliance                              │
-│    - stripe-webhooks                             │
-│  mcpServers:                                     │
-│    - stripe:                                     │
-│        type: stdio                               │
-│        command: npx                              │
-│        args: ["-y", "@stripe/mcp-server"]        │
-│  hooks:                                          │
-│    PreToolUse:                                   │
-│      - matcher: "Bash"                           │
-│        hooks:                                    │
-│          - type: command                         │
-│            command: "./scripts/validate-sql.sh"  │
-│  ---                                             │
-│  <role>You are a fintech backend engineer...</>  │
-│                                                  │
+│  AGENT BUILDER customizes:                       │
+│  - Takes payment-engineer as base                │
+│  - Adds pci-compliance to defaultSkills          │
+│  - Adds fraud-detection to defaultSkills         │
+│  - Saves as fintech-backend.md (new variant)     │
+│    OR updates payment-engineer.md in place        │
 └──────────────────┬──────────────────────────────┘
                    │
                    ▼
-         User reviews agent .md
-         Edits skills/MCPs/hooks → save
+         User reviews agent .md → save to registry
 ```
-
-**Output:** A new `agents/fintech-backend.md` in the registry — fully wired with skills, MCPs, and hooks.
 
 ### Mode 3: Team Building
 
@@ -508,14 +435,9 @@ User: "Build a team for e-commerce"
                     │
                     ▼
 ┌─────────────────────────────────────────────────┐
-│  User selects: TEAM BUILDING mode                │
-│  Active agents: Team Builder + Registry Scout   │
-└──────────────────┬──────────────────────────────┘
-                   │
-                   ▼
-┌─────────────────────────────────────────────────┐
-│  REGISTRY SCOUT searches for agents:             │
+│  REGISTRY SCOUT searches existing agents:        │
 │                                                  │
+│  Suggested team (all tested, existing agents):   │
 │  ├── backend-developer   (score: 0.91)          │
 │  │   skills: api-design, security-review         │
 │  │   mcp: @db/postgres-mcp                       │
@@ -526,37 +448,38 @@ User: "Build a team for e-commerce"
 │  │   mcp: @stripe/mcp-server                     │
 │  └── devops-engineer     (score: 0.78)          │
 │      skills: ci-cd, cloud-deployment             │
+│                                                  │
+│  Each agent already has tested skills + MCPs     │
 └──────────────────┬──────────────────────────────┘
                    │
                    ▼
+         User sees team composition:
+         
+         ☑ backend-developer    [3 skills, 1 MCP]
+         ☑ frontend-developer   [2 skills]
+         ☑ fintech-backend      [2 skills, 1 MCP]
+         ☑ devops-engineer      [2 skills]
+         ☐ qa-engineer          [not suggested, but available]
+         
+         [+ Search for more agents]
+         [Create Team]
+                   │
+                   ▼ (user adds qa-engineer, removes devops)
 ┌─────────────────────────────────────────────────┐
-│  TEAM BUILDER composes plugin:                   │
-│                                                  │
-│  e-commerce-team/                                │
-│  ├── .claude-plugin/plugin.json                  │
-│  ├── agents/                                     │
-│  │   ├── backend-developer.md    (from registry) │
-│  │   ├── frontend-developer.md   (from registry) │
-│  │   ├── fintech-backend.md      (from registry) │
-│  │   └── devops-engineer.md      (from registry) │
-│  ├── skills/     (all defaultSkills gathered)    │
-│  ├── hooks/      (merged from all agents)        │
-│  └── .mcp.json   (merged from all agents)        │
-│                                                  │
-│  Each agent already has its skills, MCPs, hooks  │
-│  wired from when it was built in Mode 2          │
+│  TEAM BUILDER creates plugin + runtime team:     │
+│  - All agents are existing tested definitions    │
+│  - Skills already assigned per agent             │
+│  - MCPs already configured per agent             │
+│  - No generation needed — just composition       │
 └──────────────────┬──────────────────────────────┘
                    │
                    ▼
-         User reviews team composition
-         Add/remove agents → Create Team → DONE
+         Team created → appears in sidebar → ready to use
 ```
 
-**Output:** A full plugin folder → runtime team with everything auto-assigned.
+### Registry Index Covers All Item Types
 
-### Registry Index Must Cover All Item Types
-
-The `index.json` needs entries for **every discoverable thing** — not just plugins:
+The `index.json` needs entries for **every discoverable thing**:
 
 ```json
 {
@@ -595,17 +518,17 @@ The `index.json` needs entries for **every discoverable thing** — not just plu
 | `search_mcp_servers` | Registry Scout | Vector search for MCP server configs |
 | `search_hooks` | Registry Scout | Vector search for hooks |
 | `get_item_details` | Registry Scout | Load full content for any item type |
-| **Creation tools** | | |
-| `generate_skill_md` | Skill Builder | Generate SKILL.md from requirements |
-| `generate_agent_md` | Agent Builder | Generate agent .md with skills/MCPs/hooks |
-| `generate_plugin` | Team Builder | Generate plugin folder from agents |
-| `save_to_registry` | All builders | Write files to registry, update index.json |
+| **Registry tools** | | |
+| `customize_agent` | Agent Builder | Read existing agent, apply skill/MCP changes |
+| `compose_team` | Team Builder | Gather agent .md files into plugin structure preview |
+| `create_team` | Team Builder | Create runtime team from plugin |
 | **Validation tools** | | |
 | `check_duplicates` | Registry Scout | Check if similar item already exists |
-| `validate_agent` | Agent Builder | Verify agent .md is well-formed |
+| `validate_skill` | Skill Builder | Check SKILL.md frontmatter is well-formed |
+| `validate_agent` | Agent Builder | Check agent .md frontmatter + required XML tags |
 | `validate_team` | Team Builder | Check coverage, redundancy, gaps |
-| **Lifecycle tools** | | |
-| `create_team` | Team Builder | Create runtime team from plugin |
+
+Agents write directly to registry using workspace tools. User approves or rejects changes (like accepting code changes). **Registry auto-reindexes** on file changes (file watcher).
 
 ### Meta-Team as a Plugin
 
@@ -635,7 +558,7 @@ Self-hosting: the Meta-Team uses the same format it creates.
 
 ## Marketplace Vision
 
-The registry evolves into a **marketplace** where agents, skills, and team templates are all independently publishable and discoverable. The meta-team agent searches across everything to find the best combination — mixing and matching from different contributors.
+The registry evolves into a **marketplace** where agents, skills, and team templates are all independently publishable and discoverable. The meta-team doesn't just find team templates — it **remixes** across the whole catalog.
 
 ### What's in the Marketplace
 
@@ -644,8 +567,6 @@ The registry evolves into a **marketplace** where agents, skills, and team templ
 | **Agent** | A single agent `.md` definition | `@community/stripe-integrator` — knows Stripe APIs |
 | **Skill** | A single `SKILL.md` knowledge pack | `@security/owasp-review` — OWASP checklist |
 | **Team template** | A plugin bundling agents + skills | `@official/engineering-team` — full-stack team |
-
-All three are independently searchable. The meta-team doesn't just find team templates — it composes new teams from individual agents and skills across the entire marketplace.
 
 ### How the Meta-Team Uses the Marketplace
 
@@ -677,19 +598,7 @@ User: "Build a fintech payment processing system"
         └─────────────────────────┘
 ```
 
-The meta-team doesn't just pick a template — it **remixes** across the whole catalog.
-
-### Version Roadmap
-
-| Version | What | Marketplace scope |
-|---------|------|-------------------|
-| **v1.0** | Local plugins, discovery API, plugin-based team creation | Built-in plugins only |
-| **v1.1** | Meta-team agents, Team Builder UI | Search local registry |
-| **v2.0** | Remote marketplace, publish/install, ratings | Community contributions |
-| **v2.1** | Marketplace search in meta-team, cross-source composition | Mix local + remote |
-| **v3.0** | Marketplace UI, contributor accounts, versioning, reviews | Full marketplace experience |
-
-### Marketplace Index Structure
+### Marketplace Index (v2.0+)
 
 The `index.json` evolves to support multiple sources:
 
@@ -710,4 +619,53 @@ The `index.json` evolves to support multiple sources:
 }
 ```
 
-The meta-team's `search_agents` and `search_skills` tools query across all sources, ranked by relevance score + community rating.
+---
+
+## 7. External Agents — Ping MCP Server
+
+> **Full architecture:** [docs/features/ping-mcp-server/feature_architecture.md](../ping-mcp-server/feature_architecture.md)  
+> **Implementation plan:** [docs/features/ping-mcp-server/feature_implementation_planning.md](../ping-mcp-server/feature_implementation_planning.md)  
+> **Feature flag:** `PING_MCP_SERVER_ENABLED`
+
+**Decision: Ping exposes ONE MCP server. Every external tool just installs it.**
+
+```
+Claude Code  → adds Ping MCP → gets tasks, executes, reports back
+Cursor       → adds Ping MCP → same
+Windsurf     → adds Ping MCP → same
+OpenClaw     → adds Ping MCP → same
+Another Ping → adds Ping MCP → same (team stacking)
+```
+
+**Config for any MCP client:**
+```json
+{ "ping": { "type": "http", "url": "http://localhost:3002/mcp" } }
+```
+
+**Key principles:**
+- **Complement, don't replace** — external agents use their own superior tools (Read, Write, Bash); Ping only serves coordination, collaboration, context, skills
+- **Capability negotiation** — Ping detects what agent already has, serves only what's missing
+- **Same bounds** — external agents have same maxTurns, permissions, hooks, DAG constraints as internal agents
+- **Workers, not tools** — external agents are assigned tasks by orchestrator, same `AgentEvent` stream
+
+See [Ping MCP Server architecture](../ping-mcp-server/feature_architecture.md) for full tool list, security model, and team stacking details.
+
+---
+
+## 8. Version Roadmap
+
+| Version | What | Plan |
+|---------|------|------|
+| **v1.0** | Plugin loader, discovery index, team creation from plugin, 3 sample plugins | [8 steps](v1.0/feature_implementation_planning.md) |
+| **v1.1** | Meta-team (4 agents, 3 modes), tool call UI, mode selector | [9 steps](v1.1/feature_implementation_planning.md) |
+| **v2.0** | Remote marketplace, plugin install/publish, ratings, Claude Code adapter | [8 steps](v2.0/feature_implementation_planning.md) |
+| **v2.1** | Cross-source meta-team search, mix local + remote | — |
+| **v3.0** | Marketplace UI, contributor accounts, reviews | — |
+
+### Feature Flags
+
+| Flag | Default | What it controls |
+|------|---------|-----------------|
+| `REGISTRY_ENABLED` | `false` | v1.0: plugin loader + discovery API |
+| `META_TEAM_ENABLED` | `false` | v1.1: meta-team + modes |
+| `MARKETPLACE_ENABLED` | `false` | v2.0: remote install/publish |
