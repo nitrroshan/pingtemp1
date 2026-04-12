@@ -9,7 +9,6 @@ import { rootLogger } from "../logging/index.js";
 import { AgentManager } from "../agentManager/AgentManagerV2.js";
 import { createAgentManagerHandlerV2 } from "./agentManagerHandlerV2.js";
 import { swaggerSpec } from "./swagger.js";
-import { skillsRouter } from "../skills/index.js";
 import { getAuthHandler } from "../auth/index.js";
 import { FRONTEND_FLAG_KEYS } from "../config/featureFlags.js";
 import { getConfig } from "../config/index.js";
@@ -125,10 +124,6 @@ export class HttpServer {
     // Also mount at /api for backward compat
     this.app.use("/api", v2Routes);
     logger.info("[HttpServer] V2 API mounted at /api/v2 and /api");
-
-    // Mount skills API routes
-    this.app.use("/api/skills", skillsRouter);
-    logger.info("[HttpServer] Skills API mounted at /api/skills");
 
     // Mount registry API routes (plugin discovery)
     this.mountRegistryRoutes();

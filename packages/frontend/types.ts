@@ -9,7 +9,13 @@ export interface Agent {
   subAgents?: Agent[]; // For hierarchy
   collapsed?: boolean; // UI state for sidebar
   hasAppInterface?: boolean; // If true, shows an "App" tab in the UI
-  skills?: string[]; // Assigned skill IDs
+  skills?: string[]; // Assigned skill IDs from agent .md defaultSkills
+}
+
+export interface Skill {
+  id: string;
+  name: string;
+  description: string;
 }
 
 export interface Message {

@@ -68,6 +68,64 @@ export class PluginRegistry {
   }
 
   /**
+   * Prepare plugins for a task — async setup before getTools.
+   * e.g. WorkspacePlugin creates the git branch workspace here.
+   */
+  async prepareForTask(context: ToolContext): Promise<void> {
+    for (const [id, plugin] of this.plugins) {
+      if (plugin.prepareForTask) {
+        try {
+          await plugin.prepareForTask(context);
+        } catch (error: any) {
+          logger.warn(`Plugin ${id} prepareForTask failed: ${error.message}`);
+        }
+      }
+    }
+  }
+
+  /**
+   * Notify all plugins that a task completed.
+   * e.g. WorkspacePlugin publishes outputs and merges the branch.
+   *
+   * @returns Merged result — success only if all plugins succeed (or have no handler)
+   */
+  async onTaskComplete(taskId: string, goalId?: string): Promise<{ success: boolean; error?: string }> {
+    const errors: string[] = [];
+    for (const [id, plugin] of this.plugins) {
+      if (plugin.onTaskComplete) {
+        try {
+          const result = await plugin.onTaskComplete(taskId, goalId);
+          if (!result.success) {
+            errors.push(`${id}: ${result.error}`);
+          }
+        } catch (error: any) {
+          errors.push(`${id}: ${error.message}`);
+          logger.warn(`Plugin ${id} onTaskComplete failed: ${error.message}`);
+        }
+      }
+    }
+    return errors.length === 0
+      ? { success: true }
+      : { success: false, error: errors.join("; ") };
+  }
+
+  /**
+   * Notify all plugins that a task failed.
+   * e.g. WorkspacePlugin cleans up the failed workspace.
+   */
+  async onTaskFailed(taskId: string): Promise<void> {
+    for (const [id, plugin] of this.plugins) {
+      if (plugin.onTaskFailed) {
+        try {
+          await plugin.onTaskFailed(taskId);
+        } catch (error: any) {
+          logger.warn(`Plugin ${id} onTaskFailed failed: ${error.message}`);
+        }
+      }
+    }
+  }
+
+  /**
    * Collect all tools from registered plugins for a given context.
    *
    * @param context - Who is requesting tools (planner vs worker, role, taskId)

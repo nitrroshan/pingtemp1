@@ -23,6 +23,9 @@ import type {
   ToolContext,
   SkillContext,
 } from "@ping/agent-manager";
+import { readFile } from "fs/promises";
+import { existsSync } from "fs";
+import { join } from "path";
 import {
   L2CollaborationPlugin,
   createCollabTool,
@@ -68,15 +71,27 @@ class CollabGuideSkill implements ISkill {
   readonly id = "collab-guide";
   readonly name = "Collaboration Guide";
   readonly description =
-    "Guidelines for using shared CRDT documents and collaborating with other agents.";
+    "How to use the collab tool for team collaboration — CRDT docs, plans, output manifests, and the shared editor.";
   readonly loadMode = "always" as const;
 
-  getInstructions(_context: SkillContext): string {
-    return `## Collaboration Guidelines
-- Use collab tool to share findings with the team.
-- Write to agent-statuses to report your progress.
+  private instructions = `## Collaboration Guidelines
+- Use collab tool with progressive discovery: discover → list → read → write.
 - Read shared docs before starting to avoid duplicate work.
 - Use write-block for text content (reports, findings), write for structured data.`;
+
+  setContent(content: string): void {
+    let body = content;
+    if (body.startsWith("---")) {
+      const endIndex = body.indexOf("---", 3);
+      if (endIndex !== -1) {
+        body = body.slice(endIndex + 3).trim();
+      }
+    }
+    this.instructions = body;
+  }
+
+  getInstructions(_context: SkillContext): string {
+    return this.instructions;
   }
 }
 
@@ -102,6 +117,23 @@ export class CollaborationPlugin implements IPlugin {
 
   async initialize(): Promise<void> {
     await this.l2.initialize();
+
+    // Load collab guide skill from @ping/collaboration package
+    try {
+      const collabPkgDir = join(require.resolve("@ping/collaboration/package.json"), "..");
+      const skillPath = join(collabPkgDir, "skills", "collab-guide", "SKILL.md");
+      if (existsSync(skillPath)) {
+        const content = await readFile(skillPath, "utf-8");
+        this.skill.setContent(content);
+      }
+    } catch {
+      // Fallback: monorepo dev path
+      const monorepoPath = join(__dirname, "..", "..", "..", "..", "collaboration", "skills", "collab-guide", "SKILL.md");
+      if (existsSync(monorepoPath)) {
+        const content = await readFile(monorepoPath, "utf-8");
+        this.skill.setContent(content);
+      }
+    }
   }
 
   async dispose(): Promise<void> {

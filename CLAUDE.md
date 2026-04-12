@@ -28,7 +28,6 @@ cd packages/backend && bun run typecheck
 bun run test                          # all packages
 
 # Backend-specific scripts (from packages/backend/)
-bun run test:skills                   # skill registry tests
 bun run test:workspace                # workspace E2E tests
 
 # MongoDB via Docker
@@ -56,7 +55,7 @@ Each has its own `package.json` and `tsconfig.json`. The root `tsconfig.json` pr
 - **`memoryManager/MemoryManager.ts`** - Task lifecycle: stores tasks, tracks prerequisites (Map<string, boolean>), determines readiness, manages shared context.
 - **`orchestrator/OrchestratorService.ts`** - LLM-powered planning engine with tools (createPlan, approvePlan, getContext, getStatus).
 - **`api/AgentManagerAPI.ts`** - Unified entry point that initializes HttpServer (Express) and SocketServerV2 (Socket.IO).
-- **`api/HttpServer.ts`** - REST endpoints: `/api/v2/*` (current), `/api/*` (legacy), `/api/skills/*`, `/api-docs` (Swagger).
+- **`api/HttpServer.ts`** - REST endpoints: `/api/v2/*` (current), `/api/*` (legacy), `/api-docs` (Swagger).
 - **`api/SocketServerV2.ts`** - Real-time WebSocket communication (preferred over V1).
 
 ### Data Flow
@@ -87,7 +86,7 @@ Tasks use `status`: `ready | pending | in_progress | completed | failed`. The `a
 - **No internal EventEmitters for new code** - Use AsyncGenerator (streaming) or direct callbacks (task lifecycle). Socket.IO is the only event bus (for frontend delivery).
 - **Types live in `types/` folders** with barrel exports. Import from: `import type { AgentConfig } from './types/index.js'`.
 - **Agent workers serialize execution** per worker via `TaskQueue`. Parallelism comes from multiple workers running concurrently.
-- **Skills loaded per-request** - WorkerPool fetches DB-assigned skills via `teamService.getAgentSkills()` on each `runTask()`. SkillSelector UI saves to DB.
+- **Skills are file-based** - SKILL.md files in `packages/registry/plugins/<team>/skills/<skillId>/SKILL.md`. Loaded by `SkillPlugin` at startup, scoped per team via `pluginName`. Per-agent filtering via `defaultSkills` in agent `.md` frontmatter. No database.
 - **Do not create files unnecessarily** - Update existing files first.
 
 ## Branching Strategy

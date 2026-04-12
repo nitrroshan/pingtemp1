@@ -589,6 +589,23 @@ export class AgentServiceV2 {
     return response.json();
   }
 
+  /**
+   * Get available skills for a team (from registry plugin)
+   */
+  async getTeamSkills(
+    teamId: string,
+  ): Promise<{ skills: Array<{ id: string; name: string; description: string }>; count: number }> {
+    const response = await fetch(
+      `${this.baseUrl}/api/v2/teams/${teamId}/skills`,
+    );
+
+    if (!response.ok) {
+      throw new Error("Failed to fetch team skills");
+    }
+
+    return response.json();
+  }
+
   // ============================================================================
   // HTTP Methods - Sessions (runtime state)
   // ============================================================================

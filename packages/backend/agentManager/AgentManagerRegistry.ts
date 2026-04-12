@@ -13,9 +13,11 @@
 
 import { rootLogger } from "../logging/index.js";
 import { AgentManager } from "./AgentManagerV2.js";
+import { join } from "path";
 import { WorkspacePlugin } from "./plugins/WorkspacePlugin.js";
 import { CollaborationPlugin } from "./plugins/CollaborationPlugin.js";
 import { KnowledgePlugin } from "./plugins/KnowledgePlugin.js";
+import { SkillPlugin } from "./plugins/SkillPlugin.js";
 import { getConfig } from "../config/index.js";
 import type { ServiceRegistry } from "../services/ServiceRegistry.js";
 
@@ -124,9 +126,32 @@ export class AgentManagerRegistry {
     const workspaceDir = process.env.WORKSPACE_BASE_DIR || "./data/workspaces";
     const teamRepoPath = `${workspaceDir}/${teamId}`;
 
-    // Register plugins — workspace (L1), collaboration (L2), knowledge (L3)
+    // Register plugins — workspace (L1), collaboration (L2), knowledge (L3), skills
     manager.registerPlugin(
       new WorkspacePlugin({ repoPath: teamRepoPath }),
+    );
+
+    // Skills plugin — loads SKILL.md files scoped to this team's registry plugin
+    // Per-role filtering: each agent's .md declares defaultSkills → only those skills are tools for that role
+    // __dirname at runtime = packages/backend/dist/agentManager/ — 4 levels up to repo root
+    const repoRoot = join(__dirname, "..", "..", "..", "..");
+    const pluginsDir = process.env.PLUGIN_REGISTRY_DIR
+      ?? join(repoRoot, "packages", "registry", "plugins");
+
+    // Build role → skill IDs map from agent definitions (config.skills from agent .md defaultSkills)
+    const roleSkillMap = new Map<string, string[]>();
+    for (const agentDef of agentDefs) {
+      const role = agentDef.role.toLowerCase();
+      const skills: string[] = (agentDef.config as any)?.skills ?? [];
+      roleSkillMap.set(role, skills);
+    }
+
+    manager.registerPlugin(
+      new SkillPlugin({
+        pluginsDir,
+        teams: team.pluginName ? [team.pluginName] : undefined,
+        roleSkillMap,
+      }),
     );
 
     const collabPort = process.env.COLLAB_PORT

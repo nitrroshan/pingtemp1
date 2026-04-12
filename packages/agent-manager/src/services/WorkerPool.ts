@@ -56,9 +56,6 @@ export class WorkerPool {
   /** Active workers by task ID */
   private workers = new Map<string, AiSdkAgent>();
 
-  /** Workspaces by task ID (managed by plugins) */
-  private workspaces = new Map<string, any>();
-
   /** Plugin registry for plugin-based tool assembly */
   private pluginRegistry: PluginRegistry | null = null;
 
@@ -247,6 +244,10 @@ export class WorkerPool {
           role: roleKey,
           taskId,
         };
+
+        // Prepare plugins (e.g. create workspace branch) before resolving tools
+        await this.pluginRegistry.prepareForTask(toolContext);
+
         const pluginTools = this.pluginRegistry.getTools(toolContext);
         additionalTools.push(...pluginTools);
 
@@ -346,26 +347,8 @@ export class WorkerPool {
       this.workers.delete(taskId);
       this.workerRoles.delete(taskId);
       this.lastResponses.delete(taskId);
-      this.workspaces.delete(taskId);
-      // Note: branch is kept until mergeAndCleanup is called
       logger.info(`Disposed: ${taskId}`);
     }
-  }
-
-  /**
-   * Merge workspace branch to main and cleanup (no-op in clean package)
-   */
-  async mergeAndCleanup(
-    _taskId: string,
-  ): Promise<{ success: boolean; error?: string }> {
-    return { success: true };
-  }
-
-  /**
-   * Get workspace for a task
-   */
-  getWorkspace(taskId: string): any | undefined {
-    return this.workspaces.get(taskId);
   }
 
   /**

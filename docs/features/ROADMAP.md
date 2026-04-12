@@ -1,8 +1,10 @@
 # Ping — Phased Roadmap
 
 **Created:** April 1, 2026  
+**Updated:** April 12, 2026  
 **Model:** Waterfall — each phase delivers a working, evolved app  
-**Principle:** Maximum value, minimum effort. After each phase, Ping works end-to-end.
+**Principle:** Maximum value, minimum effort. After each phase, Ping works end-to-end.  
+**Master Architecture:** [MASTER-ARCHITECTURE.md](MASTER-ARCHITECTURE.md) — how all features connect, with event/flow/architecture diagrams
 
 ---
 

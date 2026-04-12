@@ -89,6 +89,12 @@ export interface IPlugin {
   getSkills(): ISkill[];
   /** Optional storage layer */
   getStorage?(): IPluginStorage;
+  /** Optional async setup before getTools — e.g. create workspace for a task */
+  prepareForTask?(context: ToolContext): Promise<void>;
+  /** Called when a task completes — e.g. publish outputs, merge branch */
+  onTaskComplete?(taskId: string, goalId?: string): Promise<{ success: boolean; error?: string }>;
+  /** Called when a task fails — e.g. cleanup failed workspace */
+  onTaskFailed?(taskId: string): Promise<void>;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════

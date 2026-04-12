@@ -1,15 +1,62 @@
 # Git-Based Task Context — Feature Architecture
 
 **Status:** New  
-**Date:** March 30, 2026  
+**Date:** March 30, 2026 (Updated April 12, 2026)  
 **ID:** A8  
-**Depends on:** A4 (Worker Sandboxing)
+**Depends on:** Worker Architecture (3-layer model)  
+**See also:** [MASTER-ARCHITECTURE.md](../MASTER-ARCHITECTURE.md) — Repo Access Model section
 
 ---
 
 ## Overview
 
-Two git repositories per team: one for **L1 Memory** (per-role personal desk — identity, scratchpad, experiments, drafts, activity log) and one for **L1 Workspace** (shared deliverables — code, documents, artifacts). Each role owns its memory repo; all roles share the workspace repo. **Team-wide knowledge goes to L2** (CRDT docs via `collab` tool) so all agents can access it. **Memory repos are initialized with the agent's identity** on creation.
+Two git repositories per team: one for **Workspace** (shared deliverables — code, documents, artifacts) and one for **Memory** (per-role personal desk — identity, scratchpad, experiments, activity log). Team-wide knowledge goes to **L2** (CRDT docs via `collab` tool).
+
+### Mapping to Three-Layer Model
+
+| Layer | Workspace Repo (git) | Memory (CRDT) | L2 Team Knowledge (CRDT) |
+|---|---|---|---|
+| **L1 Planner** | No access | No access | Read (context) |
+| **L2 Chat Agent** | **Read-only** (browse, search, answer questions) | **Read + Write** (notes, identity, check history) | Read + Write |
+| **L3 Worker** | **Read + Write** (on task branch) | **Read + Write** (activity, scratch) | Read + Write |
+
+**Why memory moved from git to CRDT:** The original design used a per-role git repo for memory. This creates merge conflicts when Chat Agent and Worker(s) both write simultaneously. Memory is personal notes — no need for git's merge workflow. CRDT (same infrastructure as L2 collab) gives real-time sync with zero conflicts.
+
+**CRDT namespace layout:**
+```
+collab/
+├── team/{docName}                     ← Team knowledge (existing L2)
+│   "expertise-pricing", "lessons-api", "style-guide"
+│
+└── memory/{roleId}/                   ← Per-role persistent memory
+    ├── identity                       ← role, capabilities, tools (seeded on creation)
+    ├── lessons                        ← things worth remembering across tasks
+    ├── preferences                    ← personal approach, tool tips, style
+    └── activity/{taskId}              ← per-task activity log (kept for history)
+```
+
+**Scratchpad (ephemeral, NOT in CRDT):**
+```
+workspace-clone/task-{taskId}/.scratch/   ← or in-memory map
+├── notes.md                              ← rough thinking, temp observations
+├── approach.md                           ← current approach being tried
+└── data/                                 ← temp files, test outputs
+
+Lifetime: dies when task completes and clone is deleted.
+Agent promotes valuable findings → Memory CRDT or Team Knowledge.
+```
+
+**Three tiers of agent memory:**
+
+| Tier | Lifetime | Storage | Promote to | Example |
+|------|----------|---------|-----------|--------|
+| **Scratchpad** | Dies with task | Temp files in clone or in-memory | Memory or Team | "trying approach X...", "API returns 429 at 50/min" |
+| **Memory** | Persists across tasks | CRDT (`memory/{roleId}/...`) | Team Knowledge | "batch API is 10x faster", "prefer pandas for data" |
+| **Team Knowledge** | Persists across roles | CRDT (`team/{docName}`) | — | "Competitor X uses freemium", "API rate limit is 100/min" |
+
+**Worker identification:** Workers are scoped by `roleId + taskId`. Multiple workers for the same role write to different task-scoped CRDT documents — `memory/{roleId}/activity/{taskId}` — no conflicts ever.
+
+**Sandboxing:** Workers run sandboxed (Crush in container, external agents are already isolated). Chat Agents run in-process — safe because they only have read-only workspace access. Memory writes via CRDT are just personal notes, no code execution risk.
 
 ### Current State
 - `GitBranchManager` exists — creates branch per task, commits, merges

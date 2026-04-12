@@ -369,6 +369,7 @@ export class AgentManager {
       dagResolver,
       notificationQueue,
       planStore,
+      pluginRegistry: this.pluginRegistry,
       autoExecute: false,
       callbacks: {
         onStream: (data) => this.streamCallbacks?.onStream?.(data),
@@ -694,7 +695,8 @@ export class AgentManager {
     taskId: string,
   ):
     any | undefined {
-    return this.workerPool.getWorkspace(taskId);
+    const wsPlugin = this.pluginRegistry.get("workspace");
+    return wsPlugin?.getStorage?.()?.manager?.getWorkspace?.(taskId);
   }
 
   /**
@@ -847,23 +849,10 @@ export class AgentManager {
     const finalOutput = output ?? this.getLastWorkerResponse(taskId);
 
     // Merge workspace branch first (if enabled)
-    const mergeResult = await this.workerPool.mergeAndCleanup(taskId);
+    const mergeResult = await this.pluginRegistry.onTaskComplete(taskId);
     if (!mergeResult.success) {
-      logger.warn(`Merge failed for task ${taskId}: ${mergeResult.error}`);
+      logger.warn(`Plugin onTaskComplete failed for task ${taskId}: ${mergeResult.error}`);
       // Continue with completion but include merge error
-    }
-
-    // Publish workspace outputs
-    const workspace = this.workerPool.getWorkspace(taskId);
-    if (workspace) {
-      try {
-        const manifest = await workspace.publish();
-        logger.debug(
-          `Published ${manifest.outputs.length} outputs from workspace for task ${taskId}`,
-        );
-      } catch (err) {
-        logger.warn(`Failed to publish workspace: ${err}`);
-      }
     }
 
     // Complete task via TaskStore

@@ -1,0 +1,35 @@
+graph TB
+    subgraph "Layer 1: PLANNER"
+        P[Planner Agent<br/>AiSdkAgent]
+        P -->|submit_plan| TS[TaskStore]
+        P -->|ask_user| UI[User via Socket.IO]
+    end
+
+    subgraph "Layer 2: CHAT AGENTS"
+        CA1[Backend Dev<br/>read-only tools]
+        CA2[Marketing Lead<br/>read-only tools]
+        CA3[QA Engineer<br/>read-only tools]
+    end
+
+    subgraph "Layer 3: WORKERS"
+        W1[Crush - coding]
+        W2[Claude Code]
+        W3[Crush - content]
+        W4[Child Ping Team]
+    end
+
+    TS -->|dispatch| CA1
+    TS -->|dispatch| CA2
+    CA1 -->|spawn| W1
+    CA1 -->|session| W2
+    CA2 -->|spawn| W3
+    CA3 -->|spawn| W4
+
+    W1 -->|complete_task| CA1
+    W2 -->|complete_task| CA1
+    W3 -->|complete_task| CA2
+    W4 -->|complete_task| CA3
+
+    CA1 -->|task done| P
+    CA2 -->|task done| P
+    CA3 -->|task done| P

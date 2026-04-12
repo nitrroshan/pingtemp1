@@ -23,6 +23,9 @@ import type {
   ToolContext,
   SkillContext,
 } from "@ping/agent-manager";
+import { readFile } from "fs/promises";
+import { existsSync } from "fs";
+import { join } from "path";
 import { L1WorkspacePlugin } from "@ping/workspace";
 import type { WorkspaceConfig } from "@ping/workspace";
 
@@ -53,22 +56,32 @@ class WorkspaceMcpServer implements IMcpServer {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// SKILL — Workspace guide prompt playbook
+// SKILL — Workspace guide loaded from @ping/workspace skills/workspace-guide/SKILL.md
 // ═══════════════════════════════════════════════════════════════════════════════
 
-class WorkspaceGuideSkill implements ISkill {
+class FileBackedWorkspaceSkill implements ISkill {
   readonly id = "workspace-guide";
   readonly name = "Workspace Guide";
   readonly description =
-    "Guidelines for working with git-based workspace files and version control.";
+    "How to use your git-based workspace effectively. Covers tool selection, file operations, search, collaboration, and lifecycle.";
   readonly loadMode = "always" as const;
 
+  private instructions = "";
+
+  setContent(content: string): void {
+    // Strip YAML frontmatter
+    let body = content;
+    if (body.startsWith("---")) {
+      const endIndex = body.indexOf("---", 3);
+      if (endIndex !== -1) {
+        body = body.slice(endIndex + 3).trim();
+      }
+    }
+    this.instructions = body;
+  }
+
   getInstructions(_context: SkillContext): string {
-    return `## Workspace Best Practices
-- Use workspace_list_files to orient before creating files.
-- workspace_grep and workspace_keyword_search before duplicating work.
-- Commit frequently after each logical change.
-- Call workspace_publish when task is complete.`;
+    return this.instructions;
   }
 }
 
@@ -82,20 +95,50 @@ export class WorkspacePlugin implements IPlugin {
 
   private l1: L1WorkspacePlugin;
   private mcpServer: WorkspaceMcpServer;
-  private skill: WorkspaceGuideSkill;
+  private skill = new FileBackedWorkspaceSkill();
 
   constructor(config: WorkspaceConfig) {
     this.l1 = new L1WorkspacePlugin(config);
     this.mcpServer = new WorkspaceMcpServer(this.l1);
-    this.skill = new WorkspaceGuideSkill();
   }
 
   async initialize(): Promise<void> {
     await this.l1.initialize();
+
+    // Load workspace guide skill from @ping/workspace package
+    // Resolve from the workspace package's installed location
+    try {
+      const workspacePkgDir = join(require.resolve("@ping/workspace/package.json"), "..");
+      const skillPath = join(workspacePkgDir, "skills", "workspace-guide", "SKILL.md");
+      if (existsSync(skillPath)) {
+        const content = await readFile(skillPath, "utf-8");
+        this.skill.setContent(content);
+      }
+    } catch {
+      // Fallback: try relative from workspace source (monorepo dev)
+      const monorepoPath = join(__dirname, "..", "..", "..", "..", "workspace", "skills", "workspace-guide", "SKILL.md");
+      if (existsSync(monorepoPath)) {
+        const content = await readFile(monorepoPath, "utf-8");
+        this.skill.setContent(content);
+      }
+    }
   }
 
   async dispose(): Promise<void> {
     await this.l1.dispose();
+  }
+
+  /** Create workspace for a task before getTools resolves tools */
+  async prepareForTask(context: ToolContext): Promise<void> {
+    if (context.consumer === "planner") return;
+    if (!context.role || !context.taskId) return;
+    if (!this.l1.isReady) return;
+
+    // Ensure workspace exists — createWorkspace returns existing if already created
+    const existing = this.l1.getWorkspace(context.taskId);
+    if (!existing) {
+      await this.l1.createWorkspace(context.role, context.taskId);
+    }
   }
 
   getMcpServers(): IMcpServer[] {
@@ -110,14 +153,34 @@ export class WorkspacePlugin implements IPlugin {
     return { manager: this.l1.manager };
   }
 
+  /** Publish workspace outputs and merge branch to main */
+  async onTaskComplete(taskId: string, goalId?: string): Promise<{ success: boolean; error?: string }> {
+    if (!this.l1.isReady) return { success: true };
+
+    const workspace = this.l1.getWorkspace(taskId);
+    if (!workspace) return { success: true }; // No workspace for this task
+
+    // Publish outputs (artifacts, manifests)
+    try {
+      await workspace.publish(goalId);
+    } catch (err: any) {
+      return { success: false, error: `publish failed: ${err.message}` };
+    }
+
+    // Merge task branch to main and cleanup
+    return this.l1.manager.mergeAndCleanup(taskId);
+  }
+
+  /** Cleanup failed workspace */
+  async onTaskFailed(_taskId: string): Promise<void> {
+    if (!this.l1.isReady) return;
+    // Keep the workspace/branch for debugging — no active cleanup needed
+    // WorkspaceManager retains it in its map; cleanupFailed() can be called later
+  }
+
   /** Access the underlying L1 plugin for backward compat */
   get l1Plugin(): L1WorkspacePlugin {
     return this.l1;
-  }
-
-  /** Create workspace for a role+task (called by WorkerPool during tool assembly) */
-  async createWorkspace(role: string, taskId: string): Promise<any> {
-    return this.l1.createWorkspace(role, taskId);
   }
 
   /** Get root workspace path */

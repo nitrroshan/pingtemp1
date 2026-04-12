@@ -1,0 +1,21 @@
+flowchart LR
+    subgraph Worker
+        W[Agent executing]
+    end
+
+    subgraph Backend
+        MCP2[Ping MCP]
+        CA2[Chat Agent]
+        AM2[AgentManager]
+        SS[SocketServerV2]
+    end
+
+    subgraph Frontend
+        UI2[React UI]
+    end
+
+    W -->|MCP calls| MCP2
+    MCP2 -->|events| CA2
+    CA2 -->|progress| AM2
+    AM2 -->|stream| SS
+    SS -->|Socket.IO| UI2

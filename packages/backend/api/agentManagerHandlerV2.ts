@@ -10,6 +10,7 @@
  *   GET  /api/v2/teams/:id       - Get team by ID
  *   DELETE /api/v2/teams/:id     - Delete team
  *   GET  /api/v2/teams/:id/agents - Get agents for team
+ *   GET  /api/v2/teams/:id/skills - Get available skills for team
  *   GET  /api/v2/sessions/:id    - Get session state
  *   GET  /api/v2/sessions/:id/tasks - Get tasks for session
  */
@@ -126,7 +127,7 @@ export function createAgentManagerHandlerV2(services: ServiceRegistry): express.
       if (!team) { res.status(404).json({ error: "Team not found" }); return; }
       const agents = await services.teams.getTeamAgents(teamId);
       res.json({
-        team: { id: team.id, name: team.name, goal: team.description ?? "", description: team.description ?? "", memberCount: agents.length },
+        team: { id: team.id, name: team.name, goal: team.description ?? "", description: team.description ?? "", memberCount: agents.length, plugin: team.pluginName ?? undefined },
       });
     } catch (error: any) {
       logger.error("[V2] Error getting team:", error);
@@ -173,12 +174,34 @@ export function createAgentManagerHandlerV2(services: ServiceRegistry): express.
           role: a.role,
           name: a.name,
           goal: a.goal ?? "",
+          skills: a.skills ?? [],
           teamId,
         })),
         count: agents.length,
       });
     } catch (error: any) {
       logger.error("[V2] Error getting agents:", error);
+      res.status(500).json({ error: error.message || String(error) });
+    }
+  });
+
+  /**
+   * GET /teams/:id/skills - Get available skills for a team
+   */
+  router.get("/teams/:id/skills", async (req: Request, res: Response) => {
+    try {
+      const teamId = req.params.id as string;
+      const skills = await services.teams.getTeamSkills(teamId);
+      res.json({
+        skills: skills.map((s) => ({
+          id: s.id,
+          name: s.name,
+          description: s.description,
+        })),
+        count: skills.length,
+      });
+    } catch (error: any) {
+      logger.error("[V2] Error getting team skills:", error);
       res.status(500).json({ error: error.message || String(error) });
     }
   });

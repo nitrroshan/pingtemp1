@@ -17,6 +17,7 @@ import type { TaskStore } from "./TaskStore.js";
 import type { DependencyResolver } from "./DependencyResolver.js";
 import type { NotificationQueue } from "./NotificationQueue.js";
 import type { UserInteractionManager } from "./UserInteractionManager.js";
+import type { PluginRegistry } from "../plugin/PluginRegistry.js";
 import { toGoalId } from "../plugin/utils.js";
 import { classifyError } from "./types/workerTypes.js";
 import { rootLogger } from "../logging.js";
@@ -45,6 +46,7 @@ export interface OrchestratorServiceConfig {
   taskStore: TaskStore;
   workerPool: WorkerPool;
   dagResolver: DependencyResolver;
+  pluginRegistry?: PluginRegistry;
 
   // Optional services
   userInteractionManager?: UserInteractionManager;
@@ -72,6 +74,7 @@ export class OrchestratorService {
   private taskStore: TaskStore;
   private workerPool: WorkerPool;
   private dagResolver: DependencyResolver;
+  private pluginRegistry?: PluginRegistry;
 
   // Optional services
   private uim?: UserInteractionManager;
@@ -104,6 +107,7 @@ export class OrchestratorService {
     this.taskStore = config.taskStore;
     this.workerPool = config.workerPool;
     this.dagResolver = config.dagResolver;
+    this.pluginRegistry = config.pluginRegistry;
     this.uim = config.userInteractionManager;
     this.notificationQueue = config.notificationQueue;
     this.planStore = config.planStore;
@@ -268,7 +272,11 @@ export class OrchestratorService {
   getPendingPlan() { return this.pendingPlan; }
   setPendingPlan(plan: any) { this.pendingPlan = plan; }
   getAutoExecute(): boolean { return this.autoExecute; }
-  setAutoExecute(enabled: boolean) { this.autoExecute = enabled; }
+  setAutoExecute(enabled: boolean) {
+    this.autoExecute = enabled;
+    // When toggled ON, dispatch any tasks already sitting in "ready" state
+    if (enabled) this.dispatchReadyTasks();
+  }
   getTeamId(): string { return this.teamId; }
   getTeamRoles(): string[] { return this.teamRoles; }
   getCurrentGoalId(): string | null { return this.currentGoalId; }
@@ -280,6 +288,19 @@ export class OrchestratorService {
   // ═══════════════════════════════════════════════════════════════════
   // TASK LIFECYCLE CALLBACKS (wired from RoleTaskQueue via TaskStore)
   // ═══════════════════════════════════════════════════════════════════
+
+  /**
+   * Scan all tasks for "ready" status and dispatch them.
+   * Called when autoExecute is toggled ON to flush tasks that became ready while OFF.
+   */
+  private dispatchReadyTasks(): void {
+    const readyTasks = this.taskStore.getByStatus("ready");
+    for (const task of readyTasks) {
+      if (this.activeDispatches.has(task.id)) continue;
+      // Re-use the same onTaskReady path which handles concurrency limits
+      this.onTaskReady({ taskId: task.id, role: task.assigned_role });
+    }
+  }
 
   /** Task became ready → dispatch to WorkerPool (if autoExecute ON), else notify frontend */
   private async onTaskReady({ taskId, role }: { taskId: string; role: string }): Promise<void> {
@@ -380,10 +401,15 @@ export class OrchestratorService {
     }
   }
 
-  /** Task failed → notify planner for decision */
+  /** Task failed → notify plugins, notify planner for decision */
   private onTaskFailed({ taskId, error }: { taskId: string; error: string }): void {
     log.error(`onTaskFailed: ${taskId}: ${error}`);
     const task = this.taskStore.get(taskId);
+
+    // Notify plugins (workspace cleanup, etc.)
+    this.pluginRegistry?.onTaskFailed(taskId).catch((err) => {
+      log.warn(`Plugin onTaskFailed error for ${taskId}: ${err}`);
+    });
 
     this.callbacks.onTaskUpdate?.({
       taskId, status: "failed", role: task?.assigned_role, timestamp: Date.now(),
@@ -395,27 +421,27 @@ export class OrchestratorService {
     );
   }
 
-  /** Worker completed via complete_task tool → publish workspace, mark complete */
+  /** Worker completed via complete_task tool → notify plugins, mark complete */
   private async onWorkerDone(data: {
     taskId: string; role: string; summary: string;
     deliverables?: string[]; nextSteps?: string[]; timestamp: number;
   }): Promise<void> {
     console.log(`[OrchestratorService] Worker done: ${data.taskId}`);
 
-    // Publish workspace + merge branch
+    // Notify plugins (workspace publish + merge, etc.)
     let mergeWarning = "";
-    try {
-      const workspace = this.workerPool.getWorkspace(data.taskId);
-      if (workspace) await workspace.publish(this.currentGoalId || undefined);
-      const merge = await this.workerPool.mergeAndCleanup(data.taskId);
-      if (!merge.success) {
-        mergeWarning = `Warning: workspace merge failed for task ${data.taskId}: ${merge.error}. ` +
-          `Work is on branch but not merged to main.`;
+    if (this.pluginRegistry) {
+      try {
+        const result = await this.pluginRegistry.onTaskComplete(data.taskId, this.currentGoalId || undefined);
+        if (!result.success) {
+          mergeWarning = `Warning: plugin onTaskComplete failed for task ${data.taskId}: ${result.error}. ` +
+            `Work may be on branch but not merged to main.`;
+          console.warn(`[OrchestratorService] ${mergeWarning}`);
+        }
+      } catch (err) {
+        mergeWarning = `Warning: plugin cleanup failed for task ${data.taskId}: ${err}`;
         console.warn(`[OrchestratorService] ${mergeWarning}`);
       }
-    } catch (err) {
-      mergeWarning = `Warning: workspace cleanup failed for task ${data.taskId}: ${err}`;
-      console.warn(`[OrchestratorService] ${mergeWarning}`);
     }
 
     // Mark complete in TaskStore → triggers onTaskComplete via RoleTaskQueue

@@ -1,0 +1,12 @@
+flowchart TD
+    A[Worker calls complete_task] --> B{Has commits?}
+    B -->|Yes| C{autoMerge?}
+    B -->|No| D[Record output only]
+    C -->|Yes| E[Merge to main]
+    C -->|No| F[Show for approval]
+    F -->|Approved| E
+    F -->|Rejected| G[Keep branch]
+    E --> H[TaskStore completed]
+    D --> H
+    H --> I[Notify Planner]
+    I --> J[Cleanup clone]

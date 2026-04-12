@@ -1,7 +1,8 @@
 # Ping — Master Feature List
 
-**Last Updated:** April 1, 2026  
-**Total Features:** 34 (18 existing + 16 new)
+**Last Updated:** April 12, 2026  
+**Total Features:** 34 (18 existing + 16 new)  
+**Master Architecture:** [MASTER-ARCHITECTURE.md](MASTER-ARCHITECTURE.md) — unified reference with diagrams for how all features connect
 
 ---
 

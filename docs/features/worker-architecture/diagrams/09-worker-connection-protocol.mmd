@@ -1,0 +1,23 @@
+graph TB
+    subgraph ChatAgent
+        MCP[MCP Server]
+        SA[SubAgentAdapter]
+    end
+
+    subgraph Workers
+        C[Crush]
+        CC[Claude Code]
+        CP[Copilot CLI]
+        OC[OpenClaw]
+        PT[Child Team]
+    end
+
+    C -->|MCP HTTP| MCP
+    CC -->|MCP HTTP| MCP
+    CP -->|MCP HTTP| MCP
+    OC -->|MCP HTTP| MCP
+    PT -->|MCP HTTP| MCP
+
+    MCP --> SA
+    SA -->|SubAgentEvent| Stream[Same event stream]
+    Stream --> Socket[Socket.IO to UI]

@@ -15,7 +15,7 @@ These rules orient AI coding agents to be productive in this multi-agent orchest
   - `memoryManager/MemoryManager.ts`: stores tasks, prerequisites, status, outputs. DAG-based ready-task detection.
   - `api/SocketServerV2.ts`: Socket.IO server. Broadcasts `stream` events to frontend. Declarative `WORKER_EVENT_ROUTES` map.
   - `api/HttpServer.ts`: Express REST API. V2 endpoints at `/api/v2/*`.
-  - `skills/SkillResolver.ts`: resolves skill IDs to AI SDK tool objects. Per-request DB loading.
+  - `agentManager/plugins/SkillPlugin.ts`: loads SKILL.md files from registry plugins. Team-scoped, per-role filtered via roleSkillMap.
 
 ## Type Organization
 All modules now have centralized type definitions in dedicated `types/` folders:
@@ -199,7 +199,7 @@ Deprecated files (kept for compatibility):
 - `packages/backend/memoryManager/MemoryManager.ts`: task lifecycle and readiness checks.
 - `packages/backend/api/SocketServerV2.ts`: Socket.IO server, WORKER_EVENT_ROUTES, stream broadcasting.
 - `packages/backend/api/HttpServer.ts`: REST API endpoints.
-- `packages/backend/skills/SkillResolver.ts`: skill ID → AI SDK tool resolution.
+- `packages/backend/agentManager/plugins/SkillPlugin.ts`: team-scoped skill loading from SKILL.md files, per-role filtering.
 
 **Frontend:**
 - `packages/frontend/App.tsx`: main application, hook wiring.
