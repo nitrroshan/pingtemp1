@@ -710,8 +710,8 @@ function useDiscussionNotifications(teamId: string) {
 | `discuss` collab action | ✅ Done | v1.1 | **Yes** — collaboration |
 | CollabTaskDispatcher | ✅ Done | v1.1 | **Yes** — collaboration tasks |
 | WorkerPool tool injection | ✅ Done | v1.1 | **Yes** — tool delivery |
-| Cross-plan references | ❌ Missing | v1.1 | No — enhancement |
-| Pre-plan research | ❌ Missing | v1.1 | No — enhancement |
+| Cross-plan references | ✅ Done | v1.1 | No — enhancement |
+| Pre-plan research | ✅ Done | v1.1 | No — enhancement |
 | DiscussionThread | ❌ Missing | v2.0 | **Yes** — user visibility |
 | DecisionPanel | ❌ Missing | v2.0 | No — UI complement |
 | DiscussionComposer | ❌ Missing | v2.0 | **Yes** — user participation |

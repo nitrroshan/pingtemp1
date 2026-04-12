@@ -155,6 +155,27 @@ export class OrchestratorService {
       onDone: (data) => this.callbacks.onDone?.(data),
       onError: (data) => this.callbacks.onError?.(data),
       onAgentComplete: (data) => this.onWorkerDone(data),
+      // R2-#4 FIX: Wire agent-initiated task callbacks so planner is notified
+      onTaskCreated: (data) => {
+        log.info(`Agent-created task: ${data.taskId} by ${data.createdBy} → ${data.targetRole}`);
+        this.callbacks.onTaskUpdate?.({
+          taskId: data.taskId, status: "pending", role: data.targetRole, timestamp: Date.now(),
+        });
+        // Notify planner so it can track agent-created tasks
+        this.notifyPlanner(
+          `📋 Agent ${data.createdBy} created task ${data.taskId} for ${data.targetRole}` +
+          (data.relationship === "blocks-me" ? ` (blocks ${data.parentTaskId})` : "") +
+          `. Use get_status to see updated task list.`,
+        );
+      },
+      onBounce: (data) => {
+        log.info(`Task bounced: ${data.taskId} by ${data.role} — ${data.reason}`);
+        this.notifyPlanner(
+          `⚠️ Task ${data.taskId} bounced by ${data.role}: ${data.reason}` +
+          (data.suggestedRole ? `. Suggested role: ${data.suggestedRole}` : "") +
+          `. Use reassign_task or replan to handle this.`,
+        );
+      },
     });
 
     // Load active plan for restart recovery
@@ -248,6 +269,8 @@ export class OrchestratorService {
             files: taskContext.files || [],
             artifacts: taskContext.artifacts || [],
             relatedTasks: taskContext.relatedTasks || [],
+            // Cross-plan references (v1.1): task can reference prior plan outputs
+            references: (task as any).references || [],
           },
         });
         tasksQueued++;
@@ -266,6 +289,19 @@ export class OrchestratorService {
       // Resolve CRDT stores for this goal (lazy — goal-scoped)
       if (this.crdtTaskSyncProxy?.resolveForGoal) {
         this.crdtTaskSyncProxy.resolveForGoal(goalId);
+      }
+
+      // R2-#1 FIX: Update WorkerPool with resolved CRDT instance
+      const resolvedCrdtSync = this.crdtTaskSyncProxy?.get?.();
+      if (resolvedCrdtSync) {
+        this.workerPool.setTaskServices({
+          taskStore: this.taskStore,
+          dagResolver: this.dagResolver,
+          teamRoles: this.teamRoles,
+          crdtTaskSync: resolvedCrdtSync,
+          planId,
+          goalId,
+        });
       }
 
       // Persist goal, plan, and tasks to CRDT (durable, agent-browseable)
@@ -440,13 +476,27 @@ export class OrchestratorService {
     });
 
     if (this.taskStore.isAllComplete()) {
-      this.state = "idle";
-      this.notifyPlanner("All tasks completed successfully.");
-      this.callbacks.onProgress?.({
-        teamId: this.teamId, state: "idle",
-        message: "All tasks completed successfully",
-        timestamp: new Date().toISOString(),
-      });
+      // Check if we're in research phase → transition to planning, not idle
+      if (this.state === "researching") {
+        this.state = "idle"; // Back to idle — planner can now call submit_plan
+        this.notifyPlanner(
+          "All research tasks completed. You now have the context to create a plan. " +
+          "Use submit_plan to create and execute the plan.",
+        );
+        this.callbacks.onProgress?.({
+          teamId: this.teamId, state: "idle",
+          message: "Research complete — ready for planning",
+          timestamp: new Date().toISOString(),
+        });
+      } else {
+        this.state = "idle";
+        this.notifyPlanner("All tasks completed successfully.");
+        this.callbacks.onProgress?.({
+          teamId: this.teamId, state: "idle",
+          message: "All tasks completed successfully",
+          timestamp: new Date().toISOString(),
+        });
+      }
     }
   }
 
@@ -472,6 +522,25 @@ export class OrchestratorService {
       log.debug(`CRDT not resolved — skipping failed status sync for ${taskId}`);
     }
     // ───────────────────────
+
+    // R2-#2 FIX: Check if we're in researching state and all tasks are done (including failures)
+    const allTasksDone = this.taskStore.getAll().every(
+      (t) => t.status === "completed" || t.status === "failed"
+    );
+    if (this.state === "researching" && allTasksDone) {
+      this.state = "idle";
+      this.notifyPlanner(
+        `⚠️ Research phase ended with 1+ failed tasks. You can:\n` +
+        `- Continue with partial results: call submit_plan\n` +
+        `- Retry research: call submit_research again\n` +
+        `Use get_status to review what succeeded and what failed.`
+      );
+      this.callbacks.onProgress?.({
+        teamId: this.teamId, state: "idle",
+        message: "Research phase completed with failures",
+        timestamp: new Date().toISOString(),
+      });
+    }
 
     this.callbacks.onTaskUpdate?.({
       taskId, status: "failed", role: task?.assigned_role, timestamp: Date.now(),
@@ -604,6 +673,50 @@ export class OrchestratorService {
       if (taskCtx.expectedOutput) {
         enrichedDescription += `\n\nExpected output: ${taskCtx.expectedOutput}`;
       }
+
+      // ─── Cross-Plan Reference Resolution (v1.1) ─────────────────────
+      const references = Array.isArray(taskCtx.references) ? taskCtx.references : [];
+      const unresolvedRefs: string[] = [];  // R2-#5: Track failures
+      if (references.length > 0 && this.planStore) {
+        const priorOutputs: string[] = [];
+        for (const ref of references) {
+          try {
+            // ref format: "plan-001/task-003" or "{goalId}/task-003"
+            const [refPlanOrGoal, refTaskId] = ref.split("/");
+            if (!refTaskId) {
+              unresolvedRefs.push(`${ref} (invalid format)`);
+              continue;
+            }
+
+            // Try loading from PlanStore
+            const allPlans = await this.planStore.listAllPlans();
+            const matchPlan = allPlans.find((p: any) => p.planId === refPlanOrGoal || p.goalId === refPlanOrGoal);
+            if (matchPlan) {
+              const stored = await this.planStore.loadPlan(matchPlan.planId, matchPlan.goalId);
+              const refTask = stored?.plan?.tasks?.find((t: any) => t.id === refTaskId);
+              if (refTask?.output) {
+                const summary = typeof refTask.output === "string" ? refTask.output : JSON.stringify(refTask.output).slice(0, 500);
+                priorOutputs.push(`- ${ref}: ${summary}`);
+              } else {
+                unresolvedRefs.push(`${ref} (task found, no output)`);
+              }
+            } else {
+              unresolvedRefs.push(`${ref} (plan/goal not found)`);
+            }
+          } catch (err) {
+            unresolvedRefs.push(`${ref} (error: ${err})`);
+          }
+        }
+        if (priorOutputs.length > 0) {
+          enrichedDescription += `\n\n## Prior Work (from previous plans)\n${priorOutputs.join("\n")}`;
+        }
+        // R2-#5 FIX: Warn agent about unresolved references
+        if (unresolvedRefs.length > 0) {
+          log.warn(`Task ${taskId}: ${unresolvedRefs.length}/${references.length} cross-plan refs unresolved`);
+          enrichedDescription += `\n\n⚠️ Unresolved references (${unresolvedRefs.length}): ${unresolvedRefs.join(", ")}`;
+        }
+      }
+      // ────────────────────────────────────────────────────────────────
 
       // Fix #15: Add CRDT references to agent prompt so agents know how to access task details
       if (crdtRefs) {

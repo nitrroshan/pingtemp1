@@ -15,6 +15,7 @@ import type { AgentPlanOutput } from "./schemas.js";
 export type OrchestratorState =
   | "idle" // No active session
   | "gathering" // Gathering requirements through conversation
+  | "researching" // Pre-plan research tasks running (planner can't submit_plan yet)
   | "awaiting_approval" // Plan created, waiting for user approval
   | "executing"; // Plan approved, tasks being executed
 

@@ -36,6 +36,7 @@ export const SubmitPlanSchema = z.object({
     dependencies: z.array(z.string()).default([]).describe("Task IDs this depends on"),
     onDependencyFail: z.enum(["fail", "skip", "replan"]).default("fail"),
     expectedOutput: z.string().describe("What this task should produce"),
+    references: z.array(z.string()).optional().describe("Cross-plan task references: ['plan-001/task-003']. Agents get prior outputs as context."),
     context: TaskContextSchema,
   })).min(1).describe("At least one task required"),
 });
@@ -53,6 +54,12 @@ export function createSubmitPlanTool(ctx: SubmitPlanContext) {
   return tool(
     async (plan) => {
       try {
+        // Block submit_plan during research phase
+        const state = octx.getState();
+        if (state === "researching") {
+          return "Error: Cannot submit plan while research tasks are still running. Wait for research to complete, or ask the user to skip research.";
+        }
+
         // Validate all assigned roles exist
         for (const task of plan.tasks) {
           const lowerRole = task.assignedRole.toLowerCase();

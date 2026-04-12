@@ -1,8 +1,8 @@
 # Markdown Tasks v1.0/v1.1 — Implementation Review & Issues
 
-**Date:** April 13, 2026  
-**Scope:** CrdtTaskSync, CrdtGoalStore, OrchestratorService wiring, WorkerPool tool injection, collab tool extensions, projectToFilesystem  
-**Status:** 20 issues found — 19 fixed, 1 deferred (v2.0 scope)
+**Date:** April 13, 2026 (Round 2 — post-fix review)  
+**Scope:** Full v1.0 + v1.1 final state including cross-plan refs, submit_research, all prior fixes  
+**Status:** Round 1: 20 issues → 19 fixed. Round 2: 15 new issues found — 3 critical, 3 high, 4 medium, 5 low
 
 ---
 
@@ -403,3 +403,42 @@ async disposeAll(): Promise<void> {
 | # | Issue | Why Deferred |
 |---|-------|-------------|
 | 20 | Discuss action doesn't emit Socket.IO notifications | Requires Hocuspocus onChange → SocketServerV2 wiring. This is genuinely v2.0 frontend scope — needs the frontend discussion UI to consume the events. |
+
+---
+
+## Round 2 Review — Post v1.1 Completion
+
+### R2 Critical
+
+| # | File | Issue | Status |
+|---|------|-------|--------|
+| R2-1 | `OrchestratorService.ts` approvePlan | WorkerPool CRDT stays null after goal resolution | ✅ Fixed — approvePlan now calls `workerPool.setTaskServices()` with resolved CRDT instance after `resolveForGoal()` |
+| R2-2 | `OrchestratorService.ts` onTaskFailed | Failed research task → state stuck in `researching` forever | ✅ Fixed — onTaskFailed checks if all tasks are done (completed/failed), transitions to idle with planner notification |
+| R2-3 | `submitResearch.ts` line 80 | Uses `.addTask()` but TaskStore has `.create()` | ✅ Fixed — uses `taskStore.create \|\| taskStore.addTask` with null guard |
+
+### R2 High
+
+| # | File | Issue | Status |
+|---|------|-------|--------|
+| R2-4 | `OrchestratorService.ts` initialize | `onTaskCreated`/`onBounce` callbacks never wired | ✅ Fixed — wired in `workerPool.setCallbacks()` with planner notification via `notifyPlanner()` |
+| R2-5 | `OrchestratorService.ts` dispatchTask | Cross-plan ref failures use debug-only logging | ✅ Fixed — track `unresolvedRefs[]`, add warning to agent prompt, log at warn level |
+| R2-6 | `tools/index.ts` line 46 | Comment says "14 tools" but it's now 15 | ✅ Fixed — updated to "15 tools: knowledge (3) + execution (7) + plan mutation (5)" |
+
+### R2 Medium (deferred — needs deeper research)
+
+| # | Issue | Why Deferred |
+|---|-------|-------------|
+| R2-7 | CRDT sync errors silently swallowed (debug logs only) | Needs retry strategy design — exponential backoff + dead letter queue. Risk: retry delays could slow task dispatch pipeline. Research needed on Y.js error semantics. |
+| R2-8 | Discuss token limit sharp cutoff at 100% vs warn at 80% | UX design question — should there be a "soft limit" at 95%? Need product input on agent behavior when approaching limit. |
+| R2-9 | CrdtResolver uses mutable `this` properties | Works correctly after Fix #1. Pattern is non-standard but functional. Refactor to factory pattern requires touching 3 files for cosmetic improvement. |
+| R2-10 | CRDT null-guard logging scattered across 5+ sites | Needs helper method `getCrdtTaskSync()` that centralizes null check + single-log pattern. Low risk — all guard sites already work. |
+
+### R2 Low (deferred — acceptable as-is)
+
+| # | Issue | Why Acceptable |
+|---|-------|---------------|
+| R2-11 | blocks-me relationship logic underdocumented | Code is correct, just needs better comments. Not a bug. |
+| R2-12 | Auto-complete task edge case | Defensive behavior is correct. "auto-completed" message surfaces to frontend. |
+| R2-13 | SOLID: tool context objects duplicated | Architectural preference, not a bug. Each tool gets focused context. |
+| R2-14 | XML→MD lossy for unknown block types | Already mitigated by Fix #17. Unknown types render as text. |
+| R2-15 | No transaction semantics for approvePlan | Recovery via restart is reasonable for v1. Two-phase commit is v2+ scope. |
