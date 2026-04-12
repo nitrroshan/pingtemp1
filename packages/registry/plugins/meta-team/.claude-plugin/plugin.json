@@ -3,6 +3,7 @@
   "description": "Creates skills, agents, and teams. Discovery-first: search existing, suggest tested items, create new only if gap.",
   "version": "1.0.0",
   "tags": ["meta", "builder", "discovery", "registry"],
+  "settings": { "executionMode": "sequential", "maxConcurrency": 1 },
   "modes": {
     "skill-building": {
       "description": "Create and discover skills",

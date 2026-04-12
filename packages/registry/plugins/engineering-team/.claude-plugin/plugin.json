@@ -3,6 +3,7 @@
   "description": "Full-stack engineering team for web applications",
   "version": "1.0.0",
   "tags": ["engineering", "fullstack", "web", "typescript"],
+  "settings": { "executionMode": "sequential", "maxConcurrency": 1 },
   "modes": {
     "planning": {
       "description": "Architecture and design discussions",

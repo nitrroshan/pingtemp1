@@ -320,12 +320,11 @@ export class HttpServer {
         let remoteUrl = req.body.remoteUrl;
         let remoteToken = req.body.remoteToken;
 
-        // Try to get team's stored git config via services
+        // Try to get team info via services (validates team exists)
         if (options.services) {
           const team = await options.services.teams.getTeam(teamId);
           if (!team) { res.status(404).json({ error: "Team not found" }); return; }
-          remoteUrl = remoteUrl || team.gitRemoteUrl;
-          remoteToken = remoteToken || team.gitRemoteToken;
+          // Git remote config comes from request body or environment
         }
 
         if (!remoteUrl) { res.status(400).json({ error: "No git remote URL configured" }); return; }

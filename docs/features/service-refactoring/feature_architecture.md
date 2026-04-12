@@ -1,22 +1,96 @@
 # Service Layer Refactoring -- Architecture
 
-**Status:** Planned
+**Status:** Phase 1 complete, Phase 2 planned
 **Date:** April 12, 2026
 **Related:** [Conversation Persistence](../conversation-persistence/feature_architecture.md), [Team Registry](../team-registry/feature_architecture.md)
 
 ---
 
-## Problem
+## Phase 1 (DONE): Dead service cleanup
 
-The service layer has accumulated technical debt from the plugin migration:
+Completed: removed 7-service ServiceRegistry → 3 services (teams, chat, goals). Removed LLM role discovery, plugin branching, dead code. See Phase 4+ below for next steps.
 
-1. **Plugin logic leaked into route handlers** -- `agentManagerHandlerV2.ts` has `if (team.pluginName)` branching in 3 endpoints (GET teams, GET agents, GET teams list)
-2. **Dead services** -- `FileAgentService`, `FileSkillService`, `FileAgentSkillService` store nothing (agents/skills come from plugin .md files)
-3. **Duplicate agent loading** -- `AgentManagerRegistry.loadTeam()` and `agentManagerHandlerV2.ts` both independently load plugins
-4. **ServiceRegistry has 7 services** -- only 3 are actually used (teams, chat, goals)
-5. **`loadPluginByName()` helper** duplicated across files with `__dirname` path hacks
-6. **Two separate service interfaces** for the same data: `IAgentService` (DB) vs `PluginLoader` (files)
-7. **`ITeamService.getTeam()` returns `Team`** but route handler casts `(team as any).pluginName` -- type doesn't match reality
+---
+
+## Phase 2: Storage Simplification
+
+### Current state (problems)
+
+| Data | Local | Cloud | Problem |
+|------|-------|-------|---------|
+| Teams | lowdb (teams.json) | lowdb (teams.json) | No cloud storage — team = plugin, so why store separately? |
+| Goals | lowdb (goals/*.json) | lowdb (goals/*.json) | No cloud storage — uses local files even when cloud mode is set |
+| Chat | JSONL (chats/*.jsonl) | MongoDB | JSONL can't query by agentId, paginate, or handle concurrent writes |
+| Auth | SQLite | MongoDB | Fine — handled by better-auth, no changes needed |
+| Agents | Plugin .md files (read-only) | Plugin .md files | Fine — definitions, not runtime state |
+| Skills | Plugin .md files (read-only) | Plugin .md files | Fine — definitions, not runtime state |
+
+Two gaps:
+1. **Teams don't need a DB** — team = plugin. Derive team ID from plugin name.
+2. **Goals + Chat in local mode** should use SQLite (Bun-native, queryable) instead of lowdb/JSONL.
+
+### Architecture Options
+
+#### Option A: SQLite local + MongoDB cloud (recommended)
+
+**Implementation:**
+- **Teams:** Eliminate team store. Generate deterministic UUID from plugin name (`uuidv5(pluginName, namespace)`). `settings` (executionMode, maxConcurrency) move into `plugin.json`.
+- **Chat + Goals (local):** Single `data/ping.db` SQLite file via `bun:sqlite`. Tables: `messages`, `goals`. Indexed by teamId, agentId, goalId.
+- **Chat + Goals (cloud):** MongoDB (existing `MongoChatService` + wire in `MongoGoalService` which already exists but is unused).
+
+```
+Local mode:
+  PluginLoader (agents/skills) ─── read-only .md files
+  bun:sqlite (chat, goals)    ─── data/ping.db
+  No team store               ─── ID derived from plugin name
+
+Cloud mode:
+  PluginLoader (agents/skills) ─── read-only .md files (or S3 via IPluginStorage)
+  MongoDB (chat, goals)        ─── chatMessages, goals collections
+  No team store                ─── ID derived from plugin name
+```
+
+**Pros:**
+- Zero dependencies for local (bun:sqlite is built-in)
+- One file instead of many (teams.json + goals/*.json + chats/*.jsonl → ping.db)
+- Query support locally: `WHERE agentId = ?`, `LIMIT/OFFSET`, `ORDER BY`
+- Cloud gap fixed: goals + teams work in multi-instance deployments
+- MongoGoalService already exists, just needs wiring
+
+**Cons:**
+- Migration needed for existing local data (teams.json, goals/*.json, chats/*.jsonl → SQLite)
+- Plugin name becomes the stable identifier — renames would break references (mitigated by uuidv5 being deterministic)
+
+#### Option B: Keep lowdb/JSONL + add MongoDB for goals in cloud
+
+**Implementation:** Just wire `MongoGoalService` in cloud mode. Keep everything else as-is.
+
+**Pros:**
+- Minimal code change
+- No migration
+
+**Cons:**
+- Doesn't fix local query limitations
+- Still has many scattered files
+- Team store redundancy remains
+- JSONL performance degrades with large chat histories
+
+#### Option C: PostgreSQL/Turso everywhere
+
+**Implementation:** Use a hosted SQL database for all runtime data.
+
+**Pros:**
+- Single storage backend for all modes
+- Full SQL power
+
+**Cons:**
+- Adds external dependency for local mode (kills "zero dependency" local story)
+- Overkill for a local-first desktop app
+- Need managed hosting for cloud
+
+### Recommended: Option A
+
+SQLite locally (zero deps, Bun-native), MongoDB in cloud (already exists). Eliminate team store entirely.
 
 ---
 

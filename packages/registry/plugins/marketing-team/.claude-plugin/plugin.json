@@ -3,6 +3,7 @@
   "description": "Marketing team for content strategy, SEO, social media, and growth campaigns",
   "version": "1.0.0",
   "tags": ["marketing", "content", "seo", "social-media", "growth"],
+  "settings": { "executionMode": "sequential", "maxConcurrency": 1 },
   "modes": {
     "content": {
       "description": "Content creation and copywriting",

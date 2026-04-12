@@ -36,6 +36,10 @@ export interface PluginManifest {
   author?: { name: string };
   tags?: string[];
   modes?: Record<string, TeamMode>;
+  settings?: {
+    executionMode?: "sequential" | "parallel" | "hybrid";
+    maxConcurrency?: number;
+  };
 }
 
 export interface TeamMode {

@@ -5,311 +5,250 @@
 ## Branch
 `feature/service-refactoring`
 
-## Scope
+---
 
-Replace 7-service `ServiceRegistry` with PluginLoader + thin persistence layer.
+## Phase 1: Dead service cleanup (DONE)
+
+Completed April 12, 2026. Removed 7-service registry → 3 services, eliminated LLM role discovery, plugin branching, dead code. See git history.
+
+- [x] Step 1: Create PluginTeamService (replaces FileTeamService + FileAgentService)
+- [x] Step 2: Update ServiceRegistry (7 → 3 services)
+- [x] Step 3: Clean route handler (remove branching, LLM discovery)
+- [x] Step 4: Clean AgentManagerRegistry.loadTeam()
+- [x] Step 5: Update barrel exports
+- [x] Step 6: Update server.ts autoRegisterPluginTeams
+- [x] Step 7: Fix __dirname path resolution (3 → 4 levels up)
+
+---
+
+## Phase 2: Storage Simplification
+
+### Scope
 
 | In scope | Out of scope |
 |----------|-------------|
-| Remove dead services (agents, skills, agentSkills, members) | Conversation persistence redesign (separate feature) |
-| Remove LLM role discovery from POST /teams | Meta-team implementation (v1.1) |
-| Move agent/team resolution to PluginLoader | Frontend refactoring |
-| Clean route handler (remove plugin branching) | Old skillsRouter MongoDB cleanup |
-| Fix Team type (remove `as any` casts) | |
-| Consolidate PluginLoader instantiation | |
+| Eliminate team store (derive ID from plugin name) | Frontend changes |
+| Replace lowdb + JSONL with SQLite (local mode) | skillsRouter MongoDB refactor |
+| Wire MongoGoalService in cloud mode | Auth storage changes |
+| Add `settings` field to plugin.json | Conversation persistence redesign |
+
+### Current state
+
+```
+Local:  lowdb (teams.json) + lowdb (goals/*.json) + JSONL (chats/*.jsonl)
+Cloud:  lowdb (teams.json) + lowdb (goals/*.json) + MongoDB (chat only)
+                              ^^^^ gaps — no cloud storage for teams/goals
+```
+
+### Target state
+
+```
+Local:  PluginLoader (teams/agents/skills) + bun:sqlite (chat, goals)
+Cloud:  PluginLoader (teams/agents/skills) + MongoDB (chat, goals)
+```
 
 ---
 
-## Step 1: Create PluginTeamService (replaces FileTeamService + FileAgentService)
+### Step 1: Derive team ID from plugin name (eliminate team store)
 
-**Files:** `packages/backend/services/PluginTeamService.ts`
+**Files:** `services/PluginTeamService.ts`, `services/ServiceRegistry.ts`, `server.ts`, `api/agentManagerHandlerV2.ts`
 
-New service that combines team records (JSON) with agent loading (PluginLoader).
-Replaces both `FileTeamService` and `FileAgentService` in one class.
+Team = plugin. No separate database record needed.
 
 ```typescript
-import { PluginLoader } from "@ping/registry/src/loader/PluginLoader";
+import { v5 as uuidv5 } from "uuid";
 
-interface TeamRecord {
-  id: string;
-  name: string;
-  description?: string;
-  pluginName: string;
-  ownerId: string;
-  workspaceId: string;
-  settings: { executionMode: string; maxConcurrency: number };
-  createdAt: string;
-  updatedAt: string;
-}
+// Fixed namespace for deterministic IDs
+const TEAM_NAMESPACE = "6ba7b810-9dad-11d1-80b4-00c04fd430c8";
 
-interface AgentInfo {
-  id: string;
-  name: string;
-  role: string;
-  description: string;
-  skills: string[];
-}
-
-export class PluginTeamService {
-  private teams: TeamRecord[] = [];
-  private pluginLoader: PluginLoader;
-
-  constructor(private dataFile: string, pluginLoader: PluginLoader) {
-    this.pluginLoader = pluginLoader;
-  }
-
-  async init(): Promise<void> {
-    // Load teams.json (simple JSON read, no lowdb needed)
-  }
-
-  // Team CRUD (reads/writes teams.json)
-  async createTeam(params): Promise<TeamRecord> { }
-  async getTeam(teamId: string): Promise<TeamRecord | null> { }
-  async listTeams(): Promise<TeamRecord[]> { }
-  async deleteTeam(teamId: string): Promise<void> { }
-
-  // Agent resolution (delegates to PluginLoader)
-  async getTeamAgents(teamId: string): Promise<AgentInfo[]> {
-    const team = await this.getTeam(teamId);
-    if (!team) return [];
-    const plugin = await this.pluginLoader.loadPlugin(team.pluginName);
-    return plugin.agents.map(a => ({
-      id: a.id, name: a.name, role: a.role,
-      description: a.description ?? "",
-      skills: (a.config as any)?.skills ?? [],
-    }));
-  }
-
-  // Skill resolution (delegates to PluginLoader)
-  async getTeamSkills(teamId: string): Promise<SkillInfo[]> {
-    const team = await this.getTeam(teamId);
-    if (!team) return [];
-    const plugin = await this.pluginLoader.loadPlugin(team.pluginName);
-    return plugin.skills.map(s => ({ id: s.id, name: s.name, description: s.description }));
-  }
+// "engineering-team" → always the same UUID
+function pluginNameToTeamId(pluginName: string): string {
+  return uuidv5(pluginName, TEAM_NAMESPACE);
 }
 ```
 
-**Key change:** `pluginName` is REQUIRED on every team. No more optional.
-Team = plugin. Always. No DB-only teams.
+Changes:
+- `PluginTeamService.listTeams()` → scan plugins, return virtual team objects
+- `PluginTeamService.getTeam(id)` → find plugin where `uuidv5(name) === id`
+- Remove `createTeam()`, `deleteTeam()`, `updateTeam()` — teams are read-only projections of plugins
+- Remove `autoRegisterPluginTeams()` from `server.ts` — no registration needed
+- Remove `lowdb` dependency from PluginTeamService
+- DELETE `data/teams.json`
+- `POST /teams` → remove (or repurpose for creating plugins via meta-team)
+- `DELETE /teams` → remove (delete the plugin folder if needed)
+- Add `settings` to `plugin.json`:
+  ```json
+  {
+    "name": "engineering-team",
+    "settings": { "executionMode": "sequential", "maxConcurrency": 1 }
+  }
+  ```
+
+**Migration:** Existing chat/plan files reference old random UUIDs. Need a one-time migration script to rename `data/chats/{old-uuid}.jsonl` → `data/chats/{new-deterministic-uuid}.jsonl`. Or just clear dev data.
 
 **Depends on:** Nothing
-**Tests:** Create team, getTeamAgents returns agents from .md files
+**Risk:** Existing workspace directories use old team UUIDs. Workspace paths become `workspaces/{plugin-name}/` instead of `workspaces/{uuid}/`.
 
 ---
 
-## Step 2: Update ServiceRegistry
+### Step 2: Create SQLiteChatService (replaces FileChatService)
 
-**Files:** `packages/backend/services/ServiceRegistry.ts`
+**Files:** NEW `services/sqlite/SqliteChatService.ts`
 
 ```typescript
-// Before: 7 services, 5 dead
-interface ServiceRegistry {
-  teams: ITeamService;
-  agents: IAgentService;        // DELETE
-  skills: ISkillService;        // DELETE
-  agentSkills: IAgentSkillService;  // DELETE
-  chat: IChatService;
-  goals: IGoalService;
-  members: IMemberService;      // DELETE
-  mode: "file" | "hybrid";
-}
+import { Database } from "bun:sqlite";
 
-// After: 3 services
-interface ServiceRegistry {
-  teams: PluginTeamService;     // teams + agents + skills via PluginLoader
-  chat: IChatService;           // JSONL (local) / MongoDB (cloud)
-  goals: IGoalService;          // per-team JSONL
-  mode: "file" | "hybrid";
+export class SqliteChatService implements IChatService {
+  private db: Database;
+
+  constructor(dbPath: string) {
+    this.db = new Database(dbPath, { create: true });
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS messages (
+        id TEXT PRIMARY KEY,
+        teamId TEXT NOT NULL,
+        agentId TEXT NOT NULL,
+        sessionId TEXT NOT NULL,
+        goalId TEXT,
+        taskId TEXT,
+        role TEXT NOT NULL,
+        content TEXT NOT NULL,
+        streamParts TEXT,
+        timestamp TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_messages_team ON messages(teamId);
+      CREATE INDEX IF NOT EXISTS idx_messages_agent ON messages(teamId, agentId);
+      CREATE INDEX IF NOT EXISTS idx_messages_goal ON messages(teamId, goalId);
+    `);
+  }
+
+  async addMessage(msg) {
+    this.db.run(`INSERT INTO messages VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, [...]);
+  }
+
+  async getMessages(teamId, options?) {
+    return this.db.query(`SELECT * FROM messages WHERE teamId = ? ORDER BY timestamp DESC LIMIT ?`)
+      .all(teamId, options?.limit ?? 50);
+  }
+
+  async getAgentMessages(teamId, agentId, options?) {
+    return this.db.query(`SELECT * FROM messages WHERE teamId = ? AND agentId = ? ORDER BY timestamp DESC LIMIT ?`)
+      .all(teamId, agentId, options?.limit ?? 50);
+  }
+
+  async getGoalMessages(teamId, goalId, options?) {
+    return this.db.query(`SELECT * FROM messages WHERE teamId = ? AND goalId = ? ORDER BY timestamp DESC LIMIT ?`)
+      .all(teamId, goalId, options?.limit ?? 50);
+  }
 }
 ```
 
-- Create single `PluginLoader` instance, inject into `PluginTeamService`
-- Remove `FileAgentService`, `FileSkillService`, `FileAgentSkillService`, `FileMemberService` init calls
-- Remove their imports
+**Depends on:** Nothing (can be done in parallel with Step 1)
+
+---
+
+### Step 3: Create SqliteGoalService (replaces FileGoalService)
+
+**Files:** NEW `services/sqlite/SqliteGoalService.ts`
+
+```typescript
+export class SqliteGoalService implements IGoalService {
+  constructor(private db: Database) {
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS goals (
+        id TEXT PRIMARY KEY,
+        teamId TEXT NOT NULL,
+        sessionId TEXT NOT NULL,
+        goal TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending',
+        planId TEXT,
+        result TEXT,
+        createdAt TEXT NOT NULL,
+        updatedAt TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_goals_team ON goals(teamId);
+    `);
+  }
+}
+```
+
+Both chat and goals share the same `data/ping.db` file.
+
+**Depends on:** Nothing (parallel with Step 1 and 2)
+
+---
+
+### Step 4: Update ServiceRegistry
+
+**Files:** `services/ServiceRegistry.ts`
+
+```typescript
+// Local mode: SQLite for chat + goals
+const db = new Database(path.join(dataDir, "ping.db"), { create: true });
+const chatService = new SqliteChatService(db);
+const goalService = new SqliteGoalService(db);
+
+// Cloud mode: MongoDB for chat + goals
+const chatService = new MongoChatService();
+const goalService = new MongoGoalService();  // ← already exists, just wire it
+
+// Teams: no store needed
+const teamService = new PluginTeamService(pluginLoader);  // no lowdb, no file path
+```
+
+```typescript
+export interface ServiceRegistry {
+  teams: PluginTeamService;   // read-only projection from plugins
+  chat: IChatService;         // SQLite (local) / MongoDB (cloud)
+  goals: IGoalService;        // SQLite (local) / MongoDB (cloud)
+  mode: "local" | "cloud";
+}
+```
+
+**Depends on:** Steps 1, 2, 3
+
+---
+
+### Step 5: Delete dead storage files
+
+**Delete:**
+- `services/file/FileTeamService.ts` — replaced by PluginTeamService (no DB)
+- `services/file/FileGoalService.ts` — replaced by SqliteGoalService
+- `services/file/FileChatService.ts` — replaced by SqliteChatService
+- `services/file/lowdb-helpers.ts` — no more lowdb consumers
+- `services/mongo/MongoTeamService.ts` — teams derived from plugins
+- `services/contracts/ITeamService.ts` — PluginTeamService has its own interface
+- `services/types/Team.ts` — team is a projection, not a stored record
+
+**Keep:**
+- `services/mongo/MongoChatService.ts` — cloud chat
+- `services/mongo/MongoGoalService.ts` — cloud goals
+
+**Depends on:** Step 4
+
+---
+
+### Step 6: Add settings to plugin.json
+
+**Files:** All `packages/registry/plugins/*/. claude-plugin/plugin.json`
+
+Add default settings to each plugin manifest:
+
+```json
+{
+  "name": "engineering-team",
+  "description": "...",
+  "version": "1.0.0",
+  "settings": {
+    "executionMode": "sequential",
+    "maxConcurrency": 1
+  }
+}
+```
+
+Update `PluginManifest` type in `PluginLoader.ts` to include `settings?`.
 
 **Depends on:** Step 1
-**Tests:** Server starts, ServiceRegistry has 3 services
-
----
-
-## Step 3: Clean route handler
-
-**Files:** `packages/backend/api/agentManagerHandlerV2.ts`
-
-### 3a: Clean GET /teams/:id/agents (40 lines -> 5 lines)
-
-```typescript
-// Before: 40 lines with plugin branching
-router.get("/teams/:id/agents", async (req, res) => {
-  const team = await services.teams.getTeam(teamId);
-  if (team && (team as any).pluginName) {
-    // load plugin, map agents...
-  } else {
-    // load from DB...
-  }
-});
-
-// After: 5 lines
-router.get("/teams/:id/agents", async (req, res) => {
-  const teamId = req.params.id as string;
-  const agents = await services.teams.getTeamAgents(teamId);
-  res.json({ agents, count: agents.length });
-});
-```
-
-### 3b: Clean GET /teams (member count)
-
-```typescript
-// Before: 15 lines with plugin branching per team
-for (const t of teams) {
-  if ((t as any).pluginName) {
-    const plugin = await loadPluginByName(...);
-    memberCount = plugin.agents.length;
-  } else {
-    memberCount = (await services.agents.getTeamAgents(t.id)).length;
-  }
-}
-
-// After: 3 lines per team
-for (const t of teams) {
-  const agents = await services.teams.getTeamAgents(t.id);
-  teamList.push({ ...t, memberCount: agents.length });
-}
-```
-
-### 3c: Remove POST /teams legacy LLM discovery
-
-Remove entire block (lines ~120-165):
-- `const tempManager = new AgentManager();`
-- `await tempManager.configureNewWorkflow(...)`
-- `const roles = await tempManager.getRoles(goal);`
-- `services.agents.addAgent(...)` loop
-
-POST /teams now REQUIRES `pluginName`. Error if missing.
-
-### 3d: Remove loadPluginByName helper + imports
-
-- Delete `loadPluginByName()` function (lines 34-42)
-- Remove `PluginLoader` import from handler
-- Remove `AgentManager` import from handler
-
-**Depends on:** Step 2
-**Tests:** All 5 API endpoints return same data as before
-
----
-
-## Step 4: Clean AgentManagerRegistry.loadTeam()
-
-**Files:** `packages/backend/agentManager/AgentManagerRegistry.ts`
-
-```typescript
-// Before: 50 lines with plugin-vs-DB branching
-if ((team as any).pluginName) {
-  const { PluginLoader } = await import(...)
-  const loader = new PluginLoader(registryDir);
-  const plugin = await loader.loadPlugin(pluginName);
-  teamRoles = plugin.agents.map(...);
-} else {
-  const agents = await this.services.agents.getTeamAgents(teamId);
-  teamRoles = agents.map(...);
-}
-
-// After: 5 lines
-const team = await this.services.teams.getTeam(teamId);
-if (!team) throw new Error(`Team ${teamId} not found`);
-const agents = await this.services.teams.getTeamAgents(teamId);
-const teamRoles = agents.map(a => ({
-  id: a.id, role: a.role, name: a.name, goal: a.description,
-  systemPrompt: /* loaded from plugin via PluginLoader */
-}));
-```
-
-Note: `loadTeam()` also needs systemPrompt + pluginConfig for `initializeOrchestrator()`.
-`PluginTeamService.getTeamAgents()` should return full `AgentDefinition` (not just `AgentInfo`)
-OR add `getTeamAgentDefinitions()` that returns the full config.
-
-**Depends on:** Step 2
-**Tests:** Team loads, agents have correct system prompts
-
----
-
-## Step 5: Delete dead files
-
-**Delete contracts:**
-- `services/contracts/IAgentService.ts`
-- `services/contracts/ISkillService.ts`
-- `services/contracts/IAgentSkillService.ts`
-- `services/contracts/IMemberService.ts`
-
-**Delete file implementations:**
-- `services/file/FileAgentService.ts`
-- `services/file/FileSkillService.ts`
-- `services/file/FileAgentSkillService.ts`
-- `services/file/FileMemberService.ts`
-- `services/file/FileTeamService.ts` (replaced by PluginTeamService)
-
-**Delete mongo implementations:**
-- `services/mongo/MongoAgentService.ts`
-- `services/mongo/MongoSkillService.ts`
-- `services/mongo/MongoAgentSkillService.ts`
-- `services/mongo/MongoMemberService.ts`
-- `services/mongo/MongoTeamService.ts`
-
-**Delete types:**
-- `services/types/Agent.ts`
-- `services/types/Skill.ts`
-- `services/types/AgentSkill.ts`
-- `services/types/TeamMember.ts`
-
-**Delete schemas:**
-- `services/mongo/schemas/AgentRoleSchema.ts`
-- `services/mongo/schemas/TeamConfigSchema.ts`
-- `services/mongo/schemas/TeamMemberSchema.ts`
-
-**Keep schemas (used by skillsRouter):**
-- `services/mongo/schemas/SkillSchema.ts`
-- `services/mongo/schemas/AgentSkillSchema.ts`
-
-**Update barrel exports:**
-- `services/contracts/index.ts`
-- `services/file/index.ts`
-- `services/mongo/index.ts`
-- `services/types/index.ts`
-
-**Depends on:** Steps 3 and 4 (ensure no consumers remain)
-**Total: 19 files deleted**
-
----
-
-## Step 6: Update server.ts autoRegisterPluginTeams
-
-**Files:** `packages/backend/server.ts`
-
-```typescript
-// Before: creates PluginLoader locally, calls services.teams.createTeam()
-async function autoRegisterPluginTeams(services: ServiceRegistry) {
-  const { PluginLoader } = await import(...)
-  const loader = new PluginLoader(registryDir);
-  const manifests = await loader.getPluginManifests();
-  // ...
-  await services.teams.createTeam({ pluginName, ... });
-}
-
-// After: uses services.teams directly (PluginTeamService has the loader)
-async function autoRegisterPluginTeams(services: ServiceRegistry) {
-  const manifests = await services.teams.pluginLoader.getPluginManifests();
-  for (const manifest of manifests) {
-    if (!(await services.teams.getByPluginName(manifest.name))) {
-      await services.teams.register(manifest.name);
-    }
-  }
-}
-```
-
-Remove local `PluginLoader` instantiation from `server.ts`.
-
-**Depends on:** Step 2
 
 ---
 
@@ -317,24 +256,37 @@ Remove local `PluginLoader` instantiation from `server.ts`.
 
 | New files | Purpose |
 |-----------|---------|
-| `services/PluginTeamService.ts` | Unified teams + agents + skills via PluginLoader |
+| `services/sqlite/SqliteChatService.ts` | Local chat via bun:sqlite |
+| `services/sqlite/SqliteGoalService.ts` | Local goals via bun:sqlite |
+| `services/sqlite/index.ts` | Barrel export |
 
 | Modified files | Change |
 |---------------|--------|
-| `services/ServiceRegistry.ts` | 7 services -> 3 |
-| `api/agentManagerHandlerV2.ts` | Remove branching, remove LLM discovery |
-| `agentManager/AgentManagerRegistry.ts` | Remove plugin branching |
-| `server.ts` | Simplify autoRegister |
-| `services/contracts/index.ts` | Remove dead exports |
-| `services/file/index.ts` | Remove dead exports |
-| `services/mongo/index.ts` | Remove dead exports |
-| `services/types/index.ts` | Remove dead exports |
+| `services/PluginTeamService.ts` | Remove lowdb, derive IDs from plugin names |
+| `services/ServiceRegistry.ts` | Wire SQLite local / MongoDB cloud, remove lowdb |
+| `api/agentManagerHandlerV2.ts` | Remove POST/DELETE /teams (or repurpose) |
+| `server.ts` | Remove autoRegisterPluginTeams |
+| `registry/src/loader/PluginLoader.ts` | Add `settings` to PluginManifest type |
+| All `plugin.json` files | Add `settings` field |
 
 | Deleted files | Count |
 |--------------|-------|
-| Contracts (4) | IAgentService, ISkillService, IAgentSkillService, IMemberService |
-| File services (5) | FileTeamService, FileAgentService, FileSkillService, FileAgentSkillService, FileMemberService |
-| Mongo services (5) | MongoTeamService, MongoAgentService, MongoSkillService, MongoAgentSkillService, MongoMemberService |
-| Types (4) | Agent, Skill, AgentSkill, TeamMember |
-| Schemas (3) | AgentRoleSchema, TeamConfigSchema, TeamMemberSchema |
-| **Total** | **21 files deleted** |
+| File services (3) | FileTeamService, FileGoalService, FileChatService |
+| Helpers (1) | lowdb-helpers.ts |
+| Mongo services (1) | MongoTeamService |
+| Contracts (1) | ITeamService |
+| Types (1) | Team.ts |
+| **Total** | **7 files deleted** |
+
+## Dependencies to remove from package.json
+
+- `lowdb` — no longer used (SQLite replaces it)
+
+## Testing
+
+- `GET /teams` returns teams derived from plugin folders
+- `GET /teams/:id` returns team with deterministic UUID matching plugin name
+- Chat messages persist in SQLite, survive restart
+- Goals persist in SQLite, survive restart
+- Cloud mode: chat + goals both use MongoDB
+- No data/teams.json created on startup
