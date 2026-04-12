@@ -321,9 +321,71 @@ export class SocketServerV2 {
     const room = `team:${teamId}`;
     const streamedTasks = new Set<string>();
 
+    /**
+     * Accumulate complete stream parts per message for persistence.
+     * On finish, save the full message (text + tool calls + reasoning) to chat service.
+     * This follows the AI SDK pattern: save the complete UIMessage, not piecemeal text.
+     */
+    const messageAccumulator = new Map<string, {
+      agentId: string;
+      text: string;
+      parts: Array<{ type: string; [key: string]: any }>;
+    }>();
+
     manager.registerStreamCallbacks({
       onStream: ({ taskId, agentId, part }) => {
         if (taskId) streamedTasks.add(taskId);
+
+        const accKey = taskId || agentId || "unknown";
+        const acc = messageAccumulator.get(accKey) || { agentId: agentId || "worker", text: "", parts: [] };
+
+        // Accumulate by part type
+        switch (part?.type) {
+          case "text-delta":
+            if (part.delta) acc.text += part.delta;
+            break;
+          case "tool-call":
+            acc.parts.push({ type: "tool-call", toolCallId: part.toolCallId, toolName: part.toolName, args: part.args });
+            break;
+          case "tool-result":
+            acc.parts.push({ type: "tool-result", toolCallId: part.toolCallId, result: part.result });
+            break;
+          case "tool-input-available":
+            acc.parts.push({ type: "tool-input", toolCallId: part.toolCallId, toolName: part.toolName, input: part.input });
+            break;
+          case "tool-output-available":
+            acc.parts.push({ type: "tool-output", toolCallId: part.toolCallId, output: part.output });
+            break;
+          case "reasoning-delta":
+            // Append reasoning text (accumulated separately in parts)
+            const lastReasoning = acc.parts.findLast((p: any) => p.type === "reasoning");
+            if (lastReasoning) {
+              lastReasoning.text = (lastReasoning.text || "") + (part.delta || "");
+            } else {
+              acc.parts.push({ type: "reasoning", id: part.id, text: part.delta || "" });
+            }
+            break;
+        }
+
+        messageAccumulator.set(accKey, acc);
+
+        // On stream finish: persist complete message
+        if (part?.type === "finish" && this.services) {
+          if (acc.text.trim() || acc.parts.length > 0) {
+            this.services.chat.addMessage({
+              teamId,
+              sessionId: "default",
+              role: "assistant",
+              agentId: acc.agentId,
+              taskId: taskId || undefined,
+              content: acc.text,
+              streamParts: acc.parts.length > 0 ? JSON.stringify(acc.parts) : undefined,
+              timestamp: new Date().toISOString(),
+            }).catch((err) => logger.warn("[SocketServerV2] Failed to save assistant message:", err));
+          }
+          messageAccumulator.delete(accKey);
+        }
+
         const payload: StreamPayload = {
           sessionId: "default",
           taskId,
@@ -653,17 +715,11 @@ export class SocketServerV2 {
     sessionId: string | undefined,
     content: string,
   ) {
-    // Send message to orchestrator
-    const response = await manager.orchestratorMessage(content);
-    const state = manager.getOrchestratorState();
+    // Send message to orchestrator (response streams via onStream, not return value)
+    await manager.orchestratorMessage(content);
     const pendingPlan = manager.getOrchestratorPendingPlan();
 
-    // Orchestrator response is delivered via stream parts (worker:stream events).
-    // Only emit a 'message' if the response is non-empty AND no stream parts were sent
-    // (e.g., structured mode with no streaming). The stream finish part already
-    // finalizes the frontend message, so emitting 'message' here would duplicate it.
-    // For now, always skip — stream parts are the sole delivery path.
-    logger.info(`[SocketServerV2] Orchestrator responded (${response?.length ?? 0} chars)`);
+    logger.info(`[SocketServerV2] Orchestrator message processed`);
 
     // If plan was proposed, emit state with pending plan
     if (pendingPlan) {

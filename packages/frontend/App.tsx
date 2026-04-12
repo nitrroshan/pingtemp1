@@ -158,7 +158,7 @@ function InnerApp() {
   // ─────────────────────────────────────────────────────────────────────────
 
   const { agents, isLoadingTeams, agentsRef, findAgentById, handleToggleCollapse, loadTeams, createTeam, addLocalSubAgent } = useAgentTree();
-  const { chatHistories, addMessage, updateMessages, processStreamPart } = useChat();
+  const { chatHistories, addMessage, updateMessages, processStreamPart, loadAgentChat, clearAllHistories } = useChat();
   const {
     sessionState, currentPlan, tasks, autoExecuteEnabled, orchestrationLogs,
     handleApprovePlan, handleStartTask, handleCompleteTask, handleCancelTask,
@@ -330,6 +330,21 @@ function InnerApp() {
 
   // Error toasts from orchestration logs
   const prevLogsLen = useRef(0);
+
+  // Load chat history from backend when team is selected
+  useEffect(() => {
+    if (!selectedTeamId) return;
+    // Load orchestrator/manager chat
+    loadAgentChat(selectedTeamId, 'manager');
+    // Load sub-agent chats
+    const team = agents.find(a => a.id === selectedTeamId);
+    if (team?.subAgents) {
+      for (const sub of team.subAgents) {
+        loadAgentChat(selectedTeamId, sub.id);
+      }
+    }
+  }, [selectedTeamId, agents, loadAgentChat]);
+
   useEffect(() => {
     const newLogs = orchestrationLogs.slice(prevLogsLen.current);
     prevLogsLen.current = orchestrationLogs.length;

@@ -66,6 +66,8 @@ export class MongoAgentService implements IAgentService {
       isActive: doc.isActive ?? true,
       createdAt: doc.createdAt?.toISOString?.() ?? new Date().toISOString(),
       updatedAt: doc.updatedAt?.toISOString?.() ?? new Date().toISOString(),
+      systemPrompt: doc.systemPrompt ?? undefined,
+      goal: doc.goal ?? undefined,
     };
   }
 }

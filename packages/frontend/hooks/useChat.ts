@@ -1,14 +1,24 @@
 /**
- * useChat — manages per-agent chat history with streaming support
+ * useChat -- manages per-agent chat history with streaming support
+ *
+ * Source of truth: backend API (MongoDB/file-based ChatService)
+ * localStorage: write-through cache for current session (fast reload)
+ *
+ * Flow:
+ * 1. On agent select: load history from API, merge with localStorage cache
+ * 2. During streaming: update localStorage in real-time
+ * 3. On stream finish: backend saves the message (via SocketServerV2)
  */
 
 import { useState, useCallback, useRef, useEffect } from 'react';
 import { v4 as uuidv4 } from 'uuid';
+import { agentServiceV2 } from '../services/AgentServiceV2';
 import type { Message, RenderedPart, ToolCardState, StreamPart, NotificationChipState } from '../types';
 
 export function useChat() {
   const [chatHistories, setChatHistories] = useState<Record<string, Message[]>>(() => {
     try {
+      // Load from localStorage cache for instant display on refresh
       const stored = localStorage.getItem('ping:chatHistories');
       if (!stored) return {};
       const parsed = JSON.parse(stored) as Record<string, Message[]>;
@@ -393,12 +403,70 @@ export function useChat() {
     return chatHistories[agentId] ?? [];
   }, [chatHistories]);
 
+  /**
+   * Load chat history from backend API for an agent.
+   * Backend is the source of truth. Merges with any localStorage cache.
+   */
+  const loadedAgents = useRef(new Set<string>());
+  const loadAgentChat = useCallback(async (teamId: string, agentId: string) => {
+    // Skip if already loaded this session
+    if (loadedAgents.current.has(agentId)) return;
+    loadedAgents.current.add(agentId);
+
+    try {
+      const response = await fetch(
+        `${agentServiceV2.getBaseUrl()}/api/v2/teams/${teamId}/agents/${agentId}/messages?limit=50`
+      );
+      if (!response.ok) return;
+
+      const { messages } = await response.json();
+
+      // Backend is source of truth — if empty, clear localStorage cache for this agent
+      if (!messages?.length) {
+        setChatHistories(prev => {
+          if (!prev[agentId]?.length) return prev;
+          const next = { ...prev };
+          delete next[agentId];
+          return next;
+        });
+        return;
+      }
+
+      // Convert backend messages to frontend Message format
+      const backendMessages: Message[] = messages.map((m: any) => ({
+        id: m.id,
+        role: m.role === 'assistant' ? 'model' : m.role,
+        content: m.content,
+        timestamp: new Date(m.timestamp).getTime(),
+        isStreaming: false,
+        streamParts: m.streamParts ? JSON.parse(m.streamParts) : undefined,
+      }));
+
+      // Replace localStorage cache with backend data
+      setChatHistories(prev => ({
+        ...prev,
+        [agentId]: backendMessages,
+      }));
+    } catch {
+      // API unavailable -- use localStorage cache as fallback
+    }
+  }, []);
+
+  /** Clear all chat histories (e.g., after DB reset) */
+  const clearAllHistories = useCallback(() => {
+    setChatHistories({});
+    localStorage.removeItem('ping:chatHistories');
+    loadedAgents.current.clear();
+  }, []);
+
   return {
     chatHistories,
     addMessage,
     processStreamPart,
     updateMessages,
     clearHistory,
+    clearAllHistories,
     getMessages,
+    loadAgentChat,
   };
 }

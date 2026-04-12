@@ -61,99 +61,12 @@ interface TaskPlan {
   rationale?: string;
 }
 
-export class AgentManager {
-  private workerPool: WorkerPool;
-  private definitions: AgentDefinition[] = [];
-  private plan: TaskPlan | null = null;
-
-  /** Central task queue for role-based execution with approval flow */
-  private taskQueue = new RoleTaskQueue();
-
-  /** Task outputs for dependency injection */
-  private taskOutputs = new Map<string, any>();
-
-  /** Stream callbacks registered by SocketServerV2 */
-  private streamCallbacks: ManagerStreamCallbacks | null = null;
-
-  // Orchestrator mode properties
-  private orchestrator: OrchestratorService | null = null;
-  private taskStoreInstance: TaskStore | null = null;
-  private plannerAgent: PlannerAgent | null = null;
-  private userInteractionManager: UserInteractionManager | null = null;
-  private filePersistence: FileTaskStore | null = null;
-  private pluginRegistry: PluginRegistry = new PluginRegistry();
-  private teamId: string = "default";
-
-  /** Roles with auto-approve enabled - tasks start immediately without manual approval */
-  private autoApproveRoles = new Set<string>();
-  /** Global auto-approve flag - when true, all roles auto-approve */
-  private autoApproveAll = false;
-
-  constructor() {
-    this.workerPool = new WorkerPool();
-    this.setupCompletionHandler();
-
-    logger.info(`AgentManager initialized`);
-  }
-
-  /**
-   * Register a plugin with the agent manager.
-   * Call this before initializeOrchestrator().
-   */
-  registerPlugin(plugin: IPlugin): void {
-    this.pluginRegistry.register(plugin);
-  }
-
-  /** Get the plugin registry */
-  getPluginRegistry(): PluginRegistry {
-    return this.pluginRegistry;
-  }
-
-  /**
-   * Register stream callbacks for real-time event delivery (used by SocketServerV2)
-   */
-  registerStreamCallbacks(callbacks: ManagerStreamCallbacks): void {
-    this.streamCallbacks = callbacks;
-  }
-
-  // ===========================================================================
-  // Orchestrator Mode API
-  // ===========================================================================
-
-  /**
-   * Initialize orchestrator mode for a team
-   * Call this before using orchestrator features
-   */
-  async initializeOrchestrator(
-    teamId: string,
-    teamRoles: string[],
-    roleAgentIdMap?: Record<string, string>,
-  ): Promise<void> {
-    this.teamId = teamId;
-
-    // Initialize file-based task persistence (survives restarts)
-    this.filePersistence = new FileTaskStore(teamId);
-    await this.filePersistence.load();
-
-    const workspaceDir = process.env.WORKSPACE_BASE_DIR || "./data/workspaces";
-    const teamRepoPath = `${workspaceDir}/${teamId}`;
-
-    // Initialize all registered plugins
-    await this.pluginRegistry.initializeAll();
-    logger.info(`[AgentManager] ${this.pluginRegistry.list().length} plugins initialized`);
-
-    // Create worker agent definitions for team roles
-    logger.info(
-      `[AgentManager] Creating worker definitions for roles: ${teamRoles.join(", ")}`,
-    );
-
-    const workerDefinitions: AgentDefinition[] = teamRoles.map((role) => ({
-      id: role.toLowerCase(),
-      name: role,
-      role: role.toLowerCase(),
-      type: "internal" as const,
-      goal: `Execute ${role} tasks`,
-      systemPrompt: `You are a **${role}** agent in a multi-agent team. Execute tasks assigned to your role with expertise and precision.
+/**
+ * Generic worker prompt for agents without plugin-sourced system prompts.
+ * Used as fallback when a team is created via LLM role discovery (no plugin).
+ */
+function getGenericWorkerPrompt(role: string): string {
+  return `You are a **${role}** agent in a multi-agent team. Execute tasks assigned to your role with expertise and precision.
 
 ## Your Tools
 
@@ -233,17 +146,168 @@ You work inside a **git-based workspace** (a branch isolated to your task). Key 
 6. **Finish** — call \`complete_task\` with a summary when done. Never just stop.
 
 Do NOT invent tools you don't have. If unsure, use \`my_tools\` to check.
-`,
-      config: {
-        model: {
-          provider: "azure-openai" as const,
-          deployment: process.env.AZURE_OPENAI_DEPLOYMENT || "gpt-4o-2",
-          temperature: 0.7,
-          maxTokens: 4096,
+`;
+}
+
+export class AgentManager {
+  private workerPool: WorkerPool;
+  private definitions: AgentDefinition[] = [];
+  private plan: TaskPlan | null = null;
+
+  /** Central task queue for role-based execution with approval flow */
+  private taskQueue = new RoleTaskQueue();
+
+  /** Task outputs for dependency injection */
+  private taskOutputs = new Map<string, any>();
+
+  /** Stream callbacks registered by SocketServerV2 */
+  private streamCallbacks: ManagerStreamCallbacks | null = null;
+
+  // Orchestrator mode properties
+  private orchestrator: OrchestratorService | null = null;
+  private taskStoreInstance: TaskStore | null = null;
+  private plannerAgent: PlannerAgent | null = null;
+  private userInteractionManager: UserInteractionManager | null = null;
+  private filePersistence: FileTaskStore | null = null;
+  private pluginRegistry: PluginRegistry = new PluginRegistry();
+  private teamId: string = "default";
+
+  /** Roles with auto-approve enabled - tasks start immediately without manual approval */
+  private autoApproveRoles = new Set<string>();
+  /** Global auto-approve flag - when true, all roles auto-approve */
+  private autoApproveAll = false;
+
+  constructor() {
+    this.workerPool = new WorkerPool();
+    this.setupCompletionHandler();
+
+    logger.info(`AgentManager initialized`);
+  }
+
+  /**
+   * Register a plugin with the agent manager.
+   * Call this before initializeOrchestrator().
+   */
+  registerPlugin(plugin: IPlugin): void {
+    this.pluginRegistry.register(plugin);
+  }
+
+  /** Get the plugin registry */
+  getPluginRegistry(): PluginRegistry {
+    return this.pluginRegistry;
+  }
+
+  /**
+   * Register stream callbacks for real-time event delivery (used by SocketServerV2)
+   */
+  registerStreamCallbacks(callbacks: ManagerStreamCallbacks): void {
+    this.streamCallbacks = callbacks;
+  }
+
+  // ===========================================================================
+  // Orchestrator Mode API
+  // ===========================================================================
+
+  /**
+   * Initialize orchestrator mode for a team
+   * Call this before using orchestrator features
+   *
+   * @param teamId - Team identifier
+   * @param teamRoles - Array of role names (lowercase)
+   * @param roleAgentIdMap - Optional mapping of role → agent DB ID
+   * @param agentData - Optional array of agent records with systemPrompt, goal, pluginConfig
+   *                     (from DB, populated when team was created from a plugin)
+   */
+  async initializeOrchestrator(
+    teamId: string,
+    teamRoles: string[],
+    roleAgentIdMap?: Record<string, string>,
+    agentData?: Array<{ role: string; name: string; goal?: string; systemPrompt?: string; pluginConfig?: string }>,
+  ): Promise<void> {
+    this.teamId = teamId;
+
+    // Initialize file-based task persistence (survives restarts)
+    this.filePersistence = new FileTaskStore(teamId);
+    await this.filePersistence.load();
+
+    const workspaceDir = process.env.WORKSPACE_BASE_DIR || "./data/workspaces";
+    const teamRepoPath = `${workspaceDir}/${teamId}`;
+
+    // Initialize all registered plugins
+    await this.pluginRegistry.initializeAll();
+    logger.info(`[AgentManager] ${this.pluginRegistry.list().length} plugins initialized`);
+
+    // Create worker agent definitions for team roles
+    // When agentData is available (plugin-based teams), use custom systemPrompt + config.
+    // Otherwise, fall back to generic prompt + default Azure config.
+    logger.info(
+      `[AgentManager] Creating worker definitions for roles: ${teamRoles.join(", ")}`,
+    );
+
+    // Build a lookup from agentData (if provided)
+    const agentDataMap = new Map<string, { name: string; goal?: string; systemPrompt?: string; pluginConfig?: string }>();
+    if (agentData) {
+      for (const ad of agentData) {
+        agentDataMap.set(ad.role.toLowerCase(), ad);
+      }
+    }
+
+    const workerDefinitions: AgentDefinition[] = teamRoles.map((role) => {
+      const roleKey = role.toLowerCase();
+      const ad = agentDataMap.get(roleKey);
+
+      // If we have plugin data with a custom system prompt, use it
+      if (ad?.systemPrompt) {
+        let config: any = {
+          model: {
+            provider: "azure-openai" as const,
+            deployment: process.env.AZURE_OPENAI_DEPLOYMENT || "gpt-4o-2",
+            temperature: 0.7,
+            maxTokens: 4096,
+          },
+          tools: [],
+        };
+
+        // Override config from plugin definition (model, tools, skills, etc.)
+        if (ad.pluginConfig) {
+          try {
+            const parsed = JSON.parse(ad.pluginConfig);
+            config = { ...config, ...parsed };
+          } catch {
+            logger.warn(`[AgentManager] Failed to parse pluginConfig for ${roleKey}`);
+          }
+        }
+
+        return {
+          id: roleKey,
+          name: ad.name || role,
+          role: roleKey,
+          type: "internal" as const,
+          goal: ad.goal || `Execute ${role} tasks`,
+          systemPrompt: ad.systemPrompt,
+          config,
+        };
+      }
+
+      // Fallback: generic prompt for non-plugin agents
+      return {
+        id: roleKey,
+        name: role,
+        role: roleKey,
+        type: "internal" as const,
+        goal: `Execute ${role} tasks`,
+        systemPrompt: getGenericWorkerPrompt(role),
+        config: {
+          model: {
+            provider: "azure-openai" as const,
+            deployment: process.env.AZURE_OPENAI_DEPLOYMENT || "gpt-4o-2",
+            temperature: 0.7,
+            maxTokens: 4096,
+          },
+          tools: [],
         },
-        tools: [],
-      },
-    }));
+      };
+    });
 
     // Register worker definitions with WorkerPool
     this.workerPool.registerDefinitions(workerDefinitions);

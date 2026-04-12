@@ -1,0 +1,23 @@
+{
+  "name": "meta-team",
+  "description": "Creates skills, agents, and teams. Discovery-first: search existing, suggest tested items, create new only if gap.",
+  "version": "1.0.0",
+  "tags": ["meta", "builder", "discovery", "registry"],
+  "modes": {
+    "skill-building": {
+      "description": "Create and discover skills",
+      "activeAgents": ["registry-scout", "skill-builder"],
+      "icon": "puzzle"
+    },
+    "agent-building": {
+      "description": "Create agents with skills, MCPs, and hooks",
+      "activeAgents": ["registry-scout", "skill-builder", "agent-builder"],
+      "icon": "bot"
+    },
+    "team-building": {
+      "description": "Compose teams from agents",
+      "activeAgents": ["registry-scout", "skill-builder", "agent-builder", "team-builder"],
+      "icon": "users"
+    }
+  }
+}

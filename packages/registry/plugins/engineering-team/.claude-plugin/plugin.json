@@ -1,0 +1,23 @@
+{
+  "name": "engineering-team",
+  "description": "Full-stack engineering team for web applications",
+  "version": "1.0.0",
+  "tags": ["engineering", "fullstack", "web", "typescript"],
+  "modes": {
+    "planning": {
+      "description": "Architecture and design discussions",
+      "activeAgents": ["backend-developer", "frontend-developer"],
+      "icon": "pencil"
+    },
+    "implementation": {
+      "description": "Write and ship code",
+      "activeAgents": ["backend-developer", "frontend-developer", "devops-engineer", "qa-engineer"],
+      "icon": "code"
+    },
+    "review": {
+      "description": "Code review and quality checks",
+      "activeAgents": ["qa-engineer", "backend-developer"],
+      "icon": "check"
+    }
+  }
+}

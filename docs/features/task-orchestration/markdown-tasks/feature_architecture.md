@@ -87,15 +87,58 @@ onboarding.
 - [ ] OpenAPI spec generated
 
 ## Notes
-Consider the gap in self-serve onboarding found by the researcher —
+Consider the gap in self-serve onboarding found by the researcher ---
 this should influence the API's provisioning endpoints.
 ```
+
+### Goal.md Format
+
+The Goal is the team-level objective --- what the user asked the team to do. It's a first-class `.md` file so every agent in the team can read it for context. The Planner creates it when the user submits a goal, and all agents reference it as their north star.
+
+```yaml
+---
+id: goal-001
+title: "Build a marketing campaign for product X"
+teamId: marketing-team
+status: planning         # pending | planning | executing | completed | failed
+submittedBy: user        # user | system
+planId: plan-001         # linked plan (set after planning)
+createdAt: 2026-04-11T09:30:00Z
+completedAt: null
+---
+
+# Build a marketing campaign for product X
+
+## User Intent
+Build a comprehensive marketing campaign for product X targeting B2B SaaS mid-market.
+Focus on content marketing and SEO. Budget is limited --- prioritize organic channels.
+
+## Success Criteria
+- Campaign plan with timeline and channel strategy
+- 5 blog post drafts targeting identified keywords
+- Landing page copy with A/B test variants
+- Social media content calendar for 4 weeks
+
+## Constraints
+- No paid advertising in phase 1
+- Must align with existing brand guidelines
+- Launch within 2 weeks
+```
+
+**Why Goal.md matters:**
+- Every agent reads `.ping/goals/goal-001.md` as context before starting any task
+- Agents can check whether their work aligns with the original intent
+- Post-mortem: the goal + its linked plan + tasks tell the complete story
+- Multiple goals can be active simultaneously (each gets its own plan)
+
+**Relationship:** Goal.md (what) -> Plan.md (how) -> Task.md files (who does what)
 
 ### Plan.md Format
 
 ```yaml
 ---
 planId: plan-001
+goalId: goal-001         # links back to the Goal.md
 goal: "Build a marketing campaign for product X"
 teamId: marketing-team
 status: executing        # pending | approved | executing | completed | failed
@@ -135,6 +178,10 @@ Critical path: 001/002 → 003 → 004.
 
 ```
 .ping/
+├── goals/
+│   ├── goal-001.md              # Active goal (user's top-level request)
+│   └── _archive/
+│       └── goal-000.md          # Completed/failed goals
 ├── plans/
 │   ├── plan-001.md              # Active plan
 │   └── _archive/

@@ -1,69 +1,19 @@
 import { Agent } from "../types";
 
+/**
+ * Meta-agent — always visible in the sidebar, even with no teams.
+ * Acts as the discovery/help assistant. Teams from plugins load alongside it.
+ */
 export const INITIAL_AGENTS: Agent[] = [
   {
-    id: "root-1",
-    name: "Dev Orchestrator",
-    role: "Coder",
-    description:
-      "Manages the software development lifecycle, plans tasks, and ensures code quality.",
-    icon: "Cpu",
+    id: "meta-agent",
+    name: "Ping Assistant",
+    role: "Assistant",
+    description: "Your AI assistant. Ask questions, discover teams, or create new ones.",
+    icon: "Bot",
     systemInstruction:
-      "You are the Dev Orchestrator. You are responsible for PLANNING and EXECUTING software tasks. You must break down complex user requests into atomic steps (Tasks) yourself, and then assign those tasks to your sub-agents (Architect, Debugger).",
+      "You are Ping Assistant, the built-in helper. You can answer questions about the platform, help users discover and create teams, and provide general assistance. You are always available even when no teams are active.",
     collapsed: false,
-    subAgents: [
-      {
-        id: "dev-1",
-        name: "Code Architect",
-        role: "Architect",
-        description: "Specialized in software design patterns.",
-        icon: "Code",
-        parentId: "root-1",
-        systemInstruction:
-          "You are a Senior Software Architect. You provide high-level design advice, explain patterns, and review code structure.",
-      },
-      {
-        id: "dev-2",
-        name: "Debug Droid",
-        role: "Debugger",
-        description: "Expert in finding bugs and troubleshooting.",
-        icon: "Bug",
-        parentId: "root-1",
-        systemInstruction:
-          "You are Debug Droid. You analyze error logs and code snippets to find bugs. You are concise and solution-oriented.",
-      },
-    ],
-  },
-  {
-    id: "root-2",
-    name: "Creative Orchestrator",
-    role: "Creator",
-    description: "Plans creative campaigns and oversees content generation.",
-    icon: "Palette",
-    systemInstruction:
-      "You are the Creative Orchestrator. Your goal is to PLAN creative campaigns. Break down the user's vision into specific tasks (copywriting, design concepts) and delegate them.",
-    collapsed: true,
-    subAgents: [
-      {
-        id: "design-1",
-        name: "Copywriter",
-        role: "Copywriter",
-        description: "Writes compelling marketing copy.",
-        icon: "PenTool",
-        parentId: "root-2",
-        systemInstruction:
-          "You are an expert Copywriter. You write punchy, persuasive text.",
-      },
-    ],
-  },
-  {
-    id: "root-3",
-    name: "Research Orchestrator",
-    role: "Researcher",
-    description: "Coordinates data gathering and analysis tasks.",
-    icon: "Search",
-    systemInstruction:
-      "You are the Research Orchestrator. You PLAN research methodologies. Break down the query into specific search or analysis tasks.",
     subAgents: [],
   },
 ];

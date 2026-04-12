@@ -11,6 +11,7 @@ export interface ITeamConfig {
   teamName: string;
   goal: string;
   description?: string;
+  pluginName?: string;
   members: mongoose.Types.ObjectId[];
 }
 
@@ -19,6 +20,7 @@ const teamConfigSchema = new mongoose.Schema<ITeamConfig>(
     teamName: { type: String, required: true, index: true },
     goal: { type: String, required: true },
     description: { type: String, required: false },
+    pluginName: { type: String, default: null },
     members: [{ type: mongoose.Schema.Types.ObjectId, ref: "AgentRole" }],
   },
   { timestamps: true, versionKey: false },

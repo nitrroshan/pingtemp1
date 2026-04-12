@@ -1,0 +1,23 @@
+{
+  "name": "marketing-team",
+  "description": "Marketing team for content strategy, SEO, social media, and growth campaigns",
+  "version": "1.0.0",
+  "tags": ["marketing", "content", "seo", "social-media", "growth"],
+  "modes": {
+    "content": {
+      "description": "Content creation and copywriting",
+      "activeAgents": ["content-strategist", "copywriter"],
+      "icon": "pencil"
+    },
+    "growth": {
+      "description": "Growth campaigns and analytics",
+      "activeAgents": ["growth-marketer", "content-strategist"],
+      "icon": "trending-up"
+    },
+    "full-campaign": {
+      "description": "Full marketing campaign execution",
+      "activeAgents": ["content-strategist", "copywriter", "growth-marketer"],
+      "icon": "megaphone"
+    }
+  }
+}

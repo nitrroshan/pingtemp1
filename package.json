@@ -5,7 +5,9 @@
     "packages/*"
   ],
   "scripts": {
-    "dev": "docker compose -f docker-compose.dev.yml up -d && bun run dev:backend & bun run dev:frontend",
+    "dev": "bun run dev:local",
+    "dev:local": "bun run build:backend && bun run --filter @ping/backend start",
+    "dev:cloud": "bun run build:backend && bun run --filter @ping/backend start",
     "dev:backend": "bun run --filter @ping/backend dev",
     "dev:frontend": "bun run --filter @ping/frontend dev",
     "build:backend": "bun run --filter @ping/backend build",

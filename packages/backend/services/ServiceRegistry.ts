@@ -1,9 +1,13 @@
 /**
- * ServiceRegistry — selects MongoDB or file-based services based on config.
+ * ServiceRegistry -- creates all service instances.
  *
- * Both modes return the same ServiceRegistry interface.
- * Route-layer code NEVER branches on storage mode — it always
- * calls the same service methods regardless of backend.
+ * Storage strategy:
+ * - Teams, agents, skills, agent-skills: always file-based (plugins are source of truth)
+ * - Goals, members: always file-based (simple records, no scale concern)
+ * - Chat: file-based by default, MongoDB when MONGODB_URI is set (grows unbounded, needs DB at scale)
+ * - Auth: SQLite locally, MongoDB when MONGODB_URI is set (handled separately in auth/index.ts)
+ *
+ * Route-layer code NEVER branches on storage mode.
  */
 
 import path from "path";
@@ -21,23 +25,17 @@ export interface ServiceRegistry {
   chat: IChatService;
   goals: IGoalService;
   members: IMemberService;
-  mode: "file" | "mongo";
+  mode: "file" | "hybrid";
 }
 
 /**
- * Create all service instances based on config.
- * @param dataDir — base directory for JSON files (default: ./data)
+ * Create all service instances.
+ * @param dataDir -- base directory for JSON files (default: ./data)
  */
 export async function createServiceRegistry(dataDir: string = "./data"): Promise<ServiceRegistry> {
   const config = getConfig();
 
-  if (config.mongodbUri) {
-    // MongoDB mode — lazy import to avoid loading Mongoose when not needed
-    const { createMongoServices } = await import("./mongo/index.js");
-    return createMongoServices();
-  }
-
-  // File mode — lowdb JSON files
+  // All file-based services (always used regardless of MongoDB)
   const {
     FileTeamService, FileAgentService, FileSkillService,
     FileAgentSkillService, FileChatService, FileGoalService, FileMemberService,
@@ -47,7 +45,6 @@ export async function createServiceRegistry(dataDir: string = "./data"): Promise
   const agentService = new FileAgentService(path.join(dataDir, "agents.json"));
   const skillService = new FileSkillService(path.join(dataDir, "skills.json"));
   const agentSkillService = new FileAgentSkillService(path.join(dataDir, "agent-skills.json"));
-  const chatService = new FileChatService(path.join(dataDir, "chats"));
   const goalService = new FileGoalService(path.join(dataDir, "goals"));
   const memberService = new FileMemberService(path.join(dataDir, "members.json"));
 
@@ -59,6 +56,15 @@ export async function createServiceRegistry(dataDir: string = "./data"): Promise
     memberService.init(),
   ]);
 
+  // Chat: MongoDB in cloud mode, file-based in local mode
+  let chatService: IChatService;
+  if (config.mode === "cloud" && config.mongodbUri) {
+    const { MongoChatService } = await import("./mongo/MongoChatService.js");
+    chatService = new MongoChatService();
+  } else {
+    chatService = new FileChatService(path.join(dataDir, "chats"));
+  }
+
   return {
     teams: teamService,
     agents: agentService,
@@ -67,6 +73,6 @@ export async function createServiceRegistry(dataDir: string = "./data"): Promise
     chat: chatService,
     goals: goalService,
     members: memberService,
-    mode: "file",
+    mode: config.mongodbUri ? "hybrid" : "file",
   };
 }

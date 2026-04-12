@@ -1,53 +1,66 @@
 #!/usr/bin/env node
 /**
- * Seed — Orchestrates all seed scripts
+ * Seed -- Orchestrates seed scripts
  *
  * Usage:
- *   SEED_ENABLED=true bun run seed
- *   SEED_ENABLED=true bun run seed:teams
+ *   bun run seed
+ *   bun run seed:admin
+ *
+ * What it does:
+ *   - Seeds admin user (via better-auth, works with SQLite or MongoDB)
+ *   - Teams/agents are auto-registered from plugin folders at startup (no seeding needed)
  *
  * Safety:
  *   - Refuses to run in NODE_ENV=production
- *   - Requires SEED_ENABLED=true
  *   - Idempotent (safe to run multiple times)
  */
 
 import dotenv from "dotenv";
 dotenv.config();
+dotenv.config({ path: ".env.secrets", override: true });
 
 import { rootLogger } from "../../logging/index.js";
 import { assertSeedAllowed } from "./guard.js";
 import { connectDB, disconnectDB } from "../../db/index.js";
-import { seedTeams } from "./teams.seed.js";
-import { seedAgents } from "./agents.seed.js";
+import { getAuth } from "../../auth/index.js";
 
 const logger = rootLogger.child({ module: "seed" });
 
+const ADMIN_EMAIL = process.env.ADMIN_EMAIL || "admin@ping.local";
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "Admin123!";
+const ADMIN_NAME = process.env.ADMIN_NAME || "Admin";
+
 async function runSeeds(): Promise<void> {
-  // Safety guard — never seeds in production
   assertSeedAllowed();
 
   logger.info("[seed] Starting seed process...");
-  logger.info(`[seed] NODE_ENV: ${process.env.NODE_ENV || "development"}`);
 
-  // Connect to database
-  await connectDB();
+  // Connect DB only if using MongoDB
+  if (process.env.MONGODB_URI) {
+    await connectDB();
+  }
 
   try {
-    // 1. Seed teams
-    const teams = await seedTeams();
-
-    // 2. Seed agents for each team
-    await seedAgents(teams);
-
-    logger.info("[seed] ✅ All seeds completed successfully.");
-    logger.info("[seed] Summary:");
-    logger.info(`       Teams: ${teams.length}`);
-    for (const team of teams) {
-      logger.info(`         - ${team.name}: ${team.goal}`);
+    // Seed admin user
+    const auth = await getAuth();
+    try {
+      await auth.api.signUpEmail({
+        body: { email: ADMIN_EMAIL, password: ADMIN_PASSWORD, name: ADMIN_NAME },
+      });
+      logger.info(`[seed] Admin user created: ${ADMIN_EMAIL}`);
+    } catch (err: any) {
+      if (err?.message?.includes("already") || err?.body?.message?.includes("already")) {
+        logger.info(`[seed] Admin user already exists: ${ADMIN_EMAIL}`);
+      } else {
+        throw err;
+      }
     }
+
+    logger.info("[seed] Done. Teams/agents are auto-registered from plugins at startup.");
   } finally {
-    await disconnectDB();
+    if (process.env.MONGODB_URI) {
+      await disconnectDB();
+    }
   }
 }
 

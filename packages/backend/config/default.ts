@@ -11,8 +11,11 @@ const defaultConfig: AppConfig = {
   port: 3002,
   nodeEnv: "development",
 
-  // MongoDB
-  mongodbUri: "mongodb://localhost:27017/ping",
+  // Deployment mode: local (file-based) vs cloud (MongoDB + cloud storage)
+  mode: "local",
+
+  // MongoDB (used for chat + auth in cloud mode)
+  mongodbUri: "",
 
   // Azure OpenAI (required — validated at startup)
   azureOpenAi: {

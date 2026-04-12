@@ -28,7 +28,8 @@ export class FileTeamService implements ITeamService {
   async updateTeam(teamId: string, updates: Partial<Team>): Promise<Team | null> {
     const idx = this.db.data.teams.findIndex(t => t.id === teamId);
     if (idx === -1) return null;
-    const team = { ...this.db.data.teams[idx], ...updates, updatedAt: now() };
+    const existing = this.db.data.teams[idx]!;
+    const team: Team = { ...existing, ...updates, updatedAt: now() };
     this.db.data.teams[idx] = team;
     await this.db.write();
     return team;

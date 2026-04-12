@@ -25,6 +25,7 @@ export interface Team {
 export interface TeamSettings {
   executionMode: "sequential" | "parallel" | "hybrid";
   maxConcurrency: number;
+  pluginName?: string; // Plugin used to create this team (e.g., "engineering-team")
 }
 
 export interface CreateTeamParams {

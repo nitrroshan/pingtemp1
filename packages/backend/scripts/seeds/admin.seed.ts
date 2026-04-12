@@ -27,10 +27,13 @@ const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "Admin123!";
 const ADMIN_NAME = process.env.ADMIN_NAME || "Admin";
 
 async function seedAdmin() {
-  await connectDB();
+  // Connect DB only if MONGODB_URI is set (auth works with SQLite too)
+  if (process.env.MONGODB_URI) {
+    await connectDB();
+  }
 
   try {
-    const auth = getAuth();
+    const auth = await getAuth();
 
     // Check if admin already exists
     const existing = await auth.api.signInEmail({
@@ -65,7 +68,9 @@ async function seedAdmin() {
       throw err;
     }
   } finally {
-    await disconnectDB();
+    if (process.env.MONGODB_URI) {
+      await disconnectDB();
+    }
   }
 }
 

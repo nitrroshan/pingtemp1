@@ -20,6 +20,7 @@ export class MongoTeamService implements ITeamService {
       teamName: params.name,
       goal: params.description || "",
       description: params.description || "",
+      pluginName: params.pluginName || undefined,
     });
     return this.toTeam(doc);
   }
@@ -60,6 +61,7 @@ export class MongoTeamService implements ITeamService {
       workspaceId: doc.workspaceId ?? randomUUID(),
       gitRemoteUrl: doc.gitRemoteUrl ?? null,
       gitRemoteToken: doc.gitRemoteToken ?? null,
+      pluginName: doc.pluginName ?? undefined,
       settings: doc.settings ?? { executionMode: "sequential", maxConcurrency: 1 },
       createdAt: doc.createdAt?.toISOString?.() ?? new Date().toISOString(),
       updatedAt: doc.updatedAt?.toISOString?.() ?? new Date().toISOString(),

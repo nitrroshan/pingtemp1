@@ -13,4 +13,8 @@ export interface Agent {
   isActive: boolean;
   createdAt: string;
   updatedAt: string;
+
+  // DB-sourced fields (used by legacy LLM-discovered teams, not plugin teams)
+  systemPrompt?: string;
+  goal?: string;
 }

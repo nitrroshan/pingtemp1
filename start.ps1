@@ -8,10 +8,10 @@ function Show-Menu {
     Write-Host "  ========= Ping Monorepo =========" -ForegroundColor Cyan
     Write-Host ""
     Write-Host "  --- Start ---" -ForegroundColor DarkCyan
-    Write-Host "  [1] Start All (Backend + Frontend)" -ForegroundColor White
-    Write-Host "  [2] Start Backend" -ForegroundColor White
-    Write-Host "  [3] Start Frontend" -ForegroundColor White
-    Write-Host "  [4] Start Registry" -ForegroundColor White
+    Write-Host "  [1] Start Local (no MongoDB)" -ForegroundColor White
+    Write-Host "  [2] Start Cloud (with MongoDB)" -ForegroundColor White
+    Write-Host "  [3] Start Frontend only" -ForegroundColor White
+    Write-Host "  [4] Start Backend only (local)" -ForegroundColor White
     Write-Host "  [5] Start MongoDB" -ForegroundColor White
     Write-Host ""
     Write-Host "  --- Stop ---" -ForegroundColor DarkCyan
@@ -28,10 +28,10 @@ function Show-Menu {
     Write-Host "  [14] Status" -ForegroundColor Magenta
     Write-Host ""
     Write-Host "  --- Dev ---" -ForegroundColor DarkCyan
-    Write-Host "  [20] Dev Start (Reset DB + Seed + Start All)" -ForegroundColor Green
-    Write-Host "  [21] Seed DB (teams + agents + admin)" -ForegroundColor Green
-    Write-Host "  [22] Reset DB (drop all data)" -ForegroundColor Red
-    Write-Host "  [23] Seed Admin User only" -ForegroundColor Green
+    Write-Host "  [20] Dev Local (build + seed + start)" -ForegroundColor Green
+    Write-Host "  [21] Dev Cloud (MongoDB + build + seed + start)" -ForegroundColor Green
+    Write-Host "  [22] Seed Admin User" -ForegroundColor Green
+    Write-Host "  [23] Reset MongoDB (drop data)" -ForegroundColor Red
     Write-Host ""
     Write-Host "  [0] Exit" -ForegroundColor DarkGray
     Write-Host ""
@@ -180,13 +180,11 @@ function Reset-Database {
 }
 
 function Seed-Database {
-    Write-Host "  Seeding database..." -ForegroundColor Yellow
+    Write-Host "  Seeding admin user..." -ForegroundColor Yellow
     Push-Location "$root\packages\backend"
     bun run seed
-    Write-Host "  Seeding admin user..." -ForegroundColor Yellow
-    bun run seed:admin
     Pop-Location
-    Write-Host "  Database seeded (including admin user)" -ForegroundColor Green
+    Write-Host "  Admin user seeded. Teams auto-register from plugins at startup." -ForegroundColor Green
 }
 
 # Main loop
@@ -197,23 +195,30 @@ while ($true) {
     switch ($choice) {
         "1" {
             Write-Host ""
+            Write-Host "  === Local Mode (no MongoDB) ===" -ForegroundColor Green
             Set-Location $root; bun install 2>$null
-            Start-MongoDB
             Build-Package "All Packages" "$root" "bun run build"
-            Start-Service "Backend"  "$root\packages\backend"  "bun dist/server.js" "Ping - Backend"
+            Start-Service "Backend"  "$root\packages\backend"  "`$env:PING_MODE='local'; bun dist/server.js" "Ping - Backend"
             Start-Sleep -Seconds 2
             Start-Service "Frontend" "$root\packages\frontend" "bun run dev"       "Ping - Frontend"
         }
         "2" {
+            Write-Host ""
+            Write-Host "  === Cloud Mode (with MongoDB) ===" -ForegroundColor Green
+            Set-Location $root; bun install 2>$null
+            Start-MongoDB
+            Start-Sleep -Seconds 2
             Build-Package "All Packages" "$root" "bun run build"
-            Start-Service "Backend" "$root\packages\backend" "bun dist/server.js" "Ping - Backend"
+            Start-Service "Backend"  "$root\packages\backend"  "`$env:PING_MODE='cloud'; bun dist/server.js" "Ping - Backend"
+            Start-Sleep -Seconds 2
+            Start-Service "Frontend" "$root\packages\frontend" "bun run dev"       "Ping - Frontend"
         }
         "3" {
             Start-Service "Frontend" "$root\packages\frontend" "bun run dev" "Ping - Frontend"
         }
         "4" {
-            Build-Package "Registry" "$root\packages\registry" "bun run build"
-            Start-Service "Registry" "$root\packages\registry" "bun run start" "Ping - Registry"
+            Build-Package "All Packages" "$root" "bun run build"
+            Start-Service "Backend" "$root\packages\backend" "`$env:PING_MODE='local'; bun dist/server.js" "Ping - Backend"
         }
         "5" {
             Start-MongoDB
@@ -235,26 +240,35 @@ while ($true) {
         "14" { Show-Status }
         "20" {
             Write-Host ""
-            Write-Host "  === Dev Start ===" -ForegroundColor Green
+            Write-Host "  === Dev Local ===" -ForegroundColor Green
             Set-Location $root; bun install 2>$null
-            Start-MongoDB
-            Start-Sleep -Seconds 2
-            Reset-Database
             Seed-Database
             Build-Package "All Packages" "$root" "bun run build"
-            Start-Service "Backend"  "$root\packages\backend"  "bun dist/server.js" "Ping - Backend"
+            Start-Service "Backend"  "$root\packages\backend"  "`$env:PING_MODE='local'; bun dist/server.js" "Ping - Backend"
             Start-Sleep -Seconds 2
             Start-Service "Frontend" "$root\packages\frontend" "bun run dev"       "Ping - Frontend"
             Write-Host ""
-            Write-Host "  Dev environment ready with seed data!" -ForegroundColor Green
+            Write-Host "  Local dev ready! File-based storage, teams from plugins." -ForegroundColor Green
         }
         "21" {
+            Write-Host ""
+            Write-Host "  === Dev Cloud ===" -ForegroundColor Green
+            Set-Location $root; bun install 2>$null
             Start-MongoDB
             Start-Sleep -Seconds 2
             Seed-Database
+            Build-Package "All Packages" "$root" "bun run build"
+            Start-Service "Backend"  "$root\packages\backend"  "`$env:PING_MODE='cloud'; bun dist/server.js" "Ping - Backend"
+            Start-Sleep -Seconds 2
+            Start-Service "Frontend" "$root\packages\frontend" "bun run dev"       "Ping - Frontend"
+            Write-Host ""
+            Write-Host "  Cloud dev ready! MongoDB for chat/auth, teams from plugins." -ForegroundColor Green
         }
         "22" {
-            $confirm = Read-Host "  This will DELETE all data. Continue? [y/N]"
+            Seed-Database
+        }
+        "23" {
+            $confirm = Read-Host "  This will DELETE all MongoDB data. Continue? [y/N]"
             if ($confirm -eq "y") {
                 Start-MongoDB
                 Start-Sleep -Seconds 2
@@ -262,15 +276,6 @@ while ($true) {
             } else {
                 Write-Host "  Cancelled" -ForegroundColor DarkGray
             }
-        }
-        "23" {
-            Start-MongoDB
-            Start-Sleep -Seconds 2
-            Write-Host "  Seeding admin user..." -ForegroundColor Yellow
-            Push-Location "$root\packages\backend"
-            bun run seed:admin
-            Pop-Location
-            Write-Host "  Admin user seeded" -ForegroundColor Green
         }
         "0"  { Write-Host "  Bye!" -ForegroundColor DarkGray; break }
         default { Write-Host "  Invalid option" -ForegroundColor Red }

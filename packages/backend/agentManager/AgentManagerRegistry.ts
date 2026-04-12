@@ -95,15 +95,59 @@ export class AgentManagerRegistry {
       throw new Error(`Team ${teamId} not found`);
     }
 
-    const agents = await this.services.agents.getTeamAgents(teamId);
+    // ── Plugin-first loading: read agents directly from plugin folder ──
+    // Plugin .md files are the single source of truth (like Claude Code).
+    // No agent records exist in DB for plugin teams — definitions live in files.
+    let teamRoles: Array<{ id: string; role: string; name: string; goal: string; systemPrompt?: string; pluginConfig?: string }>;
 
-    const teamRoles = agents.map((agent) => ({
-      id: agent.id,
-      role: agent.role.toLowerCase(),
-      name: agent.name,
-      goal: (agent as any).goal ?? "",
-      systemPrompt: (agent as any).systemPrompt,
-    }));
+    if ((team as any).pluginName) {
+      const pluginName = (team as any).pluginName as string;
+      logger.info(`[Registry] Loading team from plugin: ${pluginName}`);
+
+      try {
+        const { PluginLoader } = await import("@ping/registry/src/loader/PluginLoader");
+        const { join, resolve } = await import("path");
+
+        const repoRoot = resolve(__dirname, "..", "..", "..", "..");
+        const registryDir = process.env.PLUGIN_REGISTRY_DIR
+          ?? join(repoRoot, "packages", "registry", "plugins");
+        const loader = new PluginLoader(registryDir);
+        const plugin = await loader.loadPlugin(pluginName);
+
+        // Agent IDs derived from role name — stable, no DB needed
+        teamRoles = plugin.agents.map(agentDef => ({
+          id: agentDef.id,
+          role: agentDef.role.toLowerCase(),
+          name: agentDef.name,
+          goal: agentDef.goal ?? agentDef.description ?? "",
+          systemPrompt: agentDef.systemPrompt,
+          pluginConfig: JSON.stringify(agentDef.config),
+        }));
+
+        logger.info(
+          `[Registry] Plugin "${pluginName}" loaded ${teamRoles.length} agents from .md files`,
+        );
+      } catch (error: unknown) {
+        const msg = error instanceof Error ? error.message : String(error);
+        logger.error(`[Registry] Failed to load plugin "${pluginName}" for team ${teamId}: ${msg}`);
+        throw new Error(
+          `Plugin "${pluginName}" not found or invalid. ` +
+          `Ensure the plugin folder exists at PLUGIN_REGISTRY_DIR or the default plugins/ path.`
+        );
+      }
+    } else {
+      // ── Legacy DB loading: read agents from database ──
+      // Used for teams created via LLM role discovery (no plugin folder)
+      const agents = await this.services.agents.getTeamAgents(teamId);
+
+      teamRoles = agents.map((agent) => ({
+        id: agent.id,
+        role: agent.role.toLowerCase(),
+        name: agent.name,
+        goal: agent.goal ?? "",
+        systemPrompt: agent.systemPrompt,
+      }));
+    }
 
     logger.info(
       `[Registry] Team "${team.name}" has ${teamRoles.length} roles: ${teamRoles.map((r) => r.role).join(", ")}`,
@@ -156,11 +200,12 @@ export class AgentManagerRegistry {
       );
     }
 
-    // Initialize orchestrator with team data
+    // Initialize orchestrator with team data (pass full agent records for plugin support)
     await manager.initializeOrchestrator(
       teamId,
       teamRoles.map((r) => r.role),
       Object.fromEntries(teamRoles.map((r) => [r.role, r.id])),
+      teamRoles,
     );
 
     // Cache it
