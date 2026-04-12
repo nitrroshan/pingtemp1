@@ -68,8 +68,12 @@ async function projectToFilesystem(
   await fs.mkdir(projDir, { recursive: true });
 
   // ─── Special handling: task/plan/goal docs → YAML frontmatter + markdown ───
-  // Detect if this is a task, plan, or goal doc and project as .md
-  const isTaskDoc = docType.endsWith("/task");
+  // Fix #6: Use regex patterns for more robust detection
+  // Patterns:
+  //   goal         → goal.md
+  //   plan         → plan.md
+  //   {taskId}/task → {taskId}/task.md  (regex: ^[^/]+\/task$)
+  const isTaskDoc = /^[^/]+\/task$/.test(docType);
   const isPlanDoc = docType === "plan";
   const isGoalDoc = docType === "goal";
 
@@ -248,6 +252,21 @@ function xmlFragmentToMarkdown(fragment: Y.XmlFragment): string {
         case "blockquote":
           lines.push(`> ${text}`);
           break;
+        // Fix #17: Handle additional BlockNote block types
+        case "image": {
+          const src = child.getAttribute("url") || child.getAttribute("src") || "";
+          const alt = child.getAttribute("caption") || child.getAttribute("alt") || "image";
+          lines.push(`![${alt}](${src})`);
+          break;
+        }
+        case "table":
+          lines.push(`[Table content]`);
+          break;
+        case "checkListItem": {
+          const checked = child.getAttribute("checked") === "true";
+          lines.push(`- [${checked ? "x" : " "}] ${text}`);
+          break;
+        }
         default:
           // Unknown element — emit plain text
           if (text.length > 0) lines.push(text);

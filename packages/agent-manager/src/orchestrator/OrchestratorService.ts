@@ -35,6 +35,16 @@ const MAX_TASK_RETRIES = 3;
 const MAX_CONCURRENT_DISPATCHES = 2;
 
 // ═══════════════════════════════════════════════════════════════════
+// CRDT Proxy Interface (lazy resolution per goal)
+// ═══════════════════════════════════════════════════════════════════
+
+/** Lazy proxy for goal-scoped CRDT stores. Resolved when approvePlan sets goalId. */
+export interface CrdtProxy<T = any> {
+  get(): T | null;
+  resolveForGoal(goalId: string): void;
+}
+
+// ═══════════════════════════════════════════════════════════════════
 // CONFIG
 // ═══════════════════════════════════════════════════════════════════
 
@@ -54,8 +64,8 @@ export interface OrchestratorServiceConfig {
   planStore?: any;
 
   // CRDT task persistence (injected by AgentManager from CollaborationPlugin)
-  crdtTaskSync?: any;
-  crdtGoalStore?: any;
+  crdtTaskSync?: CrdtProxy;
+  crdtGoalStore?: CrdtProxy;
 
   // Callbacks → AgentManager → SocketServerV2 → Frontend
   callbacks?: OrchestratorCallbacks;
@@ -85,8 +95,8 @@ export class OrchestratorService {
   private notificationQueue?: NotificationQueue;
   private planStore: any;
   // CRDT persistence — lazy proxies that resolve per-goal
-  private crdtTaskSyncProxy: any;  // { get(): CrdtTaskSync, resolveForGoal(goalId) }
-  private crdtGoalStoreProxy: any; // { get(): CrdtGoalStore, resolveForGoal(goalId) }
+  private crdtTaskSyncProxy: CrdtProxy | undefined;
+  private crdtGoalStoreProxy: CrdtProxy | undefined;
 
   // State — only 2 states in planner mode (planner manages its own phases)
   private state: OrchestratorState = "idle";
@@ -451,12 +461,15 @@ export class OrchestratorService {
     });
 
     // ─── CRDT Persistence ───
+    // Fix #3: Explicit null guard with warning log
     const crdtSync = this.crdtTaskSyncProxy?.get?.();
     if (crdtSync) {
       crdtSync.syncStatus(taskId, "failed").catch((err: any) => {
         log.warn(`CRDT sync failed for task ${taskId}: ${err}`);
       });
       crdtSync.updateIndex(this.taskStore.getAll()).catch(() => {});
+    } else {
+      log.debug(`CRDT not resolved — skipping failed status sync for ${taskId}`);
     }
     // ───────────────────────
 
@@ -502,6 +515,7 @@ export class OrchestratorService {
     });
 
     // ─── CRDT Persistence ───────────────────────────────────────────
+    // Fix #3: Explicit null guard with warning log
     const crdtSyncDone = this.crdtTaskSyncProxy?.get?.();
     if (crdtSyncDone) {
       await crdtSyncDone.syncStatus(data.taskId, "completed", {
@@ -510,6 +524,8 @@ export class OrchestratorService {
         nextSteps: data.nextSteps,
       });
       await crdtSyncDone.updateIndex(this.taskStore.getAll());
+    } else {
+      log.debug(`CRDT not resolved — skipping completed status sync for ${data.taskId}`);
     }
     // ────────────────────────────────────────────────────────────────
   }
@@ -536,6 +552,20 @@ export class OrchestratorService {
     });
 
     try {
+      // ─── CollabTaskDispatcher: Initialize CRDT docs for collaboration tasks ───
+      // Fix #14: Use encapsulated initCollabDocs() instead of accessing .space directly
+      const taskType = (task.context as any)?.type;
+      if (taskType === "collaboration" && this.crdtTaskSyncProxy?.get?.()) {
+        try {
+          const collabConfig = (task.context as any)?.collaboration || {};
+          await this.crdtTaskSyncProxy.get().initCollabDocs(taskId, collabConfig);
+          log.info(`Initialized collaboration CRDT docs for task ${taskId}`);
+        } catch (err) {
+          log.warn(`Failed to initialize collab docs for ${taskId}: ${err}`);
+        }
+      }
+      // ──────────────────────────────────────────────────────────────────────────
+
       // Context is pre-built by TaskStore.enrichDependantContext() at upstream completion time.
       // Planner-provided context (notes, files, artifacts) is already on task.context from create().
       // We just read — no assembly logic here.
@@ -556,6 +586,8 @@ export class OrchestratorService {
         crdtRefs = crdtSyncDispatch.getCrdtRefs(taskId, task);
         // Sync status to in_progress in CRDT
         await crdtSyncDispatch.syncStatus(taskId, "in_progress");
+      } else {
+        log.debug(`CRDT not resolved — agent won't have collab read access for ${taskId}`);
       }
       // ────────────────────────────────────────────────────────────────
 
@@ -571,6 +603,20 @@ export class OrchestratorService {
       }
       if (taskCtx.expectedOutput) {
         enrichedDescription += `\n\nExpected output: ${taskCtx.expectedOutput}`;
+      }
+
+      // Fix #15: Add CRDT references to agent prompt so agents know how to access task details
+      if (crdtRefs) {
+        enrichedDescription += `\n\n## Context Sources (use collab read to access)`;
+        enrichedDescription += `\n- Your task: collab read ${crdtRefs.task}`;
+        enrichedDescription += `\n- Plan: collab read ${crdtRefs.plan}`;
+        enrichedDescription += `\n- Goal: collab read ${crdtRefs.goal}`;
+        if (crdtRefs.dependencies?.length) {
+          enrichedDescription += `\n- Completed dependencies: ${crdtRefs.dependencies.join(", ")}`;
+        }
+        if (crdtRefs.dependants?.length) {
+          enrichedDescription += `\n- Downstream (depends on you): ${crdtRefs.dependants.join(", ")}`;
+        }
       }
 
       await this.workerPool.runTask({

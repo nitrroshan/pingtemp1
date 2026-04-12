@@ -698,16 +698,18 @@ function useDiscussionNotifications(teamId: string) {
 
 | Component | Status | Version | Blocker? |
 |-----------|--------|---------|----------|
-| CrdtTaskSync | ❌ Missing | v1.0 | **Yes** — foundational persistence |
-| CrdtGoalStore | ❌ Missing | v1.0 | No — enhancement for goal context |
-| L2CollaborationPlugin wiring | ⚠️ Partial | v1.0 | **Yes** — plugin injection point |
-| OrchestratorService wiring | ⚠️ Partial | v1.0 | **Yes** — core integration |
-| Task context enrichment | ❌ Missing | v1.0 | No — quality improvement |
-| Collab tool task/goal categories | ❌ Missing | v1.0 | **Yes** — agent browsability |
-| `request_task` tool | ❌ Missing | v1.1 | **Yes** — agent autonomy |
-| `bounce_task` tool | ❌ Missing | v1.1 | No — convenience |
-| `discuss` collab action | ❌ Missing | v1.1 | **Yes** — collaboration |
-| CollabTaskDispatcher | ❌ Missing | v1.1 | **Yes** — collaboration tasks |
+| CrdtTaskSync | ✅ Done | v1.0 | **Yes** — foundational persistence |
+| CrdtGoalStore | ✅ Done | v1.0 | No — enhancement for goal context |
+| L2CollaborationPlugin wiring | ✅ Done | v1.0 | **Yes** — plugin injection point |
+| OrchestratorService wiring | ✅ Done | v1.0 | **Yes** — core integration |
+| Task context enrichment | ✅ Done | v1.0 | No — quality improvement |
+| Collab tool task/goal categories | ✅ Done | v1.0 | **Yes** — agent browsability |
+| projectToFilesystem .md projection | ✅ Done | v1.0 | No — human readability |
+| `request_task` tool | ✅ Done | v1.1 | **Yes** — agent autonomy |
+| `bounce_task` tool | ✅ Done | v1.1 | No — convenience |
+| `discuss` collab action | ✅ Done | v1.1 | **Yes** — collaboration |
+| CollabTaskDispatcher | ✅ Done | v1.1 | **Yes** — collaboration tasks |
+| WorkerPool tool injection | ✅ Done | v1.1 | **Yes** — tool delivery |
 | Cross-plan references | ❌ Missing | v1.1 | No — enhancement |
 | Pre-plan research | ❌ Missing | v1.1 | No — enhancement |
 | DiscussionThread | ❌ Missing | v2.0 | **Yes** — user visibility |

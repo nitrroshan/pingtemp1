@@ -332,10 +332,6 @@ export class AgentManager {
     // These persist tasks and goals to CRDT for durability + agent access via collab tool
     // The L2CollaborationPlugin is stored as `crdt` in IPluginStorage
     const l2Plugin = collabStorage?.crdt as any;
-    // goalId is derived later from the plan — we use a lazy getter pattern
-    // CrdtTaskSync and CrdtGoalStore are goal-scoped, so they're created when the goal is known
-    let crdtTaskSync: any = null;
-    let crdtGoalStore: any = null;
 
     // SOLID architecture — TaskStore + OrchestratorService + PlannerAgent as peers
     this.taskStoreInstance = new TaskStore();
@@ -369,14 +365,15 @@ export class AgentManager {
       onFlush: (batchedMessage) => executePlannerTurn(batchedMessage),
     });
 
-    // Create a lazy CRDT resolver — goal-scoped stores are created when approvePlan sets goalId
+    // Create a lazy CRDT resolver — goal-scoped stores created when approvePlan sets goalId
+    // Fix #1: Use this-scoped properties instead of captured let variables
     const crdtResolver = {
-      get taskSync() { return crdtTaskSync; },
-      get goalStore() { return crdtGoalStore; },
+      taskSync: null as any,
+      goalStore: null as any,
       resolveForGoal(goalId: string) {
         if (l2Plugin?.getCrdtTaskSync) {
-          crdtTaskSync = l2Plugin.getCrdtTaskSync(goalId);
-          crdtGoalStore = l2Plugin.getCrdtGoalStore(goalId);
+          this.taskSync = l2Plugin.getCrdtTaskSync(goalId);
+          this.goalStore = l2Plugin.getCrdtGoalStore(goalId);
         }
       },
     };
@@ -414,6 +411,15 @@ export class AgentManager {
     });
 
     await this.orchestrator.initialize();
+
+    // Fix #8: Inject task services AFTER orchestrator init but resolver is already bound
+    // The crdtTaskSync will be null initially — it resolves when approvePlan sets goalId
+    this.workerPool.setTaskServices({
+      taskStore: this.taskStoreInstance,
+      dagResolver,
+      teamRoles,
+      crdtTaskSync: null, // resolved lazily via crdtResolver when goal is known
+    });
 
     // Create PlannerAgent (peer to OrchestratorService)
     const agentFactory = getAgentFactory();

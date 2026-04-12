@@ -13,6 +13,8 @@ import { AiSdkAgent } from "../agent/internal/AiSdkAgent.js";
 import {
   createReportStatusTool,
   createCompleteTaskTool,
+  createRequestTaskTool,
+  createBounceTaskTool,
 } from "../agent/internal/tools/index.js";
 import { PluginRegistry } from "../plugin/PluginRegistry.js";
 import type { ToolContext } from "../plugin/types.js";
@@ -36,6 +38,10 @@ export interface WorkerCallbacks {
   onError?: (data: { taskId: string; error: string }) => void;
   onAgentComplete?: (data: { taskId: string; role: string; summary: string; deliverables: string[]; nextSteps: string[]; timestamp: number }) => void;
   onStatusUpdate?: (data: { taskId: string; role: string; status: string; summary: string; progress?: number; timestamp: number }) => void;
+  /** Fired when an agent creates a task via request_task tool */
+  onTaskCreated?: (data: { taskId: string; createdBy: string; targetRole: string; relationship: string; parentTaskId: string }) => void;
+  /** Fired when an agent bounces a task via bounce_task tool */
+  onBounce?: (data: { taskId: string; role: string; reason: string; suggestedRole?: string; timestamp: number }) => void;
 }
 
 /**
@@ -71,6 +77,14 @@ export class WorkerPool {
   /** Callbacks for worker lifecycle events */
   private callbacks: WorkerCallbacks = {};
 
+  /** Shared services for agent-initiated task tools (injected by AgentManager) */
+  private taskStore: { getAll(): any[]; get(id: string): any; create(t: any): void; remove(id: string): boolean; updateStatus(id: string, s: string): void } | null = null;
+  private dagResolver: { rebuild(source: any): void; validateDependencies?(taskId: string, deps: string[]): string | null } | null = null;
+  private teamRoles: string[] = [];
+  private crdtTaskSync: { persistTask(t: any): Promise<void>; syncStatus(id: string, s: string, o?: any): Promise<void>; updateIndex(tasks: any[]): Promise<void> } | null = null;
+  private currentPlanId: string | null = null;
+  private currentGoalId: string | null = null;
+
   // ===========================================================================
   // Definition Management
   // ===========================================================================
@@ -99,6 +113,26 @@ export class WorkerPool {
    */
   setTeamId(teamId: string): void {
     this.teamId = teamId;
+  }
+
+  /**
+   * Set shared services for agent-initiated task tools (request_task, bounce_task).
+   * Called by AgentManager after orchestrator initialization.
+   */
+  setTaskServices(services: {
+    taskStore: any;
+    dagResolver: any;
+    teamRoles: string[];
+    crdtTaskSync?: any;
+    planId?: string | null;
+    goalId?: string | null;
+  }): void {
+    this.taskStore = services.taskStore;
+    this.dagResolver = services.dagResolver;
+    this.teamRoles = services.teamRoles;
+    this.crdtTaskSync = services.crdtTaskSync || null;
+    this.currentPlanId = services.planId || null;
+    this.currentGoalId = services.goalId || null;
   }
 
   /**
@@ -237,6 +271,33 @@ export class WorkerPool {
       );
       additionalTools.push(completeTaskTool);
 
+      // Add request_task tool — allows agents to create tasks for other roles
+      if (this.taskStore && this.dagResolver) {
+        const requestTaskTool = createRequestTaskTool({
+          taskId,
+          role: roleKey,
+          planId: this.currentPlanId || null,
+          goalId: this.currentGoalId || null,
+          availableRoles: this.teamRoles || [],
+          taskStore: this.taskStore,
+          dagResolver: this.dagResolver,
+          crdtTaskSync: this.crdtTaskSync,
+          onTaskCreated: (data) => this.callbacks.onTaskCreated?.(data),
+        });
+        additionalTools.push(requestTaskTool);
+
+        // Add bounce_task tool — allows agents to bounce tasks they can't do
+        const bounceTaskTool = createBounceTaskTool({
+          taskId,
+          role: roleKey,
+          availableRoles: this.teamRoles || [],
+          taskStore: this.taskStore,
+          crdtTaskSync: this.crdtTaskSync,
+          onBounce: (data) => this.callbacks.onBounce?.(data),
+        });
+        additionalTools.push(bounceTaskTool);
+      }
+
       // ── Plugin-based tool assembly ──────────────────────────────────────
       if (this.pluginRegistry) {
         const toolContext: ToolContext = {
@@ -365,6 +426,12 @@ export class WorkerPool {
     await Promise.all(
       Array.from(this.workers.keys()).map((id) => this.dispose(id)),
     );
+    // Fix #4: Clear all Maps to prevent memory leaks from orphaned tasks
+    this.workerBaseTools.clear();
+    // Fix #16: Clear stale task service references
+    this.taskStore = null;
+    this.dagResolver = null;
+    this.crdtTaskSync = null;
   }
 
   // ===========================================================================

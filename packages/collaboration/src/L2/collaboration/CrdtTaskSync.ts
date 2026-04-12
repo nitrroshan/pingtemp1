@@ -71,7 +71,12 @@ export interface TaskLike {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 export class CrdtTaskSync {
-  constructor(private space: CollaborationSpace) {}
+  constructor(private _space: CollaborationSpace) {}
+
+  /** Access the underlying CollaborationSpace (for CollabTaskDispatcher) */
+  get space(): CollaborationSpace {
+    return this._space;
+  }
 
   // ─────────────────────────────────────────────────────────────────────────
   // PERSIST — Write from TaskStore → CRDT
@@ -86,7 +91,7 @@ export class CrdtTaskSync {
   async persistTask(task: TaskLike): Promise<void> {
     const docName = `${task.id}/task`;
     try {
-      const doc = await this.space.openDoc(docName);
+      const doc = await this._space.openDoc(docName);
       const map = doc.getMap("task");
 
       const ctx = (task.context || {}) as Record<string, any>;
@@ -131,7 +136,7 @@ export class CrdtTaskSync {
   async syncStatus(taskId: string, newStatus: TaskStatus, output?: any): Promise<void> {
     const docName = `${taskId}/task`;
     try {
-      const doc = await this.space.openDoc(docName);
+      const doc = await this._space.openDoc(docName);
       const map = doc.getMap("task");
       map.set("status", newStatus);
       if (newStatus === "completed") {
@@ -159,7 +164,7 @@ export class CrdtTaskSync {
    */
   async persistPlan(plan: any, goalId: string): Promise<void> {
     try {
-      const doc = await this.space.openDoc("plan");
+      const doc = await this._space.openDoc("plan");
       const map = doc.getMap("plan");
       map.set("planId", plan.planId);
       map.set("goalId", goalId);
@@ -212,7 +217,7 @@ export class CrdtTaskSync {
    */
   async updateIndex(tasks: TaskLike[]): Promise<void> {
     try {
-      const doc = await this.space.openDoc("_index");
+      const doc = await this._space.openDoc("_index");
       const map = doc.getMap("_index");
 
       // Group by role
@@ -245,11 +250,12 @@ export class CrdtTaskSync {
 
   /**
    * Load all tasks from CRDT. Called during initialize() for crash recovery.
-   * Lists all docs ending with `/task` in the CollaborationSpace.
+   * Fix #7: Two-pass loading — first collect all tasks, then set prerequisite
+   * state correctly based on which dependencies are already completed.
    */
   async loadAllTasks(): Promise<TaskLike[]> {
     try {
-      const allDocs = await this.space.listDocs();
+      const allDocs = await this._space.listDocs();
       // Task docs match pattern: {taskId}/task (not goal, plan, _index, or discussion docs)
       const taskDocNames = allDocs.filter(
         (d) => d.endsWith("/task") && d !== "goal" && d !== "plan",
@@ -260,10 +266,11 @@ export class CrdtTaskSync {
         return [];
       }
 
-      const tasks: TaskLike[] = [];
+      // First pass: load all raw task data
+      const rawTasks: CrdtTaskData[] = [];
       for (const docName of taskDocNames) {
         try {
-          const doc = await this.space.openDoc(docName);
+          const doc = await this._space.openDoc(docName);
           const map = doc.getMap("task");
           const data = map.toJSON() as CrdtTaskData;
 
@@ -272,13 +279,28 @@ export class CrdtTaskSync {
             continue;
           }
 
-          tasks.push(this.toTask(data));
+          rawTasks.push(data);
         } catch (err) {
           logger.warn(`Failed to load task from ${docName}: ${err}`);
         }
       }
 
-      logger.info(`Loaded ${tasks.length} tasks from CRDT`);
+      // Collect completed task IDs for prerequisite resolution
+      const completedIds = new Set(
+        rawTasks.filter((t) => t.status === "completed").map((t) => t.id),
+      );
+
+      // Second pass: create Task objects with correct prerequisite state
+      const tasks: TaskLike[] = rawTasks.map((data) => {
+        const task = this.toTask(data);
+        // Override prerequisites with correct completion state
+        task.prerequisites = new Map(
+          (data.dependencies || []).map((d) => [d, completedIds.has(d)] as [string, boolean]),
+        );
+        return task;
+      });
+
+      logger.info(`Loaded ${tasks.length} tasks from CRDT (${completedIds.size} completed)`);
       return tasks;
     } catch (err) {
       logger.error(`Failed to load tasks from CRDT: ${err}`);
@@ -336,5 +358,30 @@ export class CrdtTaskSync {
       dependants: (task.dependants || []).map((d) => `${d}/task`),
       relatedTasks: (task.context as any)?.relatedTasks || [],
     };
+  }
+
+  /**
+   * Initialize CRDT docs for a collaboration task (Fix #14 — encapsulated).
+   * Creates discussion Y.Array, decisions Y.Map, cursors Y.Map, and config Y.Map with guard rails.
+   */
+  async initCollabDocs(taskId: string, collabConfig?: Record<string, any>): Promise<void> {
+    const config = collabConfig || {};
+    // Initialize discussion doc with Y.Array + guard rail config
+    const discussionDoc = await this._space.openDoc(`${taskId}/discussion`);
+    discussionDoc.getArray("discussion");
+    const configMap = discussionDoc.getMap("config");
+    configMap.set("maxRounds", config.maxRounds || 10);
+    configMap.set("maxTokens", config.maxTokens || 50000);
+    configMap.set("timeoutMinutes", config.timeoutMinutes || 15);
+    configMap.set("totalTokensUsed", 0);
+    configMap.set("roundsPerAgent", {});
+    configMap.set("mode", config.mode || "auto");
+    configMap.set("status", "active");
+    configMap.set("lastActivity", new Date().toISOString());
+    // Initialize cursors
+    discussionDoc.getMap("cursors");
+    // Initialize decisions doc
+    const decisionsDoc = await this._space.openDoc(`${taskId}/decisions`);
+    decisionsDoc.getMap("decisions");
   }
 }

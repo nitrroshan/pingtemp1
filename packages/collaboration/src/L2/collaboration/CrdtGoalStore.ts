@@ -51,7 +51,10 @@ export class CrdtGoalStore {
       map.set("status", "planning" as GoalStatus);
       map.set("submittedBy", "user");
       map.set("planId", null);
-      map.set("createdAt", new Date().toISOString());
+      // Fix #13: Only set createdAt if not already present
+      if (!map.get("createdAt")) {
+        map.set("createdAt", new Date().toISOString());
+      }
       map.set("completedAt", null);
 
       // Build goal body from user message
@@ -114,5 +117,26 @@ export class CrdtGoalStore {
     } catch {
       return null;
     }
+  }
+
+  /**
+   * List all goals across all spaces in this team (Fix #18).
+   * Scans all CollaborationSpaces for goal docs.
+   */
+  async loadAllGoals(allSpaces: Map<string, any>): Promise<GoalData[]> {
+    const goals: GoalData[] = [];
+    for (const [_key, space] of allSpaces) {
+      try {
+        const hasGoal = await space.hasDoc("goal");
+        if (!hasGoal) continue;
+        const doc = await space.openDoc("goal");
+        const map = doc.getMap("goal");
+        const data = map.toJSON();
+        if (data.id) goals.push(data as GoalData);
+      } catch {
+        // Skip unreadable spaces
+      }
+    }
+    return goals;
   }
 }

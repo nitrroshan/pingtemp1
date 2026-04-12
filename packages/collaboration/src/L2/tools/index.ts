@@ -254,7 +254,8 @@ export function createCollabTool(
         | "read"
         | "write"
         | "write-block"
-        | "read-block";
+        | "read-block"
+        | "discuss";
       docName?: string;
       key?: string;
       value?: any;
@@ -491,11 +492,12 @@ export function createCollabTool(
       if (action === "write") {
         if (!docName || !key)
           return "Both docName and key required for writes.";
-        if (docName === "plans" || docName === "outputs" || docName === "tasks" || docName === "goal" || docName === "plan")
-          return `"${docName}" is read-only. Only CRDT docs are writable.`;
-        // Protect individual task docs (e.g., "task-003/task")
-        if (docName.endsWith("/task"))
-          return `Task documents are read-only. Tasks are managed by the orchestrator.`;
+        // Fix #5: Comprehensive read-only protection for all system docs
+        const isSystemDoc = ["plans", "outputs", "tasks", "goal", "plan", "_index"].includes(docName);
+        const isTaskInternalDoc = /\/(task|discussion|decisions|config)$/.test(docName);
+        if (isSystemDoc || isTaskInternalDoc) {
+          return `"${docName}" is read-only. Use 'discuss' action for discussions, or write to custom CRDT docs.`;
+        }
 
         const doc = await space.openDoc(docName);
         const parsed = typeof value === "string" ? JSON.parse(value) : value;
@@ -545,7 +547,130 @@ export function createCollabTool(
         return text;
       }
 
-      return `Unknown action "${action}". Use: discover, list, read, read-block, write, write-block.`;
+      // === DISCUSS: Agent discussion protocol using Y.Array + cursor tracking ===
+      if (action === "discuss") {
+        if (!docName)
+          return "Provide docName (e.g., 'task-003/discussion') for discuss action.";
+
+        // Fix #12: Validate doc is a discussion doc
+        if (!docName.endsWith("/discussion")) {
+          return `discuss action requires a discussion doc (e.g., "task-003/discussion"). Got: "${docName}".`;
+        }
+
+        const doc = await space.openDoc(docName);
+
+        // Operation determined by key parameter:
+        // key = "post" → push a new discussion block
+        // key = "read" → read new blocks since cursor
+        // key = "decide" → record a decision
+        // key = undefined → read all blocks
+        const op = key || "read";
+
+        if (op === "post") {
+          // Push a discussion block to Y.Array
+          if (!value) return "Provide value with { content, type?, mentions? } for discuss post.";
+
+          // Check guard rails
+          const configMap = doc.getMap("config");
+          const config = configMap.toJSON();
+
+          if (config.status === "closed" || config.status === "escalated") {
+            return `Discussion is ${config.status}. No new posts allowed.`;
+          }
+
+          const totalTokens = config.totalTokensUsed || 0;
+          const maxTokens = config.maxTokens || 50000;
+          if (totalTokens >= maxTokens) {
+            return `Token limit reached (${totalTokens}/${maxTokens}). Discussion auto-closed.`;
+          }
+
+          const roundsPerAgent = config.roundsPerAgent || {};
+          const myRounds = roundsPerAgent[agentRole] || 0;
+          const maxRounds = config.maxRounds || 10;
+          if (myRounds >= maxRounds) {
+            return `You have reached the round limit (${myRounds}/${maxRounds}). Cannot post more.`;
+          }
+
+          const parsed = typeof value === "string" ? JSON.parse(value) : value;
+          const block = {
+            id: crypto.randomUUID(),
+            role: agentRole,
+            timestamp: new Date().toISOString(),
+            content: parsed.content || "",
+            mentions: parsed.mentions || [],
+            replyTo: parsed.replyTo || undefined,
+            type: parsed.type || "message",
+            tokens: Math.ceil((parsed.content || "").length / 4), // rough estimate
+          };
+
+          // Push to discussion array
+          const discussion = doc.getArray("discussion");
+          discussion.push([block]);
+
+          // Update guard rail counters
+          configMap.set("totalTokensUsed", totalTokens + block.tokens);
+          configMap.set("roundsPerAgent", {
+            ...roundsPerAgent,
+            [agentRole]: myRounds + 1,
+          });
+          configMap.set("lastActivity", block.timestamp);
+
+          // Update cursor
+          const cursors = doc.getMap("cursors");
+          cursors.set(agentRole, block.timestamp);
+
+          // Warn if approaching token limit
+          const newTotal = totalTokens + block.tokens;
+          const warning = newTotal > maxTokens * 0.8
+            ? ` ⚠️ Token usage at ${Math.round(newTotal / maxTokens * 100)}% — wrap up soon.`
+            : "";
+
+          return `Posted discussion block (${block.type}). Round ${myRounds + 1}/${maxRounds}, tokens ${newTotal}/${maxTokens}.${warning}`;
+        }
+
+        if (op === "read") {
+          // Read new blocks since cursor
+          const cursors = doc.getMap("cursors");
+          const myLastRead = cursors.get(agentRole) as string ?? "1970-01-01T00:00:00Z";
+
+          const discussion = doc.getArray("discussion");
+          const allBlocks = discussion.toJSON();
+          const newBlocks = allBlocks.filter((b: any) => b.timestamp > myLastRead);
+
+          // Update cursor to now
+          cursors.set(agentRole, new Date().toISOString());
+
+          if (newBlocks.length === 0) {
+            return "No new discussion blocks since your last read.";
+          }
+
+          const formatted = newBlocks.map((b: any) =>
+            `[${b.type}] ${b.role} (${b.timestamp}): ${b.content}${b.mentions?.length ? ` @${b.mentions.join(", @")}` : ""}`
+          ).join("\n\n");
+
+          return `${newBlocks.length} new block(s):\n\n${formatted}`;
+        }
+
+        if (op === "decide") {
+          // Record a decision
+          if (!value) return "Provide value with { key, decision, agreedBy? } for discuss decide.";
+
+          const parsed = typeof value === "string" ? JSON.parse(value) : value;
+          const decisions = doc.getMap("decisions");
+          decisions.set(parsed.key || "decision", {
+            decision: parsed.decision,
+            decidedBy: agentRole,
+            agreedBy: parsed.agreedBy || [agentRole],
+            timestamp: new Date().toISOString(),
+          });
+
+          return `Decision recorded: "${parsed.decision}" by ${agentRole}.`;
+        }
+
+        return `Unknown discuss operation "${op}". Use key = "post" | "read" | "decide".`;
+      }
+
+      return `Unknown action "${action}". Use: discover, list, read, read-block, write, write-block, discuss.`;
     },
     {
       name: "collab",
@@ -562,6 +687,10 @@ export function createCollabTool(
         "  write-block  — insert rich text into a collaborative document (visible in the shared editor)",
         "               Use markdown: # headings, ## subheadings, - bullets, plain paragraphs",
         '               Use "key" as a section title. Content appears in BlockNote editor for all users.',
+        "  discuss      — discussion protocol with cursor tracking (key = post | read | decide)",
+        '               post: push a message block { content, type?, mentions? }',
+        '               read: get new blocks since your last read (cursor-based)',
+        '               decide: record a decision { key, decision, agreedBy? }',
       ].join("\n"),
       schema: z.object({
         action: z
@@ -572,9 +701,10 @@ export function createCollabTool(
             "read-block",
             "write",
             "write-block",
+            "discuss",
           ])
           .describe(
-            "discover | list | read | read-block | write | write-block",
+            "discover | list | read | read-block | write | write-block | discuss",
           ),
         docName: z
           .string()
