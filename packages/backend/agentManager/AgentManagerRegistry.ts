@@ -13,9 +13,11 @@
 
 import { rootLogger } from "../logging/index.js";
 import { AgentManager } from "./AgentManagerV2.js";
+import { join } from "path";
 import { WorkspacePlugin } from "./plugins/WorkspacePlugin.js";
 import { CollaborationPlugin } from "./plugins/CollaborationPlugin.js";
 import { KnowledgePlugin } from "./plugins/KnowledgePlugin.js";
+import { SkillPlugin } from "./plugins/SkillPlugin.js";
 import { getConfig } from "../config/index.js";
 import type { ServiceRegistry } from "../services/ServiceRegistry.js";
 
@@ -78,7 +80,7 @@ export class AgentManagerRegistry {
 
   /**
    * Load team data and create AgentManager.
-   * Uses ServiceRegistry (file or mongo adapters) — no direct Mongoose access.
+   * Uses PluginTeamService for both team records and agent definitions.
    */
   private async loadTeam(teamId: string): Promise<AgentManager> {
     if (!this.services) {
@@ -92,18 +94,26 @@ export class AgentManagerRegistry {
 
     const team = await this.services.teams.getTeam(teamId);
     if (!team) {
-      throw new Error(`Team ${teamId} not found`);
+      throw new Error(`Team ${teamId} not found — no plugin maps to this ID`);
     }
 
-    const agents = await this.services.agents.getTeamAgents(teamId);
+    logger.info(`[Registry] Loading team from plugin: ${team.pluginName}`);
 
-    const teamRoles = agents.map((agent) => ({
-      id: agent.id,
-      role: agent.role.toLowerCase(),
-      name: agent.name,
-      goal: (agent as any).goal ?? "",
-      systemPrompt: (agent as any).systemPrompt,
+    // Load full agent definitions from plugin .md files
+    const agentDefs = await this.services.teams.getTeamAgentDefinitions(teamId);
+
+    const teamRoles = agentDefs.map(agentDef => ({
+      id: agentDef.id,
+      role: agentDef.role.toLowerCase(),
+      name: agentDef.name,
+      goal: agentDef.goal ?? agentDef.description ?? "",
+      systemPrompt: agentDef.systemPrompt,
+      pluginConfig: JSON.stringify(agentDef.config),
     }));
+
+    logger.info(
+      `[Registry] Plugin "${team.pluginName}" loaded ${teamRoles.length} agents from .md files`,
+    );
 
     logger.info(
       `[Registry] Team "${team.name}" has ${teamRoles.length} roles: ${teamRoles.map((r) => r.role).join(", ")}`,
@@ -116,9 +126,32 @@ export class AgentManagerRegistry {
     const workspaceDir = process.env.WORKSPACE_BASE_DIR || "./data/workspaces";
     const teamRepoPath = `${workspaceDir}/${teamId}`;
 
-    // Register plugins — workspace (L1), collaboration (L2), knowledge (L3)
+    // Register plugins — workspace (L1), collaboration (L2), knowledge (L3), skills
     manager.registerPlugin(
       new WorkspacePlugin({ repoPath: teamRepoPath }),
+    );
+
+    // Skills plugin — loads SKILL.md files scoped to this team's registry plugin
+    // Per-role filtering: each agent's .md declares defaultSkills → only those skills are tools for that role
+    // __dirname at runtime = packages/backend/dist/agentManager/ — 4 levels up to repo root
+    const repoRoot = join(__dirname, "..", "..", "..", "..");
+    const pluginsDir = process.env.PLUGIN_REGISTRY_DIR
+      ?? join(repoRoot, "packages", "registry", "plugins");
+
+    // Build role → skill IDs map from agent definitions (config.skills from agent .md defaultSkills)
+    const roleSkillMap = new Map<string, string[]>();
+    for (const agentDef of agentDefs) {
+      const role = agentDef.role.toLowerCase();
+      const skills: string[] = (agentDef.config as any)?.skills ?? [];
+      roleSkillMap.set(role, skills);
+    }
+
+    manager.registerPlugin(
+      new SkillPlugin({
+        pluginsDir,
+        teams: team.pluginName ? [team.pluginName] : undefined,
+        roleSkillMap,
+      }),
     );
 
     const collabPort = process.env.COLLAB_PORT
@@ -156,11 +189,12 @@ export class AgentManagerRegistry {
       );
     }
 
-    // Initialize orchestrator with team data
+    // Initialize orchestrator with team data (pass full agent records for plugin support)
     await manager.initializeOrchestrator(
       teamId,
       teamRoles.map((r) => r.role),
       Object.fromEntries(teamRoles.map((r) => [r.role, r.id])),
+      teamRoles,
     );
 
     // Cache it

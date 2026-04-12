@@ -1,0 +1,36 @@
+sequenceDiagram
+    actor User
+    participant Socket as SocketServerV2
+    participant Orch as Orchestrator
+    participant Plan as Planner
+    participant TS as TaskStore
+    participant CA as ChatAgent
+    participant MCP as PingMCP
+    participant W as Worker
+
+    User->>Socket: Build a REST API with auth
+    Socket->>Orch: handleMessage
+    Orch->>Plan: inject user message
+    Plan->>User: ask_user JWT or sessions?
+    User->>Plan: JWT
+    Plan->>TS: submit_plan T-001 T-002 T-003
+    TS->>Orch: onTaskReady T-001
+    Orch->>CA: dispatch T-001 backend-dev
+
+    CA->>CA: Create session, clone repo, branch
+    CA->>W: spawn crush process
+
+    W->>MCP: connect
+    MCP->>CA: validate, create session
+    W->>MCP: report_status Creating endpoints
+    MCP->>Socket: stream to UI
+    W->>MCP: ask_user REST or GraphQL?
+    MCP->>Socket: question to UI
+    User->>MCP: REST
+    MCP->>W: answer
+    W->>MCP: complete_task 3 endpoints created
+    MCP->>CA: collect results
+
+    CA->>TS: markComplete T-001
+    TS->>Orch: onTaskComplete T-001
+    TS->>Orch: onTaskReady T-002

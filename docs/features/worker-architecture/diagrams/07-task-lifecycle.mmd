@@ -1,0 +1,9 @@
+stateDiagram-v2
+    [*] --> proposed: Plan submitted
+    proposed --> ready: User approves
+    ready --> in_progress: Dispatched
+    in_progress --> completed: complete_task
+    in_progress --> failed: Error
+    failed --> ready: RETRY
+    failed --> [*]: ABORT
+    completed --> [*]: Resolve dependents

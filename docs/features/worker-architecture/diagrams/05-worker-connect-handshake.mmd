@@ -1,0 +1,12 @@
+sequenceDiagram
+    participant CA as ChatAgent
+    participant W as Worker
+
+    W->>CA: connect with capabilities
+    CA->>CA: Validate against role requirements
+
+    alt Sufficient
+        CA->>W: accepted + sessionId + task + workspace
+    else Missing
+        CA->>W: rejected + reason
+    end

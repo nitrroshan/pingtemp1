@@ -1,0 +1,12 @@
+stateDiagram-v2
+    [*] --> created: Task received
+    created --> workspace_ready: Clone and branch
+    workspace_ready --> pushed: Task pushed to worker
+    pushed --> working: Worker accepted
+    working --> paused: Worker pauses
+    paused --> working: Worker resumes
+    working --> completed: complete_task
+    working --> failed: Error
+    completed --> merged: Branch merged
+    merged --> [*]: Report to Planner
+    failed --> [*]: Report failure

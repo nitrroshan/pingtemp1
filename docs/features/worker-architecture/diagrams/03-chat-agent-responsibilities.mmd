@@ -1,0 +1,35 @@
+graph LR
+    subgraph ChatAgent
+        R1[R1 CHAT]
+        R2[R2 TRACK]
+        R3[R3 WORKSPACE]
+        R4[R4 PUSH TASK]
+        R5[R5 CONTEXT]
+        R6[R6 COLLECT]
+        R7[R7 EXPOSE MCP]
+    end
+
+    User((User)) --> R1
+    Planner((Planner)) -->|task| R2
+    R2 --> R3
+    R3 --> R4
+    R4 --> R5
+
+    subgraph Workers
+        Crush[Crush]
+        Claude[Claude Code]
+        Copilot[Copilot CLI]
+        Team[Child Team]
+    end
+
+    R7 -->|MCP| Crush
+    R7 -->|MCP| Claude
+    R7 -->|MCP| Copilot
+    R7 -->|MCP| Team
+
+    Crush -->|complete| R6
+    Claude -->|complete| R6
+    Copilot -->|complete| R6
+    Team -->|complete| R6
+
+    R6 -->|done| Planner

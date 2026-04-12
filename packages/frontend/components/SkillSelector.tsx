@@ -1,8 +1,11 @@
 /**
- * SkillSelector — Per-agent skill management UI
+ * SkillSelector — Per-agent skill viewer
  *
- * Displays a list of available skills with checkboxes.
- * Toggling a skill calls the backend to assign/remove it.
+ * Displays the team's available skills from the registry plugin.
+ * Highlights which skills are assigned to this specific agent
+ * (from defaultSkills in the agent's .md file).
+ *
+ * Read-only — skills are defined in SKILL.md files and agent .md defaultSkills.
  *
  * Props:
  *   agentId   — The agent ID (from team/agent model)
@@ -10,16 +13,14 @@
  *   onClose   — Close the selector panel
  */
 
-import React, { useState, useEffect, useCallback } from 'react';
-import { X, Search, Tag, Loader2 } from 'lucide-react';
-import { API_BASE_URL } from '../constants';
+import React, { useState, useEffect } from 'react';
+import { X, Search, Tag, Loader2, CheckCircle2 } from 'lucide-react';
+import { agentServiceV2 } from '../services/AgentServiceV2';
 
-interface Skill {
-  skillId: string;
+interface SkillInfo {
+  id: string;
   name: string;
   description: string;
-  tags: string[];
-  assigned?: boolean;
 }
 
 interface SkillSelectorProps {
@@ -28,43 +29,31 @@ interface SkillSelectorProps {
   onClose: () => void;
 }
 
-const API_BASE = API_BASE_URL;
-
 const SkillSelector: React.FC<SkillSelectorProps> = ({ agentId, teamId, onClose }) => {
-  const [skills, setSkills] = useState<Skill[]>([]);
-  const [assignedIds, setAssignedIds] = useState<Set<string>>(new Set());
+  const [skills, setSkills] = useState<SkillInfo[]>([]);
+  const [agentSkillIds, setAgentSkillIds] = useState<Set<string>>(new Set());
   const [search, setSearch] = useState('');
   const [loading, setLoading] = useState(true);
-  const [toggling, setToggling] = useState<Set<string>>(new Set());
   const [error, setError] = useState<string | null>(null);
 
-  // Load all available skills + currently assigned skills
   useEffect(() => {
     const load = async () => {
       setLoading(true);
       setError(null);
       try {
-        const [allRes, assignedRes] = await Promise.all([
-          fetch(`${API_BASE}/api/skills?limit=100`),
-          fetch(`${API_BASE}/api/v2/teams/${teamId}/agents/${agentId}/skills`),
+        // Fetch team's available skills and agents in parallel
+        const [skillsRes, agentsRes] = await Promise.all([
+          agentServiceV2.getTeamSkills(teamId),
+          agentServiceV2.getAgents(teamId),
         ]);
 
-        const allData = await allRes.json();
-        const assignedData = assignedRes.ok ? await assignedRes.json() : { skills: [] };
+        setSkills(skillsRes.skills);
 
-        const all: Skill[] = (allData.data || allData.skills || []).map((s: any) => ({
-          skillId: s.skillId,
-          name: s.name,
-          description: s.description || '',
-          tags: s.tags || [],
-        }));
-
-        const assigned: string[] = (assignedData.data?.skills || assignedData.skills || []).map((s: any) =>
-          s.skillId || s
+        // Find this agent's defaultSkills from the agents response
+        const agent = agentsRes.agents.find(
+          (a: any) => a.id === agentId || a.role === agentId
         );
-
-        setSkills(all);
-        setAssignedIds(new Set(assigned));
+        setAgentSkillIds(new Set(agent?.skills ?? []));
       } catch (e: any) {
         setError(`Failed to load skills: ${e.message}`);
       } finally {
@@ -74,47 +63,13 @@ const SkillSelector: React.FC<SkillSelectorProps> = ({ agentId, teamId, onClose 
     load();
   }, [agentId, teamId]);
 
-  const toggleSkill = useCallback(async (skillId: string, isAssigned: boolean) => {
-    setToggling(prev => new Set([...prev, skillId]));
-    try {
-      const url = `${API_BASE}/api/v2/teams/${teamId}/agents/${agentId}/skills${isAssigned ? `/${skillId}` : ''}`;
-      const method = isAssigned ? 'DELETE' : 'POST';
-      const body = isAssigned ? undefined : JSON.stringify({ skillId });
-
-      const res = await fetch(url, {
-        method,
-        headers: { 'Content-Type': 'application/json' },
-        ...(body ? { body } : {}),
-      });
-
-      if (res.ok) {
-        setAssignedIds(prev => {
-          const next = new Set(prev);
-          if (isAssigned) next.delete(skillId);
-          else next.add(skillId);
-          return next;
-        });
-      } else {
-        const err = await res.json().catch(() => ({ error: 'Request failed' }));
-        setError(err.error || 'Failed to update skill');
-      }
-    } catch (e: any) {
-      setError(`Error: ${e.message}`);
-    } finally {
-      setToggling(prev => {
-        const next = new Set(prev);
-        next.delete(skillId);
-        return next;
-      });
-    }
-  }, [agentId, teamId]);
-
   const filtered = skills.filter(s =>
     !search ||
     s.name.toLowerCase().includes(search.toLowerCase()) ||
-    s.description.toLowerCase().includes(search.toLowerCase()) ||
-    s.tags.some(t => t.toLowerCase().includes(search.toLowerCase()))
+    s.description.toLowerCase().includes(search.toLowerCase())
   );
+
+  const assignedCount = skills.filter(s => agentSkillIds.has(s.id)).length;
 
   return (
     <div className="flex flex-col h-full bg-background border-l border-border">
@@ -155,62 +110,52 @@ const SkillSelector: React.FC<SkillSelectorProps> = ({ agentId, teamId, onClose 
 
         {!loading && !error && filtered.length === 0 && (
           <div className="text-center text-xs text-muted-foreground py-8">
-            {search ? 'No skills match your search' : 'No skills installed'}
+            {search ? 'No skills match your search' : 'No skills defined for this team'}
           </div>
         )}
 
         {!loading && filtered.map(skill => {
-          const isAssigned = assignedIds.has(skill.skillId);
-          const isToggling = toggling.has(skill.skillId);
+          const isAssigned = agentSkillIds.has(skill.id);
 
           return (
-            <label
-              key={skill.skillId}
-              className={`flex items-start gap-3 px-3 py-2.5 rounded-lg cursor-pointer transition-colors group ${
-                isAssigned ? 'bg-primary/10' : 'hover:bg-accent'
+            <div
+              key={skill.id}
+              className={`flex items-start gap-3 px-3 py-2.5 rounded-lg transition-colors ${
+                isAssigned ? 'bg-primary/10' : 'bg-muted/30'
               }`}
             >
-              {/* Checkbox */}
+              {/* Assignment indicator */}
               <div className="flex-shrink-0 mt-0.5">
-                {isToggling ? (
-                  <Loader2 size={14} className="animate-spin text-primary" />
+                {isAssigned ? (
+                  <CheckCircle2 size={14} className="text-primary" />
                 ) : (
-                  <input
-                    type="checkbox"
-                    checked={isAssigned}
-                    onChange={() => toggleSkill(skill.skillId, isAssigned)}
-                    className="w-3.5 h-3.5 accent-teal-400 cursor-pointer"
-                  />
+                  <div className="w-3.5 h-3.5 rounded-full border border-muted-foreground/30" />
                 )}
               </div>
 
               {/* Skill info */}
               <div className="flex-1 min-w-0">
-                <p className={`text-xs font-medium truncate ${isAssigned ? 'text-foreground' : 'text-foreground/80'}`}>
+                <p className={`text-xs font-medium truncate ${isAssigned ? 'text-foreground' : 'text-foreground/60'}`}>
                   {skill.name}
                 </p>
                 <p className="text-[11px] text-muted-foreground mt-0.5 line-clamp-2">
                   {skill.description}
                 </p>
-                {skill.tags.length > 0 && (
-                  <div className="flex flex-wrap gap-1 mt-1.5">
-                    {skill.tags.slice(0, 3).map(tag => (
-                      <span key={tag} className="flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] bg-muted text-muted-foreground">
-                        <Tag size={8} />
-                        {tag}
-                      </span>
-                    ))}
-                  </div>
+                {isAssigned && (
+                  <span className="inline-flex items-center gap-0.5 mt-1 px-1.5 py-0.5 rounded text-[10px] bg-primary/15 text-primary">
+                    <Tag size={8} />
+                    assigned
+                  </span>
                 )}
               </div>
-            </label>
+            </div>
           );
         })}
       </div>
 
       {/* Footer */}
       <div className="px-4 py-2 border-t border-border text-[11px] text-muted-foreground">
-        {assignedIds.size} skill{assignedIds.size !== 1 ? 's' : ''} assigned
+        {assignedCount} of {skills.length} skill{skills.length !== 1 ? 's' : ''} assigned · Defined in agent .md
       </div>
     </div>
   );

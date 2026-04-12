@@ -9,7 +9,6 @@ import { rootLogger } from "../logging/index.js";
 import { AgentManager } from "../agentManager/AgentManagerV2.js";
 import { createAgentManagerHandlerV2 } from "./agentManagerHandlerV2.js";
 import { swaggerSpec } from "./swagger.js";
-import { skillsRouter } from "../skills/index.js";
 import { getAuthHandler } from "../auth/index.js";
 import { FRONTEND_FLAG_KEYS } from "../config/featureFlags.js";
 import { getConfig } from "../config/index.js";
@@ -99,9 +98,9 @@ export class HttpServer {
       });
     });
 
-    // Mount better-auth routes (lazy init — after MongoDB is connected)
-    this.app.all("/api/auth/*splat", (req, res, next) => {
-      const handler = getAuthHandler();
+    // Mount better-auth routes (lazy init - works with SQLite or MongoDB)
+    this.app.all("/api/auth/*splat", async (req, res, next) => {
+      const handler = await getAuthHandler();
       return handler(req, res, next);
     });
     logger.info("[HttpServer] Auth routes mounted at /api/auth/*");
@@ -126,9 +125,9 @@ export class HttpServer {
     this.app.use("/api", v2Routes);
     logger.info("[HttpServer] V2 API mounted at /api/v2 and /api");
 
-    // Mount skills API routes
-    this.app.use("/api/skills", skillsRouter);
-    logger.info("[HttpServer] Skills API mounted at /api/skills");
+    // Mount registry API routes (plugin discovery)
+    this.mountRegistryRoutes();
+    logger.info("[HttpServer] Registry API mounted at /api/registry");
 
     // Mount Swagger UI
     this.app.use("/api-docs", swaggerUi.serve, swaggerUi.setup(swaggerSpec));
@@ -208,7 +207,7 @@ export class HttpServer {
     });
     logger.info("[HttpServer] Collab doc delete API mounted at /api/collab/:teamId/docs/:docName");
 
-    // Chat message history
+    // Chat message history (team-wide)
     this.app.get("/api/v2/teams/:teamId/messages", async (req, res) => {
       try {
         const { teamId } = req.params;
@@ -217,6 +216,23 @@ export class HttpServer {
 
         if (options.services) {
           const messages = await options.services.chat.getMessages(teamId, { limit, before });
+          res.json({ messages });
+        } else {
+          res.json({ messages: [] });
+        }
+      } catch (err: any) {
+        res.status(500).json({ error: err.message });
+      }
+    });
+
+    // Per-agent chat history
+    this.app.get("/api/v2/teams/:teamId/agents/:agentId/messages", async (req, res) => {
+      try {
+        const { teamId, agentId } = req.params;
+        const limit = Math.min(parseInt(req.query.limit as string) || 50, 200);
+
+        if (options.services) {
+          const messages = await options.services.chat.getAgentMessages(teamId, agentId, { limit });
           res.json({ messages });
         } else {
           res.json({ messages: [] });
@@ -299,12 +315,11 @@ export class HttpServer {
         let remoteUrl = req.body.remoteUrl;
         let remoteToken = req.body.remoteToken;
 
-        // Try to get team's stored git config via services
+        // Try to get team info via services (validates team exists)
         if (options.services) {
           const team = await options.services.teams.getTeam(teamId);
           if (!team) { res.status(404).json({ error: "Team not found" }); return; }
-          remoteUrl = remoteUrl || team.gitRemoteUrl;
-          remoteToken = remoteToken || team.gitRemoteToken;
+          // Git remote config comes from request body or environment
         }
 
         if (!remoteUrl) { res.status(400).json({ error: "No git remote URL configured" }); return; }
@@ -334,6 +349,51 @@ export class HttpServer {
       }
     });
     logger.info("[HttpServer] Workspace push API mounted at /api/v2/workspaces/:teamId/push");
+  }
+
+  /**
+   * Mount registry API routes for plugin discovery.
+   * Uses dynamic import to avoid hard dependency on @ping/registry at startup.
+   */
+  private mountRegistryRoutes(): void {
+    // Lazy mount — load registry modules only when first request hits
+    this.app.use("/api/registry", async (req, res, next) => {
+      try {
+        const { join, resolve } = await import("path");
+        const { createRegistryRouter } = await import("./registryRouter.js");
+        const { PluginLoader } = await import("@ping/registry/src/loader/PluginLoader");
+        const { DiscoveryService } = await import("@ping/registry/src/discovery/DiscoveryService");
+        const { IndexBuilder } = await import("@ping/registry/src/index/IndexBuilder");
+
+        // Resolve registry dir: env var > repo root fallback
+        // __dirname is packages/backend/dist/api/ — 4 levels up to repo root
+        const repoRoot = resolve(__dirname, "..", "..", "..", "..");
+        const registryDir = process.env.PLUGIN_REGISTRY_DIR
+          ?? join(repoRoot, "packages", "registry", "plugins");
+        const indexPath = join(repoRoot, "packages", "registry", "index.json");
+
+        const loader = new PluginLoader(registryDir);
+
+        // Try loading cached index, rebuild if missing
+        let index;
+        try {
+          index = IndexBuilder.load(indexPath);
+        } catch {
+          // Index doesn't exist yet — create empty index (suggest endpoint will be limited)
+          index = { version: "1.0", buildTimestamp: new Date().toISOString(), plugins: [], agents: [], skills: [] };
+        }
+
+        const discovery = new DiscoveryService(index);
+        const router = createRegistryRouter(discovery, loader);
+
+        // Replace the lazy middleware with the actual router
+        this.app.use("/api/registry", router);
+        router(req, res, next);
+      } catch (error) {
+        logger.error(`[HttpServer] Failed to mount registry routes: ${error}`);
+        res.status(500).json({ error: "Registry service unavailable" });
+      }
+    });
   }
 
   /**

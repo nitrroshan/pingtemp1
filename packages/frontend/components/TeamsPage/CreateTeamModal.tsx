@@ -2,21 +2,43 @@
  * CreateTeamModal — form for creating a new team
  */
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { X, Loader2 } from 'lucide-react';
 import { cn } from '../../lib/utils';
+import { agentServiceV2 } from '../../services/AgentServiceV2';
 
 interface CreateTeamModalProps {
   onClose: () => void;
-  onConfirm: (name: string, goal: string, description: string) => Promise<void>;
+  onConfirm: (name: string, goal: string, description: string, pluginName?: string) => Promise<void>;
 }
 
 export function CreateTeamModal({ onClose, onConfirm }: CreateTeamModalProps) {
   const [name, setName] = useState('');
   const [goal, setGoal] = useState('');
   const [description, setDescription] = useState('');
+  const [pluginName, setPluginName] = useState('');
+  const [plugins, setPlugins] = useState<Array<{ name: string; description: string }>>([]);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Load available plugins on mount
+  useEffect(() => {
+    agentServiceV2.getPlugins().then(({ plugins: loaded }) => {
+      setPlugins(loaded);
+    }).catch(() => { /* registry unavailable — hide plugin selector */ });
+  }, []);
+
+  // Auto-fill name when plugin selected
+  const handlePluginChange = (selected: string) => {
+    setPluginName(selected);
+    if (selected) {
+      const plugin = plugins.find(p => p.name === selected);
+      if (plugin) {
+        if (!name) setName(plugin.name.replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase()));
+        if (!goal) setGoal(plugin.description);
+      }
+    }
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -24,7 +46,7 @@ export function CreateTeamModal({ onClose, onConfirm }: CreateTeamModalProps) {
     setIsSubmitting(true);
     setError(null);
     try {
-      await onConfirm(name.trim(), goal.trim(), description.trim());
+      await onConfirm(name.trim(), goal.trim(), description.trim(), pluginName || undefined);
       onClose();
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Failed to create team');
@@ -53,6 +75,34 @@ export function CreateTeamModal({ onClose, onConfirm }: CreateTeamModalProps) {
 
         {/* Form */}
         <form onSubmit={handleSubmit} className="p-5 space-y-4">
+          {/* Plugin selector */}
+          {plugins.length > 0 && (
+            <div className="space-y-1.5">
+              <label className="text-xs font-medium text-foreground" htmlFor="team-plugin">
+                Plugin Template
+              </label>
+              <select
+                id="team-plugin"
+                value={pluginName}
+                onChange={e => handlePluginChange(e.target.value)}
+                className={cn(
+                  'w-full px-3 py-2 rounded-md text-sm bg-input border border-border text-foreground',
+                  'focus:outline-none focus:ring-2 focus:ring-ring'
+                )}
+              >
+                <option value="">Custom (LLM discovers roles)</option>
+                {plugins.map(p => (
+                  <option key={p.name} value={p.name}>
+                    {p.name.replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase())} — {p.description}
+                  </option>
+                ))}
+              </select>
+              <p className="text-xs text-muted-foreground">
+                {pluginName ? 'Agents loaded from plugin .md files' : 'LLM will discover roles (requires API key)'}
+              </p>
+            </div>
+          )}
+
           <div className="space-y-1.5">
             <label className="text-xs font-medium text-foreground" htmlFor="team-name">
               Team Name <span className="text-destructive">*</span>

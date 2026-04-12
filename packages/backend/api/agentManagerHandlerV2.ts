@@ -1,15 +1,16 @@
 /**
  * agentManagerHandlerV2 - Express Router for V2 API
  *
- * All data access goes through ServiceRegistry (file or mongo adapters).
- * No Mongoose model imports — storage mode is transparent.
+ * All data access goes through ServiceRegistry (PluginTeamService).
+ * Teams always have a pluginName — agents/skills loaded from plugin .md files.
  *
  * Routes:
- *   POST /api/v2/teams           - Create team
+ *   POST /api/v2/teams           - Create team (requires pluginName)
  *   GET  /api/v2/teams           - List teams
  *   GET  /api/v2/teams/:id       - Get team by ID
  *   DELETE /api/v2/teams/:id     - Delete team
  *   GET  /api/v2/teams/:id/agents - Get agents for team
+ *   GET  /api/v2/teams/:id/skills - Get available skills for team
  *   GET  /api/v2/sessions/:id    - Get session state
  *   GET  /api/v2/sessions/:id/tasks - Get tasks for session
  */
@@ -18,9 +19,7 @@ import express from "express";
 import type { Request, Response, NextFunction } from "express";
 import { rootLogger } from "../logging/index.js";
 import { agentManagerRegistry } from "../agentManager/AgentManagerRegistry.js";
-import { AgentManager } from "../agentManager/AgentManagerV2.js";
 import type { ServiceRegistry } from "../services/ServiceRegistry.js";
-import { randomUUID } from "crypto";
 
 const logger = rootLogger.child({ module: "AgentManagerHandlerV2" });
 
@@ -41,78 +40,54 @@ export function createAgentManagerHandlerV2(services: ServiceRegistry): express.
   // ============================================================================
 
   /**
-   * POST /teams - Create a new team with role discovery
+   * POST /teams - Load a team from a plugin (returns team info with deterministic ID)
+   *
+   * Body: { name, goal, description?, pluginName }
+   * pluginName is REQUIRED — team is derived from the plugin.
    */
   router.post("/teams", async (req: Request, res: Response) => {
     try {
-      const { name, goal, description } = req.body;
+      const { name, goal, description, pluginName } = req.body;
 
       if (!name || !goal) {
         res.status(400).json({ error: "name and goal are required" });
         return;
       }
 
-      logger.info(`[V2] Creating team: ${name}`);
-
-      // Create temporary AgentManager for role discovery
-      const tempManager = new AgentManager();
-      await tempManager.configureNewWorkflow(
-        description ? `${goal}. ${description}` : goal,
-      );
-
-      const roles = await tempManager.getRoles(goal);
-      logger.info(
-        `[V2] Discovered ${roles.length} roles: ${roles.map((r: any) => r.role).join(", ")}`,
-      );
-
-      // Persist team via ServiceRegistry
-      const team = await services.teams.createTeam({
-        name,
-        description: description || goal,
-        ownerId: "local",
-        workspaceId: randomUUID(),
-        settings: { executionMode: "sequential", maxConcurrency: 1 },
-      });
-
-      const agentIds: string[] = [];
-      for (const role of roles) {
-        const agent = await services.agents.addAgent(team.id, {
-          teamId: team.id,
-          name: role.name,
-          role: role.role.toLowerCase(),
-          type: "worker",
-          ownedBy: "local",
-          delegatedTo: null,
-          definitionYaml: "",
-          status: "pending",
-          lastStartedAt: null,
-          errorMessage: null,
-          isActive: true,
-        });
-        agentIds.push(agent.id);
+      if (!pluginName) {
+        res.status(400).json({ error: "pluginName is required — all teams must reference a plugin" });
+        return;
       }
 
-      await tempManager.dispose();
+      logger.info(`[V2] Loading team from plugin: ${pluginName}`);
+
+      const plugin = await services.teams.loadPluginByName(pluginName);
+      const teamId = services.teams.getTeamId(pluginName);
+
+      const agentRecords = plugin.agents.map((agentDef) => ({
+        id: agentDef.id,
+        role: agentDef.role,
+        name: agentDef.name,
+        goal: agentDef.goal ?? agentDef.description ?? "",
+      }));
 
       res.status(201).json({
         team: {
-          id: team.id,
+          id: teamId,
           name,
           goal,
-          description: description || "",
-          memberCount: agentIds.length,
+          description: description || plugin.manifest.description || "",
+          memberCount: agentRecords.length,
+          plugin: pluginName,
         },
-        agents: roles.map((r: any, i: number) => ({
-          id: agentIds[i],
-          role: r.role,
-          name: r.name,
-          goal: r.goal,
-        })),
+        agents: agentRecords,
+        skills: plugin.skills.map((s: any) => ({ id: s.id, name: s.name, description: s.description })),
+        modes: plugin.modes,
       });
 
-      logger.info(`[V2] Team created: ${team.id} with ${agentIds.length} agents`);
+      logger.info(`[V2] Team loaded from plugin: ${teamId} (${pluginName}, ${agentRecords.length} agents)`);
     } catch (error: any) {
-      logger.error("[V2] Error creating team:", error);
+      logger.error("[V2] Error loading team:", error);
       res.status(500).json({ error: error.message || String(error) });
     }
   });
@@ -125,13 +100,14 @@ export function createAgentManagerHandlerV2(services: ServiceRegistry): express.
       const teams = await services.teams.listTeams();
       const teamList = [];
       for (const t of teams) {
-        const agents = await services.agents.getTeamAgents(t.id);
+        const agents = await services.teams.getTeamAgents(t.id);
         teamList.push({
           id: t.id,
           name: t.name,
           goal: t.description ?? "",
           description: t.description ?? "",
           memberCount: agents.length,
+          plugin: t.pluginName ?? undefined,
         });
       }
       res.json({ teams: teamList, count: teamList.length });
@@ -149,9 +125,9 @@ export function createAgentManagerHandlerV2(services: ServiceRegistry): express.
       const teamId = req.params.id as string;
       const team = await services.teams.getTeam(teamId);
       if (!team) { res.status(404).json({ error: "Team not found" }); return; }
-      const agents = await services.agents.getTeamAgents(teamId);
+      const agents = await services.teams.getTeamAgents(teamId);
       res.json({
-        team: { id: team.id, name: team.name, goal: team.description ?? "", description: team.description ?? "", memberCount: agents.length },
+        team: { id: team.id, name: team.name, goal: team.description ?? "", description: team.description ?? "", memberCount: agents.length, plugin: team.pluginName ?? undefined },
       });
     } catch (error: any) {
       logger.error("[V2] Error getting team:", error);
@@ -170,16 +146,11 @@ export function createAgentManagerHandlerV2(services: ServiceRegistry): express.
         return;
       }
 
+      // Evict cached AgentManager (teams themselves are read-only plugin projections)
       await agentManagerRegistry.remove(teamId);
 
-      const agents = await services.agents.getTeamAgents(teamId);
-      for (const agent of agents) {
-        await services.agents.removeAgent(teamId, agent.id);
-      }
-      await services.teams.deleteTeam(teamId);
-
       res.json({ deleted: true, teamId });
-      logger.info(`[V2] Team deleted: ${teamId}`);
+      logger.info(`[V2] Team evicted from cache: ${teamId}`);
     } catch (error: any) {
       logger.error("[V2] Error deleting team:", error);
       res.status(500).json({ error: error.message || String(error) });
@@ -196,20 +167,41 @@ export function createAgentManagerHandlerV2(services: ServiceRegistry): express.
   router.get("/teams/:id/agents", async (req: Request, res: Response) => {
     try {
       const teamId = req.params.id as string;
-      const agents = await services.agents.getTeamAgents(teamId);
-
+      const agents = await services.teams.getTeamAgents(teamId);
       res.json({
         agents: agents.map((a) => ({
           id: a.id,
           role: a.role,
           name: a.name,
-          goal: (a as any).goal ?? "",
-          teamId: a.teamId,
+          goal: a.goal ?? "",
+          skills: a.skills ?? [],
+          teamId,
         })),
         count: agents.length,
       });
     } catch (error: any) {
       logger.error("[V2] Error getting agents:", error);
+      res.status(500).json({ error: error.message || String(error) });
+    }
+  });
+
+  /**
+   * GET /teams/:id/skills - Get available skills for a team
+   */
+  router.get("/teams/:id/skills", async (req: Request, res: Response) => {
+    try {
+      const teamId = req.params.id as string;
+      const skills = await services.teams.getTeamSkills(teamId);
+      res.json({
+        skills: skills.map((s) => ({
+          id: s.id,
+          name: s.name,
+          description: s.description,
+        })),
+        count: skills.length,
+      });
+    } catch (error: any) {
+      logger.error("[V2] Error getting team skills:", error);
       res.status(500).json({ error: error.message || String(error) });
     }
   });

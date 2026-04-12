@@ -146,6 +146,10 @@ export class AgentServiceV2 {
     this.userId = `user-${Math.random().toString(36).substring(7)}`;
   }
 
+  getBaseUrl(): string {
+    return this.baseUrl;
+  }
+
   // ============================================================================
   // Connection
   // ============================================================================
@@ -493,17 +497,21 @@ export class AgentServiceV2 {
   // ============================================================================
 
   /**
-   * Create a new team with role discovery
+   * Create a new team — from plugin or via LLM role discovery
    */
   async createTeam(
     name: string,
     goal: string,
     description?: string,
+    pluginName?: string,
   ): Promise<{ team: TeamResponse; agents: AgentInfo[] }> {
+    const body: Record<string, string | undefined> = { name, goal, description };
+    if (pluginName) body.pluginName = pluginName;
+
     const response = await fetch(`${this.baseUrl}/api/v2/teams`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name, goal, description }),
+      body: JSON.stringify(body),
     });
 
     if (!response.ok) {
@@ -511,6 +519,15 @@ export class AgentServiceV2 {
       throw new Error(error.error || "Failed to create team");
     }
 
+    return response.json();
+  }
+
+  /**
+   * List available plugins from the registry
+   */
+  async getPlugins(): Promise<{ plugins: Array<{ name: string; description: string; version: string; tags?: string[] }>; count: number }> {
+    const response = await fetch(`${this.baseUrl}/api/registry/plugins`);
+    if (!response.ok) return { plugins: [], count: 0 };
     return response.json();
   }
 
@@ -567,6 +584,23 @@ export class AgentServiceV2 {
 
     if (!response.ok) {
       throw new Error("Failed to fetch agents");
+    }
+
+    return response.json();
+  }
+
+  /**
+   * Get available skills for a team (from registry plugin)
+   */
+  async getTeamSkills(
+    teamId: string,
+  ): Promise<{ skills: Array<{ id: string; name: string; description: string }>; count: number }> {
+    const response = await fetch(
+      `${this.baseUrl}/api/v2/teams/${teamId}/skills`,
+    );
+
+    if (!response.ok) {
+      throw new Error("Failed to fetch team skills");
     }
 
     return response.json();

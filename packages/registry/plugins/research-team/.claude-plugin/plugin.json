@@ -1,0 +1,7 @@
+{
+  "name": "research-team",
+  "description": "Research and analysis team for competitive analysis, technical research, and data analysis",
+  "version": "1.0.0",
+  "tags": ["research", "analysis", "competitive", "data"],
+  "settings": { "executionMode": "sequential", "maxConcurrency": 1 }
+}

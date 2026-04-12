@@ -1,0 +1,48 @@
+graph TB
+    subgraph Done
+        A5[A5 Planner]
+        A1[A1 AI SDK]
+        A2[A2 Streaming]
+        A6[A6 Task Orch]
+        C3[C3 Skills]
+        E3B[3B Events]
+    end
+
+    subgraph Phase4
+        A8[A8 Git Context]
+        KB[Knowledge L3]
+        CP2[Conversations]
+    end
+
+    subgraph Phase5
+        A3[A3 Tools as MCP]
+        A11[A11 Ping MCP]
+    end
+
+    subgraph Phase6
+        A10[A10 Persistent Agents]
+        A7[A7 External Agents]
+        A4[A4 Sandboxing]
+        B3[B3 Team Stacking]
+        WA[Worker Architecture]
+    end
+
+    A5 --> A6
+    A6 --> A8
+    A8 --> A3
+    A3 --> A11
+    A11 --> A10
+    A10 --> A7
+    A7 --> B3
+    A4 --> A10
+    CP2 --> A10
+    A10 --> WA
+    A11 --> WA
+    A7 --> WA
+
+    style A5 fill:#4CAF50,color:white
+    style A1 fill:#4CAF50,color:white
+    style A2 fill:#4CAF50,color:white
+    style A6 fill:#4CAF50,color:white
+    style C3 fill:#4CAF50,color:white
+    style E3B fill:#4CAF50,color:white

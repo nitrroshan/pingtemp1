@@ -4,6 +4,7 @@
 
 import dotenv from "dotenv";
 dotenv.config();
+dotenv.config({ path: ".env.secrets", override: true });
 
 import { AgentManagerAPI } from "./api/AgentManagerAPI.js";
 import { rootLogger } from "./logging/index.js";
@@ -31,21 +32,27 @@ async function main() {
   try {
     logger.info("Starting AgentManager API Server...");
 
-    // Connect to database (skip in file mode)
-    if (config.mongodbUri) {
-      logger.info("Connecting to MongoDB...");
+    logger.info(`Ping mode: ${config.mode}`);
+
+    // Connect to database (cloud mode only)
+    if (config.mode === "cloud" && config.mongodbUri) {
+      logger.info("Cloud mode: connecting to MongoDB for chat + auth...");
       await connectDB();
     } else {
-      logger.info("File-based storage mode — skipping MongoDB connection");
+      logger.info("Local mode: file-based storage (lowdb + SQLite)");
     }
 
-    // Create ServiceRegistry (file-based or MongoDB adapters)
+    // Create ServiceRegistry (SQLite local / MongoDB cloud)
     const dataDir = process.env.DATA_DIR || "./data";
     const services = await createServiceRegistry(dataDir);
     logger.info(`ServiceRegistry created (mode: ${services.mode})`);
 
     const api = new AgentManagerAPI(PORT, services);
     await api.start();
+
+    // Log discovered plugins (teams are derived from plugins automatically)
+    const teams = await services.teams.listTeams();
+    logger.info(`[Startup] ${teams.length} plugin team(s) available: ${teams.map(t => t.pluginName).join(", ")}`);
 
     logger.info(`Server running on:`);
     logger.info(`  HTTP API: http://localhost:${PORT}`);

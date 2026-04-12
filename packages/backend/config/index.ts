@@ -19,6 +19,9 @@ export interface AppConfig {
   port: number;
   nodeEnv: string;
 
+  /** Deployment mode: local (all file-based) vs cloud (MongoDB chat + auth, S3/Azure plugins) */
+  mode: "local" | "cloud";
+
   mongodbUri: string;
 
   azureOpenAi: {
@@ -96,8 +99,15 @@ function buildConfig(): AppConfig {
   config.port = parseInt(process.env.API_PORT || String(config.port), 10);
   config.nodeEnv = process.env.NODE_ENV || config.nodeEnv;
 
-  // LOCAL_FIRST=true forces file-based storage (ignores MONGODB_URI from .env)
-  if (process.env.LOCAL_FIRST === "true") {
+  // PING_MODE controls the full stack: local (file-based) vs cloud (MongoDB + cloud storage)
+  // LOCAL_FIRST=true is a legacy alias for PING_MODE=local
+  const pingMode = process.env.PING_MODE || (process.env.LOCAL_FIRST === "true" ? "local" : undefined);
+  if (pingMode === "local" || pingMode === "cloud") {
+    config.mode = pingMode;
+  }
+
+  // In local mode, force file-based storage (ignore MONGODB_URI)
+  if (config.mode === "local") {
     config.mongodbUri = "";
   } else {
     config.mongodbUri = process.env.MONGODB_URI || config.mongodbUri;

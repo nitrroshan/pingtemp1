@@ -3,6 +3,19 @@
   "version": "1.0.0",
   "type": "module",
   "main": "index.ts",
+  "exports": {
+    ".": "./index.ts",
+    "./src/loader/PluginLoader": "./src/loader/PluginLoader.ts",
+    "./src/discovery/DiscoveryService": "./src/discovery/DiscoveryService.ts",
+    "./src/index/IndexBuilder": "./src/index/IndexBuilder.ts",
+    "./src/parser/frontmatterParser": "./src/parser/frontmatterParser.ts",
+    "./src/converter/agentConverter": "./src/converter/agentConverter.ts",
+    "./src/storage/IPluginStorage": "./src/storage/IPluginStorage.ts",
+    "./src/storage/LocalPluginStorage": "./src/storage/LocalPluginStorage.ts",
+    "./src/storage/S3PluginStorage": "./src/storage/S3PluginStorage.ts",
+    "./src/storage/AzureBlobPluginStorage": "./src/storage/AzureBlobPluginStorage.ts",
+    "./src": "./src/index.ts"
+  },
   "scripts": {
     "start": "bun run index.ts",
     "dev": "bun run --watch index.ts",
@@ -19,10 +32,13 @@
     "typescript": "^5.9.3"
   },
   "dependencies": {
+    "@ai-sdk/openai": "^3.0.52",
     "@langchain/core": "^1.1.35",
     "@langchain/openai": "^1.3.0",
+    "ai": "^6.0.158",
     "dotenv": "^17.2.3",
     "express": "^5.1.0",
+    "gray-matter": "^4.0.3",
     "mongoose": "^8.19.2",
     "pino": "^10.3.1"
   }

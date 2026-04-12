@@ -43,8 +43,8 @@ export function TeamsPage({ onBack, onTeamCreated }: TeamsPageProps) {
 
   useEffect(() => { loadTeams(); }, [loadTeams]);
 
-  const handleCreate = useCallback(async (name: string, goal: string, description: string) => {
-    const { team } = await agentServiceV2.createTeam(name, goal, description);
+  const handleCreate = useCallback(async (name: string, goal: string, description: string, pluginName?: string) => {
+    const { team } = await agentServiceV2.createTeam(name, goal, description, pluginName);
     setTeams(prev => [...prev, team]);
     if (onTeamCreated) {
       const agentTeam: Agent = {
