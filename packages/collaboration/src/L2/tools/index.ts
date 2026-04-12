@@ -267,15 +267,67 @@ export function createCollabTool(
           const crdtDocs = await space.listDocs();
           const plans = await l2.planStore.listAllPlans();
           const manifests = await l2.getAllManifests(repoPath);
+
+          // Count task docs ({taskId}/task pattern)
+          const taskDocs = crdtDocs.filter((d: string) => d.endsWith("/task") && d !== "goal" && d !== "plan");
+          // Check if goal exists
+          const hasGoal = crdtDocs.includes("goal");
+
           return [
             "Available L2 team state (use discover with docName to drill in):",
             "",
             `  crdt    — ${crdtDocs.length} real-time docs (${crdtDocs.join(", ") || "none yet"})`,
+            `  tasks   — ${taskDocs.length} task documents (CRDT-backed, read-only)`,
+            `  goal    — ${hasGoal ? "1 active goal" : "no goal yet"}`,
             `  plans   — ${plans.length} plan files`,
             `  outputs — ${manifests.length} task output manifests`,
             "",
-            'Use: collab({ action: "discover", docName: "crdt" | "plans" | "outputs" })',
+            'Use: collab({ action: "discover", docName: "crdt" | "tasks" | "goal" | "plans" | "outputs" })',
           ].join("\n");
+        }
+
+        if (docName === "tasks") {
+          const crdtDocs = await space.listDocs();
+          const taskDocs = crdtDocs.filter((d: string) => d.endsWith("/task") && d !== "goal" && d !== "plan");
+          if (!taskDocs.length) return "No tasks found. Plan has not been approved yet.";
+
+          const summaries: string[] = [];
+          for (const docPath of taskDocs) {
+            try {
+              const doc = await space.openDoc(docPath);
+              const map = doc.getMap("task");
+              const data = map.toJSON();
+              const taskId = docPath.replace("/task", "");
+              summaries.push(`  ${data.id || taskId} [${data.status || "?"}] — ${data.title || "untitled"} (${data.assignedRole || "?"})`);
+            } catch {
+              summaries.push(`  ${docPath} — (failed to read)`);
+            }
+          }
+          return [
+            "Tasks (read-only — managed by orchestrator):",
+            ...summaries,
+            "",
+            'Read task details: collab({ action: "read", docName: "{taskId}/task" })',
+            'List task docs: collab({ action: "list", docName: "{taskId}" }) — shows discussion, decisions, etc.',
+          ].join("\n");
+        }
+
+        if (docName === "goal") {
+          try {
+            const doc = await space.openDoc("goal");
+            const map = doc.getMap("goal");
+            const data = map.toJSON();
+            if (!data.id) return "No goal document found.";
+            return [
+              "Goal (read-only):",
+              `  ${data.id} [${data.status}] — "${data.title}"`,
+              `  Submitted by: ${data.submittedBy} · Created: ${data.createdAt}`,
+              "",
+              'Read full goal: collab({ action: "read", docName: "goal" })',
+            ].join("\n");
+          } catch {
+            return "No goal document found.";
+          }
         }
 
         if (docName === "crdt") {
@@ -336,6 +388,24 @@ export function createCollabTool(
       if (action === "list") {
         if (!docName)
           return "Provide docName. Use discover to see available categories.";
+
+        // List all tasks
+        if (docName === "tasks") {
+          const crdtDocs = await space.listDocs();
+          const taskDocs = crdtDocs.filter((d: string) => d.endsWith("/task") && d !== "goal" && d !== "plan");
+          if (!taskDocs.length) return "No tasks found.";
+          const items: string[] = [];
+          for (const docPath of taskDocs) {
+            try {
+              const doc = await space.openDoc(docPath);
+              const data = doc.getMap("task").toJSON();
+              items.push(`  - ${data.id} [${data.status}] — ${data.title} (${data.assignedRole})`);
+            } catch {
+              items.push(`  - ${docPath} (unreadable)`);
+            }
+          }
+          return items.join("\n") || "No tasks.";
+        }
 
         if (docName === "plans") {
           const plans = await l2.planStore.listAllPlans();
@@ -421,8 +491,11 @@ export function createCollabTool(
       if (action === "write") {
         if (!docName || !key)
           return "Both docName and key required for writes.";
-        if (docName === "plans" || docName === "outputs")
+        if (docName === "plans" || docName === "outputs" || docName === "tasks" || docName === "goal" || docName === "plan")
           return `"${docName}" is read-only. Only CRDT docs are writable.`;
+        // Protect individual task docs (e.g., "task-003/task")
+        if (docName.endsWith("/task"))
+          return `Task documents are read-only. Tasks are managed by the orchestrator.`;
 
         const doc = await space.openDoc(docName);
         const parsed = typeof value === "string" ? JSON.parse(value) : value;
@@ -477,15 +550,15 @@ export function createCollabTool(
     {
       name: "collab",
       description: [
-        "Access shared team state — CRDT docs, plans, and output manifests.",
+        "Access shared team state — CRDT docs, tasks, goals, plans, and output manifests.",
         "Progressive discovery: start with discover, then list, read, or write.",
         "",
         "Actions:",
-        "  discover     — browse L2 categories (no docName) or items in a category (docName = crdt|plans|outputs)",
-        "  list         — show keys in a CRDT doc, or items in plans/outputs",
-        "  read         — get a specific key/item as JSON",
+        "  discover     — browse L2 categories (no docName) or items in a category (docName = crdt|tasks|goal|plans|outputs)",
+        "  list         — show keys in a CRDT doc, tasks, or items in plans/outputs",
+        "  read         — get a specific key/item as JSON (read {taskId}/task for task details, read goal for goal)",
         "  read-block   — read the rich text content from a collaborative document (what humans and agents wrote in the editor)",
-        "  write        — set a key/value in a CRDT doc (structured JSON data)",
+        "  write        — set a key/value in a CRDT doc (structured JSON data) — tasks/goals/plans are read-only",
         "  write-block  — insert rich text into a collaborative document (visible in the shared editor)",
         "               Use markdown: # headings, ## subheadings, - bullets, plain paragraphs",
         '               Use "key" as a section title. Content appears in BlockNote editor for all users.',

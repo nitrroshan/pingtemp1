@@ -328,6 +328,15 @@ export class AgentManager {
     const collabStorage = this.pluginRegistry.getPluginStorage("collaboration");
     const planStore = collabStorage?.planStore as any;
 
+    // Get CRDT task/goal stores from CollaborationPlugin (if registered)
+    // These persist tasks and goals to CRDT for durability + agent access via collab tool
+    // The L2CollaborationPlugin is stored as `crdt` in IPluginStorage
+    const l2Plugin = collabStorage?.crdt as any;
+    // goalId is derived later from the plan — we use a lazy getter pattern
+    // CrdtTaskSync and CrdtGoalStore are goal-scoped, so they're created when the goal is known
+    let crdtTaskSync: any = null;
+    let crdtGoalStore: any = null;
+
     // SOLID architecture — TaskStore + OrchestratorService + PlannerAgent as peers
     this.taskStoreInstance = new TaskStore();
     const dagResolver = new DependencyResolver();
@@ -360,6 +369,18 @@ export class AgentManager {
       onFlush: (batchedMessage) => executePlannerTurn(batchedMessage),
     });
 
+    // Create a lazy CRDT resolver — goal-scoped stores are created when approvePlan sets goalId
+    const crdtResolver = {
+      get taskSync() { return crdtTaskSync; },
+      get goalStore() { return crdtGoalStore; },
+      resolveForGoal(goalId: string) {
+        if (l2Plugin?.getCrdtTaskSync) {
+          crdtTaskSync = l2Plugin.getCrdtTaskSync(goalId);
+          crdtGoalStore = l2Plugin.getCrdtGoalStore(goalId);
+        }
+      },
+    };
+
     // Create OrchestratorService (reactive runtime)
     this.orchestrator = new OrchestratorService({
       teamId,
@@ -369,6 +390,8 @@ export class AgentManager {
       dagResolver,
       notificationQueue,
       planStore,
+      crdtTaskSync: { get: () => crdtResolver.taskSync, resolveForGoal: crdtResolver.resolveForGoal.bind(crdtResolver) },
+      crdtGoalStore: { get: () => crdtResolver.goalStore, resolveForGoal: crdtResolver.resolveForGoal.bind(crdtResolver) },
       pluginRegistry: this.pluginRegistry,
       autoExecute: false,
       callbacks: {

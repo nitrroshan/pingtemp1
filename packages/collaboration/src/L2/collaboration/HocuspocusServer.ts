@@ -43,6 +43,11 @@ function filenameToDocName(filename: string): string {
  * Convention-based: inspects Yjs shared types and writes to
  * `.ping/collaboration/` in the workspace repo.
  *
+ * Special handling for task/plan/goal docs:
+ *   - {teamId}/{goalId}/{taskId}/task → YAML frontmatter + markdown body (.md)
+ *   - {teamId}/{goalId}/plan          → YAML frontmatter + markdown body (.md)
+ *   - {teamId}/{goalId}/goal          → YAML frontmatter + markdown body (.md)
+ *
  * A single Yjs doc may contain multiple shared types (e.g. a Y.Map named
  * after the doc for data, plus a "default" Y.Map for _meta). We merge all
  * Y.Map shared types into a single JSON file and concatenate all Y.Array
@@ -61,6 +66,65 @@ async function projectToFilesystem(
   const base = repoPath || ".";
   const projDir = path.join(base, ".ping", "collaboration");
   await fs.mkdir(projDir, { recursive: true });
+
+  // ─── Special handling: task/plan/goal docs → YAML frontmatter + markdown ───
+  // Detect if this is a task, plan, or goal doc and project as .md
+  const isTaskDoc = docType.endsWith("/task");
+  const isPlanDoc = docType === "plan";
+  const isGoalDoc = docType === "goal";
+
+  if (isTaskDoc || isPlanDoc || isGoalDoc) {
+    try {
+      const mapName = isTaskDoc ? "task" : isGoalDoc ? "goal" : "plan";
+      const sharedType = doc.share.get(mapName);
+      if (sharedType && sharedType instanceof Y.Map) {
+        const data = sharedType.toJSON();
+        if (data && data.id) {
+          const body = data.body || "";
+          const { body: _body, ...frontmatter } = data;
+
+          // Build YAML frontmatter
+          const yamlLines = ["---"];
+          for (const [key, val] of Object.entries(frontmatter)) {
+            if (val == null) continue;
+            if (Array.isArray(val)) {
+              yamlLines.push(`${key}:`);
+              for (const item of val) {
+                if (typeof item === "object") {
+                  yamlLines.push(`  - ${JSON.stringify(item)}`);
+                } else {
+                  yamlLines.push(`  - ${item}`);
+                }
+              }
+            } else if (typeof val === "object") {
+              yamlLines.push(`${key}: ${JSON.stringify(val)}`);
+            } else {
+              yamlLines.push(`${key}: ${JSON.stringify(val)}`);
+            }
+          }
+          yamlLines.push("---");
+          yamlLines.push("");
+          yamlLines.push(body);
+
+          const mdContent = yamlLines.join("\n");
+
+          // Ensure parent directory exists for task docs (e.g., task-003/)
+          const mdDir = path.join(projDir, path.dirname(docType));
+          await fs.mkdir(mdDir, { recursive: true });
+
+          await fs.writeFile(
+            path.join(projDir, `${docType}.md`),
+            mdContent,
+          );
+          return; // Done — skip generic projection
+        }
+      }
+    } catch (err) {
+      logger.warn(`Markdown projection failed for ${docName}: ${err}`);
+      // Fall through to generic projection
+    }
+  }
+  // ───────────────────────────────────────────────────────────────────────────
 
   // Collect all shared types, then write once per output type
   const mergedMap: Record<string, any> = {};

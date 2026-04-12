@@ -156,6 +156,20 @@ export class CollaborationPlugin implements IPlugin {
     };
   }
 
+  /**
+   * Get CrdtTaskSync for the given goal. Creates CollaborationSpace if needed.
+   */
+  getCrdtTaskSync(goalId: string) {
+    return this.l2.getCrdtTaskSync(goalId);
+  }
+
+  /**
+   * Get CrdtGoalStore for the given goal.
+   */
+  getCrdtGoalStore(goalId: string) {
+    return this.l2.getCrdtGoalStore(goalId);
+  }
+
   /** Access the underlying L2 plugin for backward compat */
   get l2Plugin(): L2CollaborationPlugin {
     return this.l2;

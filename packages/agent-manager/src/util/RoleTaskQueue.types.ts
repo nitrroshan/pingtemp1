@@ -12,6 +12,8 @@ export interface TaskContext {
   previousOutputs: Array<{ taskId: string; output: any }>;
   /** Artifact paths/references available to this task */
   artifacts: string[];
+  /** CRDT document references for agent access via collab tool */
+  crdtRefs?: Record<string, any>;
 }
 
 /**

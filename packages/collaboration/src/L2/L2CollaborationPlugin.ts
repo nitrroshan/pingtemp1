@@ -15,6 +15,8 @@ import type { IL2CollaborationPlugin } from "../types/plugins.js";
 import { CollabServer } from "./collaboration/HocuspocusServer.js";
 import { CollaborationSpace } from "./collaboration/CollaborationSpace.js";
 import { PlanStore } from "./collaboration/PlanStore.js";
+import { CrdtTaskSync } from "./collaboration/CrdtTaskSync.js";
+import { CrdtGoalStore } from "./collaboration/CrdtGoalStore.js";
 import { GroupChatManager } from "./collaboration/GroupChatManager.js";
 import { createCollabTool } from "./tools/index.js";
 import type { ICollabProvider } from "./collaboration/types/collab-provider.types.js";
@@ -45,6 +47,8 @@ export class L2CollaborationPlugin implements IL2CollaborationPlugin {
   private _collabServer: CollabServer | null;
   private _collabProvider: ICollabProvider;
   private _planStore: PlanStore;
+  private _crdtTaskSyncs = new Map<string, CrdtTaskSync>();
+  private _crdtGoalStores = new Map<string, CrdtGoalStore>();
   private _spaces = new Map<string, CollaborationSpace>();
   private _groupChatManagers = new Map<string, GroupChatManager>();
   private _ready = false;
@@ -93,6 +97,32 @@ export class L2CollaborationPlugin implements IL2CollaborationPlugin {
     return this._collabProvider;
   }
 
+  /**
+   * Get or create a CrdtTaskSync scoped to a goal.
+   * CrdtTaskSync persists tasks to CRDT Y.Map docs.
+   */
+  getCrdtTaskSync(goalId: string): CrdtTaskSync {
+    const key = `${this._teamId}/${goalId}`;
+    if (!this._crdtTaskSyncs.has(key)) {
+      const space = this.getOrCreateSpace(goalId);
+      this._crdtTaskSyncs.set(key, new CrdtTaskSync(space));
+    }
+    return this._crdtTaskSyncs.get(key)!;
+  }
+
+  /**
+   * Get or create a CrdtGoalStore scoped to a goal.
+   * CrdtGoalStore manages goal lifecycle in CRDT.
+   */
+  getCrdtGoalStore(goalId: string): CrdtGoalStore {
+    const key = `${this._teamId}/${goalId}`;
+    if (!this._crdtGoalStores.has(key)) {
+      const space = this.getOrCreateSpace(goalId);
+      this._crdtGoalStores.set(key, new CrdtGoalStore(space, this._teamId));
+    }
+    return this._crdtGoalStores.get(key)!;
+  }
+
   async initialize(): Promise<void> {
     // Start WebSocket server for frontend collaborative editing if embedded + port configured
     if (this._collabServer && this.config.collabPort) {
@@ -130,6 +160,8 @@ export class L2CollaborationPlugin implements IL2CollaborationPlugin {
     }
     this._spaces.clear();
     this._groupChatManagers.clear();
+    this._crdtTaskSyncs.clear();
+    this._crdtGoalStores.clear();
     this._ready = false;
     logger.info("L2 disposed");
   }

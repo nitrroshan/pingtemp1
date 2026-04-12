@@ -207,55 +207,191 @@ Critical path: 001/002 → 003 → 004.
 
 ---
 
-## Storage & Distribution — How .md Files Flow
+## Task Lifecycle — End-to-End Event Flow
 
-### Where Plans and Tasks Live
+### Overview Diagram
 
-| What | Current (JSON) | New (Markdown) |
-|---|---|---|
-| Plans | `data/plans/{teamId}/{goalId}/{planId}.json` | `.ping/plans/plan-001.md` |
-| Tasks (runtime) | In-memory `Map<string, Task>` — lost on restart | `.ping/tasks/task-003.md` → parsed into in-memory Map |
-| Tasks (backup) | `data/tasks/{teamId}/tasks.json` (optional debounced dump) | Not needed — `.md` files ARE the backup |
-| Task output | `.ping/outputs/{taskId}.json` | No change — keeps JSON manifest |
+```mermaid
+sequenceDiagram
+    actor User
+    participant Socket as SocketServerV2
+    participant Orch as OrchestratorService
+    participant Planner as PlannerAgent
+    participant TS as TaskStore (in-mem)
+    participant CRDT as CrdtTaskSync
+    participant Hocus as Hocuspocus
+    participant DAG as DependencyResolver
+    participant WP as WorkerPool
+    participant Agent as Worker Agent
 
-**`.ping/` lives in the workspace repo root.** Every agent with workspace tools can read any file in it.
-
-### How Agents Get Planner-Created Tasks
-
+    User->>Socket: "Build a marketing campaign"
+    Socket->>Orch: handleMessage(goal)
+    
+    Note over Orch,CRDT: 1. GOAL CREATION
+    Orch->>CRDT: saveGoal(goalId, title, body)
+    CRDT->>Hocus: openDoc("{teamId}/{goalId}/goal") → Y.Map.set(...)
+    Hocus-->>Hocus: auto-persist to .bin + project to .md
+    
+    Orch->>Planner: inject goal as context
+    
+    Note over Planner,TS: 2. PLANNING
+    Planner->>Planner: decompose goal into tasks
+    Planner->>Orch: submit_plan({ tasks: [T1, T2, T3] })
+    
+    Note over Orch,Hocus: 3. PLAN APPROVAL
+    Orch->>Socket: onPlanProposed → show in UI
+    User->>Socket: approve plan
+    Socket->>Orch: approvePlan()
+    
+    Note over Orch,Hocus: 4. TASK CREATION (per task)
+    loop For each task in plan
+        Orch->>TS: taskStore.create(task)
+        Orch->>CRDT: persistTask(task)
+        CRDT->>Hocus: openDoc("{teamId}/{goalId}/{taskId}/task") → Y.Map.set(...)
+    end
+    Orch->>CRDT: persistPlan(storedPlan)
+    CRDT->>Hocus: openDoc("{teamId}/{goalId}/plan") → Y.Map.set(...)
+    Orch->>DAG: rebuild(taskStore)
+    
+    Note over TS,Agent: 5. DISPATCH (zero-dep tasks)
+    TS-->>Orch: onTaskReady(T1, researcher)
+    Orch->>CRDT: syncStatus(T1, "in_progress")
+    Orch->>WP: runTask(T1, researcher, message)
+    WP->>Agent: create AiSdkAgent + inject tools
+    
+    Note over Agent,CRDT: 6. EXECUTION
+    Agent->>Agent: execute task (streamText loop)
+    Agent-->>Socket: stream_part events → UI
+    Agent->>WP: complete_task(output)
+    
+    Note over WP,DAG: 7. COMPLETION CASCADE
+    WP->>Orch: onWorkerDone(T1, output)
+    Orch->>TS: completeTask(T1, output)
+    Orch->>CRDT: syncStatus(T1, "completed", output)
+    CRDT->>Hocus: Y.Map.set("status", "completed")
+    Hocus-->>Hocus: auto-persist + project task.md
+    TS-->>Orch: onTaskReady(T3, strategist)
+    Note right of Orch: T3 was waiting for T1 + T2.<br/>T2 already done → T3 ready
+    Orch->>WP: runTask(T3, strategist, message)
 ```
-User sends goal → Planner decomposes
-    │
-    ├── 1. Planner writes .ping/plans/plan-001.md (Plan.md with frontmatter)
-    ├── 2. Planner writes .ping/tasks/task-001.md ... task-005.md (one file per task)
-    ├── 3. TaskSyncer parses all Task.md frontmatter → hydrates TaskStore in-memory Map
-    ├── 4. TaskStore.create() checks prerequisites → marks ready tasks → onTaskReady fires
-    │
-    ▼
-    OrchestratorService.dispatchTask()
-    │
-    ├── 5. Enriches description with upstream outputs (existing flow)
-    ├── 6. Injects file paths into task context (new)
-    ├── 7. Calls WorkerPool.runTask({ description, context, ... })
-    │
-    ▼
-    Worker agent starts on task-003 — paths are in the prompt, no guessing needed
+
+### Task State Machine
+
+```mermaid
+stateDiagram-v2
+    [*] --> pending: taskStore.create()
+    pending --> ready: all prerequisites met
+    ready --> in_progress: dispatched to worker
+    in_progress --> completed: worker calls complete_task
+    in_progress --> failed: error or timeout
+    failed --> ready: retry (planner decision)
+    completed --> [*]
+    failed --> [*]: abort
+
+    note right of pending: CRDT: status="pending"
+    note right of in_progress: CRDT: status="in_progress"
+    note right of completed: CRDT: status="completed",<br/>output stored, completedAt set
 ```
 
-### Task Context — File Paths Injected Automatically
+### Where Data Lives (CRDT vs Runtime)
 
-The `dispatchTask` step injects all relevant paths into `task.context` before handing to WorkerPool. The agent receives these paths directly in its prompt — no browsing `.ping/` required:
+| What | Runtime (in-memory) | CRDT (Hocuspocus) | Projected (auto) |
+|------|--------------------|--------------------|-------------------|
+| **Goal** | — | `{teamId}/{goalId}/goal` Y.Map | `.ping/collaboration/goal.md` |
+| **Plan** | — | `{teamId}/{goalId}/plan` Y.Map | `.ping/collaboration/plan.md` |
+| **Task data** | TaskStore `Map<string, Task>` | `{teamId}/{goalId}/{taskId}/task` Y.Map | `.ping/collaboration/{taskId}/task.md` |
+| **Task status** | TaskStore (single writer) | Synced from TaskStore → CRDT | Updated in projected `.md` |
+| **Task output** | TaskStore `.output` field | Synced to CRDT on completion | `.ping/outputs/{taskId}.json` |
+| **Prerequisites** | TaskStore `Map<string, boolean>` | Not in CRDT (derived from `dependencies[]`) | — |
+| **DAG** | DependencyResolver (rebuilt) | Not in CRDT (rebuilt from task docs) | — |
+| **Task index** | TaskStore (primary) | `{teamId}/{goalId}/_index` Y.Map (for agent browsing) | `.ping/collaboration/_index.json` |
+
+### How Tasks Are Dispatched
+
+```mermaid
+flowchart TD
+    A[TaskStore.create] --> B{prerequisites.size === 0?}
+    B -->|Yes| C[status = ready]
+    B -->|No| D[status = pending]
+    C --> E[RoleTaskQueue.enqueue]
+    E --> F{concurrency limit?}
+    F -->|Under limit| G[OrchestratorService.dispatchTask]
+    F -->|At limit| H[deferredDispatches queue]
+    G --> I[Inject context.crdtRefs]
+    I --> J[WorkerPool.runTask]
+    J --> K[AiSdkAgent.execute]
+    K --> L{Agent completes?}
+    L -->|complete_task| M[TaskStore.completeTask]
+    M --> N[CrdtTaskSync.syncStatus]
+    N --> O[Update dependants]
+    O --> P{Dependant ready?}
+    P -->|Yes| C
+    P -->|No| Q[Wait for other deps]
+    L -->|Error| R[TaskStore.failTask]
+    R --> S[CrdtTaskSync.syncStatus failed]
+    
+    H -.->|slot opens| G
+
+    style C fill:#4CAF50,color:white
+    style D fill:#9E9E9E,color:white
+    style M fill:#4CAF50,color:white
+    style R fill:#f44336,color:white
+```
+
+### Agent-Created Tasks — Event Flow
+
+```mermaid
+sequenceDiagram
+    participant ArchAgent as Architect Agent
+    participant RT as request_task tool
+    participant CRDT as CrdtTaskSync
+    participant TS as TaskStore
+    participant DAG as DependencyResolver
+    participant Orch as OrchestratorService
+    participant FEAgent as Frontend-Dev Agent
+
+    Note over ArchAgent: Working on task-003,<br/>discovers spec gap
+
+    ArchAgent->>RT: request_task({ title, targetRole: "frontend-dev",<br/>relationship: "blocks-me" })
+    
+    Note over RT: Guard rails check:<br/>count < 5, no self-assign,<br/>priority ≤ 2
+    
+    RT->>TS: taskStore.create(newTask)
+    RT->>CRDT: persistTask(newTask) → {teamId}/{goalId}/task-006/task
+    RT->>DAG: add task-006 as prerequisite of task-003
+    RT->>TS: task-003.prerequisites.set("task-006", false)
+    
+    Note over TS: task-003 now BLOCKED<br/>(waiting for task-006)
+    
+    TS-->>Orch: onTaskReady(task-006, frontend-dev)
+    Orch->>FEAgent: dispatch task-006 with context:<br/>crdtRefs.relatedTasks = ["task-003/task"]
+    
+    FEAgent->>FEAgent: execute task-006
+    FEAgent-->>Orch: complete_task(output)
+    
+    Orch->>TS: completeTask(task-006, output)
+    Orch->>CRDT: syncStatus(task-006, "completed")
+    TS-->>TS: task-003.prerequisites["task-006"] = true
+    
+    Note over TS: task-003 all prereqs met → ready
+    
+    TS-->>Orch: onTaskReady(task-003, architect)
+    Note over Orch: Architect resumes task-003<br/>with task-006 output as context
+```
+
+### How Agents Access Task Context
+
+When a task is dispatched, the agent receives CRDT references in its prompt:
 
 ```typescript
-// TaskSyncer builds context paths when dispatching
+// Injected into task.context by OrchestratorService.dispatchTask()
 interface TaskDispatchContext {
-  // File paths — injected into agent prompt
-  paths: {
-    task: string;              // ".ping/tasks/task-003.md" — own task (full detail)
-    plan: string;              // ".ping/plans/plan-001.md" — the plan this belongs to
-    dependencies: string[];    // [".ping/tasks/task-001.md", ".ping/tasks/task-002.md"]
-    dependants: string[];      // [".ping/tasks/task-004.md"] — who depends on you
-    outputs: string[];         // [".ping/outputs/task-001.json"] — completed upstream outputs
-    collab?: string;           // "collab/task-007/discussion" — CRDT doc if collaboration type
+  crdtRefs: {
+    task: string;              // "task-003/task" — own task doc
+    plan: string;              // "plan" — plan doc at goal level
+    goal: string;              // "goal" — goal doc at goal level
+    dependencies: string[];    // ["task-001/task", "task-002/task"]
+    dependants: string[];      // ["task-004/task"]
     relatedTasks: string[];    // agent-created refs, cross-plan refs
   };
 
@@ -267,19 +403,18 @@ interface TaskDispatchContext {
 }
 ```
 
-The agent's prompt includes these paths as structured context:
+The agent's prompt includes:
 
 ```markdown
 ## Your Task
 task-003: Design REST API endpoints
 
-## File Paths
-- **Your task:** .ping/tasks/task-003.md (read for full acceptance criteria & notes)
-- **Plan:** .ping/plans/plan-001.md
-- **Completed dependencies:**
-  - .ping/tasks/task-001.md (output: .ping/outputs/task-001.json)
-  - .ping/tasks/task-002.md (output: .ping/outputs/task-002.json)
-- **Downstream (depends on you):** .ping/tasks/task-004.md, .ping/tasks/task-005.md
+## Context Sources (use `collab read` to access full details)
+- **Your task:** `collab read task-003/task`
+- **Plan:** `collab read plan`
+- **Goal:** `collab read goal`
+- **Completed dependencies:** task-001/task, task-002/task
+- **Downstream (depends on you):** task-004/task
 
 ## Context from previous tasks:
 - task-001 (researcher): "Found 12 competitors, 3 direct threats..."
@@ -287,41 +422,6 @@ task-003: Design REST API endpoints
 
 ## Expected output: API specification document with endpoint definitions
 ```
-
-The agent can `workspace_read_file` any path it needs — but the paths are handed to it, not discovered by browsing.
-
-### How Agents Get Agent-Created Tasks
-
-Same pipeline — `request_task()` creates the Task.md, TaskSyncer parses it, dispatch injects paths:
-
-```
-Agent (architect, working on task-003) calls request_task()
-    │
-    ├── 1. System writes .ping/tasks/task-006.md (createdBy: agent:architect)
-    ├── 2. TaskSyncer parses frontmatter → creates Task in TaskStore
-    ├── 3. DependencyResolver adds to DAG (new edges if blocks-me)
-    │
-    ▼
-    TaskStore.create() triggers same pipeline:
-    │
-    ├── prerequisites met → onTaskReady → dispatch with paths:
-    │     paths.task = ".ping/tasks/task-006.md"
-    │     paths.relatedTasks = [".ping/tasks/task-003.md"]  ← creator's task for context
-    │
-    ├── blocks-me → adds task-006 as prerequisite to task-003
-    │   (architect's task pauses until task-006 completes)
-    │
-    ▼
-    Target agent (frontend-dev) starts task-006, prompt includes:
-    │
-    │   ## File Paths
-    │   - **Your task:** .ping/tasks/task-006.md (created by: agent:architect)
-    │   - **Related:** .ping/tasks/task-003.md (architect's task — why this was created)
-    │
-    └── Completes → task-003 prerequisite met → architect resumes
-```
-
-**Same pipeline for planner-created and agent-created tasks.** The only difference is `createdBy` in the frontmatter.
 
 ---
 
@@ -831,16 +931,185 @@ This keeps humans as the last resort, not the bottleneck. Once a human joins, th
 
 #### Step 2: System Creates CRDT Collaboration Space
 
-When a `collaboration` task is dispatched, the system opens a CRDT document via the existing `CollaborationSpace`:
+When a `collaboration` task is dispatched, the system opens CRDT documents under `{taskId}/` via the existing `CollaborationSpace`:
 
-1. Opens CRDT doc `collab-{taskId}` via `space.openDoc("collab-{taskId}")`
-2. Initializes a `Y.Array("discussion")` — the discussion thread
-3. Initializes a `Y.Map("shared-docs")` — references to co-editable documents
-4. Initializes a `Y.Map("decisions")` — recorded outcomes
-5. Opens shared working documents as `doc-*` BlockNote editors (Y.XmlFragment)
-6. Assigns the task to `targetRole` (frontend-dev picks it up)
+1. Opens discussion doc `{taskId}/discussion` → initializes `Y.Array("discussion")`
+2. Opens decisions doc `{taskId}/decisions` → initializes `Y.Map("decisions")`
+3. Opens config doc → initializes `Y.Map("config")` with guard rail defaults
+4. Opens shared working documents as `{taskId}/doc-{name}` → `Y.XmlFragment("content")` for BlockNote
+5. Assigns the task to `targetRole` (frontend-dev picks it up)
 
 All of this uses the existing Hocuspocus server already running on port 1234.
+
+### Discussion Event Flow — CRDT, Calls, Events
+
+How an agent-initiated collaboration task works end-to-end, showing every CRDT write, Socket.IO event, and UI update:
+
+```mermaid
+sequenceDiagram
+    actor User
+    participant UI as Frontend
+    participant Socket as SocketServerV2
+    participant Orch as OrchestratorService
+    participant TS as TaskStore
+    participant CRDT as CrdtTaskSync
+    participant Hocus as Hocuspocus
+    participant ColShared as Y.Array / Y.Map
+    participant ArchAgent as Architect Agent
+    participant FEAgent as Frontend-Dev Agent
+
+    Note over ArchAgent: Working on task-003,<br/>needs frontend input
+
+    rect rgb(240, 248, 255)
+    Note over ArchAgent,CRDT: PHASE 1: Create Collaboration Task
+    ArchAgent->>Orch: request_task({ type: "collaboration",<br/>targetRole: "frontend-dev",<br/>relationship: "blocks-me" })
+    Orch->>TS: taskStore.create(task-007)
+    Orch->>CRDT: persistTask(task-007) → {goalId}/task-007/task
+    Orch->>TS: task-003.prerequisites.set("task-007", false)
+    Note over TS: task-003 now BLOCKED
+    end
+
+    rect rgb(255, 248, 240)
+    Note over Orch,ColShared: PHASE 2: Initialize Discussion CRDT Docs
+    Orch->>Hocus: openDoc("{teamId}/{goalId}/task-007/discussion")
+    Hocus->>ColShared: Y.Array("discussion") = []
+    Orch->>Hocus: openDoc("{teamId}/{goalId}/task-007/decisions")
+    Hocus->>ColShared: Y.Map("decisions") = {}
+    Hocus->>ColShared: Y.Map("config") = { maxRounds:10, maxTokens:50k, status:"active" }
+    Hocus->>ColShared: Y.Map("cursors") = {}
+    end
+
+    rect rgb(240, 255, 240)
+    Note over ArchAgent,FEAgent: PHASE 3: Discussion (Agent ↔ Agent via CRDT)
+    TS-->>Orch: onTaskReady(task-007, frontend-dev)
+    Orch->>FEAgent: dispatch task-007 with context
+
+    ArchAgent->>Hocus: collab discuss post → Y.Array.push(block-1)
+    Note right of Hocus: Y.Array("discussion") = [block-1]
+    Hocus-->>Hocus: onChange fires
+    Hocus->>Socket: discussion:activity { taskId, role, blockCount:1 }
+    Socket->>UI: badge update + notification
+    Hocus-->>Hocus: auto-persist to .bin
+    Hocus-->>Hocus: projectToFilesystem → .ping/.../task-007/discussion.json
+
+    Note over FEAgent: Notified via @mention
+    FEAgent->>Hocus: collab discuss read → cursor filter → sees [block-1]
+    FEAgent->>Hocus: collab discuss post → Y.Array.push(block-2)
+    Note right of Hocus: Y.Array("discussion") = [block-1, block-2]
+    Hocus->>Socket: discussion:activity { blockCount:2 }
+    FEAgent->>Hocus: cursors.set("frontend-dev", timestamp)
+    end
+
+    rect rgb(255, 240, 255)
+    Note over User,ColShared: PHASE 4: User Joins Discussion
+    UI->>UI: User clicks "Open Thread" for task-007
+    UI->>Hocus: HocuspocusProvider.connect("{teamId}/{goalId}/task-007/discussion")
+    Hocus-->>UI: Y.Array("discussion").observe() → renders [block-1, block-2]
+    UI->>UI: User types response in DiscussionComposer
+    UI->>ColShared: Y.Array.push(block-3: { role:"user:backend-dev", type:"decision" })
+    Note right of ColShared: block-3 has type="decision"<br/>→ auto-record to Y.Map("decisions")
+    ColShared->>Hocus: onChange → discussion:activity + discussion:mention
+    Hocus-->>Hocus: auto-persist + project
+    end
+
+    rect rgb(248, 248, 240)
+    Note over ArchAgent,TS: PHASE 5: Decision → Task Completes
+    ArchAgent->>Hocus: collab discuss read → sees [block-2, block-3]
+    Note over ArchAgent: Sees user decision block → task resolved
+    ArchAgent->>Orch: complete_task(task-007, { decision: "Use PKCE with S256" })
+    Orch->>TS: completeTask(task-007, output)
+    Orch->>CRDT: syncStatus(task-007, "completed")
+    TS-->>TS: task-003.prerequisites["task-007"] = true → ready
+    TS-->>Orch: onTaskReady(task-003, architect)
+    Note over Orch: Architect resumes task-003<br/>with decision + full discussion as context
+    end
+```
+
+### Discussion Communication Channels — Who Talks to What
+
+```mermaid
+flowchart LR
+    subgraph Agents [Backend Agents]
+        A1[Architect Agent]
+        A2[Frontend-Dev Agent]
+    end
+
+    subgraph CRDT [Hocuspocus CRDT Layer]
+        YArr["Y.Array('discussion')<br/>append-only blocks"]
+        YMap["Y.Map('decisions')<br/>agreed outcomes"]
+        YCur["Y.Map('cursors')<br/>per-agent read position"]
+        YCfg["Y.Map('config')<br/>guard rails + status"]
+    end
+
+    subgraph Backend [Backend Services]
+        Hoc[Hocuspocus Server]
+        Sock[SocketServerV2]
+        Proj[projectToFilesystem]
+    end
+
+    subgraph Frontend [React Frontend]
+        DT[DiscussionThread<br/>yarray.observe]
+        DP[DecisionPanel<br/>ymap.observe]
+        DC[DiscussionComposer<br/>yarray.push]
+        Toast[Notification Toast]
+    end
+
+    A1 -->|"collab discuss post"| YArr
+    A2 -->|"collab discuss post"| YArr
+    A1 -->|"collab discuss read<br/>(cursor filter)"| YArr
+    A2 -->|"collab discuss read"| YArr
+    A1 & A2 -->|"cursor update"| YCur
+
+    YArr -->|"onChange"| Hoc
+    Hoc -->|"discussion:activity"| Sock
+    Hoc -->|"discussion:mention"| Sock
+    Hoc -->|"auto-persist"| Hoc
+    Hoc -->|"onChange"| Proj
+    Proj -->|".json / .md files"| Proj
+
+    Sock -->|"Socket.IO event"| Toast
+    Sock -->|"Socket.IO event"| DT
+
+    DC -->|"Y.Array.push<br/>(via HocuspocusProvider)"| YArr
+    YArr -->|"yarray.observe()"| DT
+    YMap -->|"ymap.observe()"| DP
+```
+
+**Key separation of concerns:**
+- **CRDT (Hocuspocus)** — all discussion content. Agents read/write via `collab discuss`. Frontend reads via `yarray.observe()`, writes via `Y.Array.push()`. Both use the same CRDT doc.
+- **Socket.IO** — notifications only. `discussion:activity` (badge counts), `discussion:mention` (@mention alerts). Does NOT carry discussion content.
+- **projectToFilesystem** — read-only file projections. Discussion blocks → `discussion.json`. Decisions → `decisions.json`. For human browsing and post-mortem.
+
+### Guard Rail Enforcement Flow
+
+```mermaid
+flowchart TD
+    A[Agent calls collab discuss post] --> B{Check Y.Map config}
+    B --> C{totalTokensUsed < maxTokens?}
+    C -->|No| D[Reject: Token limit hit]
+    D --> E[Escalate to planner]
+    C -->|Yes| F{roundsPerAgent[role] < maxRounds?}
+    F -->|No| G[Reject: Round limit hit]
+    G --> E
+    F -->|Yes| H{config.status === 'active'?}
+    H -->|No| I[Reject: Discussion closed]
+    H -->|Yes| J[Push block to Y.Array]
+    J --> K[Update config.totalTokensUsed]
+    J --> L[Update config.roundsPerAgent]
+    J --> M[Reset timeout timer]
+    
+    N[Timeout timer fires] --> O{Any blocks in last N min?}
+    O -->|No| P{escalationPaused?}
+    P -->|No| E
+    P -->|Yes user active| Q[Wait 2× timeout]
+    O -->|Yes| R[Timer reset]
+
+    style D fill:#f44336,color:white
+    style G fill:#f44336,color:white
+    style I fill:#9E9E9E,color:white
+    style J fill:#4CAF50,color:white
+    style E fill:#FF9800,color:white
+```
 
 ---
 
@@ -1143,81 +1412,155 @@ function DecisionPanel({ provider }: Props) {
 
 ---
 
-### CRDT Document Scoping — Plan & Task Hierarchy
+### CRDT Document Scoping — Proper Hierarchy
 
 **Problem:** Flat doc naming (`collab-task-007`, `doc-api-spec-collab-007`) becomes a mess with many plans and tasks. Need natural grouping for:
 - Listing all docs for a task
 - Cleaning up when a plan/task completes
 - Filesystem projection that makes sense
 
-**Solution:** Hierarchical naming convention within the existing `{teamId}/{goalId}/` prefix.
+**Solution:** Hierarchical naming that mirrors the ownership model: Team → Goal → Plan → Task → Discussion.
 
-Hocuspocus doc names are just strings — slashes are allowed. `CollaborationSpace` already applies the `{teamId}/{goalId}/` prefix, so agents just use a path-like name:
+Hocuspocus doc names are just strings — slashes are allowed. The naming convention follows real ownership:
 
 ```
-CollaborationSpace prefix: {teamId}/{goalId}/         (existing, automatic)
+{teamId}/                                              ← TEAM scope
+├── agent-statuses                                      (well-known, existing)
+├── chat-outcomes                                       (well-known, existing)
 │
-├── agent-statuses                                     (well-known, existing)
-├── chat-outcomes                                      (well-known, existing)
-│
-├── plan/{planId}/discussion                           ← plan-level discussion
-├── plan/{planId}/decisions                            ← plan-level decisions
-│
-├── task/{taskId}/discussion                           ← task-level discussion  
-├── task/{taskId}/decisions                            ← task-level decisions
-├── task/{taskId}/doc-{name}                           ← task-level shared BlockNote doc
-│
-└── collab/{collabTaskId}/discussion                   ← collaboration task discussion
-    collab/{collabTaskId}/decisions                     ← collaboration task decisions
-    collab/{collabTaskId}/doc-{name}                    ← collaboration shared docs
+├── {goalId}/                                          ← GOAL scope
+│   ├── goal                                            ← Goal Y.Map (goal metadata + body)
+│   ├── plan                                            ← Plan Y.Map (active plan for this goal)
+│   │
+│   ├── {taskId}/                                      ← TASK scope
+│   │   ├── task                                        ← Task Y.Map (task metadata + body)
+│   │   ├── discussion                                  ← Task discussion (Y.Array)
+│   │   ├── decisions                                   ← Task decisions (Y.Map)
+│   │   └── doc-{name}                                  ← Shared working doc (Y.XmlFragment)
+│   │
+│   └── _index                                          ← Task index Y.Map (byRole, byStatus)
 ```
 
-**Full Hocuspocus doc name example:**
+**Full Hocuspocus doc name examples:**
 ```
-team-1/build-app/task/task-003/discussion
-│        │          │      │        │
-teamId  goalId    scope  taskId   docType
+team-1/build-app/goal                              ← Goal doc
+│        │         │
+teamId  goalId   docType
+
+team-1/build-app/plan                              ← Plan doc
+team-1/build-app/task-003/task                     ← Task doc
+team-1/build-app/task-003/discussion               ← Task discussion
+team-1/build-app/task-003/doc-api-spec             ← Shared working doc
+team-1/agent-statuses                              ← Team-level (no goal scope)
 ```
+
+**Why this hierarchy:**
+
+| Path | Scope | Why |
+|------|-------|-----|
+| `{teamId}/agent-statuses` | Team | Agent statuses are team-wide, not goal-specific |
+| `{teamId}/{goalId}/goal` | Goal | One goal doc per goal — everything below belongs to this goal |
+| `{teamId}/{goalId}/plan` | Goal | One active plan per goal (archived plans stay in PlanStore JSON) |
+| `{teamId}/{goalId}/{taskId}/task` | Task | Task data lives under its goal, scoped by taskId |
+| `{teamId}/{goalId}/{taskId}/discussion` | Task | Discussion is part of the task, not a separate entity |
+| `{teamId}/{goalId}/{taskId}/doc-{name}` | Task | Shared docs belong to the task that created them |
+
+**Note:** `CollaborationSpace` currently prefixes with `{teamId}/{goalId}/`. For team-level docs like `agent-statuses`, the server accesses them directly without the goal prefix.
 
 **Agent usage:**
 ```typescript
-// Agent opens its own task's discussion
-space.openDoc("task/task-003/discussion")
+// Agent reads its own task
+space.openDoc("task-003/task")
+// Full name: team-1/build-app/task-003/task
 
-// Agent opens collaboration task discussion
-space.openDoc("collab/task-007/discussion")
+// Agent reads the goal
+space.openDoc("goal")
+// Full name: team-1/build-app/goal
 
-// Agent opens plan-level discussion (e.g., to discuss the overall plan with planner)
-space.openDoc("plan/plan-001/discussion")
+// Agent reads the plan
+space.openDoc("plan")
+// Full name: team-1/build-app/plan
 
-// Agent opens a shared working doc scoped to a collaboration task
-space.openDoc("collab/task-007/doc-api-spec")
+// Agent opens task discussion
+space.openDoc("task-003/discussion")
+// Full name: team-1/build-app/task-003/discussion
+
+// Agent opens shared working doc
+space.openDoc("task-007/doc-api-spec")
+// Full name: team-1/build-app/task-007/doc-api-spec
 
 // List all docs for a specific task
 const docs = await space.listDocs();
-const taskDocs = docs.filter(d => d.startsWith("task/task-003/"));
-// → ["task/task-003/discussion", "task/task-003/decisions", "task/task-003/doc-api-spec"]
+const taskDocs = docs.filter(d => d.startsWith("task-003/"));
+// → ["task-003/task", "task-003/discussion", "task-003/decisions", "task-003/doc-api-spec"]
 ```
 
 **Benefits:**
-- **Natural cleanup:** Archive a plan → archive all `plan/{planId}/*` docs. Task completes → snapshot all `task/{taskId}/*` docs.
-- **Scoped listing:** `docs.filter(d => d.startsWith("task/task-003/"))` = free scoped query.
-- **Filesystem projection follows the hierarchy:** `.ping/collaboration/task/task-003/discussion.json` — the Hocuspocus `projectToFilesystem` already splits by `/` and creates directories.
-- **No naming collisions:** Tasks and plans are namespaced. Two tasks can both have a `discussion` doc without conflict.
-- **Frontend routing:** URL `#/team/team-1/goal/build-app/task/task-003` → subscribe to `task/task-003/*` docs.
+- **Natural ownership:** `task-003/discussion` is clearly part of task-003.
+- **Scoped cleanup:** Complete a goal → archive all `{goalId}/*` docs. Task done → snapshot `{taskId}/*`.
+- **Scoped listing:** `docs.filter(d => d.startsWith("task-003/"))` = all docs for one task.
+- **No naming collisions:** Each task is its own namespace. Two tasks can both have `discussion` without conflict.
+- **Filesystem projection follows the hierarchy:** `.ping/collaboration/task-003/task.json`, `.ping/collaboration/task-003/discussion.json`
+- **Frontend routing:** URL `/team/team-1/goal/build-app/task/task-003` → subscribe to `task-003/*` docs.
 
-#### Persistence & Projection
+#### Persistence & Projection — Including Task.md/Plan.md/Goal.md
 
 Everything persists automatically through the existing infrastructure:
 
 1. **Binary persistence:** Hocuspocus `Database` extension saves Y.Doc state to `data/collab/yjs/{docName}.bin`
-2. **Filesystem projection:** Hocuspocus `onChange` callback projects to readable files:
-   - `Y.Map` → `.ping/collaboration/{name}.json`
-   - `Y.Array` → `.ping/collaboration/{name}/{id}.json` (one file per item)
-   - `Y.XmlFragment` → `.ping/collaboration/{name}.md` (markdown rendering)
+2. **Filesystem projection:** Hocuspocus `onChange` callback projects to readable files
 3. **Crash recovery:** On restart, Hocuspocus loads `.bin` files → full state restored
 
-So you get the best of both worlds: **CRDT for real-time concurrent access, projected `.md`/`.json` for git-friendliness and human readability.**
+**We still get Task.md, Plan.md, Goal.md** — as read-only projections from CRDT, not as source of truth. `projectToFilesystem` can be extended to output YAML frontmatter + markdown body for task/plan/goal docs:
+
+```
+projectToFilesystem detects doc type:
+  - {teamId}/{goalId}/goal          → .ping/collaboration/goal.md
+  - {teamId}/{goalId}/plan          → .ping/collaboration/plan.md  
+  - {teamId}/{goalId}/{taskId}/task → .ping/collaboration/{taskId}/task.md
+  - everything else                 → .json (existing behavior)
+```
+
+**Projected Task.md example** (auto-generated from CRDT Y.Map):
+```yaml
+---
+id: task-003
+title: "Design REST API endpoints"
+assignedRole: architect
+status: in_progress
+priority: 2
+complexity: medium
+type: work
+dependencies:
+  - task-001
+  - task-002
+createdBy: planner
+planId: plan-001
+expectedOutput: "API specification document"
+createdAt: 2026-04-13T10:00:00Z
+---
+
+# Design REST API endpoints
+
+## Context
+The product requires a REST API for the B2B SaaS platform. Market research (task-001)
+identified 12 competitors.
+
+## Acceptance Criteria
+- [ ] All CRUD endpoints defined
+- [ ] Authentication flow documented
+- [ ] Rate limiting strategy included
+```
+
+**This looks identical to the original Task.md format** — same YAML frontmatter, same markdown body. The difference is the source of truth is CRDT, not the file. The file is a read-only projection that updates whenever the CRDT changes.
+
+**Why projections still matter:**
+- **Post-mortem:** After a goal completes, the projected `.md` files tell the story
+- **Human browsing:** Open `.ping/collaboration/task-003/task.md` in any editor
+- **Git-friendly:** Projected files can be committed as snapshots (optional)
+- **Agent fallback:** If `collab` tool is unavailable, agents can `workspace_read_file` the projections
+
+So you get the best of both worlds: **CRDT for real-time concurrent access and persistence, projected `.md`/`.json` for human readability.**
 
 #### Step 4: Completion
 
@@ -1245,114 +1588,261 @@ Output goes to the task's `output` field and downstream dependants get it via no
 
 ---
 
-## Architecture Options
+## Architecture Options — Storage Layer
 
-### Option A: Pure Markdown (File-System Tasks)
+### Why Not `.ping/` Filesystem?
 
-**Implementation:** Tasks and plans are `.md` files in `.ping/`. TaskStore reads/writes files directly. No in-memory Map — file system IS the store.
+The original design put Task.md/Plan.md/Goal.md in `.ping/` within the workspace repo. Research revealed this conflicts with the MASTER-ARCHITECTURE:
 
-**Pros:**
-- Maximum simplicity — files are the truth
-- Agents use existing workspace tools, no new tools needed
-- Git-native — every task change is a commit
+1. **Worker cloning breaks it** — each worker gets a workspace clone on a task branch. `.ping/tasks/task-003.md` gets cloned too. Worker updates status in its clone → out of sync with the real TaskStore. Status updates aren't deliverables — they shouldn't be in git.
 
-**Cons:**
-- File I/O on every status check (performance for large plans)
-- No atomic multi-task updates
-- Concurrent writes need file-level locking
+2. **Workspace = deliverables** — the MASTER-ARCHITECTURE separates concerns: workspace repo for code/docs, CRDT for coordination/knowledge, MongoDB for conversations. Plans/Goals/Tasks are coordination state, not deliverables.
 
-### Option B: Markdown Source + Runtime Projection (Recommended)
+3. **File I/O for state machine** — every `ready → in_progress → completed` means parse frontmatter → update field → serialize → write file. The runtime state machine (TaskStore) needs in-memory speed, not file I/O.
 
-**Implementation:** Task.md/Plan.md are the persistent source of truth. On plan approval, frontmatter is parsed into TaskStore's in-memory Map for fast runtime operations. Status changes write back to the `.md` frontmatter.
+### Option A: `.ping/` Filesystem Tasks  
+**Storage:** Markdown files in workspace git repo  
+❌ Rejected — conflicts with worker clone model, mixes deliverables with coordination state.
+
+### Option B: Markdown Source + Runtime Projection  
+**Storage:** `.md` files as source of truth, in-memory Map as runtime  
+❌ Rejected — same L1 conflict. `.md` files in repo = cloned per worker = stale reads.
+
+### Option C: JSON Runtime + Markdown Snapshots  
+**Storage:** Current JSON TaskStore, periodic markdown snapshots  
+❌ Rejected — two sources of truth, stale snapshots, agents can't write tasks.
+
+### Option D: CRDT Persistence + Runtime Projection (Recommended)  
+
+**Storage:** CRDT documents (Hocuspocus Y.Map) as persistence layer, in-memory TaskStore as runtime engine.
 
 ```
-                    ┌─────────────┐
-   Plan approved    │  Plan.md    │  Source of truth
-        │           │  Task.md×N  │  (persisted, git-friendly)
-        │           └──────┬──────┘
-        │                  │ parse (gray-matter)
+                    ┌──────────────────┐
+   Plan approved    │  CRDT Y.Map      │  Persistence layer
+        │           │  (Hocuspocus)    │  (concurrent-safe, auto-persisted)
+        │           └──────┬───────────┘
+        │                  │ read Y.Map → Task object
         ▼                  ▼
-   ┌──────────┐     ┌──────────┐
-   │ TaskStore │◄────│ Loader   │  Hydrates runtime from .md files
-   │ (Map)     │     └──────────┘
+   ┌──────────┐     ┌─────────────┐
+   │ TaskStore │◄────│ CrdtTaskSync │  Hydrates runtime from CRDT on startup
+   │ (in-mem)  │     └─────────────┘
    └─────┬────┘
-         │ status change
+         │ status change (single writer)
          ▼
-   ┌──────────┐
-   │ Syncer   │  Writes status/output back to Task.md frontmatter
-   └──────────┘
+   ┌─────────────┐      ┌─────────────────────┐
+   │ CrdtTaskSync │ ──→  │ projectToFilesystem  │
+   │ (writes back)│      │ (auto JSON/MD proj.) │
+   └─────────────┘      └─────────────────────┘
 ```
 
-**Pros:**
-- Fast runtime (in-memory DAG, O(1) lookups)
-- Persistent artifacts (`.md` files survive restarts)
-- Agents can browse/read task files with existing tools
-- Crash recovery — reload from `.md` files
-- Same parser as skills (gray-matter) — consistent pattern
-
-**Cons:**
-- Sync complexity (must keep Map ↔ files in sync)
-- Slightly more code than pure JSON
-
-### Option C: JSON Runtime + Markdown Snapshots
-
-**Implementation:** Keep current JSON-based TaskStore. Periodically snapshot to `.md` format for human/agent readability. Snapshots are read-only views.
-
-**Pros:**
-- Least change to existing code
-- Snapshots are just a view layer
-
-**Cons:**
-- Two sources of truth (which is authoritative?)
-- Agents read snapshots that could be stale
-- Doesn't solve the "tasks are opaque" problem (agents still can't write tasks as .md)
+**How it works:**
+- **TaskStore** remains the single-writer runtime engine (state machine, DAG, RoleTaskQueue)
+- **CRDT Y.Map** per task is the durable persistence layer — replaces FileTaskStore
+- **CrdtTaskSync** syncs TaskStore ↔ CRDT: writes on status change, loads on startup
+- **projectToFilesystem** (already exists) auto-projects CRDT data to `.ping/collaboration/` as readable JSON/MD — agents browse via `collab` tool
+- **Hocuspocus Database extension** (already exists) auto-persists to `.bin` files — crash recovery is free
+- **IPluginStorage.taskStore** (already defined) provides the injection point — same pattern as PlanStore
 
 ---
 
-## Recommended: Option B (Markdown Source + Runtime Projection)
+## Recommended: Option D (CRDT Persistence + Runtime Projection)
 
-It's the right trade-off:
-- Follows the team-registry pattern (`.md` → parse → runtime objects)
-- Uses the same `gray-matter` parser already planned for skills and agents
-- Every task is a readable document that agents and humans can inspect
-- Runtime performance stays fast (in-memory Map)
-- Crash recovery is free (re-parse `.md` files)
-- Agent-created tasks just write a new `.md` file — naturally integrated
+### Why CRDT Is The Right Layer
 
-### Runtime Sync Strategy
+| Concern | Filesystem (`.ping/`) | CRDT (Hocuspocus) | Database (MongoDB) |
+|---------|----------------------|--------------------|--------------------|
+| **Concurrent safety** | File locking needed | Conflict-free by design | Transactions needed |
+| **Real-time sync** | Poll or watch | Built-in (Y.Map.observe) | Change streams |
+| **Agent access** | `workspace_read_file` | `collab` tool (already exists) | Need new API tools |
+| **Persistence** | File write per change | Auto-persisted to `.bin` | Write per change |
+| **Crash recovery** | Re-read files | Hocuspocus loads `.bin` | Query DB |
+| **Worker clone conflict** | ❌ Yes | ✅ No (not in workspace) | ✅ No |
+| **Infrastructure** | Filesystem only | ✅ Already running | Need to add MongoDB collections |
+| **Co-location with discussions** | Separate systems | ✅ Same infra | Separate from CRDT |
+| **Human readability** | Native (.md files) | Via projection (auto JSON/MD) | Need export |
+
+**Key advantages:**
+
+1. **Same infra as everything collaborative.** Discussions, decisions, shared docs, agent statuses — all CRDT. Tasks/Plans/Goals join the same system. One protocol, one set of tools.
+
+2. **TaskStore stays as the query engine.** No MongoDB indexing needed — TaskStore's in-memory Map already handles `getReadyTasks(role)`, DAG traversal, status transitions. CRDT just durably stores what TaskStore decides.
+
+3. **Single-writer eliminates CRDT's weakness.** Y.Map is last-write-wins per key — but TaskStore is the ONLY status writer. All transitions go through `TaskStore.updateStatus()` which enforces `VALID_TRANSITIONS`. CRDT is the durable store, not a concurrent editor.
+
+4. **Proven pattern: PlanStore already does this.** PlanStore is wired via `IPluginStorage` from `L2CollaborationPlugin.getStorage()`. CrdtTaskSync follows the identical pattern — implement `ITaskStore`, register via plugin storage, OrchestratorService receives it.
+
+5. **Agent browsability.** Agents already use the `collab` tool. `collab({ action: "read", docName: "tasks/task-003" })` gives them the same data as `workspace_read_file(".ping/tasks/task-003.md")` — using a tool they already have.
+
+6. **No L1 conflict.** Workspace repo = pure deliverables. CRDT = coordination state + team knowledge + collaboration. Clean separation per MASTER-ARCHITECTURE.
+
+### CRDT Document Layout
+
+```
+{teamId}/                                              ← TEAM scope (no CollaborationSpace prefix)
+├── agent-statuses                                      (well-known, existing)
+├── chat-outcomes                                       (well-known, existing)
+
+{teamId}/{goalId}/                                     ← GOAL scope (= CollaborationSpace prefix)
+├── goal                                                ← Goal Y.Map
+│     { id, title, teamId, status, submittedBy, planId, createdAt, body }
+│
+├── plan                                                ← Plan Y.Map (active plan)
+│     { planId, goalId, goal, status, version, tasks[], body }
+│
+├── {taskId}/                                           ← TASK scope
+│   ├── task                                            ← Task Y.Map
+│   │     { id, title, assignedRole, status, priority, complexity, type,
+│   │       dependencies[], createdBy, planId, expectedOutput, output, body }
+│   ├── discussion                                      ← Discussion Y.Array
+│   ├── decisions                                       ← Decisions Y.Map
+│   └── doc-{name}                                      ← Shared BlockNote docs
+│
+└── _index                                              ← Task index Y.Map
+      { byRole: { architect: ["task-003"], ... },
+        byStatus: { ready: ["task-001"], ... } }
+```
+
+**One Y.Map per task** (not all tasks in one doc). Why:
+- Each task is a small document (~500 bytes) — efficient for Hocuspocus
+- `projectToFilesystem` creates one `.md` file per task — browseable
+- No contention — different agents writing to different task docs
+- Scoped cleanup — archive a task = archive all `{taskId}/*` docs
+- Discussion/decisions co-located with their task — natural grouping
+
+**Task index (Y.Map):** A lightweight index for queries like "all tasks for role X." Updated by CrdtTaskSync whenever a task is created/completed. TaskStore's in-memory Map is still the primary query engine — the index is for agents who browse via collab tool.
+
+### CrdtTaskSync — The Bridge
 
 ```typescript
-class TaskSyncer {
-  // Parse .md → Task object (on startup / plan approval)
-  async loadTask(filePath: string): Promise<Task> {
-    const raw = await fs.readFile(filePath, 'utf-8');
-    const { frontmatter, body } = parseFrontmatter(raw);
-    return {
-      id: frontmatter.id,
-      description: body,              // markdown body = rich description
-      assigned_role: frontmatter.assignedRole.toLowerCase(),
-      status: frontmatter.status,
-      priority: frontmatter.priority,
-      prerequisites: new Map(
-        (frontmatter.dependencies || []).map(d => [d, false])
-      ),
-      // ...
-    };
+class CrdtTaskSync {
+  constructor(
+    private space: CollaborationSpace,
+    private taskStore: TaskStore,
+  ) {}
+
+  // Write task to CRDT (after TaskStore.create)
+  async persistTask(task: Task): Promise<void> {
+    const doc = await this.space.openDoc(`${task.id}/task`);
+    const map = doc.getMap("task");
+    map.set("id", task.id);
+    map.set("title", task.context?.title || task.description);
+    map.set("assignedRole", task.assigned_role);
+    map.set("status", task.status);
+    map.set("priority", task.priority || 3);
+    map.set("dependencies", Array.from(task.prerequisites.keys()));
+    map.set("createdBy", task.context?.createdBy || "planner");
+    map.set("planId", task.context?.planId);
+    map.set("expectedOutput", task.context?.expectedOutput || "");
+    // body = rich markdown description for agents to read
+    map.set("body", task.description);
   }
 
-  // Task status change → update .md frontmatter
-  async syncStatus(taskId: string, newStatus: TaskStatus): Promise<void> {
-    const filePath = `.ping/tasks/${taskId}.md`;
-    const raw = await fs.readFile(filePath, 'utf-8');
-    const { frontmatter, body } = parseFrontmatter(raw);
-    frontmatter.status = newStatus;
-    if (newStatus === 'completed') {
-      frontmatter.completedAt = new Date().toISOString();
+  // Update status in CRDT (after TaskStore.updateStatus)
+  async syncStatus(taskId: string, newStatus: TaskStatus, output?: any): Promise<void> {
+    const doc = await this.space.openDoc(`${taskId}/task`);
+    const map = doc.getMap("task");
+    map.set("status", newStatus);
+    if (newStatus === "completed") {
+      map.set("completedAt", new Date().toISOString());
+      if (output) map.set("output", output);
     }
-    await fs.writeFile(filePath, serializeFrontmatter(frontmatter, body));
+  }
+
+  // Load all tasks from CRDT (on startup / crash recovery)
+  async loadAllTasks(): Promise<Task[]> {
+    const docs = await this.space.listDocs();
+    // Task docs match pattern: {taskId}/task (not {taskId}/discussion, etc.)
+    const taskDocs = docs.filter(d => d.endsWith("/task") && d !== "goal" && d !== "plan");
+    const tasks: Task[] = [];
+    for (const docName of taskDocs) {
+      const doc = await this.space.openDoc(docName);
+      const map = doc.getMap("task");
+      tasks.push(this.mapToTask(map.toJSON()));
+    }
+    return tasks;
+  }
+
+  private mapToTask(data: Record<string, any>): Task {
+    return {
+      id: data.id,
+      description: data.body || data.title,
+      assigned_role: data.assignedRole?.toLowerCase(),
+      status: data.status,
+      priority: data.priority,
+      prerequisites: new Map(
+        (data.dependencies || []).map((d: string) => [d, false])
+      ),
+      dependants: [],  // rebuilt by DependencyResolver
+      context: {
+        title: data.title,
+        planId: data.planId,
+        expectedOutput: data.expectedOutput,
+        createdBy: data.createdBy,
+      },
+    };
   }
 }
 ```
+
+### How Agents Access Task Data
+
+Agents use the existing `collab` tool — no new tools needed:
+
+```typescript
+// Agent reads its own task
+collab({ action: "read", docName: "task-003/task" })
+// → Returns: { id, title, assignedRole, status, dependencies, body, ... }
+
+// Agent lists all tasks (via index)
+collab({ action: "list", docName: "tasks" })
+// → Returns: task-001 [completed] — Market Research (researcher)
+//            task-002 [completed] — Competitive Analysis (researcher)
+//            task-003 [in_progress] — Product Positioning (strategist)
+
+// Agent reads the goal
+collab({ action: "read", docName: "goal" })
+// → Returns: { title, status, body (with user intent + success criteria) }
+
+// Agent reads the plan
+collab({ action: "read", docName: "plan" })
+// → Returns: { planId, goal, status, tasks[], body (with strategy notes) }
+
+// Agent reads task discussion
+collab({ action: "read", docName: "task-003/discussion" })
+// → Returns: discussion blocks array
+
+// Agent lists all docs for a task
+collab({ action: "list", docName: "task-003" })
+// → Returns: task, discussion, decisions, doc-api-spec
+```
+
+**projectToFilesystem** (already exists) auto-creates readable files:
+```
+.ping/collaboration/
+├── goal.md                            ← projected from CRDT goal doc
+├── plan.md                            ← projected from CRDT plan doc
+├── task-001/
+│   └── task.md                        ← projected task (YAML frontmatter + body)
+├── task-002/
+│   └── task.md
+├── task-003/
+│   ├── task.md
+│   ├── discussion.json                ← projected discussion blocks
+│   └── doc-api-spec.md                ← projected BlockNote doc
+└── _index.json                        ← projected task index
+```
+
+These projections are read-only artifacts — the CRDT is the source of truth.
+
+### When You'd Add MongoDB
+
+CRDT-only works until you need:
+- **Cross-team queries** ("all tasks across all teams") — CRDT is team-scoped
+- **Analytics/reporting** ("average completion time over 30 days") — no aggregation in CRDT
+- **Full-text search** ("find tasks mentioning 'auth'") — no search in CRDT
+- **Access control** — MongoDB has field-level security; CRDT doesn't
+
+At that point, add MongoDB as a **read replica** — CRDT writes trigger event → store in MongoDB for queries. CRDT remains source of truth. MongoDB is the analytics layer. This is a v2+ concern.
 
 ---
 
@@ -1362,20 +1852,22 @@ class TaskSyncer {
 
 | Component | Change |
 |---|---|
-| **TaskStore** | Add `TaskSyncer` — load from `.md`, sync status back |
-| **OrchestratorService** | `approvePlan()` writes Plan.md + Task.md files before hydrating TaskStore |
+| **TaskStore** | Add `CrdtTaskSync` — persist to CRDT, load from CRDT on startup |
+| **OrchestratorService** | `approvePlan()` persists tasks/plans/goals to CRDT via CrdtTaskSync after hydrating TaskStore |
 | **WorkerPool** | Inject `request_task` tool into all worker agents |
 | **RoleTaskQueue** | No change — still handles runtime dispatch |
 | **DependencyResolver** | Handle agent-created task edges (dynamic DAG mutation) |
-| **Frontmatter Parser** | Reuse from team-registry (same `gray-matter` based parser) |
-| **Workspace Tools** | Agents use existing `read_file`/`write_file` to browse `.ping/tasks/` |
-| **Collab Tool** | Add `discuss` action for Y.Array discussion + cursor protocol. Existing `write`/`read` actions handle Y.Map data. Existing `write-block`/`read-block` handle shared BlockNote docs. |
+| **Collab Tool** | Agents read tasks/plans/goals via existing `read`/`list` actions. Add `discuss` action for Y.Array discussion + cursor protocol. |
+| **CollaborationSpace** | No change — already scopes docs by `{teamId}/{goalId}/` |
+| **L2CollaborationPlugin** | Return `CrdtTaskSync` via `getStorage().taskStore` (same pattern as PlanStore) |
+| **projectToFilesystem** | No change — auto-projects CRDT docs to `.ping/collaboration/` as JSON/MD |
 
 ### New Components
 
 | Component | Purpose |
 |---|---|
-| **TaskSyncer** | Bidirectional `.md` ↔ runtime sync |
+| **CrdtTaskSync** | Bidirectional TaskStore ↔ CRDT persistence (implements ITaskStore) |
+| **CrdtGoalStore** | Goal lifecycle in CRDT (create, update status, archive) |
 | **`request_task` tool** | AI SDK tool for agents to create tasks |
 | **`discuss` collab action** | New action in existing `collab` tool — read/write discussion Y.Array with cursor tracking |
 | **CollabTaskDispatcher** | Specialized dispatch for `collaboration` type tasks — opens CRDT doc, initializes Y.Array/Y.Map |
@@ -1665,20 +2157,22 @@ Implemented as: create `task/{myTaskId}/quick-ask-{uuid}` discussion doc → pus
 
 | Decision | Choice | Rationale |
 |---|---|---|
-| Task format | Markdown + frontmatter | Same as skills/agents, git-friendly, agent-readable |
-| Runtime | Markdown source + in-memory projection | Performance + persistence + crash recovery |
-| Storage location | `.ping/tasks/` and `.ping/plans/` in workspace repo root | All agents can read via workspace tools — no special distribution needed |
+| Task data format | Structured Y.Map (JSON-like) with rich `body` field | Agent-readable via collab tool, human-readable via auto-projection |
+| Runtime engine | TaskStore (in-memory Map) — single writer for state machine | Performance + DAG queries + status transitions. CRDT is persistence, not runtime. |
+| Persistence layer | CRDT (Hocuspocus Y.Map per task/plan/goal) | Concurrent-safe, auto-persisted to `.bin`, crash recovery, same infra as discussions |
+| Storage location | CRDT docs: `{teamId}/{goalId}/{taskId}/task` hierarchy | Team→Goal→Task ownership, clean scoping, no workspace conflicts |
+| Agent access | Existing `collab` tool (`read`/`list` actions) | No new tools needed — agents already use collab for team knowledge |
+| Human readability | `projectToFilesystem` → `.ping/collaboration/{taskId}/task.md` | Auto-projected as YAML frontmatter + markdown body — same format as original design |
 | Agent task creation | `request_task` tool with guard rails | Autonomous but bounded — max 5, no self-assign, priority ceiling |
 | Pre-plan research | `submit_research` tool — blocks plan creation until tasks complete | Planner gets informed context before decomposing; user can skip/cancel |
 | Collaboration protocol | CRDT — Y.Array for discussion, Y.Map for decisions, Y.XmlFragment for shared docs | Concurrent-safe by math, uses existing Hocuspocus + collab tool, real-time sync, no file locking |
 | Read tracking | Timestamp cursor in Y.Map("cursors") per agent | Robust to compaction, agents filter by `timestamp > lastRead` |
 | Agent tagging | `mentions[]` array in DiscussionBlock + `@role` in content | Machine-parseable for notifications, human-readable in projections |
-| CRDT scoping | `plan/{planId}/`, `task/{taskId}/`, `collab/{taskId}/` prefixes | Natural grouping, scoped listing/cleanup, no naming collisions |
-| Viewing Y.Array/Y.Map | Custom React components with `.observe()` | BlockNote only renders Y.XmlFragment — discussions/decisions need dedicated components |
+| CRDT scoping | `{teamId}/{goalId}/{taskId}/` hierarchy | Natural ownership (team→goal→task), scoped listing/cleanup, discussion co-located with task |
 | Frontend UI | DiscussionThread + DecisionPanel + DiscussionComposer + AgentStatusBar | 5th DetailPanel tab + 4th sidebar nav + split-pane Mode B |
 | Discussion guard rails | maxRounds (10), maxTokens (50k), timeout (15min) | Prevents infinite discussions, auto-escalates on cap hit |
 | Discussion mode | Auto by default | Agents respond immediately without waiting for turn management |
 | User participation | Users join as `user:{agentRole}`, post blocks, make decisions | Human as tiebreaker, not bottleneck — any user activity stops escalation timer |
-| Persistence | Hocuspocus auto-persists to `.bin` + projects to `.ping/collaboration/` as `.json`/`.md` | CRDT for runtime, readable files for git/human access |
-| Plan relationship | Agent tasks don't modify Plan.md | Plan is Planner's artifact; agent tasks are addenda to the DAG |
+| Plan relationship | Agent tasks don't modify Plan CRDT doc | Plan is Planner's artifact; agent tasks are addenda to the DAG |
 | Priority system | 0-5 with reserved levels | 0=system, 1=critical/planner-only, 2-5=general use |
+| Future DB layer | MongoDB as read-replica when analytics/search needed | CRDT remains source of truth; MongoDB for cross-team queries, v2+ |

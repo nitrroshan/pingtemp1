@@ -53,6 +53,10 @@ export interface OrchestratorServiceConfig {
   notificationQueue?: NotificationQueue;
   planStore?: any;
 
+  // CRDT task persistence (injected by AgentManager from CollaborationPlugin)
+  crdtTaskSync?: any;
+  crdtGoalStore?: any;
+
   // Callbacks → AgentManager → SocketServerV2 → Frontend
   callbacks?: OrchestratorCallbacks;
 
@@ -80,6 +84,9 @@ export class OrchestratorService {
   private uim?: UserInteractionManager;
   private notificationQueue?: NotificationQueue;
   private planStore: any;
+  // CRDT persistence — lazy proxies that resolve per-goal
+  private crdtTaskSyncProxy: any;  // { get(): CrdtTaskSync, resolveForGoal(goalId) }
+  private crdtGoalStoreProxy: any; // { get(): CrdtGoalStore, resolveForGoal(goalId) }
 
   // State — only 2 states in planner mode (planner manages its own phases)
   private state: OrchestratorState = "idle";
@@ -111,6 +118,8 @@ export class OrchestratorService {
     this.uim = config.userInteractionManager;
     this.notificationQueue = config.notificationQueue;
     this.planStore = config.planStore;
+    this.crdtTaskSyncProxy = config.crdtTaskSync;
+    this.crdtGoalStoreProxy = config.crdtGoalStore;
     this.callbacks = config.callbacks || {};
     this.sessionId = `team-${config.teamId}`;
     this.autoExecute = config.autoExecute ?? false;
@@ -242,6 +251,36 @@ export class OrchestratorService {
       const goalId = toGoalId(planToApprove.goal || planId);
       this.currentGoalId = goalId;
       this.workerPool.setTeamId(this.teamId);
+
+      // ─── CRDT Persistence ───────────────────────────────────────────
+      // Resolve CRDT stores for this goal (lazy — goal-scoped)
+      if (this.crdtTaskSyncProxy?.resolveForGoal) {
+        this.crdtTaskSyncProxy.resolveForGoal(goalId);
+      }
+
+      // Persist goal, plan, and tasks to CRDT (durable, agent-browseable)
+      const crdtGoalStore = this.crdtGoalStoreProxy?.get?.();
+      if (crdtGoalStore) {
+        await crdtGoalStore.saveGoal(
+          goalId,
+          planToApprove.goal || planId,
+          planToApprove.goal || "",
+        );
+        await crdtGoalStore.updateStatus("executing", planId);
+      }
+
+      const crdtTaskSync = this.crdtTaskSyncProxy?.get?.();
+      if (crdtTaskSync) {
+        // Persist each task to CRDT
+        for (const task of this.taskStore.getAll()) {
+          await crdtTaskSync.persistTask(task);
+        }
+        // Persist plan overview to CRDT
+        await crdtTaskSync.persistPlan(planToApprove, goalId);
+        // Update task index
+        await crdtTaskSync.updateIndex(this.taskStore.getAll());
+      }
+      // ────────────────────────────────────────────────────────────────
 
       // Persist plan
       if (this.planStore) {
@@ -411,6 +450,16 @@ export class OrchestratorService {
       log.warn(`Plugin onTaskFailed error for ${taskId}: ${err}`);
     });
 
+    // ─── CRDT Persistence ───
+    const crdtSync = this.crdtTaskSyncProxy?.get?.();
+    if (crdtSync) {
+      crdtSync.syncStatus(taskId, "failed").catch((err: any) => {
+        log.warn(`CRDT sync failed for task ${taskId}: ${err}`);
+      });
+      crdtSync.updateIndex(this.taskStore.getAll()).catch(() => {});
+    }
+    // ───────────────────────
+
     this.callbacks.onTaskUpdate?.({
       taskId, status: "failed", role: task?.assigned_role, timestamp: Date.now(),
     });
@@ -451,6 +500,18 @@ export class OrchestratorService {
       deliverables: data.deliverables,
       nextSteps: data.nextSteps, completedBy: "agent", timestamp: data.timestamp,
     });
+
+    // ─── CRDT Persistence ───────────────────────────────────────────
+    const crdtSyncDone = this.crdtTaskSyncProxy?.get?.();
+    if (crdtSyncDone) {
+      await crdtSyncDone.syncStatus(data.taskId, "completed", {
+        summary: data.summary,
+        deliverables: data.deliverables,
+        nextSteps: data.nextSteps,
+      });
+      await crdtSyncDone.updateIndex(this.taskStore.getAll());
+    }
+    // ────────────────────────────────────────────────────────────────
   }
 
   // ═══════════════════════════════════════════════════════════════════
@@ -487,6 +548,17 @@ export class OrchestratorService {
         ...(Array.isArray(taskCtx.artifacts) ? taskCtx.artifacts : []),
       ];
 
+      // ─── CRDT Context Enrichment ─────────────────────────────────────
+      // Inject CRDT references so agents can use `collab read` to access task details
+      let crdtRefs: Record<string, any> | undefined;
+      const crdtSyncDispatch = this.crdtTaskSyncProxy?.get?.();
+      if (crdtSyncDispatch) {
+        crdtRefs = crdtSyncDispatch.getCrdtRefs(taskId, task);
+        // Sync status to in_progress in CRDT
+        await crdtSyncDispatch.syncStatus(taskId, "in_progress");
+      }
+      // ────────────────────────────────────────────────────────────────
+
       // Enrich description with planner notes + upstream notes + expected output
       let enrichedDescription = task.description;
 
@@ -504,7 +576,7 @@ export class OrchestratorService {
       await this.workerPool.runTask({
         id: taskId, assigned_role: role, description: enrichedDescription,
         priority: task.priority || 0,
-        context: { previousOutputs, artifacts },
+        context: { previousOutputs, artifacts, crdtRefs },
         createdAt: Date.now(), status: "in_progress",
       });
 
