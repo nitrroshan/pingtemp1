@@ -304,6 +304,16 @@ function xmlElementText(el: Y.XmlElement): string {
  * - Azure: pass AzureBlobStorageProvider
  * - S3: pass S3BlobStorageProvider
  */
+/** Payload emitted when a discussion doc changes */
+export interface DiscussionChangeEvent {
+  teamId: string;
+  goalId: string;
+  taskId: string;
+  docName: string;
+  blockCount: number;
+  mentions: string[];
+}
+
 export class CollabServer implements ICollabProvider {
   /** The Server wraps Hocuspocus + HTTP/WebSocket. We use server.hocuspocus for everything. */
   private server: HocuspocusHTTPServer;
@@ -311,6 +321,7 @@ export class CollabServer implements ICollabProvider {
   private blobAdapter: HocuspocusBlobStorageAdapter;
   private repoPath?: string;
   private started = false;
+  private discussionChangeCallbacks: Set<(event: DiscussionChangeEvent) => void> = new Set();
 
   constructor(storageDir = "./data/collab", repoPath?: string, blobStorage?: BlobStorageProvider) {
     this.storageDir = storageDir;
@@ -319,6 +330,9 @@ export class CollabServer implements ICollabProvider {
     // Use provided blob storage or default to filesystem
     const storage = blobStorage ?? new FsBlobStorage(storageDir);
     this.blobAdapter = new HocuspocusBlobStorageAdapter(storage);
+
+    // Capture `this` for use in onChange
+    const self = this;
 
     // Create Server — it internally creates ONE Hocuspocus instance
     // We use server.hocuspocus for both WebSocket AND in-process access
@@ -339,12 +353,61 @@ export class CollabServer implements ICollabProvider {
         documentName: string;
       }) {
         await projectToFilesystem(documentName, document, repoPath);
+
+        // Emit discussion change events for Socket.IO notification pipeline
+        if (documentName.endsWith("/discussion")) {
+          self.emitDiscussionChange(documentName, document);
+        }
       },
 
       async onAuthenticate({ token }: { token: string }) {
         return { user: token || "anonymous" };
       },
     });
+  }
+
+  /**
+   * Register a callback for discussion doc changes.
+   * Used by SocketServerV2 to emit real-time notifications.
+   */
+  onDiscussionChange(callback: (event: DiscussionChangeEvent) => void): () => void {
+    this.discussionChangeCallbacks.add(callback);
+    return () => this.discussionChangeCallbacks.delete(callback);
+  }
+
+  private emitDiscussionChange(documentName: string, document: Y.Doc): void {
+    if (this.discussionChangeCallbacks.size === 0) return;
+
+    const parts = documentName.split("/");
+    // Expected: {teamId}/{goalId}/{taskId}/discussion
+    if (parts.length < 4) return;
+
+    const teamId = parts[0]!;
+    const goalId = parts[1]!;
+    const taskId = parts[2]!;
+    const discussion = document.getArray("discussion");
+    const blocks = discussion.toJSON() as Array<{ mentions?: string[] }>;
+
+    // Extract @mentions from the latest block (last item)
+    const latestBlock = blocks[blocks.length - 1];
+    const mentions = Array.isArray(latestBlock?.mentions) ? latestBlock.mentions : [];
+
+    const event: DiscussionChangeEvent = {
+      teamId,
+      goalId,
+      taskId,
+      docName: documentName,
+      blockCount: blocks.length,
+      mentions,
+    };
+
+    for (const cb of this.discussionChangeCallbacks) {
+      try {
+        cb(event);
+      } catch (err) {
+        logger.warn(`Discussion change callback error: ${err}`);
+      }
+    }
   }
 
   /**

@@ -14,5 +14,7 @@ export { CrdtTaskSync } from "./L2/collaboration/CrdtTaskSync.js";
 export type { CrdtTaskData, TaskLike } from "./L2/collaboration/CrdtTaskSync.js";
 export { CrdtGoalStore } from "./L2/collaboration/CrdtGoalStore.js";
 export type { GoalData, GoalStatus } from "./L2/collaboration/CrdtGoalStore.js";
+export { CollabServer } from "./L2/collaboration/HocuspocusServer.js";
+export type { DiscussionChangeEvent } from "./L2/collaboration/HocuspocusServer.js";
 export { RemoteCollabClient } from "./L2/collaboration/RemoteCollabClient.js";
 export { createCollabTool } from "./L2/tools/index.js";

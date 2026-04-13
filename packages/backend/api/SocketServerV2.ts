@@ -510,12 +510,61 @@ export class SocketServerV2 {
       },
     });
 
+    // Wire discussion event emission from CollabServer → Socket.IO
+    this.wireDiscussionEvents(teamId, manager, room);
+
     logger.info(`[SocketServerV2] Callbacks registered for team ${teamId}`);
   }
 
   /** Join socket to team's broadcast room */
   private joinTeamRoom(socket: Socket, teamId: string): void {
     socket.join(`team:${teamId}`);
+  }
+
+  /**
+   * Wire CollabServer discussion onChange → Socket.IO discussion events.
+   * Emits `discussion:activity` and `discussion:mention` to team room.
+   */
+  private wireDiscussionEvents(teamId: string, manager: AgentManager, room: string): void {
+    try {
+      const plugin = manager.getPluginRegistry().get("collaboration") as any;
+      const collabServer = plugin?.l2Plugin?.collabServer ?? plugin?.collabServer;
+      if (!collabServer?.onDiscussionChange) {
+        logger.debug(`[SocketServerV2] No CollabServer for team ${teamId} — discussion events skipped`);
+        return;
+      }
+
+      collabServer.onDiscussionChange((event: {
+        teamId: string; goalId: string; taskId: string;
+        docName: string; blockCount: number; mentions: string[];
+      }) => {
+        // Broadcast activity to all team subscribers
+        this.io.to(room).emit("discussion:activity", {
+          teamId: event.teamId,
+          goalId: event.goalId,
+          taskId: event.taskId,
+          docName: event.docName,
+          blockCount: event.blockCount,
+          timestamp: Date.now(),
+        });
+
+        // Emit targeted mention events
+        if (event.mentions.length > 0) {
+          this.io.to(room).emit("discussion:mention", {
+            teamId: event.teamId,
+            goalId: event.goalId,
+            taskId: event.taskId,
+            docName: event.docName,
+            mentions: event.mentions,
+            timestamp: Date.now(),
+          });
+        }
+      });
+
+      logger.info(`[SocketServerV2] Discussion events wired for team ${teamId}`);
+    } catch (err) {
+      logger.warn(`[SocketServerV2] Failed to wire discussion events for team ${teamId}: ${err}`);
+    }
   }
 
   // ============================================================================

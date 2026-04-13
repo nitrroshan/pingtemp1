@@ -16,7 +16,7 @@ import {
   ChevronRight, ChevronDown, Plus,
   Cpu, Code, Bug, Palette, PenTool, Search, Bot,
   BarChart3, Workflow, PanelLeftClose, PanelLeft,
-  MessageSquare, LayoutDashboard, FileCode2,
+  MessageSquare, LayoutDashboard, FileCode2, MessageCircle,
   ChevronsUpDown, Check, Settings,
 } from 'lucide-react';
 import { cn } from '../lib/utils';
@@ -41,7 +41,7 @@ const getIcon = (iconName: string, size = 15) => {
 
 // ─── types ────────────────────────────────────────────────────────────────────
 
-export type ViewMode = 'chat' | 'tasks' | 'collaborate';
+export type ViewMode = 'chat' | 'tasks' | 'collaborate' | 'discussions';
 
 interface NavItem {
   id: ViewMode;
@@ -50,9 +50,10 @@ interface NavItem {
 }
 
 const NAV_ITEMS: NavItem[] = [
-  { id: 'chat',        label: 'Chat',       icon: <MessageSquare size={15} /> },
-  { id: 'tasks',       label: 'Tasks',      icon: <LayoutDashboard size={15} /> },
-  { id: 'collaborate', label: 'Collaborate', icon: <FileCode2 size={15} /> },
+  { id: 'chat',        label: 'Chat',        icon: <MessageSquare size={15} /> },
+  { id: 'tasks',       label: 'Tasks',       icon: <LayoutDashboard size={15} /> },
+  { id: 'collaborate', label: 'Collaborate',  icon: <FileCode2 size={15} /> },
+  { id: 'discussions', label: 'Discussions',  icon: <MessageCircle size={15} /> },
 ];
 
 interface SidebarProps {

@@ -62,12 +62,13 @@ export function createSubmitResearchTool(ctx: SubmitResearchContext) {
       // R2-#3 FIX: Use consistent method name (.create matches approvePlan pattern)
       // TaskStore may not have .addTask() — it uses .create()
       const taskStore = octx.memoryManager as any;
+      const createdTasks: any[] = [];
       for (const task of input.tasks) {
         const createFn = taskStore.create || taskStore.addTask;
         if (!createFn) {
           return `Error: TaskStore does not support task creation. Internal error.`;
         }
-        createFn.call(taskStore, {
+        const taskObj = {
           id: task.id,
           description: `[Research] ${task.title}: ${task.description}`,
           assigned_role: task.assignedRole.toLowerCase(),
@@ -83,7 +84,31 @@ export function createSubmitResearchTool(ctx: SubmitResearchContext) {
             phase: "pre-plan",
             expectedOutput: task.expectedOutput,
           },
-        });
+        };
+        createFn.call(taskStore, taskObj);
+        createdTasks.push(taskObj);
+      }
+
+      // Final-review fix #3: Persist research tasks to CRDT + rebuild DAG
+      // This makes research tasks visible to agents via collab tool
+      try {
+        // Get CRDT stores via orchestrator context (if available)
+        const crdtSync = (octx as any).crdtTaskSync?.get?.();
+        if (crdtSync) {
+          for (const task of createdTasks) {
+            await crdtSync.persistTask(task);
+          }
+          await crdtSync.updateIndex(taskStore.getAll ? taskStore.getAll() : []);
+        }
+      } catch (err) {
+        // Non-fatal — tasks exist in TaskStore even if CRDT fails
+      }
+
+      // Rebuild DAG to validate research tasks
+      try {
+        ctx.dagResolver.rebuild(taskStore);
+      } catch (err) {
+        // Non-fatal for research tasks (no dependencies)
       }
 
       // Transition to researching state

@@ -9,19 +9,24 @@
  */
 
 import React, { useState } from 'react';
-import { X, Activity, ListTodo, Users, Settings } from 'lucide-react';
+import { X, Activity, ListTodo, Users, Settings, MessageCircle } from 'lucide-react';
 import { AnimatePresence, motion } from 'framer-motion';
 import EventsView from '../AgentManagerPanel/EventsView';
 import SwarmView from '../AgentManagerPanel/SwarmView';
 import SkillSelector from '../SkillSelector';
+import { DiscussionListPanel } from './DiscussionListPanel';
 import type { OrchestrationEvent, ActiveAgentState, Task } from '../../types';
+import type { DiscussionThread as DiscussionThreadType } from '../../hooks/useDiscussion';
 
-type DetailTab = 'events' | 'agents' | 'tasks' | 'settings';
+type DetailTab = 'events' | 'agents' | 'tasks' | 'discussions' | 'settings';
 
 interface DetailPanelProps {
   logs: OrchestrationEvent[];
   activeAgents: ActiveAgentState[];
   allTasks: Task[];
+  discussionThreads?: DiscussionThreadType[];
+  onOpenDiscussion?: (thread: DiscussionThreadType) => void;
+  onPinDiscussion?: (thread: DiscussionThreadType) => void;
   agentName?: string;
   agentId?: string;
   teamId?: string;
@@ -29,10 +34,11 @@ interface DetailPanelProps {
 }
 
 const TABS: { id: DetailTab; label: string; icon: React.ReactNode }[] = [
-  { id: 'events',   label: 'Events',   icon: <Activity size={13} /> },
-  { id: 'agents',   label: 'Agents',   icon: <Users size={13} /> },
-  { id: 'tasks',    label: 'Tasks',    icon: <ListTodo size={13} /> },
-  { id: 'settings', label: 'Settings', icon: <Settings size={13} /> },
+  { id: 'events',      label: 'Events',      icon: <Activity size={13} /> },
+  { id: 'agents',      label: 'Agents',      icon: <Users size={13} /> },
+  { id: 'tasks',       label: 'Tasks',       icon: <ListTodo size={13} /> },
+  { id: 'discussions', label: 'Discussions', icon: <MessageCircle size={13} /> },
+  { id: 'settings',    label: 'Settings',    icon: <Settings size={13} /> },
 ];
 
 const STATUS_COLORS: Record<string, string> = {
@@ -82,7 +88,7 @@ function SettingsTab({ agentName }: { agentName?: string }) {
   );
 }
 
-export function DetailPanel({ logs, activeAgents, allTasks, agentName, agentId, teamId, onClose }: DetailPanelProps) {
+export function DetailPanel({ logs, activeAgents, allTasks, discussionThreads, onOpenDiscussion, onPinDiscussion, agentName, agentId, teamId, onClose }: DetailPanelProps) {
   const [activeTab, setActiveTab] = useState<DetailTab>('events');
 
   return (
@@ -145,6 +151,17 @@ export function DetailPanel({ logs, activeAgents, allTasks, agentName, agentId, 
               initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
               transition={{ duration: 0.12 }}>
               <TasksTab tasks={allTasks} />
+            </motion.div>
+          )}
+          {activeTab === 'discussions' && (
+            <motion.div key="discussions" className="absolute inset-0"
+              initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+              transition={{ duration: 0.12 }}>
+              <DiscussionListPanel
+                threads={discussionThreads || []}
+                onOpenThread={(thread) => onOpenDiscussion?.(thread)}
+                onPinThread={onPinDiscussion ? (thread) => onPinDiscussion(thread) : undefined}
+              />
             </motion.div>
           )}
           {activeTab === 'settings' && (

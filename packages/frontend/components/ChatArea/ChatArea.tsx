@@ -34,6 +34,8 @@ interface ChatAreaProps {
   onCompleteTask?: (taskId: string) => void;
   onCancelTask?: (taskId: string) => void;
   isLoading?: boolean;
+  onOpenDiscussions?: () => void;
+  discussionUnreadCount?: number;
 }
 
 function ChatAreaSkeleton() {
@@ -93,6 +95,8 @@ const ChatArea: React.FC<ChatAreaProps> = ({
   onCompleteTask,
   onCancelTask,
   isLoading = false,
+  onOpenDiscussions,
+  discussionUnreadCount = 0,
 }) => {
   const [viewMode, setViewMode] = useState<'chat' | 'tasks'>('chat');
   const [inputValue, setInputValue] = useState('');
@@ -232,6 +236,8 @@ const ChatArea: React.FC<ChatAreaProps> = ({
                 onInputChange={setInputValue}
                 onSubmit={handleSubmit}
                 onKeyDown={handleKeyDown}
+                onOpenDiscussions={onOpenDiscussions}
+                discussionUnreadCount={discussionUnreadCount}
               />
             </motion.div>
           ) : (

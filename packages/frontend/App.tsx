@@ -47,6 +47,10 @@ import { useSession, signOut } from './lib/auth-client';
 import { LoginPage } from './components/Auth/LoginPage';
 import { Skeleton } from './components/ui/skeleton';
 import { TeamsPage } from './components/TeamsPage/TeamsPage';
+import { DiscussionThread } from './components/DiscussionThread/DiscussionThread';
+import { DecisionPanel } from './components/DecisionPanel/DecisionPanel';
+import { useDiscussion, useDiscussionNotifications } from './hooks/useDiscussion';
+import type { DiscussionThread as DiscussionThreadType } from './hooks/useDiscussion';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // CollabFileTree — lightweight CRDT doc browser
@@ -129,6 +133,55 @@ function CollabFileTree({ teamId, activeDoc, onSelectDoc }: {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// ActiveDiscussionView — renders a single discussion thread with decisions
+// ─────────────────────────────────────────────────────────────────────────────
+
+function ActiveDiscussionView({ teamId, goalId, taskId, title, onBack }: {
+  teamId: string; goalId: string; taskId: string; title: string; onBack: () => void;
+}) {
+  const { blocks, decisions, config, status, postBlock } = useDiscussion({
+    teamId, goalId, taskId,
+  });
+
+  return (
+    <div className="flex-1 flex flex-col min-h-0">
+      {/* Header with back button */}
+      <div className="px-4 py-2.5 border-b border-border flex items-center gap-3 shrink-0 bg-card/50">
+        <button onClick={onBack} className="text-xs text-muted-foreground hover:text-foreground cursor-pointer">
+          ← Back
+        </button>
+        <div className="flex-1">
+          <h2 className="text-sm font-semibold text-foreground truncate">{title}</h2>
+          <p className="text-[10px] text-muted-foreground">
+            {teamId}/{goalId}/{taskId} ·{' '}
+            {status === 'connected' ? '🟢 live' : status === 'connecting' ? '🟡 connecting...' : '🔴 error'}
+          </p>
+        </div>
+      </div>
+
+      {/* Content: thread + decisions side by side on wide screens */}
+      <div className="flex-1 flex min-h-0">
+        <div className="flex-1 min-h-0">
+          <DiscussionThread
+            blocks={blocks}
+            config={config}
+            title={title}
+            subtitle={`Task: ${taskId}`}
+            onPost={postBlock}
+            compact
+          />
+        </div>
+        {Object.keys(decisions).length > 0 && (
+          <div className="w-64 border-l border-border overflow-y-auto shrink-0 hidden lg:block">
+            <DecisionPanel decisions={decisions} compact />
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // InnerApp
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -177,10 +230,48 @@ function InnerApp() {
   const [isSidebarExpanded, setIsSidebarExpanded] = useState(true);
   const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState(false);
   const [isMobileViewport, setIsMobileViewport] = useState(() => window.innerWidth < 1024);
-  const [viewMode, setViewMode] = useState<'chat' | 'tasks' | 'collaborate'>('chat');
+  const [viewMode, setViewMode] = useState<'chat' | 'tasks' | 'collaborate' | 'discussions'>('chat');
   const [collabDocId, setCollabDocId] = useState('doc-shared');
   const [isCommandPaletteOpen, setIsCommandPaletteOpen] = useState(false);
   const [activeMenu, setActiveMenu] = useState<string | null>(null);
+
+  // Discussion state — selected thread for full-view rendering
+  const [activeDiscussion, setActiveDiscussion] = useState<{ teamId: string; goalId: string; taskId: string; title: string } | null>(null);
+  const [discussionThreads, setDiscussionThreads] = useState<DiscussionThreadType[]>([]);
+
+  // Discussion notifications (Socket.IO badges)
+  const { unreadCount: discussionUnreadCount, mentions: discussionMentions } = useDiscussionNotifications(agentServiceV2);
+
+  // Track discussion activity from Socket.IO → build thread list
+  useEffect(() => {
+    const unsub = agentServiceV2.onDiscussionActivity?.((data: any) => {
+      setDiscussionThreads(prev => {
+        const idx = prev.findIndex(t => t.docName === data.docName);
+        if (idx >= 0) {
+          const updated = [...prev];
+          updated[idx] = {
+            ...updated[idx],
+            blockCount: data.blockCount,
+            lastActivity: new Date(data.timestamp).toISOString(),
+            unreadCount: updated[idx].unreadCount + 1,
+          };
+          return updated;
+        }
+        // New thread discovered via activity
+        return [...prev, {
+          docName: data.docName,
+          taskId: data.taskId,
+          title: `Discussion: ${data.taskId}`,
+          participants: [],
+          blockCount: data.blockCount,
+          status: 'active' as const,
+          unreadCount: 1,
+          lastActivity: new Date(data.timestamp).toISOString(),
+        }];
+      });
+    });
+    return () => unsub?.();
+  }, []);
 
   // Close menu on click outside
   useEffect(() => {
@@ -198,9 +289,9 @@ function InnerApp() {
 
   const parseRouteState = useCallback((pathname: string) => {
     const segments = pathname.split('/').filter(Boolean);
-    const validViews = new Set(['chat', 'tasks', 'collaborate']);
+    const validViews = new Set(['chat', 'tasks', 'collaborate', 'discussions']);
 
-    let nextView: 'chat' | 'tasks' | 'collaborate' = 'chat';
+    let nextView: 'chat' | 'tasks' | 'collaborate' | 'discussions' = 'chat';
     let nextTeamId: string | null = null;
 
     if (segments[0] === 'teams') {
@@ -208,10 +299,10 @@ function InnerApp() {
         nextTeamId = decodeURIComponent(segments[1]);
       }
       if (segments[2] && validViews.has(segments[2])) {
-        nextView = segments[2] as 'chat' | 'tasks' | 'collaborate';
+        nextView = segments[2] as 'chat' | 'tasks' | 'collaborate' | 'discussions';
       }
     } else if (segments[0] && validViews.has(segments[0])) {
-      nextView = segments[0] as 'chat' | 'tasks' | 'collaborate';
+      nextView = segments[0] as 'chat' | 'tasks' | 'collaborate' | 'discussions';
     }
 
     return { nextView, nextTeamId };
@@ -369,8 +460,9 @@ function InnerApp() {
     }
   }, [agents, isMobileViewport, pushRoute, viewMode]);
 
-  const handleSelectView = useCallback((mode: 'chat' | 'tasks' | 'collaborate') => {
+  const handleSelectView = useCallback((mode: 'chat' | 'tasks' | 'collaborate' | 'discussions') => {
     setViewMode(mode);
+    if (mode !== 'discussions') setActiveDiscussion(null);
     if (isMobileViewport) {
       setIsMobileSidebarOpen(false);
     }
@@ -380,6 +472,24 @@ function InnerApp() {
       pushRoute(`/${mode}`);
     }
   }, [isMobileViewport, pushRoute, selectedTeamId]);
+
+  const handleOpenDiscussion = useCallback((thread: DiscussionThreadType) => {
+    // Parse docName: "{teamId}/{goalId}/{taskId}/discussion"
+    const parts = thread.docName.split('/');
+    if (parts.length >= 3) {
+      setActiveDiscussion({
+        teamId: parts[0],
+        goalId: parts[1],
+        taskId: parts[2],
+        title: thread.title,
+      });
+      setViewMode('discussions');
+      // Mark as read
+      setDiscussionThreads(prev =>
+        prev.map(t => t.docName === thread.docName ? { ...t, unreadCount: 0 } : t)
+      );
+    }
+  }, []);
 
   const handleGoalSubmit = useCallback(async (goal: string) => {
     if (!selectedTeamId) { showToast('Please select a team first', 'warning'); return; }
@@ -732,6 +842,59 @@ function InnerApp() {
                     onStartTask={handleStartTask} onCompleteTask={handleCompleteTask} onCancelTask={handleCancelTask} />
                 </div>
               </motion.div>
+            ) : viewMode === 'discussions' ? (
+              <motion.div
+                key="discussions-view"
+                className="flex-1 flex min-h-0"
+                initial={{ opacity: 0, y: 8 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -8 }}
+                transition={{ duration: 0.18, ease: 'easeOut' }}
+              >
+                {activeDiscussion ? (
+                  <ActiveDiscussionView
+                    teamId={activeDiscussion.teamId}
+                    goalId={activeDiscussion.goalId}
+                    taskId={activeDiscussion.taskId}
+                    title={activeDiscussion.title}
+                    onBack={() => setActiveDiscussion(null)}
+                  />
+                ) : (
+                  <div className="flex-1 flex flex-col items-center justify-center text-muted-foreground text-sm p-6">
+                    <p className="text-lg mb-2">💬 Discussions</p>
+                    {discussionThreads.length > 0 ? (
+                      <div className="w-full max-w-md space-y-2 mt-4">
+                        <p className="text-xs text-center mb-3">Active discussions — click to open</p>
+                        {discussionThreads.filter(t => t.status === 'active').map(thread => (
+                          <button
+                            key={thread.docName}
+                            onClick={() => handleOpenDiscussion(thread)}
+                            className="w-full text-left p-3 rounded-lg border border-border hover:bg-accent/50 transition-colors cursor-pointer"
+                          >
+                            <div className="flex items-center gap-2">
+                              <span className="w-2 h-2 rounded-full bg-red-500 shrink-0" />
+                              <span className="text-xs font-semibold truncate">{thread.title}</span>
+                              {thread.unreadCount > 0 && (
+                                <span className="text-[10px] bg-red-100 dark:bg-red-900 text-red-600 dark:text-red-300 px-1.5 py-0.5 rounded-full font-medium ml-auto">
+                                  {thread.unreadCount} new
+                                </span>
+                              )}
+                            </div>
+                            <p className="text-[10px] text-muted-foreground mt-1 pl-4">
+                              {thread.blockCount} blocks · {thread.participants.join(' ↔ ') || 'awaiting input'}
+                            </p>
+                          </button>
+                        ))}
+                      </div>
+                    ) : (
+                      <>
+                        <p>Select a discussion from the Detail Panel's Discussions tab</p>
+                        <p className="text-xs mt-1">Agent discussions appear here when collaboration tasks are active</p>
+                      </>
+                    )}
+                  </div>
+                )}
+              </motion.div>
             ) : (
               <motion.div
                 key="chat-view"
@@ -770,6 +933,8 @@ function InnerApp() {
                         onCompleteTask={handleCompleteTask}
                         onCancelTask={handleCancelTask}
                         isLoading={isLoadingTeams && activeAgentMessages.length === 0}
+                        onOpenDiscussions={() => handleSelectView('discussions')}
+                        discussionUnreadCount={discussionUnreadCount}
                       />
                     </div>
                   </div>
@@ -792,6 +957,8 @@ function InnerApp() {
               logs={orchestrationLogs}
               activeAgents={[]}
               allTasks={allTasks}
+              discussionThreads={discussionThreads}
+              onOpenDiscussion={handleOpenDiscussion}
               agentName={activeAgent?.name}
               agentId={activeAgent?.id}
               teamId={selectedTeamId ?? undefined}

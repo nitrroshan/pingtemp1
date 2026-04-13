@@ -1,5 +1,5 @@
 import React, { useRef, useEffect, useCallback } from 'react';
-import { Send, Loader2, CornerDownLeft } from 'lucide-react';
+import { Send, Loader2, CornerDownLeft, MessageCircle } from 'lucide-react';
 import { cn } from '../../lib/utils';
 
 interface ChatInputProps {
@@ -9,6 +9,8 @@ interface ChatInputProps {
   onInputChange: (value: string) => void;
   onSubmit: () => void;
   onKeyDown: (e: React.KeyboardEvent) => void;
+  onOpenDiscussions?: () => void;
+  discussionUnreadCount?: number;
 }
 
 const ChatInput: React.FC<ChatInputProps> = ({
@@ -18,6 +20,8 @@ const ChatInput: React.FC<ChatInputProps> = ({
   onInputChange,
   onSubmit,
   onKeyDown,
+  onOpenDiscussions,
+  discussionUnreadCount = 0,
 }) => {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
@@ -63,6 +67,23 @@ const ChatInput: React.FC<ChatInputProps> = ({
           />
 
           <div className="flex items-center gap-1 p-1.5 flex-shrink-0">
+            {onOpenDiscussions && (
+              <button
+                onClick={onOpenDiscussions}
+                title="Open discussions"
+                className={cn(
+                  'relative w-7 h-7 rounded-lg flex items-center justify-center transition-colors',
+                  'text-muted-foreground hover:text-foreground hover:bg-accent cursor-pointer',
+                )}
+              >
+                <MessageCircle size={14} />
+                {discussionUnreadCount > 0 && (
+                  <span className="absolute -top-0.5 -right-0.5 min-w-[14px] h-[14px] rounded-full bg-red-500 text-white text-[9px] font-bold flex items-center justify-center leading-none px-0.5">
+                    {discussionUnreadCount > 9 ? '9+' : discussionUnreadCount}
+                  </span>
+                )}
+              </button>
+            )}
             <button
               onClick={onSubmit}
               disabled={!canSubmit}

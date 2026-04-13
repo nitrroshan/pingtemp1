@@ -712,11 +712,11 @@ function useDiscussionNotifications(teamId: string) {
 | WorkerPool tool injection | ✅ Done | v1.1 | **Yes** — tool delivery |
 | Cross-plan references | ✅ Done | v1.1 | No — enhancement |
 | Pre-plan research | ✅ Done | v1.1 | No — enhancement |
-| DiscussionThread | ❌ Missing | v2.0 | **Yes** — user visibility |
-| DecisionPanel | ❌ Missing | v2.0 | No — UI complement |
-| DiscussionComposer | ❌ Missing | v2.0 | **Yes** — user participation |
-| DiscussionListPanel | ❌ Missing | v2.0 | No — discovery UI |
-| Socket.IO events | ❌ Missing | v2.0 | **Yes** — notifications |
+| DiscussionThread | ✅ Done | v2.0 | **Yes** — user visibility |
+| DecisionPanel | ✅ Done | v2.0 | No — UI complement |
+| DiscussionComposer | ✅ Done | v2.0 | **Yes** — user participation |
+| DiscussionListPanel | ✅ Done | v2.0 | No — discovery UI |
+| Socket.IO events | ✅ Done | v2.0 | **Yes** — notifications |
 | Agent status extension | ⚠️ Partial | v2.0 | No — observability |
 
 **Critical path:** CrdtTaskSync (v1.0) → OrchestratorService wiring (v1.0) → request_task tool (v1.1) → discuss action (v1.1) → DiscussionThread + Composer (v2.0)
