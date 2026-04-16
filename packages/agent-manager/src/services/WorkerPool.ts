@@ -10,14 +10,10 @@
 
 import { rootLogger } from "../logging.js";
 import { AiSdkAgent } from "../agent/internal/AiSdkAgent.js";
-import {
-  createReportStatusTool,
-  createCompleteTaskTool,
-  createRequestTaskTool,
-  createBounceTaskTool,
-} from "../agent/internal/tools/index.js";
+import { assembleLifecycleTools } from "./tools/index.js";
 import { PluginRegistry } from "../plugin/PluginRegistry.js";
 import type { ToolContext } from "../plugin/types.js";
+import { loadTaskLifecycleSkill } from "../skills/taskLifecycleSkill.js";
 import type {
   AgentDefinition,
   AgentInput,
@@ -252,51 +248,21 @@ export class WorkerPool {
       agent = new AiSdkAgent(fixedDefinition);
       await agent.initialize();
 
-      // Collect additional tools
-      const additionalTools: any[] = [];
-
-      // Add report_status tool for task lifecycle
-      const reportStatusTool = createReportStatusTool(
+      // Assemble task-lifecycle tools (report_status, complete_task, request_task, bounce_task)
+      const { tools: lifecycleTools } = assembleLifecycleTools({
         taskId,
         roleKey,
-        (data) => this.callbacks.onStatusUpdate?.(data),
-      );
-      additionalTools.push(reportStatusTool);
-
-      // Add complete_task tool for agent-initiated completion
-      const completeTaskTool = createCompleteTaskTool(
-        taskId,
-        roleKey,
-        (data) => this.callbacks.onAgentComplete?.(data),
-      );
-      additionalTools.push(completeTaskTool);
-
-      // Add request_task tool — allows agents to create tasks for other roles
-      if (this.taskStore && this.dagResolver) {
-        const requestTaskTool = createRequestTaskTool({
-          taskId,
-          role: roleKey,
-          planId: this.currentPlanId || null,
-          goalId: this.currentGoalId || null,
-          availableRoles: this.teamRoles || [],
+        callbacks: this.callbacks,
+        taskServices: {
           taskStore: this.taskStore,
           dagResolver: this.dagResolver,
+          teamRoles: this.teamRoles || [],
           crdtTaskSync: this.crdtTaskSync,
-          onTaskCreated: (data) => this.callbacks.onTaskCreated?.(data),
-        });
-        additionalTools.push(requestTaskTool);
-
-        // Add bounce_task tool — allows agents to bounce tasks they can't do
-        const bounceTaskTool = createBounceTaskTool({
-          taskId,
-          role: roleKey,
-          availableRoles: this.teamRoles || [],
-          taskStore: this.taskStore,
-          crdtTaskSync: this.crdtTaskSync,
-          onBounce: (data) => this.callbacks.onBounce?.(data),
-        });
-        additionalTools.push(bounceTaskTool);
-      }
+          planId: this.currentPlanId || null,
+          goalId: this.currentGoalId || null,
+        },
+      });
+      const additionalTools: any[] = [...lifecycleTools];
 
       // ── Plugin-based tool assembly ──────────────────────────────────────
       if (this.pluginRegistry) {
@@ -326,11 +292,43 @@ export class WorkerPool {
         );
       }
 
+      // ── System skill: task-lifecycle (always injected) ─────────────────
+      // Core orchestration instructions — report_status, complete_task,
+      // request_task, bounce_task, and the missing-context protocol.
+      // This reaches ALL agents (plugin-based and generic) since it's
+      // injected here, not in any plugin or worker prompt.
+      const taskLifecycleInstructions = loadTaskLifecycleSkill();
+      if (taskLifecycleInstructions) {
+        agent.appendSystemPrompt([taskLifecycleInstructions]);
+      }
+
       // Inject base (non-skill) tools
       const currentTools = (agent as any).loadedTools || {};
       const currentToolsArray = Array.isArray(currentTools) ? currentTools : Object.values(currentTools);
       const baseTools = [...currentToolsArray, ...additionalTools];
       await agent.setTools(baseTools);
+
+      // ── Write identity file to workspace ─────────────────────────────────────────
+      // Simple JSON file the agent can read via workspace_read_file(".ping/identity.json")
+      if (this.pluginRegistry) {
+        const wsPlugin = this.pluginRegistry.get("workspace");
+        if (wsPlugin && typeof (wsPlugin as any).writeIdentityFile === "function") {
+          try {
+            const definition = this.definitions.get(roleKey);
+            await (wsPlugin as any).writeIdentityFile({
+              taskId,
+              role: roleKey,
+              name: definition?.name || roleKey,
+              goal: definition?.goal || `Execute ${roleKey} tasks`,
+              skills: (definition?.config as any)?.skills,
+              teamId: this.teamId,
+              teamRoles: this.teamRoles,
+            });
+          } catch (err) {
+            logger.debug(`Identity file write skipped for ${taskId}: ${err}`);
+          }
+        }
+      }
 
       // Store base tools for per-request skill refresh
       this.workerBaseTools.set(taskId, baseTools);
@@ -500,7 +498,15 @@ export class WorkerPool {
     }
 
     if (task.context.artifacts.length > 0) {
-      msg += `\n\n## Available artifacts:\n${task.context.artifacts.join("\n")}`;
+      msg += `\n\n## Deliverables from Upstream Tasks`;
+      msg += `\nThese are references to work produced by completed tasks you depend on.`;
+      msg += `\n\n**How to access:**`;
+      msg += `\n- **File paths** (e.g. \`src/schema.ts\`): Use \`workspace_read_file\` — files are already merged into your workspace`;
+      msg += `\n- **CRDT docs** (e.g. \`task-1/task\`): Use \`collab read\` to retrieve structured data`;
+      msg += `\n- **Directories**: Use \`workspace_list_files\` to explore and discover related files`;
+      msg += `\n- **Search**: Use \`workspace_grep\` to search file contents, \`workspace_glob\` to find files by pattern`;
+      msg += `\n\nAlways read deliverables before starting work — don't rely solely on summaries.`;
+      msg += `\n\n${task.context.artifacts.join("\n")}`;
     }
 
     return msg;

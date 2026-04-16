@@ -6,17 +6,6 @@ export { AgentWorkspace } from "./AgentWorkspace.js";
 export { WorkspaceManager } from "./WorkspaceManager.js";
 export { SafeAgentWorkspace } from "./SafeAgentWorkspace.js";
 export { Scratchpad } from "./Scratchpad.js";
-export { IdentityCard } from "./IdentityCard.js";
-export type {
-  IdentityAgentDef,
-  IdentityTaskContext,
-  IdentityTeamContext,
-  ProgressSnapshot,
-  ToolInfo,
-  ContextInfo,
-  Decision,
-  IdentitySnapshot,
-} from "./IdentityCard.js";
 export { createWorkspaceTools } from "./tools/workspace-tools.js";
 
 // Search (Phase 8)

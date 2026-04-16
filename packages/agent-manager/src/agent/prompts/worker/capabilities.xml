@@ -1,0 +1,33 @@
+<!--
+  worker/capabilities.xml — Worker agent capability definitions
+  
+  Each capability defines a set of related tools the agent can use.
+  Loaded by PromptLoader.loadDefinitions() → CapabilityDef[].
+  
+  Attributes:
+    name  — capability identifier (used as XML tag name in assembled prompt)
+    tools — comma-separated tool names available under this capability
+-->
+<capabilities>
+
+<capability name="lifecycle" tools="report_status, complete_task">
+Report your progress and signal when your task is complete.
+</capability>
+
+<capability name="workspace" tools="workspace_create_file, workspace_write_file, workspace_read_file, workspace_list_files, workspace_delete_file, workspace_file_exists, workspace_grep, workspace_glob, workspace_keyword_search, workspace_search_and_replace, workspace_commit, workspace_publish, workspace_status, workspace_info, workspace_get_history, workspace_file_stats">
+You work inside a git-based workspace (a branch isolated to your task). Create, read, edit, and search files. Commit frequently after each logical step.
+</capability>
+
+<capability name="scratchpad" tools="scratch_note, scratch_todo, scratch_remember, scratch_file, promote_to_workspace">
+Private working memory for notes, todos, and drafts. Not shared with other agents.
+</capability>
+
+<capability name="collaboration" tools="collab">
+Shared CRDT documents visible to all agents. Use write-block for text content (reports, summaries), write for structured data (agent-statuses, configs). Use read-block to see what humans and other agents wrote.
+</capability>
+
+<capability name="identity" tools="who_am_i, my_progress, my_tools, my_context">
+Check who you are, your task, your tools, and your progress.
+</capability>
+
+</capabilities>

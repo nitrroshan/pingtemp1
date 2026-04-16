@@ -10,6 +10,7 @@
 
 import { z } from "zod";
 import { tool } from "@langchain/core/tools";
+import { PromptLoader } from "../../../orchestrator/PromptLoader.js";
 
 export const BounceTaskSchema = z.object({
   reason: z.string().describe("Why you can't complete this task"),
@@ -107,12 +108,7 @@ export function createBounceTaskTool(ctx: BounceTaskContext) {
     },
     {
       name: "bounce_task",
-      description: `Bounce a task back when you can't complete it. Use this when:
-- The task requires expertise you don't have
-- The task description is wrong or incomplete
-- You discover the task should be done by a different role
-
-The planner will be notified and can reassign the task.`,
+      description: PromptLoader.loadTemplate("tools", "bounce_task"),
       schema: BounceTaskSchema,
     },
   );

@@ -19,6 +19,7 @@ import { z } from "zod";
 import { tool } from "@langchain/core/tools";
 import type { DependencyResolver } from "../DependencyResolver.js";
 import type { ITaskProvider } from "../ITaskProvider.js";
+import { PromptLoader } from "../PromptLoader.js";
 
 // ─── Schemas ──────────────────────────────────────────────────────────────────
 
@@ -150,7 +151,7 @@ export function createUpdateTaskTool(ctx: PlanMutationContext) {
     },
     {
       name: "update_task",
-      description: `Modify a pending/ready task's properties. Cannot modify in_progress or completed tasks.`,
+      description: PromptLoader.loadTemplate("tools", "update_task"),
       schema: UpdateTaskSchema,
     },
   );
@@ -200,7 +201,7 @@ export function createAddTasksTool(ctx: PlanMutationContext) {
     },
     {
       name: "add_tasks",
-      description: `Add new tasks to the active plan. Tasks must have valid dependencies (no cycles) and valid role assignments.`,
+      description: PromptLoader.loadTemplate("tools", "add_tasks"),
       schema: AddTasksSchema,
     },
   );
@@ -239,7 +240,7 @@ export function createRemoveTaskTool(ctx: PlanMutationContext) {
     },
     {
       name: "remove_task",
-      description: `Remove a pending/ready task from the plan. Optionally cascades to orphaned dependents.`,
+      description: PromptLoader.loadTemplate("tools", "remove_task"),
       schema: RemoveTaskSchema,
     },
   );
@@ -259,7 +260,7 @@ export function createReprioritizeTool(ctx: PlanMutationContext) {
     },
     {
       name: "reprioritize",
-      description: `Change a task's priority (1=highest, 5=lowest). Affects dispatch order for ready tasks.`,
+      description: PromptLoader.loadTemplate("tools", "reprioritize"),
       schema: ReprioritizeSchema,
     },
   );
@@ -278,12 +279,21 @@ export function createReassignTaskTool(ctx: PlanMutationContext) {
       const oldRole = task.assigned_role;
       task.assigned_role = input.newRole.toLowerCase();
 
-      ctx.onMutation?.({ type: "plan:task_reassigned", data: { taskId: input.taskId, oldRole, newRole: input.newRole, reason: input.reason } });
-      return `Task '${input.taskId}' reassigned from '${oldRole}' to '${input.newRole}'`;
+      // R9-3 FIX: Reset failed status so task can be re-dispatched
+      let statusReset = false;
+      if (task.status === "failed") {
+        task.status = "ready";
+        statusReset = true;
+      }
+
+      ctx.onMutation?.({ type: "plan:task_reassigned", data: { taskId: input.taskId, oldRole, newRole: input.newRole, reason: input.reason, statusReset } });
+      return statusReset
+        ? `Task '${input.taskId}' reassigned from '${oldRole}' to '${input.newRole}' and status reset to ready for re-dispatch.`
+        : `Task '${input.taskId}' reassigned from '${oldRole}' to '${input.newRole}'`;
     },
     {
       name: "reassign_task",
-      description: `Move a task to a different worker role. The new role must exist in the team.`,
+      description: PromptLoader.loadTemplate("tools", "reassign_task"),
       schema: ReassignTaskSchema,
     },
   );
@@ -333,7 +343,7 @@ export function createReplanTool(ctx: PlanMutationContext) {
     },
     {
       name: "replan",
-      description: `Replace the remaining plan. Cancels all pending/ready tasks and submits new ones. Use as a last resort when the current plan can't be salvaged.`,
+      description: PromptLoader.loadTemplate("tools", "replan"),
       schema: ReplanSchema,
     },
   );

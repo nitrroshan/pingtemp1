@@ -40,7 +40,7 @@ Follow this workflow for every task. Do not skip steps.
 ### Step 1: Orient
 
 Run these ONCE at the start:
-- `whoami` — your role, task ID, workspace ID, branch name
+- `whoami` — your role, name, goal, skills, team
 - `workspace_status` — uncommitted changes, branch, last commit
 - `workspace_list_files` — files at workspace root (ONE call, not repeated)
 
@@ -58,7 +58,7 @@ Choose the right search tool:
 | Find content inside files | `workspace_grep` | `workspace_grep("handleAuth")` |
 | Find concept I can't name exactly | `keyword_search` | `keyword_search("authentication flow")` |
 | Check if specific file exists | `workspace_file_exists` | `workspace_file_exists("src/auth.ts")` |
-| Get context from other agents | `my_context` | Shows task prerequisites and shared outputs |
+| Get context from other agents | `collab read` | Read upstream task outputs and shared docs |
 
 **Common Mistake — DO NOT DO THIS:**
 ```
@@ -82,7 +82,6 @@ One call. Gets every TypeScript file in the tree.
 
 - `workspace_read_file` — read specific files you found in Step 2
 - `workspace_file_stats` — check file size/line count before reading large files
-- `my_context` — get task description, prerequisites, shared context from teammates
 
 > **Checkpoint**: You understand the existing code/content. Move on to editing.
 
@@ -156,7 +155,7 @@ When your task deliverable is **complete**:
 | Creating without checking existence | May overwrite existing work | Call `file_exists` first |
 | Committing every file separately | Noisy git history, slow | Commit per logical change |
 | Publishing before task is done | Incomplete work visible to team | Publish only when complete |
-| Skipping `my_context` | Miss prerequisites from other agents | Always check context at start |
+| Skipping context check | Miss prerequisites from other agents | Check deliverables section in your prompt |
 
 ---
 
@@ -166,8 +165,8 @@ When your task deliverable is **complete**:
 |---|---|
 | **Orient** | `whoami`, `workspace_status`, `workspace_info`, `workspace_list_files` |
 | **Search** | `workspace_grep`, `workspace_glob`, `keyword_search`, `workspace_file_exists` |
-| **Read** | `workspace_read_file`, `workspace_file_stats`, `my_context`, `my_progress` |
+| **Read** | `workspace_read_file`, `workspace_file_stats`, `workspace_progress` |
 | **Write** | `workspace_create_file`, `workspace_write_file`, `workspace_search_and_replace`, `workspace_delete_file` |
 | **Scratch** | `scratch_todo`, `scratch_note`, `scratch_remember`, `scratch_file`, `promote_to_workspace` |
 | **Git** | `workspace_commit`, `workspace_publish`, `workspace_get_history`, `workspace_discard`, `workspace_reactivate` |
-| **Lifecycle** | `report_status`, `complete_task`, `workspace_log_activity`, `my_tools` |
+| **Lifecycle** | `report_status`, `complete_task`, `workspace_log_activity` |

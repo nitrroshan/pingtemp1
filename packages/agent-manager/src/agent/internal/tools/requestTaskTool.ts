@@ -6,7 +6,6 @@
  *
  * Guard rails:
  * - Max 5 agent-created tasks per agent per plan
- * - No self-assignment (can't assign to own role)
  * - Priority ceiling at 2 (priority 1 = planner-only CRITICAL)
  * - Planner is notified of all agent-created tasks
  *
@@ -15,6 +14,7 @@
 
 import { z } from "zod";
 import { tool } from "@langchain/core/tools";
+import { PromptLoader } from "../../../orchestrator/PromptLoader.js";
 
 const MAX_AGENT_TASKS_PER_PLAN = 5;
 const MAX_AGENT_PRIORITY = 2;
@@ -81,23 +81,18 @@ export function createRequestTaskTool(ctx: RequestTaskContext) {
     async (input: RequestTaskInput) => {
       // ── Guard Rails ─────────────────────────────────────────────────
 
-      // 1. No self-assignment
-      if (input.targetRole.toLowerCase() === ctx.role.toLowerCase()) {
-        return "Error: Cannot assign tasks to your own role. Use a different targetRole.";
-      }
-
-      // 2. Validate target role exists
+      // 1. Validate target role exists
       const targetLower = input.targetRole.toLowerCase();
       if (!ctx.availableRoles.some((r) => r.toLowerCase() === targetLower)) {
         return `Error: Role '${input.targetRole}' not found. Available roles: ${ctx.availableRoles.join(", ")}`;
       }
 
-      // 3. Priority ceiling
+      // 2. Priority ceiling
       if (input.priority < MAX_AGENT_PRIORITY) {
         return `Error: Agent-created tasks cannot have priority higher than ${MAX_AGENT_PRIORITY}. Use priority ${MAX_AGENT_PRIORITY}-5.`;
       }
 
-      // 4. Max tasks per agent per plan — derive from TaskStore for durability (Fix #2)
+      // 3. Max tasks per agent per plan — derive from TaskStore for durability (Fix #2)
       const createdByTag = `agent:${ctx.role}`;
       const currentCount = ctx.taskStore.getAll
         ? ctx.taskStore.getAll().filter((t: any) => (t.context as any)?.createdBy === createdByTag).length
@@ -108,7 +103,14 @@ export function createRequestTaskTool(ctx: RequestTaskContext) {
 
       // ── Create Task ────────────────────────────────────────────────
 
-      const newTaskId = `task-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+      // R6-5 FIX: Use sequential task IDs consistent with planner (task-N format)
+      const existingNums = ctx.taskStore.getAll
+        ? ctx.taskStore.getAll().map((t: any) => {
+            const m = t.id.match(/^task-(\d+)$/);
+            return m ? parseInt(m[1], 10) : 0;
+          })
+        : [0];
+      const newTaskId = `task-${Math.max(0, ...existingNums) + 1}`;
 
       // Build the Task object
       const dependencies: string[] = [];
@@ -208,18 +210,9 @@ export function createRequestTaskTool(ctx: RequestTaskContext) {
     },
     {
       name: "request_task",
-      description: `Create a task for another agent role. Use this when:
-- You discover work that another role should do
-- You need a review of your output
-- You need a decision from the planner
-- You need to collaborate with another agent
-
-Relationships:
-- "independent": Someone should do this, it doesn't block me
-- "subtask": Part of my work, tracked as child task
-- "blocks-me": I can't continue until this is done (my task pauses)
-
-Guard rails: max ${MAX_AGENT_TASKS_PER_PLAN} tasks per plan, no self-assignment, priority 2-5 only.`,
+      description: PromptLoader.loadTemplate("tools", "request_task", {
+        maxTasks: String(MAX_AGENT_TASKS_PER_PLAN),
+      }),
       schema: RequestTaskSchema,
     },
   );

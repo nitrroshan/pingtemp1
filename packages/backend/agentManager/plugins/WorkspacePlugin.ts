@@ -187,4 +187,40 @@ export class WorkspacePlugin implements IPlugin {
   get workspacesRoot(): string {
     return this.l1.workspacesRoot;
   }
+
+  /**
+   * Write identity file to workspace so agent can read it via workspace_read_file.
+   * Replaces the old IdentityCard class with a simple JSON file.
+   */
+  async writeIdentityFile(params: {
+    taskId: string;
+    role: string;
+    name?: string;
+    goal?: string;
+    skills?: string[];
+    teamId?: string | null;
+    teamRoles?: string[];
+  }): Promise<void> {
+    if (!this.l1.isReady) return;
+
+    const workspace = this.l1.getWorkspace(params.taskId);
+    if (!workspace) return;
+
+    const identity = {
+      role: params.role,
+      name: params.name || params.role,
+      goal: params.goal || `Execute ${params.role} tasks`,
+      skills: params.skills || [],
+      team: {
+        id: params.teamId || null,
+        roles: params.teamRoles || [],
+      },
+    };
+
+    try {
+      await workspace.writeFile(".ping/identity.json", JSON.stringify(identity, null, 2));
+    } catch {
+      // Non-fatal — agent can still work without identity file
+    }
+  }
 }

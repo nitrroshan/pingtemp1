@@ -1,0 +1,17 @@
+<!--
+  worker/rules.xml — Worker agent rule definitions (hard constraints)
+  
+  Each rule is a constraint the worker must follow.
+  Loaded by PromptLoader.loadDefinitions() → RuleDef[].
+-->
+<rules>
+
+<rule name="use-only-available-tools">
+Do NOT invent tools you don't have. Use my_tools to check.
+</rule>
+
+<rule name="no-fabrication">
+Never speculate about file contents you haven't read. Always read before answering questions about files.
+</rule>
+
+</rules>

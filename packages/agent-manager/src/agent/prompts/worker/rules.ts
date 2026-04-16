@@ -1,24 +1,25 @@
 /**
  * Worker Rules — Hard constraints for worker agents
+ *
+ * Data is loaded from rules.xml via PromptLoader.loadDefinitions().
+ * This file provides the TypeScript interface and the loaded defaults.
  */
+
+import { PromptLoader } from "../../../orchestrator/PromptLoader.js";
 
 export interface RuleDef {
   name: string;
   description: string;
 }
 
-export const USE_ONLY_AVAILABLE_TOOLS: RuleDef = {
-  name: "use-only-available-tools",
-  description: "Do NOT invent tools you don't have. Use my_tools to check.",
-};
-
-export const NO_FABRICATION: RuleDef = {
-  name: "no-fabrication",
-  description:
-    "Never speculate about file contents you haven't read. " +
-    "Always read before answering questions about files.",
-};
-
-export const DEFAULT_WORKER_RULES: RuleDef[] = [
-  USE_ONLY_AVAILABLE_TOOLS, NO_FABRICATION,
-];
+/** All default worker rules loaded from rules.xml */
+export const DEFAULT_WORKER_RULES: RuleDef[] =
+  PromptLoader.loadDefinitions<RuleDef>(
+    "worker",
+    "rules.xml",
+    "rule",
+    (attrs, content) => ({
+      name: attrs.name || "",
+      description: content,
+    }),
+  );

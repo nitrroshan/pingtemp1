@@ -104,19 +104,6 @@ export class AgentWorkspace {
   /** Keyword search index (Phase 8 — MiniSearch BM25-like) */
   public readonly search: WorkspaceSearchIndex;
 
-  /** Identity card (Zone 4 — set by WorkerPool after workspace creation) */
-  private _identityCard: import("./IdentityCard.js").IdentityCard | null = null;
-
-  /** Set the identity card (called by WorkerPool after assembling tools) */
-  setIdentityCard(card: import("./IdentityCard.js").IdentityCard): void {
-    this._identityCard = card;
-  }
-
-  /** Get the identity card (null if not yet configured) */
-  get identityCard(): import("./IdentityCard.js").IdentityCard | null {
-    return this._identityCard;
-  }
-
   // ═══════════════════════════════════════════════════════════════════════════
   // CONSTRUCTOR
   // ═══════════════════════════════════════════════════════════════════════════

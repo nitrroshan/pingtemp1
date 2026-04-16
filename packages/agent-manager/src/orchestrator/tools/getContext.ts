@@ -4,6 +4,7 @@ import { tool } from "@langchain/core/tools";
 import { z } from "zod";
 import type { OrchestratorContext } from "../types.js";
 import type { OutputManifest } from "../../memory/types/output-manifest.types.js";
+import { PromptLoader } from "../PromptLoader.js";
 
 /**
  * Tool for retrieving context from previous task executions.
@@ -62,13 +63,7 @@ ${files || "  (none)"}`;
     },
     {
       name: "get_context",
-      description: `Retrieve context and output manifests from previous task executions.
-Use this to:
-- Get outputs from prerequisite tasks
-- Access code/documentation from related tasks
-- Review previous analyses or decisions
-
-You can query by taskId for specific task outputs, or filter by role.`,
+      description: PromptLoader.loadTemplate("tools", "get_context"),
       schema: z.object({
         taskId: z
           .string()

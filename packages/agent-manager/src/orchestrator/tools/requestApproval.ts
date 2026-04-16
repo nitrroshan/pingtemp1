@@ -12,6 +12,7 @@ import { z } from "zod";
 import { tool } from "@langchain/core/tools";
 import type { OrchestratorContext } from "../types.js";
 import type { UserInteractionManager } from "../UserInteractionManager.js";
+import { PromptLoader } from "../PromptLoader.js";
 
 export const RequestApprovalSchema = z.object({
   message: z
@@ -59,8 +60,7 @@ export function createRequestApprovalTool(ctx: RequestApprovalContext) {
     },
     {
       name: "request_approval",
-      description: `Request user approval for the submitted plan. Blocks until user approves or rejects.
-Call this AFTER submit_plan. If rejected, modify the plan and resubmit.`,
+      description: PromptLoader.loadTemplate("tools", "request_approval"),
       schema: RequestApprovalSchema,
     },
   );

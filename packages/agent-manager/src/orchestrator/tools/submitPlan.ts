@@ -13,6 +13,7 @@ import { tool } from "@langchain/core/tools";
 import type { OrchestratorContext } from "../types.js";
 import type { DependencyResolver } from "../DependencyResolver.js";
 import { toGoalId } from "../../plugin/utils.js";
+import { PromptLoader } from "../PromptLoader.js";
 
 // ─── Schema ───────────────────────────────────────────────────────────────────
 
@@ -107,14 +108,7 @@ export function createSubmitPlanTool(ctx: SubmitPlanContext) {
     },
     {
       name: "submit_plan",
-      description: `Submit a task plan and start execution. The plan must have:
-- Valid task IDs with no duplicate IDs  
-- Dependencies that form a valid DAG (no cycles)
-- Roles assigned only from the available team roles
-- DEPENDENCIES ARE CRITICAL: tasks that need output from earlier tasks MUST list dependencies.
-  Example: frontend depends on backend API, testing depends on implementation, deployment depends on everything.
-  Only tasks with zero dependencies will run first. Others wait for their dependencies to complete.
-Plan is auto-approved and tasks begin executing immediately.`,
+      description: PromptLoader.loadTemplate("tools", "submit_plan"),
       schema: SubmitPlanSchema,
     },
   );

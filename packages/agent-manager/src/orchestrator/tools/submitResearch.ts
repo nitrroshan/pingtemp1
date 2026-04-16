@@ -14,6 +14,7 @@ import { z } from "zod";
 import { tool } from "@langchain/core/tools";
 import type { OrchestratorContext } from "../types.js";
 import type { DependencyResolver } from "../DependencyResolver.js";
+import { PromptLoader } from "../PromptLoader.js";
 
 const ResearchTaskSchema = z.object({
   id: z.string().describe("Unique research task ID (e.g., pre-001)"),
@@ -132,15 +133,7 @@ export function createSubmitResearchTool(ctx: SubmitResearchContext) {
     },
     {
       name: "submit_research",
-      description: `Start a pre-plan research phase. Use this BEFORE submit_plan when you need more information to create a good plan.
-
-Examples of when to use:
-- "What tech stack are we using?" → create a research task for a researcher
-- "What compliance requirements apply?" → create a research task for a security reviewer
-- "What did we build last time?" → create a research task to review prior work
-
-Research tasks execute via the normal pipeline. You cannot call submit_plan until all research tasks complete.
-You CAN still chat with the user while research is running.`,
+      description: PromptLoader.loadTemplate("tools", "submit_research"),
       schema: SubmitResearchSchema,
     },
   );

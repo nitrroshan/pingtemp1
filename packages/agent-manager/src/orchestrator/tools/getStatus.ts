@@ -9,6 +9,7 @@ import { tool } from "@langchain/core/tools";
 import { z } from "zod";
 import type { OrchestratorContext } from "../types.js";
 import type { TaskStatusSummary } from "../schemas.js";
+import { PromptLoader } from "../PromptLoader.js";
 
 /**
  * Creates the get_status tool with injected context
@@ -86,10 +87,7 @@ export function createGetStatusTool(context: OrchestratorContext) {
     },
     {
       name: "get_status",
-      description: `Get the current execution status of all tasks.
-Returns counts of tasks by status (ready, in_progress, completed, failed) 
-and a list of all tasks with their current status.
-Use this to monitor progress and report to the user.`,
+      description: PromptLoader.loadTemplate("tools", "get_status"),
       schema: z.object({}), // No input needed
     },
   );
