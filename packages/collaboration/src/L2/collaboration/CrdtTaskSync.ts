@@ -207,6 +207,26 @@ export class CrdtTaskSync {
   }
 
   // ─────────────────────────────────────────────────────────────────────────
+  // SYNC PLAN STATUS — Update plan status in CRDT (BUG-1 fix)
+  // ─────────────────────────────────────────────────────────────────────────
+
+  /**
+   * Update plan status in CRDT. Called when plan is completed, interrupted, or archived.
+   * Fixes dual-write drift where PlanStore has the truth but CRDT is stale.
+   */
+  async syncPlanStatus(status: string): Promise<void> {
+    try {
+      const doc = await this._space.openDoc("plan");
+      const map = doc.getMap("plan");
+      map.set("status", status);
+      map.set("updatedAt", new Date().toISOString());
+      logger.debug(`Synced plan status to "${status}" in CRDT`);
+    } catch (err) {
+      logger.warn(`Failed to sync plan status to CRDT: ${err}`);
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
   // UPDATE INDEX — Lightweight index for agent browsing via collab tool
   // ─────────────────────────────────────────────────────────────────────────
 

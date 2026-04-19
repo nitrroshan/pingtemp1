@@ -86,8 +86,7 @@ export type {
   InternalConfig,
 } from "./agent/types.js";
 
-// MemoryManager
-export { MemoryManager } from "./memory/MemoryManager.js";
+// Task types
 export type { Task, TaskStatus } from "./memory/types/index.js";
 
 // Persistence (built-in defaults)

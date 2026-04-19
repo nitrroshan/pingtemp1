@@ -160,11 +160,13 @@ export class WorkspacePlugin implements IPlugin {
     const workspace = this.l1.getWorkspace(taskId);
     if (!workspace) return { success: true }; // No workspace for this task
 
-    // Publish outputs (artifacts, manifests)
-    try {
-      await workspace.publish(goalId);
-    } catch (err: any) {
-      return { success: false, error: `publish failed: ${err.message}` };
+    // Publish outputs if not already published (agent may have called workspace_publish)
+    if (workspace.status === "active") {
+      try {
+        await workspace.publish(goalId);
+      } catch (err: any) {
+        return { success: false, error: `publish failed: ${err.message}` };
+      }
     }
 
     // Merge task branch to main and cleanup

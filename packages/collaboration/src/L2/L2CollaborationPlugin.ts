@@ -125,9 +125,11 @@ export class L2CollaborationPlugin implements IL2CollaborationPlugin {
 
   async initialize(): Promise<void> {
     // Start WebSocket server for frontend collaborative editing if embedded + port configured
-    if (this._collabServer && this.config.collabPort) {
+    // Default to port 1234 if not explicitly configured
+    const port = this.config.collabPort || 1234;
+    if (this._collabServer) {
       try {
-        await this._collabServer.start(this.config.collabPort);
+        await this._collabServer.start(port);
         logger.info(
           `L2 CollabServer WebSocket listening on port ${this.config.collabPort}`,
         );

@@ -39,7 +39,15 @@ Use get_status to review what succeeded and what failed.
 <!-- A task failed during execution -->
 <template id="task-failed">
 ❌ Task "{{description}}" ({{role}}) failed: {{error}}
-{{blockedSuffix}}Use get_status to see current state. Options: replan, add_tasks, remove_task.
+{{blockedSuffix}}
+ACTION REQUIRED — call one of these tools NOW (do NOT just describe what you'd do):
+- Call `get_status` to assess the situation
+- Call `add_tasks` to add recovery/diagnostic tasks
+- Call `reassign_task` to retry with a different role
+- Call `replan` to replace the remaining plan
+- Call `remove_task` to drop blocked downstream tasks
+
+You MUST call a tool. Do not respond with text only.
 </template>
 
 </notifications>

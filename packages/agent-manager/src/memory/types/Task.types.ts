@@ -7,7 +7,8 @@ export type TaskStatus =
   | "pending"
   | "in_progress"
   | "completed"
-  | "failed";
+  | "failed"
+  | "discarded";
 
 /**
  * Workspace branch status for git-based workflows
@@ -20,6 +21,11 @@ export type BranchStatus =
   | "discarded";
 
 /**
+ * How a task was completed — prevents auto-complete race condition.
+ */
+export type CompletionSource = "tool" | "auto" | "manual";
+
+/**
  * Task interface
  * Represents a task with its metadata, dependencies, and execution state
  */
@@ -27,14 +33,23 @@ export interface Task {
   /** Unique task identifier */
   id: string;
 
+  /** Short human-readable title */
+  title?: string;
+
   /** Human-readable description of what the task should accomplish */
   description: string;
 
   /** The role (lowercase) assigned to execute this task */
   assigned_role: string;
 
-  /** Optional priority level (lower = higher priority, default: 0) */
+  /** Priority level (1=highest, 5=lowest, default: 3) */
   priority?: number;
+
+  /** Task type — drives dispatch behavior */
+  type?: "work" | "review" | "collaboration" | "subtask" | "decision" | "research";
+
+  /** Description of what this task should produce */
+  expectedOutput?: string;
 
   /** Optional context or additional information for the task */
   context?: Record<string, any>;
@@ -44,6 +59,12 @@ export interface Task {
 
   /** Optional output or result from task execution */
   output?: any;
+
+  /** How the task was completed (set at completion time) */
+  completionSource?: CompletionSource;
+
+  /** Last status reported by the worker (e.g., "blocked") — used by auto-complete guard */
+  lastReportedStatus?: string;
 
   /** Map of prerequisite task IDs to their completion status (true = completed) */
   prerequisites: Map<string, boolean>;

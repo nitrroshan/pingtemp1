@@ -297,9 +297,9 @@ class WorkspacePublishTool extends StructuredTool {
     try {
       const manifest = await this.workspace.publish();
       if (manifest.outputs.length === 0) {
-        return "No artifacts to publish";
+        return "Published (no files in workspace). Workspace is now in 'published' state — branch is ready for merge.";
       }
-      return `Published ${manifest.outputs.length} outputs:\n${manifest.outputs.map((o) => `  - ${o.path} (${o.category})`).join("\n")}`;
+      return `Published ${manifest.outputs.length} file(s):\n${manifest.outputs.map((o) => `  - ${o.path} (${o.category})`).join("\n")}`;
     } catch (error: any) {
       return `Error publishing: ${error.message}`;
     }

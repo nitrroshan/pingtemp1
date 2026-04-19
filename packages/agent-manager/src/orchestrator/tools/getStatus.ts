@@ -18,8 +18,8 @@ export function createGetStatusTool(context: OrchestratorContext) {
   return tool(
     async (): Promise<TaskStatusSummary> => {
       try {
-        // Get all tasks from provider (works with both MemoryManager and TaskStore)
-        const allTasks = context.memoryManager.getAllTasks();
+        // Get all tasks from provider
+        const allTasks = context.taskProvider.getAllTasks();
 
         // Count by status
         const counts = {
@@ -37,7 +37,8 @@ export function createGetStatusTool(context: OrchestratorContext) {
             | "pending"
             | "in_progress"
             | "completed"
-            | "failed" = task.status || "pending";
+            | "failed"
+            | "discarded" = task.status || "pending";
 
           // Map status variations
           if (status === "in_progress") {
@@ -55,7 +56,7 @@ export function createGetStatusTool(context: OrchestratorContext) {
 
           return {
             id: task.id,
-            title: (task as any).title || (task.context as any)?.title || task.id,
+            title: task.title || task.context?.title || task.id,
             status,
             assignedRole: task.assigned_role || "unknown",
           };

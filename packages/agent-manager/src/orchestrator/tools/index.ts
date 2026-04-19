@@ -45,14 +45,14 @@ export function createPlannerTools(ctx: PlannerToolsContext) {
   };
 
   const execCtx: ExecutionToolContext = {
-    tasks: octx.memoryManager,
+    tasks: octx.taskProvider,
     dagResolver: ctx.dagResolver,
     agentFactory: ctx.agentFactory,
     onCancelTask: ctx.onCancelTask,
   };
 
   const mutCtx: PlanMutationContext = {
-    tasks: octx.memoryManager,
+    tasks: octx.taskProvider,
     dagResolver: ctx.dagResolver,
     availableRoles: octx.teamRoles,
     onMutation: ctx.onMutation,

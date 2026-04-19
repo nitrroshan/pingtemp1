@@ -30,6 +30,7 @@ import {
   L2CollaborationPlugin,
   createCollabTool,
 } from "@ping/collaboration";
+import type { CollabToolCallbacks } from "@ping/collaboration";
 import type { L2CollaborationPluginConfig } from "@ping/collaboration";
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -46,9 +47,15 @@ class CollabMcpServer implements IMcpServer {
   ) {}
 
   private goalId: string = "default";
+  private collabCallbacks?: CollabToolCallbacks;
 
   setGoalId(goalId: string): void {
     this.goalId = goalId;
+  }
+
+  /** Set callbacks for collab tool events (mention routing, etc.) */
+  setCollabCallbacks(callbacks: CollabToolCallbacks): void {
+    this.collabCallbacks = callbacks;
   }
 
   getTools(context: ToolContext): any[] {
@@ -58,7 +65,10 @@ class CollabMcpServer implements IMcpServer {
     if (!this.l2.isReady) return [];
 
     const space = this.l2.getOrCreateSpace(this.goalId);
-    const collabTool = createCollabTool(space, context.role, this.l2, this.repoPath);
+    const collabTool = createCollabTool(
+      space, context.role, this.l2, this.repoPath,
+      context.taskId, this.collabCallbacks,
+    );
     return [collabTool];
   }
 }
@@ -178,5 +188,10 @@ export class CollaborationPlugin implements IPlugin {
   /** Set the active goal ID for collab space scoping */
   setGoalId(goalId: string): void {
     this.mcpServer.setGoalId(goalId);
+  }
+
+  /** Set callbacks for collab tool events (mention routing, etc.) */
+  setCollabCallbacks(callbacks: CollabToolCallbacks): void {
+    this.mcpServer.setCollabCallbacks(callbacks);
   }
 }

@@ -38,6 +38,8 @@ export interface WorkerCallbacks {
   onTaskCreated?: (data: { taskId: string; createdBy: string; targetRole: string; relationship: string; parentTaskId: string }) => void;
   /** Fired when an agent bounces a task via bounce_task tool */
   onBounce?: (data: { taskId: string; role: string; reason: string; suggestedRole?: string; timestamp: number }) => void;
+  /** Fired when an agent mentions roles in a discussion — triggers priority collab worker spawn */
+  onMentionedRoles?: (data: { roles: string[]; sourceTaskId: string; docName: string }) => void;
 }
 
 /**
@@ -161,6 +163,13 @@ export class WorkerPool {
    */
   getDefinition(role: string): AgentDefinition | undefined {
     return this.definitions.get(role.toLowerCase());
+  }
+
+  /**
+   * Check if a worker with the given taskId is currently active
+   */
+  hasActiveWorker(taskId: string): boolean {
+    return this.workers.has(taskId);
   }
 
   /**

@@ -161,8 +161,10 @@ async function projectToFilesystem(
   // Write merged Y.Map data
   if (Object.keys(mergedMap).length > 0) {
     try {
+      const jsonPath = path.join(projDir, `${docType}.json`);
+      await fs.mkdir(path.dirname(jsonPath), { recursive: true });
       await fs.writeFile(
-        path.join(projDir, `${docType}.json`),
+        jsonPath,
         JSON.stringify(mergedMap, null, 2),
       );
     } catch (err) {

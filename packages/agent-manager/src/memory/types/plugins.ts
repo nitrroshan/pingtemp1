@@ -176,8 +176,8 @@ export interface MemoryCoordinatorPluginConfig {
   /** Team identifier for scoping memory */
   teamId: string;
 
-  /** MemoryManager instance for task state */
-  memoryManager: any;
+  /** TaskStore / ITaskProvider instance for task state */
+  taskProvider: any;
 
   /** Optional repo path (used by L2 projections) */
   repoPath?: string;

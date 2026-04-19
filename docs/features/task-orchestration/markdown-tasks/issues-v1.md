@@ -952,3 +952,110 @@ This keeps the agent in control — it reads on demand, choosing what to access 
 - **D: Notify-and-proceed** (task creation auto-posts context to discussion thread)
 
 **Awaiting architecture decision before implementation.**
+
+---
+
+## Round 10 Review — Live Testing Issues (April 18, 2026)
+
+**Source:** Full team execution with replanning. Planner replanned with `-revised` task IDs, agents reported blocked but completed anyway, projection writes failed for nested directories.
+
+### R10-1: HIGH — Projection ENOENT for nested task IDs
+
+**File:** `HocuspocusServer.ts` line 163  
+**Impact:** CRDT projection to `.ping/collaboration/` fails for task IDs containing slashes (e.g., `task-5-revised/task` → needs `task-5-revised/` directory).
+
+**Root cause:** `fs.writeFile()` for Y.Map JSON doesn't create parent directories. Y.Array and markdown projection both have `fs.mkdir({ recursive: true })` but Y.Map projection is missing it.
+
+**Fix:** ✅ Added `fs.mkdir(path.dirname(jsonPath), { recursive: true })` before writeFile.
+
+### R10-2: HIGH — Replan creates non-standard task IDs (e.g., `task-5-revised`)
+
+**File:** `planMutationTools.ts` replan tool  
+**Impact:** LLM-generated task IDs like `task-5-revised`, `task-100-v2` cause CRDT doc path issues, break the sequential `task-N` convention, and confuse agents trying to reference tasks.
+
+**Root cause:** Replan tool accepts arbitrary IDs from the LLM with no format validation. Unlike `requestTaskTool` (which generates sequential `task-N` IDs), replan passes through whatever the LLM generates.
+
+**Fix:** ✅ Added ID normalization — builds `idMap` (LLM ID → `task-N`), normalizes both task IDs and dependency references. Non-conforming IDs like `task-5-revised` become `task-11`, `task-12`, etc.
+
+### R10-3: MEDIUM — Blocked agent completes task (hasToolCall stop condition)
+
+**File:** `AiSdkAgent.ts` line 285  
+**Impact:** Agent reports `status: "blocked"`, the blocked guard in `complete_task` returns an error, but `hasToolCall("complete_task")` stop condition has already triggered — loop stops anyway. OrchestratorService sees worker finished without successful completion → auto-completes the task.
+
+**Root cause:** `hasToolCall("complete_task")` fires when the tool is CALLED, not when it SUCCEEDS. The blocked guard returns an error string, but the stop condition doesn't check the tool result.
+
+**Analysis:** This is an AI SDK limitation — `hasToolCall` doesn't distinguish success from failure. The auto-complete in OrchestratorService (`dispatchTask` line ~950) then marks the task as completed because the worker finished without calling `complete_task` successfully.
+
+**Not fixed yet — needs design decision:**
+- Option A: Remove `hasToolCall("complete_task")` stop condition, rely on `isLoopFinished()` only
+- Option B: Check tool result in OrchestratorService auto-complete — if last tool was `complete_task` with error, don't auto-complete
+- Option C: Make the blocked guard throw an exception instead of returning error string
+
+### R10-4: LOW — add_tasks tool likely has same ID normalization issue
+
+**File:** `planMutationTools.ts` — `createAddTasksTool`  
+**Impact:** Same as R10-2 but for `add_tasks` tool. LLM-provided IDs pass through without validation.
+
+**Status:** Not yet fixed — lower priority since `add_tasks` is less commonly used than `replan`.
+
+### R10-5: CRITICAL — Replanned tasks never dispatch
+
+**File:** `planMutationTools.ts` replan tool + `TaskStore.ts` + `OrchestratorService.ts`  
+**Impact:** Planner calls `replan`, new tasks are added to TaskStore, DAG is rebuilt, but NO dispatch happens. New tasks sit in "pending"/"ready" forever. Meanwhile, `isAllComplete()` returns true because the ORIGINAL tasks are all completed/failed.
+
+**Root cause chain:**
+1. `replan` tool calls `ctx.tasks.addTask()` for each new task → task enters TaskStore
+2. `dagResolver.rebuild()` recalculates the DAG → new tasks with no dependencies become "ready"
+3. BUT: nothing triggers `onTaskReady` for the new tasks — no dispatch
+4. The original tasks are all completed/failed → `isAllComplete()` returns `true`
+5. `onTaskComplete` fires "All tasks completed" → planner says "done!"
+6. New replanned tasks never execute
+
+**Why this happens:** The `replan` tool operates at the `ITaskProvider` level (add/remove tasks), which doesn't have access to the dispatch pipeline. The dispatch pipeline is in `OrchestratorService` which listens for `onTaskReady` events from `RoleTaskQueue`. But `addTask()` → `create()` queues the task internally — the `onTaskReady` callback fires but by that time, the completion check has already triggered.
+
+**The timing issue:**
+```
+T=0: Task-3 (last original task) completes
+T=0: onTaskComplete fires → isAllComplete() = true (only original tasks)
+T=0: Planner notified "all done"
+T=1: Planner calls replan (adds task-11, task-12, task-13)
+T=1: New tasks enter TaskStore, onTaskReady fires for task-11
+T=1: But OrchestratorService state is already "idle" → onTaskReady dispatches normally
+```
+
+Actually the REAL issue is simpler: **replan happens INSIDE the planner's LLM turn, which is triggered by the "all done" notification.** The planner gets "all done", decides to replan, calls the replan tool. But by that time the orchestrator state is already "idle" and `autoExecute` should dispatch ready tasks.
+
+**Investigate further:** Check if `autoExecute` is actually ON when replan fires. Check if `onTaskReady` fires for the new tasks after `addTask()`. The `create()` method calls `queueTask()` which calls `queue.queueTask()` — does the queue fire `onTaskReady`?
+
+### R10-6: HIGH — `isAllComplete()` counts failed tasks as done
+
+**File:** `TaskStore.ts` line 255  
+**Impact:** When some tasks fail and others complete, the system reports "all tasks completed successfully" to the planner. Failed tasks are treated as "done" — their downstream dependants are never unblocked, and no retry/replan is triggered.
+
+**Current code:**
+```typescript
+isAllComplete(): boolean {
+  return this.getAll().every(t => t.status === "completed" || t.status === "failed");
+}
+```
+
+**Problem:** This doesn't distinguish "all succeeded" from "some failed". The planner gets a "success" notification when there are failures.
+
+**The fix should be:**
+```typescript
+isAllComplete(): boolean {
+  return this.getAll().every(t => t.status === "completed" || t.status === "failed");
+}
+
+isAllSuccessful(): boolean {
+  return this.getAll().every(t => t.status === "completed");
+}
+
+hasFailures(): boolean {
+  return this.getAll().some(t => t.status === "failed");
+}
+```
+
+Then `onTaskComplete` should check `isAllSuccessful()` vs `hasFailures()` and send different notifications to the planner:
+- All successful → "All tasks completed successfully"
+- All done but some failed → "All tasks finished. X succeeded, Y failed. Review with get_status."

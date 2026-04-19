@@ -62,7 +62,7 @@ export function createSubmitResearchTool(ctx: SubmitResearchContext) {
 
       // R2-#3 FIX: Use consistent method name (.create matches approvePlan pattern)
       // TaskStore may not have .addTask() — it uses .create()
-      const taskStore = octx.memoryManager as any;
+      const taskStore = octx.taskProvider as any;
       const createdTasks: any[] = [];
       for (const task of input.tasks) {
         const createFn = taskStore.create || taskStore.addTask;

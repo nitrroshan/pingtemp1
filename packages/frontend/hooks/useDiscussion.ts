@@ -76,7 +76,7 @@ interface UseDiscussionReturn {
 }
 
 export function useDiscussion({
-  serverUrl = "ws://localhost:1234",
+  serverUrl = import.meta.env.VITE_HOCUSPOCUS_URL || "ws://localhost:1234",
   teamId,
   goalId,
   taskId,

@@ -92,7 +92,7 @@ async function discoverManifests(
   const manifests: OutputManifest[] = [];
 
   // Access workspace manager if available
-  const memMgr = context.memoryManager as any;
+  const memMgr = context.taskProvider as any;
   const workspaceMgr = memMgr._workspaceManager || memMgr.workspaceManager;
   if (!workspaceMgr) return manifests;
 

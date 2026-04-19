@@ -296,6 +296,14 @@ function extractDocData(doc: CollabDocument, docName: string): any {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /**
+ * Callbacks for collab tool events (wired by WorkerPool → OrchestratorService).
+ */
+export interface CollabToolCallbacks {
+  /** Fired when discuss post mentions other roles — triggers priority worker spawn */
+  onMentionedRoles?: (roles: string[], sourceTaskId: string, docName: string) => void;
+}
+
+/**
  * Create the unified `collab` tool for agent L2 access.
  *
  * Provides discover/list/read/write over CRDT docs, plans, and output manifests.
@@ -305,6 +313,8 @@ export function createCollabTool(
   agentRole: string,
   l2: IL2CollaborationPlugin,
   repoPath: string,
+  taskId?: string,
+  callbacks?: CollabToolCallbacks,
 ): StructuredToolInterface {
   return tool(
     async ({
@@ -652,6 +662,20 @@ export function createCollabTool(
 
         const doc = await space.openDoc(docName);
 
+        // Auto-initialize discussion docs if not yet initialized
+        // (handles case where discuss is called without prior initCollabDocs)
+        const earlyConfigMap = doc.getMap("config");
+        if (!earlyConfigMap.has("status")) {
+          earlyConfigMap.set("maxRounds", 10);
+          earlyConfigMap.set("maxTokens", 50000);
+          earlyConfigMap.set("timeoutMinutes", 15);
+          earlyConfigMap.set("totalTokensUsed", 0);
+          earlyConfigMap.set("roundsPerAgent", {});
+          earlyConfigMap.set("mode", "auto");
+          earlyConfigMap.set("status", "active");
+          earlyConfigMap.set("lastActivity", new Date().toISOString());
+        }
+
         // Operation determined by key parameter:
         // key = "post" → push a new discussion block
         // key = "read" → read new blocks since cursor
@@ -671,10 +695,20 @@ export function createCollabTool(
             return `Discussion is ${config.status}. No new posts allowed.`;
           }
 
+          // BUG-3 FIX: Check-on-access timeout enforcement
+          const lastActivity = config.lastActivity ? new Date(config.lastActivity).getTime() : Date.now();
+          const timeoutMs = (config.timeoutMinutes || 15) * 60 * 1000;
+          if (Date.now() - lastActivity > timeoutMs && config.status === "active") {
+            configMap.set("status", "escalated");
+            return `Discussion timed out (no activity for ${config.timeoutMinutes || 15}min). Status: escalated. Use request_task to create a formal task instead.`;
+          }
+
           const totalTokens = config.totalTokensUsed || 0;
           const maxTokens = config.maxTokens || 50000;
           if (totalTokens >= maxTokens) {
-            return `Token limit reached (${totalTokens}/${maxTokens}). Discussion auto-closed.`;
+            // BUG-2 FIX: Actually set status to closed
+            configMap.set("status", "closed");
+            return `Token limit reached (${totalTokens}/${maxTokens}). Discussion closed.`;
           }
 
           const roundsPerAgent = config.roundsPerAgent || {};
@@ -700,6 +734,11 @@ export function createCollabTool(
           const discussion = doc.getArray("discussion");
           discussion.push([block]);
 
+          // Fire mention routing callback — spawns collab workers for mentioned roles
+          if (block.mentions.length > 0 && callbacks?.onMentionedRoles && docName) {
+            callbacks.onMentionedRoles(block.mentions, taskId || "unknown", docName);
+          }
+
           // Update guard rail counters
           configMap.set("totalTokensUsed", totalTokens + block.tokens);
           configMap.set("roundsPerAgent", {
@@ -717,6 +756,33 @@ export function createCollabTool(
           const warning = newTotal > maxTokens * 0.8
             ? ` ⚠️ Token usage at ${Math.round(newTotal / maxTokens * 100)}% — wrap up soon.`
             : "";
+
+          // waitForResponse: block until a mentioned role responds (or timeout)
+          if (parsed.waitForResponse && block.mentions.length > 0) {
+            const TIMEOUT = 120_000; // 2 minutes
+            const POLL_INTERVAL = 3_000; // 3 seconds
+            const startTime = Date.now();
+
+            while (Date.now() - startTime < TIMEOUT) {
+              await new Promise(resolve => setTimeout(resolve, POLL_INTERVAL));
+
+              // Read new blocks since our post
+              const allBlocks = discussion.toJSON();
+              const responseBlock = allBlocks.find((b: any) =>
+                b.timestamp > block.timestamp &&
+                b.role !== agentRole &&
+                (block.mentions.includes(b.role) || b.role.startsWith("user:"))
+              );
+
+              if (responseBlock) {
+                // Update cursor past the response
+                cursors.set(agentRole, new Date().toISOString());
+                return `Response from ${responseBlock.role}: ${responseBlock.content}`;
+              }
+            }
+
+            return `No response within ${TIMEOUT / 1000}s. The mentioned role may not be available. Use request_task to create a formal task instead.`;
+          }
 
           return `Posted discussion block (${block.type}). Round ${myRounds + 1}/${maxRounds}, tokens ${newTotal}/${maxTokens}.${warning}`;
         }

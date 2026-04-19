@@ -107,7 +107,7 @@ export function CollaborativeEditor({
   docId,
   userName,
   userColor = "#3b82f6",
-  serverUrl = "ws://localhost:1234",
+  serverUrl = import.meta.env.VITE_HOCUSPOCUS_URL || "ws://localhost:1234",
   token,
 }: CollaborativeEditorProps) {
   const [provider, setProvider] = useState<HocuspocusProvider | null>(null);
@@ -228,15 +228,12 @@ function ConnectedEditor({ provider, userName, userColor, docName }: { provider:
     doc.on("update", updateMapData);
     // Listen for initial sync completion from Hocuspocus
     provider.on("synced", updateMapData);
-    // Poll periodically in case events are missed
-    const poll = setInterval(updateMapData, 2000);
     // Initial check
     updateMapData();
 
     return () => {
       doc.off("update", updateMapData);
       provider.off("synced", updateMapData);
-      clearInterval(poll);
     };
   }, [provider]);
 

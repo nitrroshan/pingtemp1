@@ -18,3 +18,4 @@ export { CollabServer } from "./L2/collaboration/HocuspocusServer.js";
 export type { DiscussionChangeEvent } from "./L2/collaboration/HocuspocusServer.js";
 export { RemoteCollabClient } from "./L2/collaboration/RemoteCollabClient.js";
 export { createCollabTool } from "./L2/tools/index.js";
+export type { CollabToolCallbacks } from "./L2/tools/index.js";

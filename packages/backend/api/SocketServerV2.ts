@@ -530,7 +530,7 @@ export class SocketServerV2 {
       const plugin = manager.getPluginRegistry().get("collaboration") as any;
       const collabServer = plugin?.l2Plugin?.collabServer ?? plugin?.collabServer;
       if (!collabServer?.onDiscussionChange) {
-        logger.debug(`[SocketServerV2] No CollabServer for team ${teamId} — discussion events skipped`);
+        logger.info(`[SocketServerV2] No CollabServer for team ${teamId} — discussion events will not work. Ensure collaboration plugin is loaded.`);
         return;
       }
 

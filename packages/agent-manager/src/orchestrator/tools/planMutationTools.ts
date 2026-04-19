@@ -116,6 +116,89 @@ function validateRole(availableRoles: string[], role: string): string | null {
   return null;
 }
 
+// ─── Shared: Normalize + Add Tasks ────────────────────────────────────────────
+
+interface RawTaskInput {
+  id: string;
+  title: string;
+  description: string;
+  assignedRole: string;
+  priority: number;
+  complexity: string;
+  dependencies: string[];
+  expectedOutput: string;
+  context?: Record<string, any>;
+}
+
+/**
+ * Normalize task IDs to sequential `task-N` format and add to TaskStore.
+ *
+ * Shared by `add_tasks` and `replan` — single implementation (DRY).
+ * Returns the list of normalized task IDs.
+ */
+function normalizeAndAddTasks(
+  ctx: PlanMutationContext,
+  rawTasks: RawTaskInput[],
+): string[] {
+  const allExisting = ctx.tasks.getAllTasks();
+  const assignedIds = new Set(allExisting.map(t => t.id));
+
+  let maxId = Math.max(0, ...allExisting.map(t => {
+    const m = (t.id || "").match(/^task-(\d+)/);
+    return m ? parseInt(m[1]!, 10) : 0;
+  }));
+
+  // Build ID normalization map (LLM ID → normalized task-N)
+  // Track ALL assigned IDs to prevent collisions between kept and generated IDs
+  const idMap = new Map<string, string>();
+  for (const task of rawTasks) {
+    if (/^task-\d+$/.test(task.id) && !assignedIds.has(task.id)) {
+      idMap.set(task.id, task.id);
+      assignedIds.add(task.id);
+      // Keep maxId ahead of any kept ID
+      const num = parseInt(task.id.match(/^task-(\d+)/)![1]!, 10);
+      if (num > maxId) maxId = num;
+    } else {
+      maxId++;
+      while (assignedIds.has(`task-${maxId}`)) maxId++; // skip collisions
+      idMap.set(task.id, `task-${maxId}`);
+      assignedIds.add(`task-${maxId}`);
+    }
+  }
+
+  // Add each task to TaskStore
+  for (const task of rawTasks) {
+    const normalizedId = idMap.get(task.id) || task.id;
+    const normalizedDeps = task.dependencies.map(d => idMap.get(d) || d);
+
+    ctx.tasks.addTask({
+      id: normalizedId,
+      title: task.title,
+      description: `${task.title}: ${task.description}`,
+      assigned_role: task.assignedRole.toLowerCase(),
+      status: "pending",
+      priority: task.priority,
+      type: "work",
+      expectedOutput: task.expectedOutput,
+      prerequisites: new Map(normalizedDeps.map(d => {
+        const depTask = ctx.tasks.getTask(d);
+        return [d, depTask?.status === "completed"] as [string, boolean];
+      })),
+      dependants: [],
+      context: {
+        title: task.title,
+        priority: task.priority,
+        complexity: task.complexity,
+        expectedOutput: task.expectedOutput,
+        ...task.context,
+      },
+    });
+  }
+
+  ctx.dagResolver.rebuild(ctx.tasks);
+  return rawTasks.map(t => idMap.get(t.id) || t.id);
+}
+
 // ─── Tool Factories ───────────────────────────────────────────────────────────
 
 export function createUpdateTaskTool(ctx: PlanMutationContext) {
@@ -134,16 +217,27 @@ export function createUpdateTaskTool(ctx: PlanMutationContext) {
         if (cycleErr) return `Error: ${cycleErr}`;
       }
 
-      // Apply patch to task in MemoryManager
+      // Apply patch to task
       const task = ctx.tasks.getTask(input.taskId)!;
-      if (input.patch.title) (task as any).title = input.patch.title;
+      if (input.patch.title) task.title = input.patch.title;
       if (input.patch.description) task.description = input.patch.description;
       if (input.patch.assignedRole) task.assigned_role = input.patch.assignedRole.toLowerCase();
-      if (input.patch.priority) (task as any).priority = input.patch.priority;
-      if (input.patch.expectedOutput) (task as any).expectedOutput = input.patch.expectedOutput;
+      if (input.patch.priority) task.priority = input.patch.priority;
+      if (input.patch.expectedOutput) task.expectedOutput = input.patch.expectedOutput;
       if (input.patch.dependencies) {
-        task.prerequisites = new Map(input.patch.dependencies.map((d) => [d, false]));
+        // Set prerequisites, marking already-completed deps as met
+        task.prerequisites = new Map(input.patch.dependencies.map((d) => {
+          const depTask = ctx.tasks.getTask(d);
+          const met = depTask?.status === "completed";
+          return [d, met] as [string, boolean];
+        }));
         ctx.dagResolver.rebuild(ctx.tasks);
+
+        // Re-evaluate readiness: if all deps met, mark task ready via ITaskProvider
+        const allMet = !task.prerequisites.size || Array.from(task.prerequisites.values()).every(v => v);
+        if (allMet && (task.status === "pending" || task.status === "failed")) {
+          ctx.tasks.markReady(input.taskId);
+        }
       }
 
       ctx.onMutation?.({ type: "plan:task_updated", data: { taskId: input.taskId, patch: input.patch } });
@@ -176,28 +270,9 @@ export function createAddTasksTool(ctx: PlanMutationContext) {
       const dagErr = ctx.dagResolver.validateNewTasks(input.tasks, ctx.tasks);
       if (dagErr) return `Error: ${dagErr}`;
 
-      // Add tasks to MemoryManager
-      for (const task of input.tasks) {
-        ctx.tasks.addTask({
-          id: task.id,
-          description: `${task.title}: ${task.description}`,
-          assigned_role: task.assignedRole.toLowerCase(),
-          status: "pending",
-          prerequisites: new Map(task.dependencies.map((d) => [d, false])),
-          dependants: [],
-          context: {
-            title: task.title,
-            priority: task.priority,
-            complexity: task.complexity,
-            expectedOutput: task.expectedOutput,
-            ...task.context,
-          },
-        });
-      }
-
-      ctx.dagResolver.rebuild(ctx.tasks);
-      ctx.onMutation?.({ type: "plan:tasks_added", data: { tasks: input.tasks.map((t) => t.id) } });
-      return `Added ${input.tasks.length} task(s): ${input.tasks.map((t) => t.id).join(", ")}`;
+      const normalizedIds = normalizeAndAddTasks(ctx, input.tasks);
+      ctx.onMutation?.({ type: "plan:tasks_added", data: { tasks: normalizedIds } });
+      return `Added ${input.tasks.length} task(s): ${normalizedIds.join(", ")}`;
     },
     {
       name: "add_tasks",
@@ -253,7 +328,7 @@ export function createReprioritizeTool(ctx: PlanMutationContext) {
       if (err) return `Error: ${err}`;
 
       const task = ctx.tasks.getTask(input.taskId)!;
-      (task as any).priority = input.priority;
+      task.priority = input.priority;
 
       ctx.onMutation?.({ type: "plan:task_reprioritized", data: { taskId: input.taskId, priority: input.priority } });
       return `Task '${input.taskId}' priority set to ${input.priority}`;
@@ -308,38 +383,19 @@ export function createReplanTool(ctx: PlanMutationContext) {
         if (roleErr) return `Error: ${roleErr}`;
       }
 
-      // Cancel all pending/ready tasks
+      // Discard pending/ready tasks (mark as discarded, don't delete — audit trail)
       const allTasks = ctx.tasks.getAllTasks();
-      const cancelled: string[] = [];
+      const discarded: string[] = [];
       for (const task of allTasks) {
         if (task.status === "pending" || task.status === "ready") {
-          ctx.tasks.removeTask(task.id);
-          cancelled.push(task.id);
+          task.status = "discarded";
+          discarded.push(task.id);
         }
       }
 
-      // Add new tasks
-      for (const task of input.newTasks) {
-        ctx.tasks.addTask({
-          id: task.id,
-          description: `${task.title}: ${task.description}`,
-          assigned_role: task.assignedRole.toLowerCase(),
-          status: "pending",
-          prerequisites: new Map(task.dependencies.map((d) => [d, false])),
-          dependants: [],
-          context: {
-            title: task.title,
-            priority: task.priority,
-            complexity: task.complexity,
-            expectedOutput: task.expectedOutput,
-            ...task.context,
-          },
-        });
-      }
-
-      ctx.dagResolver.rebuild(ctx.tasks);
-      ctx.onMutation?.({ type: "plan:replanned", data: { reason: input.reason, cancelled, newTasks: input.newTasks.map((t) => t.id) } });
-      return `Replan complete. Cancelled ${cancelled.length} task(s), added ${input.newTasks.length} new task(s). Reason: ${input.reason}`;
+      const normalizedNewIds = normalizeAndAddTasks(ctx, input.newTasks);
+      ctx.onMutation?.({ type: "plan:replanned", data: { reason: input.reason, discarded, newTasks: normalizedNewIds } });
+      return `Replan complete. Discarded ${discarded.length} task(s), added ${input.newTasks.length} new task(s). Reason: ${input.reason}`;
     },
     {
       name: "replan",

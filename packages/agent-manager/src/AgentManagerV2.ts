@@ -18,6 +18,7 @@ import { AiSdkAgent } from "./agent/internal/AiSdkAgent.js";
 import type { AgentDefinition } from "./agent/types.js";
 import type { TaskWithContext } from "./util/RoleTaskQueue.types.js";
 import { OrchestratorService } from "./orchestrator/OrchestratorService.js";
+import type { ITaskProvider } from "./orchestrator/ITaskProvider.js";
 import type { PlanProposedEvent } from "./orchestrator/types.js";
 import { TaskStore } from "./orchestrator/TaskStore.js";
 import { DependencyResolver } from "./orchestrator/DependencyResolver.js";
@@ -354,7 +355,7 @@ export class AgentManager {
 
     // Create and inject planner tools (close over shared services)
     const orchestratorContext = {
-      memoryManager: this.taskStoreInstance as any, // TaskStore satisfies the interface
+      taskProvider: this.taskStoreInstance as ITaskProvider,
       callbacks: this.orchestrator.getCallbacks(),
       planStore,
       teamId,
@@ -372,18 +373,15 @@ export class AgentManager {
       agentFactory,
       dagResolver,
       onMutation: (event) => {
+        // Notify frontend of plan mutation
         this.streamCallbacks?.onTaskUpdate?.({
           taskId: "plan",
           status: "mutation",
           ...event,
         });
 
-        // R9-3 FIX: Dispatch reassigned task when status was reset from failed→ready
-        if (event.type === "plan:task_reassigned" && event.data?.statusReset && event.data?.taskId) {
-          this.orchestrator?.manualDispatch(event.data.taskId).catch((err) => {
-            logger.warn(`[AgentManager] Failed to dispatch reassigned task ${event.data.taskId}: ${err}`);
-          });
-        }
+        // Delegate dispatch to OrchestratorService (single responsibility)
+        this.orchestrator?.onPlanMutation(event);
       },
     });
     await this.plannerAgent.setTools(tools);
@@ -619,7 +617,7 @@ export class AgentManager {
   }
 
   /**
-   * Get memory manager (deprecated — returns null, use getTaskStore())
+   * @deprecated Use getTaskStore() instead.
    */
   getMemoryManager(): null {
     return null;
@@ -754,7 +752,7 @@ export class AgentManager {
       id: taskId,
       assigned_role: task.assigned_role,
       description: task.description,
-      priority: (task as any).priority || 0,
+      priority: task.priority || 0,
       context: {
         previousOutputs: Array.isArray(taskContext.upstreamOutputs) ? taskContext.upstreamOutputs : [],
         artifacts: [
@@ -990,16 +988,13 @@ export class AgentManager {
 
     // Apply changes
     if (changes.description !== undefined) {
-      (task as any).description = changes.description;
+      task.description = changes.description;
     }
     if (changes.priority !== undefined) {
-      (task as any).context = {
-        ...(task as any).context,
-        priority: changes.priority,
-      };
+      task.priority = changes.priority;
     }
     if (changes.assignedRole !== undefined) {
-      (task as any).assigned_role = changes.assignedRole.toLowerCase();
+      task.assigned_role = changes.assignedRole.toLowerCase();
     }
 
     logger.info({ taskId, changes }, `Modified task ${taskId}`);
