@@ -845,18 +845,27 @@ export class OrchestratorService {
     }
 
     // Notify plugins (workspace publish + merge, etc.)
-    let mergeWarning = "";
     if (this.pluginRegistry) {
       try {
         const result = await this.pluginRegistry.onTaskComplete(data.taskId, this.currentGoalId || undefined);
         if (!result.success) {
-          mergeWarning = `Warning: plugin onTaskComplete failed for task ${data.taskId}: ${result.error}. ` +
-            `Work may be on branch but not merged to main.`;
-          console.warn(`[OrchestratorService] ${mergeWarning}`);
+          // BUG A FIX: Merge failure → fail the task, don't complete it.
+          // This prevents dependent tasks from dispatching against a main branch
+          // that's missing the predecessor's files.
+          const mergeError = `Workspace merge failed: ${result.error}`;
+          log.error(`[OrchestratorService] ${mergeError}`);
+          try { this.taskStore.updateStatus(data.taskId, "failed"); } catch { /* already failed */ }
+          this.taskStore.queue.failTask(data.taskId, mergeError);
+          this.callbacks?.onTaskUpdate?.({ taskId: data.taskId, status: "failed", timestamp: data.timestamp });
+          return;
         }
       } catch (err) {
-        mergeWarning = `Warning: plugin cleanup failed for task ${data.taskId}: ${err}`;
-        console.warn(`[OrchestratorService] ${mergeWarning}`);
+        const mergeError = `Plugin cleanup crashed for task ${data.taskId}: ${err}`;
+        log.error(`[OrchestratorService] ${mergeError}`);
+        try { this.taskStore.updateStatus(data.taskId, "failed"); } catch { /* already failed */ }
+        this.taskStore.queue.failTask(data.taskId, mergeError);
+        this.callbacks?.onTaskUpdate?.({ taskId: data.taskId, status: "failed", timestamp: data.timestamp });
+        return;
       }
     }
 
@@ -881,7 +890,7 @@ export class OrchestratorService {
     // Mark complete in TaskStore → triggers onTaskComplete via RoleTaskQueue
     // Newly ready dependants are queued → onTaskReady fires → auto-dispatch if enabled
     this.taskStore.completeTask(data.taskId, {
-      summary: data.summary + (mergeWarning ? `\n${mergeWarning}` : ""),
+      summary: data.summary,
       deliverables: data.deliverables,
       nextSteps: data.nextSteps, completedBy: "agent", timestamp: data.timestamp,
     });

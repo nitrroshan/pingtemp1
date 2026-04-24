@@ -320,11 +320,11 @@ export class WorkerPool {
       // ── Write identity file to workspace ─────────────────────────────────────────
       // Simple JSON file the agent can read via workspace_read_file(".ping/identity.json")
       if (this.pluginRegistry) {
-        const wsPlugin = this.pluginRegistry.get("workspace");
-        if (wsPlugin && typeof (wsPlugin as any).writeIdentityFile === "function") {
+        const wsPlugin = this.pluginRegistry.get("workspace") as { writeIdentityFile?: (params: any) => Promise<void> } | undefined;
+        if (wsPlugin?.writeIdentityFile) {
           try {
             const definition = this.definitions.get(roleKey);
-            await (wsPlugin as any).writeIdentityFile({
+            await wsPlugin.writeIdentityFile({
               taskId,
               role: roleKey,
               name: definition?.name || roleKey,

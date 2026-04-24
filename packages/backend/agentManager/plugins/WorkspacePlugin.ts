@@ -220,9 +220,11 @@ export class WorkspacePlugin implements IPlugin {
     };
 
     try {
-      await workspace.writeFile(".ping/identity.json", JSON.stringify(identity, null, 2));
-    } catch {
+      // BUG C FIX: workspace.writeFile() doesn't exist — use createFile()
+      await workspace.createFile(".ping/identity.json", JSON.stringify(identity, null, 2));
+    } catch (err) {
       // Non-fatal — agent can still work without identity file
+      // createFile may throw if .ping/ dir or file already exists (retry scenario)
     }
   }
 }

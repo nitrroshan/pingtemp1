@@ -9,10 +9,10 @@
 
 | Step | Description | Status | Files |
 |------|-------------|--------|-------|
-| 1 | Fail task on merge failure (Bug A) | ⬜ Not started | `OrchestratorService.ts` |
-| 2 | Fix writeIdentityFile (Bug C) | ⬜ Not started | `WorkspacePlugin.ts` |
-| 3 | Type-safe writeIdentityFile caller | ⬜ Not started | `WorkerPool.ts` |
-| 4 | Verify Phase 1 | ⬜ Not started | — |
+| 1 | Fail task on merge failure (Bug A) | ✅ Done | `OrchestratorService.ts` |
+| 2 | Fix writeIdentityFile (Bug C) | ✅ Done | `WorkspacePlugin.ts` |
+| 3 | Type-safe writeIdentityFile caller | ✅ Done | `WorkerPool.ts` |
+| 4 | Verify Phase 1 | ✅ Done | TypeScript — 0 errors |
 
 ## Phase 2 — Per-Task Clone Directories
 
