@@ -5,7 +5,7 @@ import react from '@vitejs/plugin-react';
 export default defineConfig(({ mode }) => {
     const env = loadEnv(mode, '.', '');
     return {
-      base: './',  // Relative paths — required for Electron file:// loading
+      base: '/',  // Absolute paths for web SPA routing (Electron override in electron/vite.config.ts)
       server: {
         port: 3000,
         host: '0.0.0.0',

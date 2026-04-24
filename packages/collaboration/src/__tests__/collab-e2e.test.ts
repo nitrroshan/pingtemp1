@@ -172,13 +172,17 @@ async function testOnMentionedRoles(): Promise<void> {
   let capturedRoles: string[] = [];
   let capturedTaskId = "";
   let capturedDocName = "";
+  let capturedSourceRole = "";
+  let capturedPostContent = "";
 
   const callbacks: CollabToolCallbacks = {
-    onMentionedRoles: (roles, taskId, docName) => {
+    onMentionedRoles: (roles, taskId, docName, sourceRole, postContent) => {
       callbackFired = true;
       capturedRoles = roles;
       capturedTaskId = taskId;
       capturedDocName = docName;
+      capturedSourceRole = sourceRole || "";
+      capturedPostContent = postContent || "";
     },
   };
 
@@ -201,6 +205,8 @@ async function testOnMentionedRoles(): Promise<void> {
   assertEqual(capturedRoles[1], "designer", "second mentioned role");
   assertEqual(capturedTaskId, "task-2", "task ID passed to callback");
   assertEqual(capturedDocName, "task-2/discussion", "doc name passed to callback");
+  assertEqual(capturedSourceRole, "backend", "source role passed to callback");
+  assertIncludes(capturedPostContent, "component structure", "post content passed to callback");
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -239,28 +245,21 @@ async function testWaitForResponse(): Promise<void> {
   const space = new CollaborationSpace("test/goal-4", "test", "goal-4", provider);
   const l2 = createMockL2();
 
-  // When onMentionedRoles fires, simulate a response after a short delay
+  let mentionedRoles: string[] = [];
+  let capturedSourceRole = "";
+  let capturedPostContent = "";
+
   const callbacks: CollabToolCallbacks = {
-    onMentionedRoles: async (roles, _taskId, docName) => {
-      // Simulate the mentioned role responding after 1 second
-      setTimeout(async () => {
-        const responderTool = createCollabTool(space, roles[0], l2, "/tmp/repo", "task-4");
-        await invokeTool(responderTool, {
-          action: "discuss",
-          docName,
-          key: "post",
-          value: {
-            content: "Sure, I suggest we use a REST API with versioned endpoints.",
-            type: "message",
-          },
-        });
-      }, 500);
+    onMentionedRoles: async (roles, _taskId, _docName, sourceRole, postContent) => {
+      mentionedRoles = roles;
+      capturedSourceRole = sourceRole || "";
+      capturedPostContent = postContent || "";
     },
   };
 
   const tool = createCollabTool(space, "backend", l2, "/tmp/repo", "task-4", callbacks);
 
-  // Post with waitForResponse = true
+  // Post with waitForResponse = true — should return immediately (non-blocking)
   const result = await invokeTool(tool, {
     action: "discuss",
     docName: "task-4/discussion",
@@ -272,9 +271,15 @@ async function testWaitForResponse(): Promise<void> {
     },
   });
 
-  // Should get the response (not timeout)
-  assertIncludes(result, "Response from frontend", "got response from frontend");
-  assertIncludes(result, "REST API", "response contains expected content");
+  // Should get immediate confirmation, not block for 120s
+  assertIncludes(result, "frontend notified", "confirms mention was sent");
+  assertIncludes(result, "key: \"read\"", "tells agent how to read response");
+
+  // Verify callback received source role + content
+  assertEqual(mentionedRoles.length, 1, "one role mentioned");
+  assertEqual(mentionedRoles[0], "frontend", "frontend mentioned");
+  assertEqual(capturedSourceRole, "backend", "source role passed to callback");
+  assertIncludes(capturedPostContent, "API pattern", "post content passed to callback");
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -416,10 +421,28 @@ async function testDecideOperation(): Promise<void> {
   const space = new CollaborationSpace("test/goal-9", "test", "goal-9", provider);
   const l2 = createMockL2();
 
-  const tool = createCollabTool(space, "backend", l2, "/tmp/repo", "task-9");
+  const backendTool = createCollabTool(space, "backend", l2, "/tmp/repo", "task-9");
+  const frontendTool = createCollabTool(space, "frontend", l2, "/tmp/repo", "task-9");
 
-  // Initialize discussion first (auto-init happens on first action)
-  const result = await invokeTool(tool, {
+  // Both roles must post before deciding (quorum verification)
+  await invokeTool(backendTool, {
+    action: "discuss",
+    docName: "task-9/discussion",
+    key: "post",
+    value: { content: "I propose REST with /api/v2 prefix" },
+  });
+
+  await new Promise(r => setTimeout(r, 5));
+
+  await invokeTool(frontendTool, {
+    action: "discuss",
+    docName: "task-9/discussion",
+    key: "post",
+    value: { content: "Agreed, REST v2 works for us" },
+  });
+
+  // Now decide with both roles in agreedBy — should succeed
+  const result = await invokeTool(backendTool, {
     action: "discuss",
     docName: "task-9/discussion",
     key: "decide",
@@ -431,6 +454,7 @@ async function testDecideOperation(): Promise<void> {
   });
 
   assertIncludes(result, "Decision recorded", "decision was recorded");
+  assertIncludes(result, "closed", "discussion auto-closed");
 
   // Verify the decision is in the CRDT
   const doc = await space.openDoc("task-9/discussion");
@@ -471,6 +495,9 @@ async function testTwoAgentDiscussionCycle(): Promise<void> {
 
   assertEqual(mentionLog.length, 1, "1 mention callback fired");
 
+  // Small delay to ensure different timestamps between posts
+  await new Promise(r => setTimeout(r, 5));
+
   // Step 2: Frontend reads the message
   const readResult = await invokeTool(frontendTool, {
     action: "discuss",
@@ -489,6 +516,9 @@ async function testTwoAgentDiscussionCycle(): Promise<void> {
   });
 
   assertEqual(mentionLog.length, 2, "2 mention callbacks fired total");
+
+  // Small delay to ensure cursor advancement
+  await new Promise(r => setTimeout(r, 5));
 
   // Step 4: Backend reads the response
   const backendRead = await invokeTool(backendTool, {
@@ -559,24 +589,96 @@ async function testAutoInitialization(): Promise<void> {
 }
 
 // ════════════════════════════════════════════════════════════════════════════
-// Test Suite 12: Invalid docName rejected
+// Test Suite 12: Auto-append /discussion suffix
 // ════════════════════════════════════════════════════════════════════════════
 
-async function testInvalidDocNameRejected(): Promise<void> {
+async function testAutoAppendDiscussionSuffix(): Promise<void> {
   const provider = new InMemoryCollabProvider();
   const space = new CollaborationSpace("test/goal-12", "test", "goal-12", provider);
   const l2 = createMockL2();
 
   const tool = createCollabTool(space, "backend", l2, "/tmp/repo", "task-12");
 
+  // Post without /discussion suffix — should auto-append and succeed
   const result = await invokeTool(tool, {
     action: "discuss",
-    docName: "random-doc",
+    docName: "task-12",
     key: "post",
-    value: { content: "This should fail" },
+    value: { content: "This should work with auto-append" },
   });
 
-  assertIncludes(result, "discuss action requires a discussion doc", "non-discussion doc rejected");
+  assertIncludes(result, "Posted discussion block", "auto-append works for discuss post");
+
+  // Read without suffix — should also work
+  const tool2 = createCollabTool(space, "frontend", l2, "/tmp/repo", "task-12");
+  const readResult = await invokeTool(tool2, {
+    action: "discuss",
+    docName: "task-12",
+    key: "read",
+  });
+
+  assertIncludes(readResult, "1 new block", "auto-append works for discuss read");
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// Test Suite 13: read/list on discussion docs returns blocks
+// ════════════════════════════════════════════════════════════════════════════
+
+async function testReadListDiscussionReturnsBlocks(): Promise<void> {
+  const provider = new InMemoryCollabProvider();
+  const space = new CollaborationSpace("test/goal-13", "test", "goal-13", provider);
+  const l2 = createMockL2();
+
+  const tool = createCollabTool(space, "backend", l2, "/tmp/repo", "task-13");
+
+  // Post a discussion block first
+  await invokeTool(tool, {
+    action: "discuss",
+    docName: "task-13/discussion",
+    key: "post",
+    value: { content: "What API pattern should we use?" },
+  });
+
+  // read on discussion doc should return blocks, not config
+  const readResult = await invokeTool(tool, {
+    action: "read",
+    docName: "task-13/discussion",
+  });
+
+  assertIncludes(readResult, "1 block", "read returns block count");
+  assertIncludes(readResult, "API pattern", "read returns block content");
+  assert(!readResult.includes("maxRounds"), "read does NOT return config keys");
+
+  // list on discussion doc should also return blocks
+  const listResult = await invokeTool(tool, {
+    action: "list",
+    docName: "task-13/discussion",
+  });
+
+  assertIncludes(listResult, "backend", "list shows poster role");
+  assertIncludes(listResult, "API pattern", "list shows content");
+  assert(!listResult.includes("maxRounds"), "list does NOT return config keys");
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// Test Suite 14: write-block on discussion docs is blocked
+// ════════════════════════════════════════════════════════════════════════════
+
+async function testWriteBlockOnDiscussionBlocked(): Promise<void> {
+  const provider = new InMemoryCollabProvider();
+  const space = new CollaborationSpace("test/goal-14", "test", "goal-14", provider);
+  const l2 = createMockL2();
+
+  const tool = createCollabTool(space, "backend", l2, "/tmp/repo", "task-14");
+
+  const result = await invokeTool(tool, {
+    action: "write-block",
+    docName: "task-14/discussion",
+    value: "This should be rejected",
+  });
+
+  assertIncludes(result, "Cannot write-block to discussion docs", "write-block on discussion rejected");
+  assertIncludes(result, "discuss", "error message mentions discuss action");
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -609,7 +711,11 @@ async function main(): Promise<void> {
 
   console.log(c("cyan", "\nSuite 7: Edge Cases"));
   await runTest("auto-initialization of discussion", testAutoInitialization);
-  await runTest("invalid docName rejected", testInvalidDocNameRejected);
+  await runTest("auto-append /discussion suffix", testAutoAppendDiscussionSuffix);
+
+  console.log(c("cyan", "\nSuite 8: Discussion Doc Redirects"));
+  await runTest("read/list on discussion returns blocks not config", testReadListDiscussionReturnsBlocks);
+  await runTest("write-block on discussion docs is blocked", testWriteBlockOnDiscussionBlocked);
 
   // Summary
   const passed = results.filter((r) => r.passed).length;

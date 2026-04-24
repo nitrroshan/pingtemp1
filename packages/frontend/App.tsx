@@ -10,7 +10,7 @@
  *   /*  → InnerApp (handles all navigation internally)
  */
 
-import React, { useState, useEffect, useRef, lazy, Suspense, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { BrowserRouter, Routes, Route } from 'react-router-dom';
 import { v4 as uuidv4 } from 'uuid';
 import { Menu, PanelRight, Search, Sun, Moon, LogOut } from 'lucide-react';
@@ -21,165 +21,28 @@ import ChatArea from './components/ChatArea/ChatArea';
 import AgentModal from './components/AgentModal/AgentModal';
 import { DetailPanel } from './components/DetailPanel/DetailPanel';
 import { PlanApproval } from './components/PlanApproval';
-import GoalInput from './components/GoalInput/GoalInput';
-import TaskDashboard from './components/TaskDashboard/TaskDashboard';
+import { GoalScreen } from './components/GoalScreen';
+import { savePlan } from './components/GoalScreen/PlanList';
+import { makePlanId } from './lib/planId';
+import { PlanSwitcher } from './components/PlanSwitcher';
+import type { PlanSummary } from './components/GoalScreen/PlanList';
 import { ToastContainer, useToast } from './components/Toast/Toast';
 import { CommandPalette } from './components/CommandPalette';
 import { StatusBar } from './components/layout/StatusBar';
-
-const CollaborativeEditor = lazy(() => import('./components/CollaborativeEditor').catch(() => ({
-  default: () => (
-    <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", height: "100%", gap: "12px", color: "#64748b", padding: "40px" }}>
-      <div style={{ fontSize: "48px" }}>⚠️</div>
-      <div style={{ fontSize: "16px", fontWeight: 600, color: "#ef4444" }}>Failed to load Collaborative Editor</div>
-      <div style={{ fontSize: "13px" }}>Check browser console for details.</div>
-    </div>
-  )
-})));
+import { DevCollabButton } from './components/DevCollabButton';
 
 import { useOrchestration } from './hooks/useOrchestration';
 import { useChat } from './hooks/useChat';
 import { useAgentTree } from './hooks/useAgentTree';
 import { agentServiceV2, type Task as BackendTask } from './services/AgentServiceV2';
 import type { Agent, Message } from './types';
-import { API_BASE_URL } from './constants';
 import { useSession, signOut } from './lib/auth-client';
 import { LoginPage } from './components/Auth/LoginPage';
 import { Skeleton } from './components/ui/skeleton';
 import { TeamsPage } from './components/TeamsPage/TeamsPage';
-import { DiscussionThread } from './components/DiscussionThread/DiscussionThread';
-import { DecisionPanel } from './components/DecisionPanel/DecisionPanel';
-import { useDiscussion, useDiscussionNotifications } from './hooks/useDiscussion';
+import { PlanViewerPage } from './components/PlanViewer/PlanViewerPage';
+import { useDiscussionNotifications } from './hooks/useDiscussion';
 import type { DiscussionThread as DiscussionThreadType } from './hooks/useDiscussion';
-
-// ─────────────────────────────────────────────────────────────────────────────
-// CollabFileTree — lightweight CRDT doc browser
-// ─────────────────────────────────────────────────────────────────────────────
-
-function CollabFileTree({ teamId, activeDoc, onSelectDoc }: {
-  teamId: string | null; activeDoc: string; onSelectDoc: (d: string) => void;
-}) {
-  const [docs, setDocs] = React.useState<string[]>([]);
-  const [newDocName, setNewDocName] = React.useState('');
-
-  const loadDocs = React.useCallback(() => {
-    if (!teamId) return;
-    fetch(`${API_BASE_URL}/api/collab/${teamId}/docs`)
-      .then(r => r.json()).then(d => setDocs(d.docs || [])).catch(() => {});
-  }, [teamId]);
-
-  React.useEffect(() => {
-    if (!teamId) return;
-    loadDocs();
-    const iv = setInterval(loadDocs, 10000);
-    return () => clearInterval(iv);
-  }, [teamId, loadDocs]);
-
-  const [confirmDelete, setConfirmDelete] = React.useState<string | null>(null);
-
-  const deleteDoc = (doc: string) => {
-    if (!teamId) return;
-    fetch(`${API_BASE_URL}/api/collab/${teamId}/docs/${encodeURIComponent(doc)}`, { method: 'DELETE' })
-      .then(() => {
-        setDocs(prev => prev.filter(d => d !== doc));
-        if (activeDoc === doc) onSelectDoc('');
-        setConfirmDelete(null);
-      })
-      .catch(() => { setConfirmDelete(null); });
-  };
-
-  return (
-    <div className="w-60 border-r border-border bg-card flex flex-col shrink-0">
-      <div className="p-3 border-b border-border">
-        <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">CRDT Documents</span>
-      </div>
-      <div className="flex-1 overflow-auto p-2 text-sm">
-        {docs.length === 0
-          ? <div className="text-muted-foreground text-xs p-2">No documents yet.</div>
-          : docs.map(doc => (
-            <div key={doc} className="flex items-center group">
-              {confirmDelete === doc ? (
-                <div className="flex items-center gap-1 w-full px-2 py-1 bg-red-500/10 rounded text-xs">
-                  <span className="flex-1 truncate text-red-400">Delete?</span>
-                  <button onClick={() => deleteDoc(doc)}
-                    className="px-1.5 py-0.5 rounded bg-red-500 text-white text-[10px] font-medium hover:bg-red-600 cursor-pointer">Yes</button>
-                  <button onClick={() => setConfirmDelete(null)}
-                    className="px-1.5 py-0.5 rounded bg-muted text-foreground text-[10px] font-medium hover:bg-accent cursor-pointer">No</button>
-                </div>
-              ) : (
-                <>
-                  <button onClick={() => onSelectDoc(doc)}
-                    className={`flex-1 text-left px-3 py-1.5 rounded-l text-xs truncate transition-colors cursor-pointer ${doc === activeDoc ? 'bg-primary/10 text-primary' : 'text-foreground/80 hover:bg-accent'}`}>
-                    📄 {doc}
-                  </button>
-                  <button onClick={() => setConfirmDelete(doc)} title="Delete document"
-                    className="px-1.5 py-1.5 rounded-r text-xs text-muted-foreground opacity-0 group-hover:opacity-100 hover:text-red-400 hover:bg-accent transition-all cursor-pointer">
-                    ✕
-                  </button>
-                </>
-              )}
-            </div>
-          ))}
-      </div>
-      <div className="p-2 border-t border-border flex gap-1">
-        <input value={newDocName} onChange={e => setNewDocName(e.target.value)} placeholder="new-doc"
-          onKeyDown={e => { if (e.key === 'Enter' && newDocName.trim()) { onSelectDoc(newDocName.trim()); setNewDocName(''); } }}
-          className="flex-1 px-2 py-1 text-xs bg-muted border border-border rounded text-foreground focus:outline-none" />
-        <button onClick={() => { if (newDocName.trim()) { onSelectDoc(newDocName.trim()); setNewDocName(''); } }}
-          className="px-2 py-1 text-xs bg-primary text-primary-foreground rounded hover:bg-primary/90 cursor-pointer">+</button>
-      </div>
-    </div>
-  );
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// ActiveDiscussionView — renders a single discussion thread with decisions
-// ─────────────────────────────────────────────────────────────────────────────
-
-function ActiveDiscussionView({ teamId, goalId, taskId, title, onBack }: {
-  teamId: string; goalId: string; taskId: string; title: string; onBack: () => void;
-}) {
-  const { blocks, decisions, config, status, postBlock } = useDiscussion({
-    teamId, goalId, taskId,
-  });
-
-  return (
-    <div className="flex-1 flex flex-col min-h-0">
-      {/* Header with back button */}
-      <div className="px-4 py-2.5 border-b border-border flex items-center gap-3 shrink-0 bg-card/50">
-        <button onClick={onBack} className="text-xs text-muted-foreground hover:text-foreground cursor-pointer">
-          ← Back
-        </button>
-        <div className="flex-1">
-          <h2 className="text-sm font-semibold text-foreground truncate">{title}</h2>
-          <p className="text-[10px] text-muted-foreground">
-            {teamId}/{goalId}/{taskId} ·{' '}
-            {status === 'connected' ? '🟢 live' : status === 'connecting' ? '🟡 connecting...' : '🔴 error'}
-          </p>
-        </div>
-      </div>
-
-      {/* Content: thread + decisions side by side on wide screens */}
-      <div className="flex-1 flex min-h-0">
-        <div className="flex-1 min-h-0">
-          <DiscussionThread
-            blocks={blocks}
-            config={config}
-            title={title}
-            subtitle={`Task: ${taskId}`}
-            onPost={postBlock}
-            compact
-          />
-        </div>
-        {Object.keys(decisions).length > 0 && (
-          <div className="w-64 border-l border-border overflow-y-auto shrink-0 hidden lg:block">
-            <DecisionPanel decisions={decisions} compact />
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // InnerApp
@@ -230,17 +93,23 @@ function InnerApp() {
   const [isSidebarExpanded, setIsSidebarExpanded] = useState(true);
   const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState(false);
   const [isMobileViewport, setIsMobileViewport] = useState(() => window.innerWidth < 1024);
-  const [viewMode, setViewMode] = useState<'chat' | 'tasks' | 'collaborate' | 'discussions'>('chat');
-  const [collabDocId, setCollabDocId] = useState('doc-shared');
   const [isCommandPaletteOpen, setIsCommandPaletteOpen] = useState(false);
   const [activeMenu, setActiveMenu] = useState<string | null>(null);
+  const [activePlanId, setActivePlanId] = useState<string | null>(() => {
+    // URL is the single source of truth — parse planId on first render
+    const segments = window.location.pathname.split('/').filter(Boolean);
+    if (segments[0] === 'teams' && segments[2] === 'p' && segments[3]) {
+      return decodeURIComponent(segments[3]);
+    }
+    return null;
+  });
 
   // Discussion state — selected thread for full-view rendering
-  const [activeDiscussion, setActiveDiscussion] = useState<{ teamId: string; goalId: string; taskId: string; title: string } | null>(null);
   const [discussionThreads, setDiscussionThreads] = useState<DiscussionThreadType[]>([]);
 
   // Discussion notifications (Socket.IO badges)
-  const { unreadCount: discussionUnreadCount, mentions: discussionMentions } = useDiscussionNotifications(agentServiceV2);
+  // Subscribe to discussion notification badges (unread count surfaces in DetailPanel discussion tab)
+  useDiscussionNotifications(agentServiceV2);
 
   // Track discussion activity from Socket.IO → build thread list
   useEffect(() => {
@@ -289,23 +158,18 @@ function InnerApp() {
 
   const parseRouteState = useCallback((pathname: string) => {
     const segments = pathname.split('/').filter(Boolean);
-    const validViews = new Set(['chat', 'tasks', 'collaborate', 'discussions']);
-
-    let nextView: 'chat' | 'tasks' | 'collaborate' | 'discussions' = 'chat';
     let nextTeamId: string | null = null;
+    let nextPlanId: string | null = null;
 
     if (segments[0] === 'teams') {
-      if (segments[1]) {
-        nextTeamId = decodeURIComponent(segments[1]);
+      if (segments[1]) nextTeamId = decodeURIComponent(segments[1]);
+      // /teams/{id}/p/{planId}
+      if (segments[2] === 'p' && segments[3]) {
+        nextPlanId = decodeURIComponent(segments[3]);
       }
-      if (segments[2] && validViews.has(segments[2])) {
-        nextView = segments[2] as 'chat' | 'tasks' | 'collaborate' | 'discussions';
-      }
-    } else if (segments[0] && validViews.has(segments[0])) {
-      nextView = segments[0] as 'chat' | 'tasks' | 'collaborate' | 'discussions';
     }
 
-    return { nextView, nextTeamId };
+    return { nextTeamId, nextPlanId };
   }, []);
 
   useEffect(() => { activeAgentIdRef.current = activeAgentId; }, [activeAgentId]);
@@ -344,22 +208,20 @@ function InnerApp() {
     setCurrentPath(path);
   }, []);
 
-  // Route is the source of truth for shell view and selected team (Option C foundation).
+  // Route is the source of truth for shell view, selected team, and active plan.
   useEffect(() => {
-    if (currentPath === '/manage-teams') return; // handled separately
+    if (currentPath === '/manage-teams') return;
     if (currentPath === '/') {
       const storedTeamId = localStorage.getItem('ping:activeTeamId');
-      if (storedTeamId) {
-        pushRoute(`/teams/${encodeURIComponent(storedTeamId)}/chat`);
-      } else {
-        pushRoute('/chat');
-      }
+      if (storedTeamId && selectedTeamId !== storedTeamId) setSelectedTeamId(storedTeamId);
+      setActivePlanId(null);
       return;
     }
-    const { nextView, nextTeamId } = parseRouteState(currentPath);
-    if (viewMode !== nextView) setViewMode(nextView);
-    if (selectedTeamId !== nextTeamId) setSelectedTeamId(nextTeamId);
-  }, [currentPath, parseRouteState, pushRoute, selectedTeamId, viewMode]);
+    const { nextTeamId, nextPlanId } = parseRouteState(currentPath);
+    if (nextTeamId !== null) setSelectedTeamId(nextTeamId);
+    setActivePlanId(nextPlanId);
+  }, [currentPath]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Only re-run when URL changes — not when derived state changes
 
   // Keep active agent in scope for deep-linked team routes.
   useEffect(() => {
@@ -448,58 +310,66 @@ function InnerApp() {
       setIsMobileSidebarOpen(false);
     }
     const isTeam = agents.some(a => a.id === agent.id);
-    if (isTeam) {
-      setSelectedTeamId(agent.id);
-      pushRoute(`/teams/${encodeURIComponent(agent.id)}/${viewMode}`);
-    } else {
-      const parent = agents.find(a => a.subAgents?.some(s => s.id === agent.id));
-      if (parent) {
-        setSelectedTeamId(parent.id);
-        pushRoute(`/teams/${encodeURIComponent(parent.id)}/${viewMode}`);
+    const teamId = isTeam ? agent.id : agents.find(a => a.subAgents?.some(s => s.id === agent.id))?.id;
+    if (teamId) {
+      setSelectedTeamId(teamId);
+      // Preserve planId in URL when switching agents within a plan
+      if (activePlanId) {
+        pushRoute(`/teams/${encodeURIComponent(teamId)}/p/${encodeURIComponent(activePlanId)}`);
+      } else {
+        pushRoute(`/teams/${encodeURIComponent(teamId)}`);
       }
     }
-  }, [agents, isMobileViewport, pushRoute, viewMode]);
-
-  const handleSelectView = useCallback((mode: 'chat' | 'tasks' | 'collaborate' | 'discussions') => {
-    setViewMode(mode);
-    if (mode !== 'discussions') setActiveDiscussion(null);
-    if (isMobileViewport) {
-      setIsMobileSidebarOpen(false);
-    }
-    if (selectedTeamId) {
-      pushRoute(`/teams/${encodeURIComponent(selectedTeamId)}/${mode}`);
-    } else {
-      pushRoute(`/${mode}`);
-    }
-  }, [isMobileViewport, pushRoute, selectedTeamId]);
+  }, [agents, isMobileViewport, pushRoute, activePlanId]);
 
   const handleOpenDiscussion = useCallback((thread: DiscussionThreadType) => {
-    // Parse docName: "{teamId}/{goalId}/{taskId}/discussion"
-    const parts = thread.docName.split('/');
-    if (parts.length >= 3) {
-      setActiveDiscussion({
-        teamId: parts[0],
-        goalId: parts[1],
-        taskId: parts[2],
-        title: thread.title,
-      });
-      setViewMode('discussions');
-      // Mark as read
-      setDiscussionThreads(prev =>
-        prev.map(t => t.docName === thread.docName ? { ...t, unreadCount: 0 } : t)
-      );
-    }
+    // Mark as read — the discussion content is now reachable from the task-scoped DetailPanel.
+    setDiscussionThreads(prev =>
+      prev.map(t => t.docName === thread.docName ? { ...t, unreadCount: 0 } : t)
+    );
   }, []);
 
   const handleGoalSubmit = useCallback(async (goal: string) => {
     if (!selectedTeamId) { showToast('Please select a team first', 'warning'); return; }
+    const planId = makePlanId(selectedTeamId, goal, Date.now());
+    savePlan(selectedTeamId, {
+      planId,
+      goal,
+      createdAt: Date.now(),
+      status: 'active',
+    });
     addMessage(selectedTeamId, { id: uuidv4(), role: 'user', content: goal, timestamp: Date.now() });
     try {
       agentServiceV2.sendToManager(goal);
     } catch (err: any) {
       showToast(`Failed to send goal: ${err.message}`, 'error');
     }
-  }, [selectedTeamId, addMessage, showToast]);
+    setActivePlanId(planId);
+    pushRoute(`/teams/${encodeURIComponent(selectedTeamId)}/p/${encodeURIComponent(planId)}`);
+  }, [selectedTeamId, addMessage, showToast, pushRoute]);
+
+  /** Goal submitted from GoalScreen (teamId provided explicitly) */
+  const handleGoalScreenSubmit = useCallback((teamId: string, goal: string) => {
+    if (selectedTeamId !== teamId) setSelectedTeamId(teamId);
+    // Defer slightly to let team connection establish
+    setTimeout(() => {
+      const planId = makePlanId(teamId, goal, Date.now());
+      savePlan(teamId, {
+        planId,
+        goal,
+        createdAt: Date.now(),
+        status: 'active',
+      });
+      addMessage(teamId, { id: uuidv4(), role: 'user', content: goal, timestamp: Date.now() });
+      try {
+        agentServiceV2.sendToManager(goal);
+      } catch (err: any) {
+        showToast(`Failed to send goal: ${err.message}`, 'error');
+      }
+      setActivePlanId(planId);
+      pushRoute(`/teams/${encodeURIComponent(teamId)}/p/${encodeURIComponent(planId)}`);
+    }, 100);
+  }, [selectedTeamId, addMessage, showToast, pushRoute]);
 
   const handleApprove = useCallback((_tasks?: BackendTask[]) => {
     handleApprovePlan();
@@ -527,18 +397,27 @@ function InnerApp() {
   const activeAgent = findAgentById(activeAgentId);
   const activeAgentTasks = tasks[activeAgentId] ?? [];
   const activeAgentMessages = chatHistories[activeAgentId] ?? [];
-  const isGoalInputVisible = agents.some(a => a.id === activeAgentId) && !!selectedTeamId;
   const showTaskSkeleton = (sessionState === 'planning' || sessionState === 'executing') && allTasks.length === 0;
   const selectedTeam = selectedTeamId ? agents.find(a => a.id === selectedTeamId) : undefined;
   const selectedTeamAgentCount = selectedTeam ? 1 + (selectedTeam.subAgents?.length ?? 0) : 0;
+
+  // Task selection state for DetailPanel
+  const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
+
+  // Plans list for switcher (from localStorage)
+  const storedPlans = React.useMemo<PlanSummary[]>(() => {
+    if (!selectedTeamId) return [];
+    try {
+      const raw = localStorage.getItem(`ping:plans:${selectedTeamId}`);
+      return raw ? JSON.parse(raw) : [];
+    } catch { return []; }
+  }, [selectedTeamId, activePlanId /* re-read after new plan saved */]);
 
   const sidebarNode = (
     <Sidebar
       agents={agents}
       activeAgentId={activeAgentId}
-      viewMode={viewMode}
       onSelectAgent={handleSelectAgent}
-      onSelectView={handleSelectView}
       onToggleCollapse={handleToggleCollapse}
       onAddAgent={(parentId) => { setModalParentId(parentId); setIsModalOpen(true); }}
       isExpanded={isMobileViewport ? true : isSidebarExpanded}
@@ -547,6 +426,17 @@ function InnerApp() {
       activeTeamId={selectedTeamId}
       onSelectTeam={handleSelectAgent}
       onNavigateToTeams={() => { pushRoute('/manage-teams'); if (isMobileViewport) setIsMobileSidebarOpen(false); }}
+      planTasks={allTasks}
+      planName={currentPlan?.[0]?.title ?? undefined}
+      selectedTaskId={selectedTaskId}
+      onSelectTask={(taskId) => { setSelectedTaskId(taskId); setIsPanelOpen(true); }}
+      activePlanId={activePlanId}
+      sessionState={sessionState}
+      onBackToGoals={() => {
+        setActivePlanId(null);
+        if (selectedTeamId) pushRoute(`/teams/${encodeURIComponent(selectedTeamId)}`);
+        else pushRoute('/');
+      }}
     />
   );
 
@@ -556,13 +446,89 @@ function InnerApp() {
   if (currentPath === '/manage-teams') {
     return (
       <TeamsPage
-        onBack={() => pushRoute(selectedTeamId ? `/teams/${encodeURIComponent(selectedTeamId)}/chat` : '/chat')}
+        onBack={() => {
+          if (selectedTeamId && activePlanId) {
+            pushRoute(`/teams/${encodeURIComponent(selectedTeamId)}/p/${encodeURIComponent(activePlanId)}`);
+          } else if (selectedTeamId) {
+            pushRoute(`/teams/${encodeURIComponent(selectedTeamId)}`);
+          } else {
+            pushRoute('/');
+          }
+        }}
         onTeamCreated={(team) => {
           setActiveAgentId(team.id);
           setSelectedTeamId(team.id);
-          pushRoute(`/teams/${encodeURIComponent(team.id)}/chat`);
+          pushRoute(`/teams/${encodeURIComponent(team.id)}`);
         }}
       />
+    );
+  }
+
+  // /plans route — render full-page PlanViewerPage
+  if (currentPath === '/plans') {
+    return (
+      <div className="h-screen w-full bg-background font-sans text-foreground">
+        <PlanViewerPage
+          teams={agents}
+          selectedTeamId={selectedTeamId}
+          allTasks={allTasks}
+          activePlanId={activePlanId}
+          orchestrationLogs={orchestrationLogs}
+          sessionState={sessionState}
+          autoExecuteEnabled={autoExecuteEnabled}
+          onBack={() => {
+            if (selectedTeamId && activePlanId) {
+              pushRoute(`/teams/${encodeURIComponent(selectedTeamId)}/p/${encodeURIComponent(activePlanId)}`);
+            } else if (selectedTeamId) {
+              pushRoute(`/teams/${encodeURIComponent(selectedTeamId)}`);
+            } else {
+              pushRoute('/');
+            }
+          }}
+          onSelectTeam={(teamId) => {
+            setSelectedTeamId(teamId);
+          }}
+          onOpenPlanChat={(teamId, planId) => {
+            setSelectedTeamId(teamId);
+            setActivePlanId(planId);
+            pushRoute(`/teams/${encodeURIComponent(teamId)}/p/${encodeURIComponent(planId)}`);
+          }}
+          onStartTask={handleStartTask}
+        />
+        <ToastContainer toasts={toasts} onDismiss={dismissToast} />
+      </div>
+    );
+  }
+
+  // GoalScreen — shown at `/` or `/teams/{teamId}` when no plan is active anywhere
+  const urlHasPlan = currentPath.includes('/p/');
+  const hasAnyPlan = !!activePlanId || urlHasPlan;
+  const showGoalScreen = !hasAnyPlan && (currentPath === '/' || currentPath.startsWith('/teams/'));
+
+  if (showGoalScreen) {
+    return (
+      <div className="h-screen w-full bg-background font-sans text-foreground">
+        <GoalScreen
+          teams={agents}
+          activeTeamId={selectedTeamId}
+          activePlanId={activePlanId}
+          onSelectTeam={(teamId) => {
+            setSelectedTeamId(teamId);
+            pushRoute(`/teams/${encodeURIComponent(teamId)}`);
+          }}
+          onSubmitGoal={handleGoalScreenSubmit}
+          onSelectPlan={(planId) => {
+            if (selectedTeamId) {
+              setActivePlanId(planId);
+              pushRoute(`/teams/${encodeURIComponent(selectedTeamId)}/p/${encodeURIComponent(planId)}`);
+            }
+          }}
+          onNavigateToTeams={() => pushRoute('/manage-teams')}
+          onSignOut={() => signOut().then(() => window.location.reload())}
+          sessionState={sessionState}
+        />
+        <ToastContainer toasts={toasts} onDismiss={dismissToast} />
+      </div>
     );
   }
 
@@ -748,15 +714,34 @@ function InnerApp() {
           {/* Context Bar */}
           <div className="flex items-center gap-3 px-4 py-2 border-b border-border bg-card/80 shrink-0">
             <div className="flex items-center gap-2 min-w-0">
-              <span className="text-sm font-medium text-foreground truncate">
-                {activeAgent?.name ?? 'Ping'}
-              </span>
-              {activeAgent?.role && (
+              {/* Plan switcher (when plan is active) */}
+              {activePlanId ? (
+                <PlanSwitcher
+                  plans={storedPlans}
+                  activePlanId={activePlanId}
+                  planName={storedPlans.find(p => p.planId === activePlanId)?.goal ?? 'Plan'}
+                  sessionState={sessionState}
+                  onSelectPlan={(planId) => {
+                    setActivePlanId(planId);
+                    if (selectedTeamId) pushRoute(`/teams/${encodeURIComponent(selectedTeamId)}/p/${encodeURIComponent(planId)}`);
+                  }}
+                  onNewGoal={() => {
+                    setActivePlanId(null);
+                    if (selectedTeamId) pushRoute(`/teams/${encodeURIComponent(selectedTeamId)}`);
+                    else pushRoute('/');
+                  }}
+                />
+              ) : (
+                <span className="text-sm font-medium text-foreground truncate">
+                  {activeAgent?.name ?? 'Ping'}
+                </span>
+              )}
+              {!activePlanId && activeAgent?.role && (
                 <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-muted text-muted-foreground uppercase tracking-wider shrink-0">
                   {activeAgent.role}
                 </span>
               )}
-              {sessionState && sessionState !== 'idle' && (
+              {!activePlanId && sessionState && sessionState !== 'idle' && (
                 <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-blue-500/20 text-blue-400 shrink-0">
                   {sessionState.replace('_', ' ')}
                 </span>
@@ -786,166 +771,41 @@ function InnerApp() {
             <Skeleton className="h-20 w-full rounded-xl" />
             <Skeleton className="h-48 w-full rounded-xl" />
           </div>
+        ) : activeAgent ? (
+          <div className="flex-1 flex flex-col min-h-0 min-w-0">
+            <div className="flex-1 min-h-0">
+              <ChatArea
+                key={activeAgent.id}
+                agent={activeAgent}
+                messages={activeAgentMessages}
+                tasks={activeAgentTasks}
+                teamId={selectedTeamId}
+                onUpdateMessages={(agentId, msg) => updateMessages(agentId, msg)}
+                onAddTask={() => { /* tasks come from backend plan only */ }}
+                onToggleTask={() => { /* status managed by backend */ }}
+                onDeleteTask={() => { /* deletion not yet supported */ }}
+                apiKey={process.env.API_KEY || process.env.GEMINI_API_KEY || ''}
+                onTogglePanel={() => setIsPanelOpen(v => !v)}
+                isPanelOpen={isPanelOpen}
+                autoExecuteEnabled={autoExecuteEnabled}
+                onToggleAutoExecute={handleToggleAutoExecute}
+                currentPlan={currentPlan}
+                onStartTask={handleStartTask}
+                onCompleteTask={handleCompleteTask}
+                onCancelTask={handleCancelTask}
+                isLoading={isLoadingTeams && activeAgentMessages.length === 0}
+                compactHeader={!!activePlanId}
+                taskScope={!activeAgent.parentId ? 'plan' : 'agent'}
+                allTasks={allTasks}
+                onSelectTask={(taskId) => { setSelectedTaskId(taskId); setIsPanelOpen(true); }}
+                selectedTaskId={selectedTaskId}
+              />
+            </div>
+          </div>
         ) : (
-          <AnimatePresence mode="wait" initial={false}>
-            {viewMode === 'collaborate' ? (
-              <motion.div
-                key="collaborate-view"
-                className="flex-1 flex min-h-0"
-                initial={{ opacity: 0, y: 8 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -8 }}
-                transition={{ duration: 0.18, ease: 'easeOut' }}
-              >
-                <CollabFileTree teamId={selectedTeamId} activeDoc={collabDocId} onSelectDoc={setCollabDocId} />
-                <div className="flex-1 flex flex-col min-h-0 min-w-0">
-                  <div className="flex items-center gap-3 p-3 border-b border-border bg-card shrink-0">
-                    <span className="text-sm text-muted-foreground">Document:</span>
-                    <span className="text-sm text-foreground font-mono truncate">{collabDocId || "none"}</span>
-                  </div>
-                  <div className="flex-1 overflow-auto min-h-0">
-                    {collabDocId ? (
-                      <Suspense fallback={<div className="flex items-center justify-center h-full text-muted-foreground">Loading editor...</div>}>
-                        <CollaborativeEditor key={collabDocId}
-                          docId={`${selectedTeamId || "default"}/${collabDocId}`}
-                          userName="User" userColor="#3b82f6"
-                          serverUrl={`ws://localhost:${"1234"}`} />
-                      </Suspense>
-                    ) : (
-                      <div className="flex items-center justify-center h-full text-muted-foreground">Select a document</div>
-                    )}
-                  </div>
-                </div>
-              </motion.div>
-            ) : viewMode === 'tasks' ? (
-              <motion.div
-                key="tasks-view"
-                className="flex-1 overflow-y-auto p-6"
-                initial={{ opacity: 0, y: 8 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -8 }}
-                transition={{ duration: 0.18, ease: 'easeOut' }}
-              >
-                <div className="max-w-4xl mx-auto">
-                  <div className="mb-6">
-                    <h1 className="text-xl font-semibold text-foreground mb-1">Task Dashboard</h1>
-                    <p className="text-sm text-muted-foreground">Real-time status of all tasks across all agents</p>
-                  </div>
-                  {selectedTeamId && (
-                    <div className="mb-6">
-                      <GoalInput onSubmit={handleGoalSubmit} sessionState={sessionState}
-                        disabled={sessionState === 'executing' || sessionState === 'planning'} />
-                    </div>
-                  )}
-                  <TaskDashboard allTasks={allTasks}
-                    isLoading={showTaskSkeleton}
-                    onStartTask={handleStartTask} onCompleteTask={handleCompleteTask} onCancelTask={handleCancelTask} />
-                </div>
-              </motion.div>
-            ) : viewMode === 'discussions' ? (
-              <motion.div
-                key="discussions-view"
-                className="flex-1 flex min-h-0"
-                initial={{ opacity: 0, y: 8 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -8 }}
-                transition={{ duration: 0.18, ease: 'easeOut' }}
-              >
-                {activeDiscussion ? (
-                  <ActiveDiscussionView
-                    teamId={activeDiscussion.teamId}
-                    goalId={activeDiscussion.goalId}
-                    taskId={activeDiscussion.taskId}
-                    title={activeDiscussion.title}
-                    onBack={() => setActiveDiscussion(null)}
-                  />
-                ) : (
-                  <div className="flex-1 flex flex-col items-center justify-center text-muted-foreground text-sm p-6">
-                    <p className="text-lg mb-2">💬 Discussions</p>
-                    {discussionThreads.length > 0 ? (
-                      <div className="w-full max-w-md space-y-2 mt-4">
-                        <p className="text-xs text-center mb-3">Active discussions — click to open</p>
-                        {discussionThreads.filter(t => t.status === 'active').map(thread => (
-                          <button
-                            key={thread.docName}
-                            onClick={() => handleOpenDiscussion(thread)}
-                            className="w-full text-left p-3 rounded-lg border border-border hover:bg-accent/50 transition-colors cursor-pointer"
-                          >
-                            <div className="flex items-center gap-2">
-                              <span className="w-2 h-2 rounded-full bg-red-500 shrink-0" />
-                              <span className="text-xs font-semibold truncate">{thread.title}</span>
-                              {thread.unreadCount > 0 && (
-                                <span className="text-[10px] bg-red-100 dark:bg-red-900 text-red-600 dark:text-red-300 px-1.5 py-0.5 rounded-full font-medium ml-auto">
-                                  {thread.unreadCount} new
-                                </span>
-                              )}
-                            </div>
-                            <p className="text-[10px] text-muted-foreground mt-1 pl-4">
-                              {thread.blockCount} blocks · {thread.participants.join(' ↔ ') || 'awaiting input'}
-                            </p>
-                          </button>
-                        ))}
-                      </div>
-                    ) : (
-                      <>
-                        <p>Select a discussion from the Detail Panel's Discussions tab</p>
-                        <p className="text-xs mt-1">Agent discussions appear here when collaboration tasks are active</p>
-                      </>
-                    )}
-                  </div>
-                )}
-              </motion.div>
-            ) : (
-              <motion.div
-                key="chat-view"
-                className="flex-1 flex min-h-0"
-                initial={{ opacity: 0, y: 8 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -8 }}
-                transition={{ duration: 0.18, ease: 'easeOut' }}
-              >
-                {activeAgent ? (
-                  <div className="flex-1 flex flex-col min-h-0 min-w-0">
-                    {isGoalInputVisible && (
-                      <div className="px-6 py-4 border-b border-border bg-card/50">
-                        <GoalInput onSubmit={handleGoalSubmit} sessionState={sessionState}
-                          disabled={sessionState === 'executing' || sessionState === 'planning'} />
-                      </div>
-                    )}
-                    <div className="flex-1 min-h-0">
-                      <ChatArea
-                        key={activeAgent.id}
-                        agent={activeAgent}
-                        messages={activeAgentMessages}
-                        tasks={activeAgentTasks}
-                        teamId={selectedTeamId}
-                        onUpdateMessages={(agentId, msg) => updateMessages(agentId, msg)}
-                        onAddTask={() => { /* Phase 1: tasks come from backend plan only */ }}
-                        onToggleTask={() => { /* Phase 1: status managed by backend */ }}
-                        onDeleteTask={() => { /* Phase 1: deletion not yet supported */ }}
-                        apiKey={process.env.API_KEY || process.env.GEMINI_API_KEY || ''}
-                        onTogglePanel={() => setIsPanelOpen(v => !v)}
-                        isPanelOpen={isPanelOpen}
-                        autoExecuteEnabled={autoExecuteEnabled}
-                        onToggleAutoExecute={handleToggleAutoExecute}
-                        currentPlan={currentPlan}
-                        onStartTask={handleStartTask}
-                        onCompleteTask={handleCompleteTask}
-                        onCancelTask={handleCancelTask}
-                        isLoading={isLoadingTeams && activeAgentMessages.length === 0}
-                        onOpenDiscussions={() => handleSelectView('discussions')}
-                        discussionUnreadCount={discussionUnreadCount}
-                      />
-                    </div>
-                  </div>
-                ) : (
-                  <div className="flex-1 flex items-center justify-center text-muted-foreground">
-                    Select a team to start.
-                  </div>
-                )}
-              </motion.div>
-            )}
-          </AnimatePresence>
+          <div className="flex-1 flex items-center justify-center text-muted-foreground">
+            Select a team to start.
+          </div>
         )}
         </div>
         {/* ── end main content column ── */}
@@ -957,12 +817,19 @@ function InnerApp() {
               logs={orchestrationLogs}
               activeAgents={[]}
               allTasks={allTasks}
+              currentPlanName={currentPlan?.[0]?.title ?? undefined}
+              activePlanId={activePlanId}
               discussionThreads={discussionThreads}
               onOpenDiscussion={handleOpenDiscussion}
               agentName={activeAgent?.name}
               agentId={activeAgent?.id}
               teamId={selectedTeamId ?? undefined}
-              onClose={() => setIsPanelOpen(false)}
+              isManager={!!activeAgent && !activeAgent.parentId}
+              onClose={() => { setIsPanelOpen(false); setSelectedTaskId(null); }}
+              selectedTask={selectedTaskId ? allTasks.find(t => t.id === selectedTaskId) ?? null : null}
+              onSelectTask={(taskId) => setSelectedTaskId(taskId)}
+              onStartTask={handleStartTask}
+              autoExecuteEnabled={autoExecuteEnabled}
             />
           )}
         </AnimatePresence>
@@ -979,10 +846,12 @@ function InnerApp() {
         onOpenChange={setIsCommandPaletteOpen}
         agents={agents}
         onSelectAgent={handleSelectAgent}
-        onSelectView={handleSelectView}
         onNewTeam={() => {
           setModalParentId(undefined);
           setIsModalOpen(true);
+        }}
+        onViewPlans={() => {
+          pushRoute('/plans');
         }}
       />
 
@@ -992,6 +861,9 @@ function InnerApp() {
         teamName={selectedTeam?.name}
         sessionState={sessionState}
       />
+
+      {/* Dev-only: collab inspector — stripped from production bundle at compile time */}
+      <DevCollabButton teamId={selectedTeamId} goalId={activePlanId} />
 
       <AgentModal isOpen={isModalOpen} onClose={() => setIsModalOpen(false)} onSave={handleAddAgent}
         parentAgents={agents} initialParentId={modalParentId} />

@@ -19,9 +19,8 @@ interface DiscussionComposerProps {
 }
 
 const TYPE_OPTIONS: { value: DiscussionBlock["type"]; label: string; icon: string }[] = [
-  { value: "message", label: "Message", icon: "💬" },
-  { value: "question", label: "Question", icon: "❓" },
-  { value: "decision", label: "Decision", icon: "✅" },
+  // Feature-gated: type selector removed for minimalist UI
+  // Type is auto-inferred: contains "?" → question, else message
 ];
 
 function parseMentions(text: string): string[] {
@@ -35,7 +34,6 @@ export function DiscussionComposer({
   disabled = false,
 }: DiscussionComposerProps) {
   const [content, setContent] = useState("");
-  const [type, setType] = useState<DiscussionBlock["type"]>("message");
   const [showMentions, setShowMentions] = useState(false);
   const [mentionFilter, setMentionFilter] = useState("");
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -49,9 +47,9 @@ export function DiscussionComposer({
     if (!trimmed || disabled) return;
 
     const mentions = parseMentions(trimmed);
-    onPost(trimmed, type, mentions);
+    const inferredType = trimmed.includes("?") ? "question" : "message";
+    onPost(trimmed, inferredType, mentions);
     setContent("");
-    setType("message");
     textareaRef.current?.focus();
   }, [content, type, disabled, onPost]);
 
@@ -108,27 +106,6 @@ export function DiscussionComposer({
           ))}
         </div>
       )}
-
-      {/* Controls row */}
-      <div className="flex items-center gap-1 px-3 pt-2">
-        {/* Type selector */}
-        <div className="flex gap-0.5">
-          {TYPE_OPTIONS.map((opt) => (
-            <button
-              key={opt.value}
-              onClick={() => setType(opt.value)}
-              className={`px-2 py-0.5 text-[10px] rounded cursor-pointer transition-colors ${
-                type === opt.value
-                  ? "bg-primary/10 text-primary font-medium"
-                  : "text-muted-foreground hover:text-foreground"
-              }`}
-              title={opt.label}
-            >
-              {opt.icon} {opt.label}
-            </button>
-          ))}
-        </div>
-      </div>
 
       {/* Input row */}
       <div className="flex items-end gap-2 p-2">

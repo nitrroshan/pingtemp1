@@ -36,6 +36,17 @@ interface ChatAreaProps {
   isLoading?: boolean;
   onOpenDiscussions?: () => void;
   discussionUnreadCount?: number;
+
+  /** Render slim toggle-only header (PlanSwitcher above shows agent/plan identity) */
+  compactHeader?: boolean;
+
+  /** Task list scope: 'plan' for the orchestrator (full plan), 'agent' for individual roles */
+  taskScope?: 'plan' | 'agent';
+  /** When taskScope === 'plan', pass the full task set so dependency labels can resolve */
+  allTasks?: Task[];
+  /** Click a task row to open the DetailPanel for it */
+  onSelectTask?: (taskId: string) => void;
+  selectedTaskId?: string | null;
 }
 
 function ChatAreaSkeleton() {
@@ -97,6 +108,11 @@ const ChatArea: React.FC<ChatAreaProps> = ({
   isLoading = false,
   onOpenDiscussions,
   discussionUnreadCount = 0,
+  compactHeader = false,
+  taskScope = 'agent',
+  allTasks,
+  onSelectTask,
+  selectedTaskId,
 }) => {
   const [viewMode, setViewMode] = useState<'chat' | 'tasks'>('chat');
   const [inputValue, setInputValue] = useState('');
@@ -195,17 +211,13 @@ const ChatArea: React.FC<ChatAreaProps> = ({
       {/* Background Gradient Effect */}
       <div className="absolute top-0 left-0 w-full h-32 bg-gradient-to-b from-muted/30 to-transparent pointer-events-none" />
       
-      {/* Header */}
+      {/* Minimal header — slim in plan mode, full in standalone agent mode */}
       <Header
         agent={agent}
         viewMode={viewMode}
-        tasks={tasks}
-        showPanelToggle={showPanelToggle}
-        isPanelOpen={isPanelOpen}
-        autoExecuteEnabled={autoExecuteEnabled}
+        tasks={taskScope === 'plan' && allTasks ? allTasks : tasks}
+        compact={compactHeader}
         onViewModeChange={setViewMode}
-        onTogglePanel={onTogglePanel}
-        onToggleAutoExecute={onToggleAutoExecute}
         onClearHistory={handleClearHistory}
       />
 
@@ -238,6 +250,8 @@ const ChatArea: React.FC<ChatAreaProps> = ({
                 onKeyDown={handleKeyDown}
                 onOpenDiscussions={onOpenDiscussions}
                 discussionUnreadCount={discussionUnreadCount}
+                autoExecuteEnabled={autoExecuteEnabled}
+                onToggleAutoExecute={onToggleAutoExecute}
               />
             </motion.div>
           ) : (
@@ -250,14 +264,14 @@ const ChatArea: React.FC<ChatAreaProps> = ({
               transition={{ duration: 0.18, ease: 'easeOut' }}
             >
               <TaskList
-                tasks={tasks}
-                agentId={agent.id}
+                tasks={taskScope === 'plan' && allTasks ? allTasks : tasks}
                 agentName={agent.name}
-                onToggleTask={onToggleTask}
-                onDeleteTask={onDeleteTask}
+                scope={taskScope}
+                allTasks={allTasks}
+                onSelectTask={onSelectTask}
+                selectedTaskId={selectedTaskId}
                 onStartTask={onStartTask}
-                onCompleteTask={onCompleteTask}
-                onCancelTask={onCancelTask}
+                autoExecuteEnabled={autoExecuteEnabled}
               />
             </motion.div>
           )}

@@ -3,12 +3,11 @@
  * Sidebar — Linear/Vercel-style navigation sidebar
  *
  * Sections:
- *   1. Logo + Team Switcher (placeholder, Phase 3 will add full switcher)
- *   2. Primary navigation (Chat / Tasks / Collaborate)
- *   3. Agents tree (team hierarchy)
- *   4. Footer quick actions
+ *   1. Logo + Team Switcher
+ *   2. Plan task list (when a plan is active) OR agents tree
+ *   3. Footer quick actions
  *
- * Collapsible to icon-only rail (48px) via isWorkflowsExpanded.
+ * Collapsible to icon-only rail (48px) via isExpanded.
  */
 
 import React, { useState, useRef, useEffect } from 'react';
@@ -16,12 +15,13 @@ import {
   ChevronRight, ChevronDown, Plus,
   Cpu, Code, Bug, Palette, PenTool, Search, Bot,
   BarChart3, Workflow, PanelLeftClose, PanelLeft,
-  MessageSquare, LayoutDashboard, FileCode2, MessageCircle,
-  ChevronsUpDown, Check, Settings,
+  ChevronsUpDown, Check, Settings, ChevronUp,
 } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from './ui/tooltip';
-import type { Agent } from '../types';
+import type { Agent, Task } from '../types';
+import { PlanTaskList } from './Sidebar/PlanTaskList';
+import { ModeIndicator } from './Sidebar/ModeIndicator';
 
 // ─── icon helper ─────────────────────────────────────────────────────────────
 
@@ -41,27 +41,10 @@ const getIcon = (iconName: string, size = 15) => {
 
 // ─── types ────────────────────────────────────────────────────────────────────
 
-export type ViewMode = 'chat' | 'tasks' | 'collaborate' | 'discussions';
-
-interface NavItem {
-  id: ViewMode;
-  label: string;
-  icon: React.ReactNode;
-}
-
-const NAV_ITEMS: NavItem[] = [
-  { id: 'chat',        label: 'Chat',        icon: <MessageSquare size={15} /> },
-  { id: 'tasks',       label: 'Tasks',       icon: <LayoutDashboard size={15} /> },
-  { id: 'collaborate', label: 'Collaborate',  icon: <FileCode2 size={15} /> },
-  { id: 'discussions', label: 'Discussions',  icon: <MessageCircle size={15} /> },
-];
-
 interface SidebarProps {
   agents: Agent[];
   activeAgentId: string;
-  viewMode: ViewMode;
   onSelectAgent: (agent: Agent) => void;
-  onSelectView: (view: ViewMode) => void;
   onToggleCollapse: (agentId: string) => void;
   onAddAgent: (parentId?: string) => void;
   isExpanded: boolean;
@@ -74,47 +57,14 @@ interface SidebarProps {
   onSelectTeam?: (team: Agent) => void;
   /** Called when "Manage teams" is clicked */
   onNavigateToTeams?: () => void;
-}
-
-// ─── NavButton ────────────────────────────────────────────────────────────────
-
-function NavButton({
-  item,
-  isActive,
-  isExpanded,
-  onClick,
-}: {
-  item: NavItem;
-  isActive: boolean;
-  isExpanded: boolean;
-  onClick: () => void;
-}) {
-  const btn = (
-    <button
-      onClick={onClick}
-      className={cn(
-        'flex items-center gap-2.5 w-full rounded-md transition-colors text-sm cursor-pointer select-none',
-        isExpanded ? 'px-2.5 py-1.5' : 'justify-center p-2',
-        isActive
-          ? 'bg-primary/10 text-primary font-medium'
-          : 'text-muted-foreground hover:text-foreground hover:bg-accent'
-      )}
-    >
-      <span className="flex-shrink-0">{item.icon}</span>
-      {isExpanded && <span className="truncate">{item.label}</span>}
-    </button>
-  );
-
-  if (!isExpanded) {
-    return (
-      <Tooltip>
-        <TooltipTrigger asChild>{btn}</TooltipTrigger>
-        <TooltipContent side="right">{item.label}</TooltipContent>
-      </Tooltip>
-    );
-  }
-
-  return btn;
+  /** Plan-scoped task list (shown instead of nav items when plan is active) */
+  planTasks?: Task[];
+  planName?: string;
+  selectedTaskId?: string | null;
+  onSelectTask?: (taskId: string) => void;
+  activePlanId?: string | null;
+  sessionState?: string | null;
+  onBackToGoals?: () => void;
 }
 
 // ─── AgentRow ─────────────────────────────────────────────────────────────────
@@ -180,6 +130,9 @@ function AgentRow({
             </span>
           )}
 
+          {/* Mode indicator (shown for non-team agents) */}
+          {!isTeam && <ModeIndicator />}
+
           {/* Add sub-agent button (teams only) */}
           {isTeam && (
             <button
@@ -231,14 +184,113 @@ function AgentRow({
   );
 }
 
+// ─── SidebarPlanLayout — collapsible PLAN + AGENTS sections ───────────────────
+
+function SidebarPlanLayout({
+  planTasks, selectedTaskId, onSelectTask, planName, sessionState,
+  activeTeam, activeAgentId, onSelectAgent, onToggleCollapse, onAddAgent,
+}: {
+  planTasks: Task[];
+  selectedTaskId: string | null;
+  onSelectTask: (taskId: string) => void;
+  planName?: string;
+  sessionState?: string | null;
+  activeTeam?: Agent;
+  activeAgentId: string;
+  onSelectAgent: (a: Agent) => void;
+  onToggleCollapse: (id: string) => void;
+  onAddAgent: (parentId?: string) => void;
+}) {
+  const [planCollapsed, setPlanCollapsed] = useState(false);
+  const [agentsCollapsed, setAgentsCollapsed] = useState(false);
+
+  const completedCount = planTasks.filter(t => t.status === 'completed').length;
+
+  return (
+    <div className="flex-1 flex flex-col min-h-0">
+      {/* PLAN section — collapsible, scrollable, max 60% */}
+      <div className={cn('flex flex-col border-b border-border', !planCollapsed && 'max-h-[60%]')}>
+        <button
+          onClick={() => setPlanCollapsed(v => !v)}
+          className="flex items-center gap-1.5 px-2.5 py-1.5 text-[10px] font-semibold text-muted-foreground uppercase tracking-wider hover:text-foreground transition-colors cursor-pointer shrink-0"
+        >
+          {planCollapsed ? <ChevronRight size={10} /> : <ChevronDown size={10} />}
+          <span>Plan</span>
+          <span className="text-[9px] font-normal normal-case tracking-normal ml-auto">
+            {completedCount}/{planTasks.length}
+          </span>
+          {sessionState === 'executing' && (
+            <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+          )}
+        </button>
+        {!planCollapsed && (
+          <div className="overflow-y-auto px-1 pb-1">
+            <PlanTaskList
+              tasks={planTasks}
+              selectedTaskId={selectedTaskId}
+              onSelectTask={onSelectTask}
+              sessionState={sessionState}
+            />
+          </div>
+        )}
+      </div>
+
+      {/* AGENTS section — collapsible, fills remaining space */}
+      <div className="flex-1 flex flex-col min-h-0">
+        <button
+          onClick={() => setAgentsCollapsed(v => !v)}
+          className="flex items-center gap-1.5 px-2.5 py-1.5 text-[10px] font-semibold text-muted-foreground uppercase tracking-wider hover:text-foreground transition-colors cursor-pointer shrink-0"
+        >
+          {agentsCollapsed ? <ChevronRight size={10} /> : <ChevronDown size={10} />}
+          <span>Agents</span>
+          {activeTeam?.subAgents && (
+            <span className="text-[9px] font-normal normal-case tracking-normal ml-auto">
+              {activeTeam.subAgents.length}
+            </span>
+          )}
+        </button>
+        {!agentsCollapsed && activeTeam && (
+          <div className="flex-1 overflow-y-auto p-1.5 min-h-0">
+            <AgentRow
+              key={activeTeam.id}
+              agent={{ ...activeTeam, collapsed: true, subAgents: [] }}
+              depth={0}
+              activeAgentId={activeAgentId}
+              isExpanded={true}
+              onSelectAgent={() => onSelectAgent(activeTeam)}
+              onToggleCollapse={onToggleCollapse}
+              onAddAgent={onAddAgent}
+            />
+            {activeTeam.subAgents && activeTeam.subAgents.length > 0 && (
+              <>
+                <div className="border-t border-border my-1 mx-2" />
+                {activeTeam.subAgents.map(agent => (
+                  <AgentRow
+                    key={agent.id}
+                    agent={agent}
+                    depth={0}
+                    activeAgentId={activeAgentId}
+                    isExpanded={true}
+                    onSelectAgent={onSelectAgent}
+                    onToggleCollapse={onToggleCollapse}
+                    onAddAgent={onAddAgent}
+                  />
+                ))}
+              </>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ─── Sidebar ──────────────────────────────────────────────────────────────────
 
 const Sidebar: React.FC<SidebarProps> = ({
   agents,
   activeAgentId,
-  viewMode,
   onSelectAgent,
-  onSelectView,
   onToggleCollapse,
   onAddAgent,
   isExpanded,
@@ -247,6 +299,13 @@ const Sidebar: React.FC<SidebarProps> = ({
   activeTeamId,
   onSelectTeam,
   onNavigateToTeams,
+  planTasks,
+  planName,
+  selectedTaskId,
+  onSelectTask,
+  activePlanId,
+  sessionState,
+  onBackToGoals,
 }) => {
   const [isTeamDropdownOpen, setIsTeamDropdownOpen] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
@@ -351,21 +410,25 @@ const Sidebar: React.FC<SidebarProps> = ({
             </Tooltip>
           </div>
         )}
-        {/* ── Navigation ── */}
-        <div className={cn('p-1.5 border-b border-border flex-shrink-0', !isExpanded && 'flex flex-col items-center gap-1')}>
-          {NAV_ITEMS.map(item => (
-            <NavButton
-              key={item.id}
-              item={item}
-              isActive={viewMode === item.id}
-              isExpanded={isExpanded}
-              onClick={() => onSelectView(item.id)}
-            />
-          ))}
-        </div>
-
-        {/* ── Agents section (current team only) ── */}
-        <div className="flex-1 overflow-y-auto p-1.5 min-h-0">
+        {/* ── Navigation / Plan Tasks + Agents ── */}
+        {activePlanId && planTasks && isExpanded ? (
+          /* Plan-scoped layout: collapsible PLAN + AGENTS sections */
+          <SidebarPlanLayout
+            planTasks={planTasks}
+            selectedTaskId={selectedTaskId ?? null}
+            onSelectTask={onSelectTask ?? (() => {})}
+            planName={planName}
+            sessionState={sessionState}
+            activeTeam={activeTeam}
+            activeAgentId={activeAgentId}
+            onSelectAgent={onSelectAgent}
+            onToggleCollapse={onToggleCollapse}
+            onAddAgent={onAddAgent}
+          />
+        ) : (
+          <>
+            {/* ── Agents section (current team only) ── */}
+            <div className="flex-1 overflow-y-auto p-1.5 min-h-0">
           {!activeTeam ? (
             isExpanded ? (
               <div className="text-xs text-muted-foreground text-center py-4 px-2">
@@ -409,12 +472,24 @@ const Sidebar: React.FC<SidebarProps> = ({
             </>
           )}
         </div>
+          </>
+        )}
 
         {/* ── Footer: manage teams + collapse ── */}
         <div className={cn(
           'p-1.5 border-t border-border flex-shrink-0',
-          isExpanded ? 'flex items-center gap-1' : 'flex flex-col items-center gap-1'
+          isExpanded ? 'flex flex-col gap-1' : 'flex flex-col items-center gap-1'
         )}>
+          {/* Back to goals (when plan is active) */}
+          {isExpanded && activePlanId && onBackToGoals && (
+            <button
+              onClick={onBackToGoals}
+              className="flex items-center gap-2 px-2.5 py-1.5 rounded-md text-xs text-muted-foreground hover:text-foreground hover:bg-accent transition-colors cursor-pointer"
+            >
+              ← Back to goals
+            </button>
+          )}
+          <div className={cn(isExpanded ? 'flex items-center gap-1' : 'flex flex-col items-center gap-1')}>
           {isExpanded ? (
             <>
               <button
@@ -457,8 +532,7 @@ const Sidebar: React.FC<SidebarProps> = ({
                 <TooltipContent side="right">Expand sidebar</TooltipContent>
               </Tooltip>
             </>
-          )}
-        </div>
+          )}          </div>        </div>
       </aside>
     </TooltipProvider>
   );

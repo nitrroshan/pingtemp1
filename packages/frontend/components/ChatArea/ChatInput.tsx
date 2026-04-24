@@ -1,5 +1,5 @@
-import React, { useRef, useEffect, useCallback } from 'react';
-import { Send, Loader2, CornerDownLeft, MessageCircle } from 'lucide-react';
+import React, { useRef, useEffect, useCallback, useState } from 'react';
+import { Send, Loader2, CornerDownLeft, MessageCircle, ChevronDown, Check, Zap, Hand, Bot } from 'lucide-react';
 import { cn } from '../../lib/utils';
 
 interface ChatInputProps {
@@ -11,6 +11,8 @@ interface ChatInputProps {
   onKeyDown: (e: React.KeyboardEvent) => void;
   onOpenDiscussions?: () => void;
   discussionUnreadCount?: number;
+  autoExecuteEnabled?: boolean;
+  onToggleAutoExecute?: () => void;
 }
 
 const ChatInput: React.FC<ChatInputProps> = ({
@@ -22,6 +24,8 @@ const ChatInput: React.FC<ChatInputProps> = ({
   onKeyDown,
   onOpenDiscussions,
   discussionUnreadCount = 0,
+  autoExecuteEnabled = false,
+  onToggleAutoExecute,
 }) => {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
@@ -102,8 +106,20 @@ const ChatInput: React.FC<ChatInputProps> = ({
           </div>
         </div>
 
+        {/* VS Code-style bottom bar: mode selector + model selector */}
         <div className="flex items-center justify-between mt-1.5 px-1">
-          <span className="text-[10px] text-muted-foreground">AI can make mistakes.</span>
+          <div className="flex items-center gap-1.5">
+            {/* Mode selector (Auto/Manual) */}
+            {onToggleAutoExecute && (
+              <ModeSelector
+                autoEnabled={autoExecuteEnabled}
+                onToggle={onToggleAutoExecute}
+              />
+            )}
+
+            {/* Model selector */}
+            <ModelSelector />
+          </div>
           <span className="text-[10px] text-muted-foreground flex items-center gap-1">
             <CornerDownLeft size={9} /> Enter to send
           </span>
@@ -112,5 +128,122 @@ const ChatInput: React.FC<ChatInputProps> = ({
     </div>
   );
 };
+
+// ── Mode Selector (Auto / Manual) — VS Code Copilot style dropdown ──
+
+function ModeSelector({ autoEnabled, onToggle }: { autoEnabled: boolean; onToggle: () => void }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const handler = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [open]);
+
+  return (
+    <div className="relative" ref={ref}>
+      <button
+        onClick={() => setOpen(v => !v)}
+        className="flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] text-muted-foreground hover:text-foreground hover:bg-accent transition-colors cursor-pointer"
+      >
+        {autoEnabled ? <Zap size={10} className="text-emerald-500" /> : <Hand size={10} />}
+        <span>{autoEnabled ? 'Auto' : 'Manual'}</span>
+        <ChevronDown size={9} />
+      </button>
+
+      {open && (
+        <div className="absolute bottom-full left-0 mb-1 w-48 bg-popover border border-border rounded-lg shadow-xl z-50 py-1">
+          <button
+            onClick={() => { if (!autoEnabled) onToggle(); setOpen(false); }}
+            className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-popover-foreground hover:bg-accent transition-colors cursor-pointer"
+          >
+            <Zap size={12} className="text-emerald-500" />
+            <div className="flex-1 text-left">
+              <div className="font-medium">Auto</div>
+              <div className="text-[10px] text-muted-foreground">Tasks execute automatically</div>
+            </div>
+            {autoEnabled && <Check size={12} className="text-primary" />}
+          </button>
+          <button
+            onClick={() => { if (autoEnabled) onToggle(); setOpen(false); }}
+            className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-popover-foreground hover:bg-accent transition-colors cursor-pointer"
+          >
+            <Hand size={12} />
+            <div className="flex-1 text-left">
+              <div className="font-medium">Manual</div>
+              <div className="text-[10px] text-muted-foreground">Review and approve each task</div>
+            </div>
+            {!autoEnabled && <Check size={12} className="text-primary" />}
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Model Selector — dropdown for choosing LLM model ──
+
+const MODELS = [
+  { id: 'azure-gpt-4o', label: 'GPT-4o', provider: 'Azure', recommended: true },
+  { id: 'azure-gpt-4o-mini', label: 'GPT-4o Mini', provider: 'Azure' },
+  { id: 'claude-sonnet-4', label: 'Sonnet 4', provider: 'Anthropic' },
+  { id: 'claude-opus-4', label: 'Opus 4', provider: 'Anthropic' },
+];
+
+function ModelSelector() {
+  const [open, setOpen] = useState(false);
+  const [selected, setSelected] = useState(MODELS[0]);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const handler = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [open]);
+
+  return (
+    <div className="relative" ref={ref}>
+      <button
+        onClick={() => setOpen(v => !v)}
+        className="flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] text-muted-foreground hover:text-foreground hover:bg-accent transition-colors cursor-pointer"
+      >
+        <Bot size={10} />
+        <span>{selected.label}</span>
+        <ChevronDown size={9} />
+      </button>
+
+      {open && (
+        <div className="absolute bottom-full left-0 mb-1 w-52 bg-popover border border-border rounded-lg shadow-xl z-50 py-1">
+          {MODELS.map(model => (
+            <button
+              key={model.id}
+              onClick={() => { setSelected(model); setOpen(false); }}
+              className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-popover-foreground hover:bg-accent transition-colors cursor-pointer"
+            >
+              <Bot size={12} />
+              <div className="flex-1 text-left">
+                <div className="font-medium">
+                  {model.label}
+                  {model.recommended && (
+                    <span className="ml-1 text-[9px] text-primary">recommended</span>
+                  )}
+                </div>
+                <div className="text-[10px] text-muted-foreground">{model.provider}</div>
+              </div>
+              {selected.id === model.id && <Check size={12} className="text-primary" />}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
 
 export default ChatInput;

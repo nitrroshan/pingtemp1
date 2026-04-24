@@ -38,7 +38,7 @@ export interface DiscussionConfig {
   totalTokensUsed: number;
   roundsPerAgent: Record<string, number>;
   mode: "auto" | "manual";
-  status: "active" | "wrapping-up" | "closed" | "escalated";
+  status: "active" | "all_posted" | "decided" | "wrapping-up" | "closed" | "escalated";
   lastActivity: string;
 }
 

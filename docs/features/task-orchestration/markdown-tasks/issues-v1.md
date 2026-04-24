@@ -1,8 +1,9 @@
 # Markdown Tasks v1.0/v1.1/v2.0 — Implementation Review & Issues
 
 **Date:** April 14, 2026 (Round 9 — task flow & plan issues from live testing)  
-**Scope:** Full v1.0 + v1.1 + v2.0 implementation, 9 review rounds, 40+ files reviewed  
-**Status:** R1-R4: 29 fixed. R5+R6: 12 fixed. R7+R8: 5 fixed. R9: 6 fixed (live testing issues).
+**Updated:** April 20, 2026 (R11-R12 — workspace merge, dispatch, SOLID refactor)  
+**Scope:** Full v1.0 + v1.1 + v2.0 implementation, 12 review rounds, 50+ files reviewed  
+**Status:** R1-R4: 29 fixed. R5+R6: 12 fixed. R7+R8: 5 fixed. R9: 6 fixed. R10: 6 fixed. R11: 10 fixed. R12: 4 fixed.
 
 ---
 
@@ -30,6 +31,22 @@
 | 18 | LOW | CrdtGoalStore has no loadAllGoals() for multi-goal discovery | ✅ Added `loadAllGoals(allSpaces)` method |
 | 19 | LOW | No exports of tool types from @ping/agent-manager | ✅ Exported RequestTaskContext, BounceTaskContext, CrdtProxy, GoalData, TaskLike |
 | 20 | LOW | Discuss action doesn't emit Socket.IO notifications | ✅ Added `onDiscussionChange` callback to CollabServer + `wireDiscussionEvents` in SocketServerV2 |
+| R11-1 | CRITICAL | `_agentCompleted` race — double-completion crash | ✅ Added `completionSource` typed field to Task, replaced `(task as any)._agentCompleted` hack |
+| R11-2 | CRITICAL | `update_task` sets all deps to `false` — tasks permanently Blocked | ✅ Now checks `depTask.status === "completed"` and marks met deps as `true` |
+| R11-3 | CRITICAL | No dispatch after `add_tasks`/`replan` — ready tasks never start | ✅ Added `OrchestratorService.onPlanMutation()` as single dispatch entry point |
+| R11-4 | CRITICAL | `replan` ID collision — partial success then crash | ✅ `normalizeAndAddTasks` tracks all assigned IDs, skips collisions with `while` loop |
+| R11-5 | CRITICAL | Auto-complete path skips workspace merge — files stuck on branches | ✅ Added `pluginRegistry.onTaskComplete()` call to auto-complete path |
+| R11-6 | CRITICAL | `WorkspacePlugin.onTaskComplete` throws when already published | ✅ Added `workspace.status === "active"` guard before calling `publish()` |
+| R11-7 | HIGH | `queueTask` crashes on duplicate — "already exists in queue" | ✅ Wrapped `queue.queueTask()` in try/catch (idempotent) |
+| R11-8 | HIGH | Failed tasks produce no context for downstream | ✅ `onTaskFailed` now stores `{ error, summary }` on `task.output` |
+| R11-9 | HIGH | Upstream outputs not in agent description — agents can't find files | ✅ Added `## Completed Upstream Work` section to enriched task description |
+| R11-10 | HIGH | `create()` doesn't enrich context from already-completed deps | ✅ Added context enrichment loop in `TaskStore.create()` for pre-completed upstream |
+| R11-11 | HIGH | DRY violation — task creation duplicated in `add_tasks` + `replan` | ✅ Extracted `normalizeAndAddTasks()` shared helper |
+| R11-12 | HIGH | `publish()` only scans `artifacts/` — manifest always empty | ✅ Now scans ALL workspace files (excludes .git, .ping, .scratch) |
+| R12-1 | MEDIUM | SRP violation — `AgentManagerV2.onMutation` is a god-handler | ✅ Moved dispatch logic to `OrchestratorService.onPlanMutation()` |
+| R12-2 | MEDIUM | DIP violation — 15+ `(task as any)` casts for missing typed fields | ✅ Added `title`, `type`, `expectedOutput`, `completionSource`, `lastReportedStatus` to Task interface |
+| R12-3 | MEDIUM | `ITaskProvider` too thin — no `markReady()` or `getByStatus()` | ✅ Added both methods to interface, implemented in TaskStore + MemoryManager |
+| R12-4 | LOW | `MemoryManager` deprecated but still exported + referenced | ✅ Deleted file, renamed `memoryManager` → `taskProvider` in OrchestratorContext |
 | R4-5 | MEDIUM | Discussions view was placeholder — no thread rendering | ✅ Added ActiveDiscussionView with useDiscussion hook, DiscussionThread + DecisionPanel rendering |
 | R4-7 | MEDIUM | DetailPanel not wired with discussion props | ✅ Passed discussionThreads + onOpenDiscussion to DetailPanel, activity tracking via Socket.IO |
 | R5-1 | CRITICAL | CollaborationPlugin goalId never set → wrong CRDT space | ✅ Added `collabPlugin.setGoalId(goalId)` in OrchestratorService.approvePlan() after resolveForGoal |
@@ -1059,3 +1076,157 @@ hasFailures(): boolean {
 Then `onTaskComplete` should check `isAllSuccessful()` vs `hasFailures()` and send different notifications to the planner:
 - All successful → "All tasks completed successfully"
 - All done but some failed → "All tasks finished. X succeeded, Y failed. Review with get_status."
+
+---
+
+## R11 — Live Testing: Dispatch, Workspace Merge, SOLID Refactor (April 19-20, 2026)
+
+### R11-1: CRITICAL — Double-completion crash (`completed → completed`)
+
+**File:** `OrchestratorService.ts` `onWorkerDone` + `dispatchTask` auto-complete  
+**Category:** RACE CONDITION  
+**Impact:** Server crashes with invalid state transition
+
+When an agent calls `complete_task`, `onWorkerDone` fires async. After `runTask()` returns, auto-complete checks `task.status === "in_progress"` — but `onWorkerDone` may have already completed it. Both paths call `taskStore.completeTask()` → second call throws `completed → completed`.
+
+**Fix:** Added `completionSource` field to Task interface (replaces `_agentCompleted` hack). `onWorkerDone` sets `completionSource = "tool"`. Auto-complete checks `!afterTask.completionSource` before proceeding.
+
+---
+
+### R11-2: CRITICAL — `update_task` blindly sets deps to `false`
+
+**File:** `planMutationTools.ts` `createUpdateTaskTool`  
+**Category:** WIRING  
+**Impact:** Tasks permanently Blocked after dependency update
+
+When the planner calls `update_task` to change dependencies, all prerequisite values were set to `false` (unmet) — even if the dependency task was already completed. Task stays Blocked forever.
+
+**Fix:** Now checks `depTask.status === "completed"` for each dep. Also calls `ctx.tasks.markReady()` if all deps met and task is pending/failed.
+
+---
+
+### R11-3: CRITICAL — No dispatch after `add_tasks`/`replan`
+
+**File:** `AgentManagerV2.ts` `onMutation` handler  
+**Category:** WIRING  
+**Impact:** Newly created tasks with no deps sit in ready state but never dispatch
+
+`TaskStore.create()` promotes empty-dep tasks to `ready` and queues them via `RoleTaskQueue`. But the `onTaskReady` callback fires during the planner's tool execution (inside `streamText()`). The dispatch gets lost because the planner is still in its tool loop.
+
+**Fix:** Added `OrchestratorService.onPlanMutation(event)` — single entry point for mutation→dispatch. Handles `plan:tasks_added`, `plan:replanned`, `plan:task_updated`, `plan:task_reassigned`. AgentManagerV2 just forwards events to this method (SRP).
+
+---
+
+### R11-4: CRITICAL — `replan` ID collision (partial success then crash)
+
+**File:** `planMutationTools.ts` `normalizeAndAddTasks`  
+**Category:** LLD  
+**Impact:** Planner loops retrying `replan`, creating duplicate zombie tasks
+
+When LLM sends `replan` with `[{id:"task-9"}, {id:"task-1"}]`: task-9 is kept (new), but task-1 (exists) is bumped via `maxId++` (8→9) → normalized to `task-9` → COLLISION. First task creates fine, second crashes with "already exists". Planner retries → creates task-10, crashes again → loop.
+
+**Fix:** Track ALL assigned IDs (existing + kept + generated) in a single Set. When generating, `while (assignedIds.has(...)) maxId++` skips collisions. When keeping, advance `maxId` if the kept number is higher.
+
+---
+
+### R11-5: CRITICAL — Auto-complete skips workspace merge
+
+**File:** `OrchestratorService.ts` `dispatchTask` auto-complete block  
+**Category:** WIRING  
+**Impact:** Files stuck on task branches — downstream tasks can't see upstream work
+
+Two completion paths exist:
+1. Agent calls `complete_task` → `onWorkerDone` → `pluginRegistry.onTaskComplete()` → **merge** ✅
+2. Agent stops without `complete_task` → auto-complete → `taskStore.completeTask()` → **NO merge** ❌
+
+Auto-complete never called `pluginRegistry.onTaskComplete()`, so the workspace branch was never merged to main. New branches forked from stale main.
+
+**Fix:** Auto-complete now calls `pluginRegistry.onTaskComplete()` before `taskStore.completeTask()`.
+
+---
+
+### R11-6: CRITICAL — `WorkspacePlugin.onTaskComplete` throws on already-published workspace
+
+**File:** `packages/backend/agentManager/plugins/WorkspacePlugin.ts`  
+**Category:** WIRING  
+**Impact:** Branches NEVER merge to main (most critical bug found)
+
+When agent calls `workspace_publish` (sets status to `"published"`), then `complete_task` triggers `onTaskComplete` → `workspace.publish()` → `assertActive()` **throws** because status is `"published"` not `"active"`. Catch block returns `{success: false}` → **merge never reached**.
+
+Only 1 out of 17+ task branches was ever merged to main. All other branches stuck.
+
+**Fix:** Added `if (workspace.status === "active")` guard — skips redundant publish, goes straight to `mergeAndCleanup()`.
+
+---
+
+### R11-7: HIGH — `queueTask` crashes on duplicate enqueue
+
+**File:** `TaskStore.ts` `queueTask`  
+**Category:** LLD  
+**Impact:** Server crashes when `completeTask` tries to re-queue an already-queued task
+
+After fixing `create()` to pre-queue tasks with completed deps, `completeTask()` later tries to queue the same task again when the upstream finishes → `RoleTaskQueue.queueTask()` throws "already exists".
+
+**Fix:** Wrapped `queue.queueTask()` in try/catch — duplicate enqueue is a no-op.
+
+---
+
+### R11-8: HIGH — Failed tasks produce no context for downstream
+
+**File:** `OrchestratorService.ts` `onTaskFailed`  
+**Category:** WIRING  
+**Impact:** "Investigate failure" tasks can't access the error message from the failed upstream
+
+`onTaskFailed` logged the error but never stored it on `task.output`. Downstream tasks created to investigate the failure got empty `previousOutputs` — no failure context.
+
+**Fix:** `onTaskFailed` now sets `task.output = { error, failedAt, summary: "FAILED: ..." }`. `enrichDependantContext` reads `output.error` as fallback for `summary`.
+
+---
+
+### R11-9: HIGH — Upstream outputs not injected into agent description
+
+**File:** `OrchestratorService.ts` `dispatchTask`  
+**Category:** WIRING  
+**Impact:** Agents report "missing context from dependencies" — can't find upstream files
+
+`previousOutputs` and `artifacts` were passed as structured `context` to `workerPool.runTask()`, but never appeared in the `enrichedDescription` that the agent reads as its prompt. Agent had no idea what upstream tasks produced or where files are.
+
+**Fix:** Added `## Completed Upstream Work` section to the enriched description with upstream task summaries, roles, statuses, artifact paths, and guidance to use `workspace_list_files`.
+
+---
+
+### R11-10: HIGH — `TaskStore.create()` doesn't enrich from completed deps
+
+**File:** `TaskStore.ts` `create()`  
+**Category:** WIRING  
+**Impact:** Tasks created after their deps finished get empty upstream context
+
+`enrichDependantContext` only ran at upstream completion time (in `completeTask()`). Tasks added by `add_tasks`/`replan` after upstream already finished never got enriched.
+
+**Fix:** Added enrichment loop in `create()` — iterates all met prerequisites and calls `enrichDependantContext()` for each completed upstream task.
+
+---
+
+### R11-12: HIGH — `publish()` only scans `artifacts/` directory
+
+**File:** `AgentWorkspace.ts` `publish()`  
+**Category:** LLD  
+**Impact:** Output manifest always empty — "No artifacts to publish"
+
+Agents write to `src/`, `db/`, `migrations/` — never to `artifacts/`. `publish()` only scanned the `artifacts/` subdirectory, so the manifest was always empty. Downstream agents couldn't find output manifests via `collab read outputs`.
+
+**Fix:** `publish()` now scans ALL workspace files (excludes `.git`, `.ping`, `.scratch`, `node_modules`, `workspace.json`).
+
+---
+
+## R12 — SOLID Refactor (April 19, 2026)
+
+See [refactor-plan-mutation-dispatch.md](../refactor-plan-mutation-dispatch.md) for the full 4-phase refactor plan.
+
+| Phase | What | Files Changed |
+|-------|------|---------------|
+| 1 | Added `title`, `type`, `expectedOutput`, `completionSource`, `lastReportedStatus` to Task interface | Task.types.ts, ITaskProvider.ts |
+| 2 | Extracted `normalizeAndAddTasks()` helper (DRY) | planMutationTools.ts |
+| 3 | Created `OrchestratorService.onPlanMutation()` (SRP) | OrchestratorService.ts, AgentManagerV2.ts |
+| 4 | Added `markReady()`, `getByStatus()` to ITaskProvider | ITaskProvider.ts, TaskStore.ts, MemoryManager.ts |
+| — | Deleted MemoryManager.ts, renamed `memoryManager` → `taskProvider` | 8 files |

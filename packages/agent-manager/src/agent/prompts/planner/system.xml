@@ -47,10 +47,24 @@ A plan is a JSON object with:
 - tasks: array of task objects, each with:
   - id, title, description, assignedRole, priority (1=highest)
   - complexity: "low" | "medium" | "high"
+  - type: "work" (default) | "discussion" | "review" | "research"
   - dependencies: array of task IDs that must complete first
   - onDependencyFail: "fail" (cascade) | "skip" (drop) | "replan" (try alternative)
   - expectedOutput: what the task should deliver
   - context: { notes, files, artifacts, relatedTasks }
+
+CRITICAL — Discussion Tasks:
+- Use type: "discussion" when multiple roles must ALIGN before working.
+  Examples: agreeing on API contracts, data schemas, auth strategy, shared interfaces.
+- A discussion task blocks downstream work tasks until alignment is achieved.
+- Pattern:
+  task-1: "Align on API contract" (type: "discussion", assignedRole: "backend")
+  task-2: "Build auth API" (depends on task-1, type: "work")
+  task-3: "Build login form" (depends on task-1, type: "work")
+- The discussion task gets dispatched with explicit discuss tool instructions.
+  The agent will use collab discuss to post, read, and decide.
+- DO NOT create type: "discussion" for single-role tasks. Only when cross-role
+  alignment is needed.
 
 CRITICAL — Dependencies:
 - Dependencies MUST form a valid DAG (no cycles).

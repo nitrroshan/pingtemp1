@@ -200,30 +200,7 @@ export class OrchestratorService {
         );
       },
       // Step 3+4: Priority mention routing — spawn collab workers immediately
-      onMentionedRoles: (data) => {
-        log.info(`Mention routing: ${data.roles.join(", ")} mentioned in ${data.docName}`);
-        for (const role of data.roles) {
-          // Don't spawn a worker for a role that's already active
-          const collabWorkerId = `collab-${data.docName.replace(/\//g, "-")}-${role}`;
-          if (this.workerPool.hasActiveWorker(collabWorkerId)) continue;
-
-          const collabMessage =
-            `You were mentioned in a discussion.\n\n` +
-            `Discussion doc: ${data.docName}\n\n` +
-            `1. Read the discussion: \`collab discuss read\`\n` +
-            `2. Contribute your expertise: \`collab discuss post\`\n` +
-            `3. If a decision is needed: \`collab discuss decide\`\n` +
-            `4. When done: \`complete_task\`\n\n` +
-            `Keep it brief — this is alignment, not work.`;
-
-          // Fire-and-forget — waitForResponse polls for the result
-          this.workerPool.runTask(collabWorkerId, role, collabMessage)
-            .catch((err) => log.error(`Collab worker ${collabWorkerId} error: ${err}`))
-            .finally(() => {
-              this.workerPool.dispose(collabWorkerId).catch(() => {});
-            });
-        }
-      },
+      onMentionedRoles: (data) => this.spawnCollabWorkers(data.roles, data.docName, data.sourceRole, data.postContent),
     });
 
     // Load active plan for restart recovery
@@ -352,26 +329,8 @@ export class OrchestratorService {
         // Wire collab callbacks so discuss mentions trigger priority worker spawn
         if (typeof (collabPlugin as any).setCollabCallbacks === 'function') {
           (collabPlugin as any).setCollabCallbacks({
-            onMentionedRoles: (roles: string[], sourceTaskId: string, docName: string) => {
-              // Route to the onMentionedRoles handler in workerPool callbacks (set in initialize())
-              log.info(`Collab mention routing: ${roles.join(", ")} in ${docName}`);
-              for (const role of roles) {
-                const collabWorkerId = `collab-${docName.replace(/\//g, "-")}-${role}`;
-                if (this.workerPool.hasActiveWorker(collabWorkerId)) continue;
-
-                const collabMessage =
-                  `You were mentioned in a discussion.\n\n` +
-                  `Discussion doc: ${docName}\n\n` +
-                  `1. Read the discussion: \`collab discuss read\`\n` +
-                  `2. Contribute your expertise: \`collab discuss post\`\n` +
-                  `3. If a decision is needed: \`collab discuss decide\`\n` +
-                  `4. When done: \`complete_task\`\n\n` +
-                  `Keep it brief — this is alignment, not work.`;
-
-                this.workerPool.runTask(collabWorkerId, role, collabMessage)
-                  .catch((err) => log.error(`Collab worker ${collabWorkerId} error: ${err}`))
-                  .finally(() => { this.workerPool.dispose(collabWorkerId).catch(() => {}); });
-              }
+            onMentionedRoles: (roles: string[], sourceTaskId: string, docName: string, sourceRole?: string, postContent?: string) => {
+              this.spawnCollabWorkers(roles, docName, sourceRole, postContent);
             },
           });
         }
@@ -531,6 +490,52 @@ export class OrchestratorService {
       if (this.activeDispatches.has(task.id)) continue;
       // Re-use the same onTaskReady path which handles concurrency limits
       this.onTaskReady({ taskId: task.id, role: task.assigned_role });
+    }
+  }
+
+  /**
+   * Spawn collab workers for mentioned roles. Validates roles, includes context.
+   * Single implementation — called from both initialize() and approvePlan() callbacks.
+   */
+  private spawnCollabWorkers(
+    roles: string[], docName: string, sourceRole?: string, postContent?: string,
+  ): void {
+    // Fix 1: Validate mentions against team roles
+    const validRoles = roles.filter(r => this.teamRoles.some(tr => tr.toLowerCase() === r.toLowerCase()));
+    const invalidRoles = roles.filter(r => !this.teamRoles.some(tr => tr.toLowerCase() === r.toLowerCase()));
+    if (invalidRoles.length > 0) {
+      log.warn(`Mention validation: unknown roles ignored: ${invalidRoles.join(", ")}`);
+    }
+    // Filter self-mentions (agent mentioning own role)
+    const effectiveRoles = validRoles.filter(r => r.toLowerCase() !== sourceRole?.toLowerCase());
+    if (effectiveRoles.length === 0) return;
+
+    log.info(`Spawning collab workers: ${effectiveRoles.join(", ")} for ${docName}`);
+
+    for (const role of effectiveRoles) {
+      const collabWorkerId = `collab-${docName.replace(/\//g, "-")}-${role}`;
+      if (this.workerPool.hasActiveWorker(collabWorkerId)) continue;
+
+      // Fix 2: Context-aware collab worker prompt
+      const excerpt = postContent ? postContent.slice(0, 500) : "(no content available)";
+      const collabMessage = [
+        `## You were mentioned by ${sourceRole || "another agent"} in a discussion`,
+        ``,
+        `### What they said:`,
+        `> ${excerpt}`,
+        ``,
+        `### Your task:`,
+        `1. Read the discussion: \`collab({ action: "discuss", docName: "${docName}", key: "read" })\``,
+        `2. Post your response: \`collab({ action: "discuss", docName: "${docName}", key: "post", value: { content: "YOUR RESPONSE" } })\``,
+        `3. Complete: \`complete_task({ summary: "Responded to ${sourceRole || "discussion"}" })\``,
+        ``,
+        `If you have no expertise on this topic, call \`bounce_task()\`.`,
+        `Keep it brief — this is alignment, not implementation.`,
+      ].join("\n");
+
+      this.workerPool.runTask(collabWorkerId, role, collabMessage)
+        .catch((err) => log.error(`Collab worker ${collabWorkerId} error: ${err}`))
+        .finally(() => { this.workerPool.dispose(collabWorkerId).catch(() => {}); });
     }
   }
 
@@ -822,6 +827,13 @@ export class OrchestratorService {
 
     // Guard: skip if task is already completed (prevents double-completion crash)
     const currentTask = this.taskStore.get(data.taskId);
+
+    // Fix 3: Collab workers have IDs like "collab-task-5-discussion-frontend" — not in TaskStore
+    if (!currentTask && data.taskId.startsWith("collab-")) {
+      log.debug(`Collab worker ${data.taskId} completed — no TaskStore entry (expected)`);
+      return;
+    }
+
     if (currentTask && (currentTask.status === "completed" || currentTask.status === "discarded")) {
       log.debug(`Task ${data.taskId} already ${currentTask.status} — skipping onWorkerDone`);
       return;
@@ -833,25 +845,52 @@ export class OrchestratorService {
     }
 
     // Notify plugins (workspace publish + merge, etc.)
-    let mergeWarning = "";
     if (this.pluginRegistry) {
       try {
         const result = await this.pluginRegistry.onTaskComplete(data.taskId, this.currentGoalId || undefined);
         if (!result.success) {
-          mergeWarning = `Warning: plugin onTaskComplete failed for task ${data.taskId}: ${result.error}. ` +
-            `Work may be on branch but not merged to main.`;
-          console.warn(`[OrchestratorService] ${mergeWarning}`);
+          // BUG A FIX: Merge failure → fail the task, don't complete it.
+          // This prevents dependent tasks from dispatching against a main branch
+          // that's missing the predecessor's files.
+          const mergeError = `Workspace merge failed: ${result.error}`;
+          log.error(`[OrchestratorService] ${mergeError}`);
+          try { this.taskStore.updateStatus(data.taskId, "failed"); } catch { /* already failed */ }
+          this.taskStore.queue.failTask(data.taskId, mergeError);
+          this.callbacks?.onTaskUpdate?.({ taskId: data.taskId, status: "failed", timestamp: data.timestamp });
+          return;
         }
       } catch (err) {
-        mergeWarning = `Warning: plugin cleanup failed for task ${data.taskId}: ${err}`;
-        console.warn(`[OrchestratorService] ${mergeWarning}`);
+        const mergeError = `Plugin cleanup crashed for task ${data.taskId}: ${err}`;
+        log.error(`[OrchestratorService] ${mergeError}`);
+        try { this.taskStore.updateStatus(data.taskId, "failed"); } catch { /* already failed */ }
+        this.taskStore.queue.failTask(data.taskId, mergeError);
+        this.callbacks?.onTaskUpdate?.({ taskId: data.taskId, status: "failed", timestamp: data.timestamp });
+        return;
+      }
+    }
+
+    // Auto-close discussion CRDT if this is a discussion task
+    const completingTask = this.taskStore.get(data.taskId);
+    if (completingTask && (completingTask.type === "discussion" || completingTask.type === "collaboration")) {
+      try {
+        const crdtSync = this.crdtTaskSyncProxy?.get?.();
+        if (crdtSync) {
+          const discussionDoc = await crdtSync.space.openDoc(`${data.taskId}/discussion`);
+          const configMap = discussionDoc.getMap("config");
+          if (configMap.get("status") !== "closed") {
+            configMap.set("status", "closed");
+            log.info(`Auto-closed discussion for completed task ${data.taskId}`);
+          }
+        }
+      } catch (err) {
+        log.debug(`Failed to auto-close discussion for ${data.taskId}: ${err}`);
       }
     }
 
     // Mark complete in TaskStore → triggers onTaskComplete via RoleTaskQueue
     // Newly ready dependants are queued → onTaskReady fires → auto-dispatch if enabled
     this.taskStore.completeTask(data.taskId, {
-      summary: data.summary + (mergeWarning ? `\n${mergeWarning}` : ""),
+      summary: data.summary,
       deliverables: data.deliverables,
       nextSteps: data.nextSteps, completedBy: "agent", timestamp: data.timestamp,
     });
@@ -894,14 +933,27 @@ export class OrchestratorService {
     });
 
     try {
-      // ─── CollabTaskDispatcher: Initialize CRDT docs for collaboration tasks ───
-      // Fix #14: Use encapsulated initCollabDocs() instead of accessing .space directly
+      // ─── CollabTaskDispatcher: Initialize CRDT docs for collaboration/discussion tasks ───
       const taskType = task.type || task.context?.type;
-      if (taskType === "collaboration" && this.crdtTaskSyncProxy?.get?.()) {
+      if ((taskType === "collaboration" || taskType === "discussion") && this.crdtTaskSyncProxy?.get?.()) {
         try {
           const collabConfig = task.context?.collaboration || {};
-          await this.crdtTaskSyncProxy.get().initCollabDocs(taskId, collabConfig);
-          log.info(`Initialized collaboration CRDT docs for task ${taskId}`);
+
+          // Phase 3: Extract agenda from task description (numbered items)
+          const agendaLines = task.description
+            .split("\n")
+            .filter((l: string) => /^\d+\./.test(l.trim()))
+            .map((l: string) => l.trim().replace(/^\d+\.\s*/, ""));
+
+          // Phase 4: Set participants from team roles
+          const participants = this.teamRoles.map(r => r.toLowerCase());
+
+          await this.crdtTaskSyncProxy.get().initCollabDocs(taskId, {
+            ...collabConfig,
+            agenda: agendaLines.length > 0 ? agendaLines : undefined,
+            participants,
+          });
+          log.info(`Initialized discussion CRDT docs for task ${taskId} (agenda: ${agendaLines.length} items, participants: ${participants.length})`);
         } catch (err) {
           log.warn(`Failed to initialize collab docs for ${taskId}: ${err}`);
         }
@@ -1031,15 +1083,38 @@ export class OrchestratorService {
         }
       }
 
-      // Step 5: Collaboration-specific prompt for type: "collaboration" tasks
-      if (task.type === "collaboration" || task.context?.type === "collaboration") {
-        enrichedDescription += `\n\n## ⚡ This is a Collaboration Task`;
-        enrichedDescription += `\nAnother agent invited you to align on a decision.`;
-        enrichedDescription += `\n1. Read the discussion: \`collab discuss read\``;
-        enrichedDescription += `\n2. Post your expertise: \`collab discuss post\``;
-        enrichedDescription += `\n3. Record the decision: \`collab discuss decide\``;
-        enrichedDescription += `\n4. Complete immediately: \`complete_task\` with the decision summary`;
-        enrichedDescription += `\nKeep it brief — this is alignment, not work.`;
+      // Step 5: Discussion-specific prompt for type: "discussion" or "collaboration" tasks
+      if (task.type === "collaboration" || task.type === "discussion" || task.context?.type === "collaboration") {
+        const discussionDocName = `${taskId}/discussion`;
+        const otherRoles = this.teamRoles.filter(r => r.toLowerCase() !== role.toLowerCase());
+        enrichedDescription += `\n\n## ⚡ Discussion Task`;
+        enrichedDescription += `\nYou are participating in a cross-role discussion. Other team roles: ${otherRoles.join(", ")}.`;
+
+        // Phase 3: Inject agenda if present
+        const agendaLines = task.description
+          .split("\n")
+          .filter((l: string) => /^\d+\./.test(l.trim()))
+          .map((l: string) => l.trim().replace(/^\d+\.\s*/, ""));
+        if (agendaLines.length > 0) {
+          enrichedDescription += `\n\n### Agenda:`;
+          enrichedDescription += agendaLines.map((a, i) => `\n${i + 1}. ${a}`).join("");
+          enrichedDescription += `\nAddress each item. Use decide with matching key to resolve each.`;
+        }
+        enrichedDescription += `\n\n### Protocol (follow these steps exactly):`;
+        enrichedDescription += `\n1. **Read** existing discussion:`;
+        enrichedDescription += `\n   \`collab({ action: "discuss", docName: "${discussionDocName}", key: "read" })\``;
+        enrichedDescription += `\n2. **Post** your perspective (mention other roles for their input):`;
+        enrichedDescription += `\n   \`collab({ action: "discuss", docName: "${discussionDocName}", key: "post", value: { content: "YOUR INPUT HERE", mentions: [${otherRoles.map(r => `"${r}"`).join(", ")}] } })\``;
+        enrichedDescription += `\n3. **Read** again to check for responses:`;
+        enrichedDescription += `\n   \`collab({ action: "discuss", docName: "${discussionDocName}", key: "read" })\``;
+        enrichedDescription += `\n4. **Decide** when consensus is reached:`;
+        enrichedDescription += `\n   \`collab({ action: "discuss", docName: "${discussionDocName}", key: "decide", value: { key: "outcome", decision: "...", agreedBy: ["${role}", ...] } })\``;
+        enrichedDescription += `\n5. **Complete**: \`complete_task({ summary: "Decision: ..." })\``;
+        enrichedDescription += `\n\n### Rules:`;
+        enrichedDescription += `\n- Post ONCE with your expert perspective. Don't repeat yourself.`;
+        enrichedDescription += `\n- Read other participants' posts before recording a decision.`;
+        enrichedDescription += `\n- Do NOT use write-block — only use discuss post/read/decide.`;
+        enrichedDescription += `\n- Keep it brief — this is alignment, not implementation.`;
       }
 
       await this.workerPool.runTask({
