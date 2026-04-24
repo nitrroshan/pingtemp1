@@ -1,8 +1,35 @@
 # Chat Agent Layer (L2) — Architecture
 
-**Date:** 2026-04-22 · **Status:** Design · **Risk:** High (changes dispatch path eventually)
+**Date:** 2026-04-22 · **Status:** Design · **Risk:** High (changes dispatch path eventually)  
+**Phase:** 1 in the [Parallel Plans roadmap](../parallel-plans/feature_architecture.md#cross-feature-dependency-map)  
+**Unlocks:** Conversation Persistence (Phase 2), Git Task Context (Phase 3), Parallel Plans (Phases 4-6)
 
 Implements **Layer 2** from [MASTER-ARCHITECTURE.md §1](../MASTER-ARCHITECTURE.md). Today the system has L1 (Planner) and L3 (transient `AiSdkAgent` workers) but **no persistent L2 between them**. This feature introduces persistent per-role Chat Agents that own task tracking, user conversations, and worker dispatch.
+
+### Unified Agent Model
+
+All three layers (Planner, ChatAgent, Worker) use the **same `AiSdkAgent` class** with different configuration. No separate facade classes.
+
+| Dimension | Planner | ChatAgent | Worker |
+|---|---|---|---|
+| **Class** | `AiSdkAgent` | `AiSdkAgent` | `AiSdkAgent` |
+| **Mode** | `session` | `session` | `task` |
+| **Tools** | 20 planning tools | Chat + search + dispatch tools | Lifecycle + workspace tools |
+| **Lifetime** | Long-lived (team) | Long-lived (role) | Short-lived (per-task) |
+| **Memory** | Reads Team Memory (CRDT) | Reads + writes Team Memory (CRDT) | Borrows context from ChatAgent |
+| **Conversation** | Persisted (MongoDB/JSONL) | Persisted (MongoDB/JSONL) | In-memory only |
+
+**SOLID:** `PlannerAgent` facade class (120 lines) should be eliminated. Its XML prompt assembly moves to `PromptBuilder`. All agents created via `AgentFactory` with config only. Key config distinction: `mode: "session" | "task"`.
+
+### Memory Model
+
+| Storage | Scope | Lifetime | Who Writes | Who Reads |
+|---|---|---|---|---|
+| **Team Memory** (CRDT) | Per-team | Permanent | Planner, ChatAgents | All (Workers get injected context) |
+| **Conversation** | Per-agent, per-session | Permanent | Planner, ChatAgents | Same agent |
+| **Scratchpad** | Per-task | Ephemeral | Workers | Same worker |
+
+Workers **borrow** memory from their parent ChatAgent. When dispatching a task, the ChatAgent injects relevant Team Memory + dependency outputs into the worker's system prompt. Workers never write to Team Memory directly — on task completion, the ChatAgent reviews outputs in the background and promotes valuable learnings.
 
 ## Problem
 
@@ -29,7 +56,8 @@ Common misconception: *"all worker events go to the Planner."* **False.** Verifi
 
 The Planner receives discrete summaries as chat messages, not real-time streams. There is no internal event bus — AsyncGenerator + callbacks. Socket.IO is the only bus, and only at the edge.
 
-## Two distinct event channels (the design)
+## Two distinct
+ event channels (the design)
 
 ChatAgent is **at the same abstraction level as a remote Ping team subscribing via MCP**, or as Claude Code reporting back through the Ping MCP Server. Those external recipients **do not receive raw token streams** — they receive discrete task-level updates ([team-stacking decision #1](../team-stacking/feature_architecture.md): "Black box. Parent sees only planner-level status updates."; [ping-mcp-server `report_status` / `complete_task`](../ping-mcp-server/feature_architecture.md): "External agents explicitly call these to report meaningful events").
 

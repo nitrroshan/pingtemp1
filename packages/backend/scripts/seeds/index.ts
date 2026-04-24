@@ -65,6 +65,7 @@ async function runSeeds(): Promise<void> {
 }
 
 runSeeds().catch((err) => {
-  logger.error("[seed] Seed failed:", err);
+  logger.error({ err }, "[seed] Seed failed");
+  console.error(err);
   process.exit(1);
 });

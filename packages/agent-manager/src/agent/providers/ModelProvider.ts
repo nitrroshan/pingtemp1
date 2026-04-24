@@ -5,6 +5,14 @@
  * Supports: azure-openai, anthropic, openai, ollama, google, groq,
  *           mistral, deepseek, xai, openai-compatible.
  *
+ * Environment-based override (follows AI SDK Provider Registry convention):
+ *   Set MODEL_ID to override all agent configs at runtime using "provider:model" format.
+ *   - Dev:  MODEL_ID=ollama:llama3.1     → all agents use local Ollama
+ *   - Dev:  MODEL_ID=groq:llama-3.3-70b  → all agents use Groq cloud
+ *   - Prod: unset                        → agents use their YAML-defined provider
+ *
+ * See: https://ai-sdk.dev/docs/reference/ai-sdk-core/provider-registry
+ *
  * Providers that expose an OpenAI-compatible API (ollama, groq, deepseek,
  * xai, openai-compatible) are handled via @ai-sdk/openai with a custom baseURL.
  * This avoids extra dependencies — only @ai-sdk/openai is needed.
@@ -33,9 +41,55 @@ const PROVIDER_DEFAULTS = {
 } as const;
 
 /**
+ * Parse MODEL_ID env var ("provider:model") into a ModelConfig override.
+ * Follows AI SDK's provider registry convention: "providerId:modelId".
+ *
+ * Examples:
+ *   "ollama:llama3.1"        → { provider: "ollama", model: "llama3.1" }
+ *   "azure-openai:gpt-4o-2"  → { provider: "azure-openai", deployment: "gpt-4o-2" }
+ *   "ollama"                 → { provider: "ollama" } (uses PROVIDER_DEFAULTS)
+ */
+function parseModelId(modelId: string): { provider: ModelConfig["provider"]; model?: string } {
+  const sepIndex = modelId.indexOf(":");
+  if (sepIndex === -1) {
+    return { provider: modelId as ModelConfig["provider"] };
+  }
+  return {
+    provider: modelId.slice(0, sepIndex) as ModelConfig["provider"],
+    model: modelId.slice(sepIndex + 1),
+  };
+}
+
+/**
+ * Apply MODEL_ID environment override.
+ * If MODEL_ID is set, it replaces the config's provider and model.
+ * This lets you run all agents on Ollama in dev without touching YAML files.
+ */
+function applyProviderOverride(config: ModelConfig): ModelConfig {
+  const modelId = process.env.MODEL_ID;
+  if (!modelId) return config;
+
+  const parsed = parseModelId(modelId);
+  const overridden: ModelConfig = { ...config, provider: parsed.provider };
+
+  if (parsed.model) {
+    overridden.model = parsed.model;
+    overridden.deployment = parsed.model; // for azure-openai
+  } else if (parsed.provider !== config.provider) {
+    // Switching provider without specifying model — clear stale values
+    overridden.model = undefined;
+    overridden.deployment = undefined;
+  }
+
+  return overridden;
+}
+
+/**
  * Create an AI SDK model instance from a ModelConfig.
  */
-export function getModel(config: ModelConfig): any {
+export function getModel(rawConfig: ModelConfig): any {
+  const config = applyProviderOverride(rawConfig);
+
   switch (config.provider) {
     case "azure-openai": {
       const endpoint = process.env.AZURE_OPENAI_ENDPOINT_URL;
@@ -94,7 +148,8 @@ export function getModel(config: ModelConfig): any {
 
     // ─── OpenAI-compatible providers ──────────────────────────────────
     // These all expose /v1/chat/completions. We use @ai-sdk/openai with
-    // a custom baseURL — no extra SDK packages needed.
+    // a custom baseURL. IMPORTANT: use .chat() to force Chat Completions API —
+    // the default in AI SDK v6 is the Responses API which these don't support.
 
     case "ollama": {
       const baseUrl = config.baseUrl || process.env.OLLAMA_BASE_URL || "http://localhost:11434/v1";
@@ -103,7 +158,7 @@ export function getModel(config: ModelConfig): any {
         baseURL: baseUrl,
         apiKey: "ollama", // Ollama ignores this but the SDK requires it
       });
-      return ollama(config.model || PROVIDER_DEFAULTS.ollama);
+      return ollama.chat(config.model || PROVIDER_DEFAULTS.ollama);
     }
 
     case "groq": {
@@ -115,7 +170,7 @@ export function getModel(config: ModelConfig): any {
         baseURL: config.baseUrl || "https://api.groq.com/openai/v1",
         apiKey,
       });
-      return groq(config.model || PROVIDER_DEFAULTS.groq);
+      return groq.chat(config.model || PROVIDER_DEFAULTS.groq);
     }
 
     case "deepseek": {
@@ -127,7 +182,7 @@ export function getModel(config: ModelConfig): any {
         baseURL: config.baseUrl || "https://api.deepseek.com/v1",
         apiKey,
       });
-      return deepseek(config.model || PROVIDER_DEFAULTS.deepseek);
+      return deepseek.chat(config.model || PROVIDER_DEFAULTS.deepseek);
     }
 
     case "xai": {
@@ -139,7 +194,7 @@ export function getModel(config: ModelConfig): any {
         baseURL: config.baseUrl || "https://api.x.ai/v1",
         apiKey,
       });
-      return xai(config.model || PROVIDER_DEFAULTS.xai);
+      return xai.chat(config.model || PROVIDER_DEFAULTS.xai);
     }
 
     case "mistral": {
@@ -147,12 +202,11 @@ export function getModel(config: ModelConfig): any {
       if (!apiKey) {
         throw new Error("MISTRAL_API_KEY environment variable is required");
       }
-      // Mistral also exposes an OpenAI-compatible endpoint
       const mistral = createOpenAI({
         baseURL: config.baseUrl || "https://api.mistral.ai/v1",
         apiKey,
       });
-      return mistral(config.model || PROVIDER_DEFAULTS.mistral);
+      return mistral.chat(config.model || PROVIDER_DEFAULTS.mistral);
     }
 
     case "google": {
@@ -165,7 +219,7 @@ export function getModel(config: ModelConfig): any {
         baseURL: config.baseUrl || "https://generativelanguage.googleapis.com/v1beta/openai",
         apiKey,
       });
-      return google(config.model || PROVIDER_DEFAULTS.google);
+      return google.chat(config.model || PROVIDER_DEFAULTS.google);
     }
 
     case "openai-compatible": {
@@ -178,7 +232,7 @@ export function getModel(config: ModelConfig): any {
         baseURL: baseUrl,
         apiKey: process.env.OPENAI_COMPATIBLE_API_KEY || "none",
       });
-      return compatible(config.model || "default");
+      return compatible.chat(config.model || "default");
     }
 
     default:

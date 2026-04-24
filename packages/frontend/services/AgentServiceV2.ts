@@ -143,6 +143,7 @@ export class AgentServiceV2 {
   // Discussion notification callbacks (v2.0)
   private discussionActivityCallbacks: Set<(data: any) => void> = new Set();
   private discussionMentionCallbacks: Set<(data: any) => void> = new Set();
+  private taskUpdateCallbacks: Set<(data: any) => void> = new Set();
 
   constructor(baseUrl: string = API_BASE_URL) {
     this.baseUrl = baseUrl;
@@ -280,6 +281,11 @@ export class AgentServiceV2 {
     this.socket.on("discussion:mention", (data: any) => {
       this.discussionMentionCallbacks.forEach((cb) => cb(data));
     });
+
+    // Channel B: task_update events (task lifecycle updates for sidebar + logs)
+    this.socket.on("task_update", (data: any) => {
+      this.taskUpdateCallbacks.forEach((cb) => cb(data));
+    });
   }
 
   disconnect() {
@@ -342,6 +348,31 @@ export class AgentServiceV2 {
       teamId: this.teamId,
       agentId,
       taskId,
+      content,
+    });
+  }
+
+  /**
+   * Send message to a persistent ChatAgent (L2) for a role.
+   * Uses "chat-{role}" agentId convention — backend routes to ChatAgent.
+   */
+  sendToChatAgent(role: string, content: string): void {
+    if (!this.isReady()) {
+      logger.error("[AgentServiceV2] Cannot send: socket =", !!this.socket, "clientId =", this.clientId, "teamId =", this.teamId);
+      throw new Error("Not connected or no team selected");
+    }
+
+    const agentId = `chat-${role}`;
+    logger.info("[AgentServiceV2] sendToChatAgent:", {
+      teamId: this.teamId,
+      agentId,
+      contentPreview: content?.substring(0, 50),
+    });
+
+    this.socket!.emit("message", {
+      teamId: this.teamId,
+      agentId,
+      sessionId: this.sessionId,
       content,
     });
   }
@@ -493,6 +524,24 @@ export class AgentServiceV2 {
   onDiscussionMention(callback: (data: any) => void): () => void {
     this.discussionMentionCallbacks.add(callback);
     return () => this.discussionMentionCallbacks.delete(callback);
+  }
+
+  /**
+   * Subscribe to any custom socket event.
+   * Returns an unsubscribe function.
+   */
+  on(event: string, callback: (data: any) => void): () => void {
+    if (!this.socket) return () => {};
+    this.socket.on(event, callback);
+    return () => { this.socket?.off(event, callback); };
+  }
+
+  /**
+   * Subscribe to Channel B task_update events.
+   */
+  onTaskUpdate(callback: (data: any) => void): () => void {
+    this.taskUpdateCallbacks.add(callback);
+    return () => this.taskUpdateCallbacks.delete(callback);
   }
 
   // ============================================================================

@@ -1,11 +1,17 @@
 # Persistent Agents & Three-Layer Hierarchy — Feature Architecture
 
-**Status:** Draft  
-**Date:** April 6, 2026  
-**ID:** A10  
-**Priority:** HIGH — Foundational for parallel plans, always-on chat, and Planner-as-Agent (A5)  
-**Depends on:** Phase 3 Event Refactor (3B), Planner as Agent (A5)  
-**Supersedes:** Parts of A5 (planner-as-agent) — this doc extends A5 with sub-agent patterns and persistent chat sessions
+**Status:** Draft  \n**Date:** April 6, 2026 (updated April 24, 2026)  \n**ID:** A10  \n**Priority:** HIGH — Foundational for parallel plans, always-on chat, and Planner-as-Agent (A5)  \n**Depends on:** Planner as Agent (A5) ✅  \n**Supersedes:** Parts of A5 (planner-as-agent) — this doc extends A5 with sub-agent patterns and persistent chat sessions  \n**Phases:** Implements across Phases 1-3 in the [Parallel Plans roadmap](../parallel-plans/feature_architecture.md#cross-feature-dependency-map)
+
+> **Relationship to chat-agent-layer:**  
+> This doc is the **vision document** for the full three-layer hierarchy (Planner → Chat Agents → Workers).  
+> The [chat-agent-layer](../chat-agent-layer/feature_architecture.md) doc is the **implementation-focused**  
+> architecture for Layer 2 specifically, with 5 incremental feature-gated steps.  
+> When implementing A10, follow [chat-agent-layer](../chat-agent-layer/) for the detailed plan.
+>
+> **Implementation order** (from parallel plans cross-feature map):
+> - Phase 1: Chat Agent Layer (L2 class, read-only chat, task dispatch)
+> - Phase 2: Conversation Persistence (per-agent storage, session restore)
+> - Phase 3: Git Task Context (branch-per-task, memory tools)
 
 ---
 
@@ -93,30 +99,39 @@ The current design is strictly **one active plan per team at a time**:
 │  "The CEO" — owns the goal, talks to user, makes strategic         │
 │  decisions, monitors all work, replans when needed                  │
 │                                                                     │
-│  Spawns: research sub-agents, submits plans                         │
-│  Memory: Full conversation with user (persisted to DB)              │
+│  Class: AiSdkAgent (mode: "session")                                │
+│  Memory: Conversation persisted (MongoDB/JSONL)                     │
+│          Reads Team Memory (CRDT) for context                       │
 │  Tools: user interaction, knowledge, plan management                │
 │  Always available for chat about: goals, plans, strategy            │
 ├─────────────────────────────────────────────────────────────────────┤
 │ Layer 2: CHAT AGENTS (persistent, role-scoped)                      │
 │                                                                     │
-│  "The Employees" — one per role, persistent identity/memory         │
+│  "The Employees" — one per role, persistent identity                │
 │  Understand their domain, can discuss past/future work              │
 │                                                                     │
-│  Spawns: task execution sub-agents                                  │
-│  Memory: Per-role conversation history (persisted to DB)            │
+│  Class: AiSdkAgent (mode: "session")                                │
+│  Memory: Conversation persisted (MongoDB/JSONL)                     │
+│          Reads + writes Team Memory (CRDT)                          │
+│          Reviews worker outputs → promotes learnings to Team Memory │
 │  Tools: L2 collab, L3 knowledge, workspace read, execute_task      │
 │  Always available for chat about: their domain, past tasks          │
 ├─────────────────────────────────────────────────────────────────────┤
 │ Layer 3: TASK SUB-AGENTS (transient, task-scoped)                   │
 │                                                                     │
 │  "The Hands" — do the actual work, write code, create files        │
-│  Fresh context per task, return summary to parent                   │
+│  Fresh context per task, return summary to parent ChatAgent         │
 │                                                                     │
-│  Memory: Ephemeral (task instructions + dep outputs only)           │
+│  Class: AiSdkAgent (mode: "task")                                   │
+│  Memory: In-memory only + scratchpad (ephemeral)                    │
+│          Borrows context from parent ChatAgent (injected at start)  │
 │  Tools: workspace write, skills, commit, publish                    │
 │  Disposed after task completion                                     │
 └─────────────────────────────────────────────────────────────────────┘
+
+> **Unified Agent Model:** All three layers use the same `AiSdkAgent` class.
+> The difference is config only: `mode: "session"` (L1, L2) vs `mode: "task"` (L3).
+> No PlannerAgent facade, no ChatAgent facade — just AiSdkAgent + AgentFactory.
 ```
 
 ### Why Three Layers, Not Two

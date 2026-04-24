@@ -15,7 +15,7 @@ import { getAgentFactory } from "./agent/AgentFactory.js";
 import { WorkerPool } from "./services/WorkerPool.js";
 import { RoleTaskQueue } from "./util/RoleTaskQueue.js";
 import { AiSdkAgent } from "./agent/internal/AiSdkAgent.js";
-import type { AgentDefinition } from "./agent/types.js";
+import type { AgentDefinition, AgentEvent } from "./agent/types.js";
 import type { TaskWithContext } from "./util/RoleTaskQueue.types.js";
 import { OrchestratorService } from "./orchestrator/OrchestratorService.js";
 import type { ITaskProvider } from "./orchestrator/ITaskProvider.js";
@@ -23,6 +23,8 @@ import type { PlanProposedEvent } from "./orchestrator/types.js";
 import { TaskStore } from "./orchestrator/TaskStore.js";
 import { DependencyResolver } from "./orchestrator/DependencyResolver.js";
 import { PlannerAgent } from "./orchestrator/PlannerAgent.js";
+import { ChatAgent } from "./chatAgent/ChatAgent.js";
+import type { ChatAgentSnapshot } from "./chatAgent/ChatAgent.js";
 import { UserInteractionManager } from "./orchestrator/UserInteractionManager.js";
 import { NotificationQueue } from "./orchestrator/NotificationQueue.js";
 import { createPlannerTools } from "./orchestrator/tools/index.js";
@@ -41,6 +43,8 @@ export interface ManagerStreamCallbacks {
   onTaskUpdate?: (data: { taskId: string; status: string; role?: string; output?: any }) => void;
   onPlanUpdate?: (data: { action: string; tasksQueued?: number; timestamp: number }) => void;
   onPlanProposed?: (data: PlanProposedEvent) => void;
+  /** Channel B — coarse-grained worker task updates for ChatAgent + Frontend sidebar */
+  onWorkerTaskUpdate?: (update: import("./types/TaskUpdate.js").TaskUpdate) => void;
 }
 
 /**
@@ -98,6 +102,11 @@ export class AgentManager {
   private autoApproveRoles = new Set<string>();
   /** Global auto-approve flag - when true, all roles auto-approve */
   private autoApproveAll = false;
+
+  /** Chat Agents — persistent per-role L2 agents (Phase 1) */
+  private chatAgents = new Map<string, ChatAgent>();
+  /** Feature flag: whether chat agents are enabled */
+  private chatAgentsEnabled = false;
 
   constructor() {
     this.workerPool = new WorkerPool();
@@ -319,6 +328,13 @@ export class AgentManager {
         onDone: (data) => this.streamCallbacks?.onDone?.(data),
         onError: (data) => this.streamCallbacks?.onError?.(data),
         onTaskUpdate: (data) => this.streamCallbacks?.onTaskUpdate?.(data),
+        onWorkerTaskUpdate: (update) => {
+          // Route to ChatAgent (ingest into thread)
+          const agent = this.chatAgents.get(update.role?.toLowerCase());
+          agent?.ingestTaskUpdate(update);
+          // Forward to Socket.IO via streamCallbacks
+          this.streamCallbacks?.onWorkerTaskUpdate?.(update);
+        },
         onPlanProposed: (data) => {
           this.streamCallbacks?.onPlanProposed?.(data);
           // Auto-approve: planner already consulted user via natural chat
@@ -412,6 +428,79 @@ export class AgentManager {
    */
   getAutoExecute(): boolean {
     return this.orchestrator?.getAutoExecute() ?? true;
+  }
+
+  // ===========================================================================
+  // Chat Agent API (Phase 1)
+  // ===========================================================================
+
+  /**
+   * Enable chat agents for this manager.
+   * Call after initializeOrchestrator() when feature flag is on.
+   */
+  enableChatAgents(roles: string[]): void {
+    if (!this.taskStoreInstance) {
+      logger.warn("Cannot enable chat agents — TaskStore not initialized");
+      return;
+    }
+    this.chatAgentsEnabled = true;
+    for (const role of roles) {
+      this.getChatAgent(role); // lazy-create for each role
+    }
+    logger.info(`Chat agents enabled for ${roles.length} roles: ${roles.join(", ")}`);
+  }
+
+  /**
+   * Get or create a ChatAgent for a role.
+   * Returns null if chat agents are not enabled.
+   */
+  getChatAgent(role: string): ChatAgent | null {
+    if (!this.chatAgentsEnabled || !this.taskStoreInstance) return null;
+    const key = role.toLowerCase();
+    let agent = this.chatAgents.get(key);
+    if (!agent) {
+      agent = new ChatAgent({
+        role: key,
+        teamId: this.teamId,
+        taskStore: this.taskStoreInstance,
+      });
+      this.chatAgents.set(key, agent);
+    }
+    return agent;
+  }
+
+  /**
+   * Get snapshot for a specific role's ChatAgent.
+   */
+  getChatAgentSnapshot(role: string): ChatAgentSnapshot | null {
+    const agent = this.chatAgents.get(role.toLowerCase());
+    return agent?.getSnapshot() ?? null;
+  }
+
+  /**
+   * Get all active ChatAgent snapshots.
+   */
+  getAllChatAgentSnapshots(): ChatAgentSnapshot[] {
+    return Array.from(this.chatAgents.values()).map(a => a.getSnapshot());
+  }
+
+  /**
+   * Send a user message to a ChatAgent and stream the response.
+   * Returns an async generator of AgentEvents (same as worker/planner streams).
+   */
+  async *chatAgentMessage(role: string, content: string): AsyncGenerator<AgentEvent> {
+    const agent = this.getChatAgent(role);
+    if (!agent) {
+      throw new Error(`Chat agent not available for role '${role}'. Chat agents may not be enabled.`);
+    }
+    yield* agent.handleUserMessage(content);
+  }
+
+  /**
+   * Check if chat agents are enabled and available.
+   */
+  isChatAgentEnabled(): boolean {
+    return this.chatAgentsEnabled;
   }
 
   /**

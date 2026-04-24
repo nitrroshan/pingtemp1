@@ -220,6 +220,18 @@ export function useOrchestration(): OrchestrationState & OrchestrationActions {
       if (!payload?.part) return;
       const { part, agentId: streamAgentId } = payload;
 
+      // Handle ChatAgent responses (agentId = "chat-{role}")
+      // Route to separate chat history key "chat:{mongoId}" to keep ChatAgent R1 chat
+      // separate from worker streams
+      if (streamAgentId?.startsWith('chat-')) {
+        const role = streamAgentId.replace('chat-', '');
+        const resolved = findAgentByRole(role, selectedTeamIdRef.current);
+        if (resolved && onStreamPart) {
+          onStreamPart(`chat:${resolved.id}`, part);
+        }
+        return;
+      }
+
       // Map role-based agentId to MongoDB agent ID
       const isOrchestrator = streamAgentId === 'manager' || streamAgentId === 'orchestrator' || streamAgentId === 'planner';
       const resolved = isOrchestrator ? null : findAgentByRole(streamAgentId, selectedTeamIdRef.current);
@@ -235,12 +247,29 @@ export function useOrchestration(): OrchestrationState & OrchestrationActions {
       }
     });
 
+    // Channel B: task_update events (started/progress/tool_milestone/completed/failed)
+    const TASK_UPDATE_LOG: Record<string, { fmt: (u: any) => string; type: string }> = {
+      started:        { fmt: (u) => `${u.taskId}: Started`,                                    type: 'info' },
+      progress:       { fmt: (u) => `${u.taskId}: ${u.note || `Step ${u.stepIdx}`}`,            type: 'info' },
+      tool_milestone: { fmt: (u) => `${u.taskId}: ${u.tool} — ${u.summary?.slice(0, 100) || 'done'}`, type: 'info' },
+      completed:      { fmt: (u) => `${u.taskId}: Completed — ${u.summary?.slice(0, 100) || ''}`, type: 'success' },
+      failed:         { fmt: (u) => `${u.taskId}: Failed — ${u.error?.slice(0, 100) || ''}`,     type: 'error' },
+      blocked:        { fmt: (u) => `${u.taskId}: Blocked — ${u.reason?.slice(0, 100) || ''}`,   type: 'warning' },
+    };
+
+    const unsubTaskUpdate = agentServiceV2.onTaskUpdate((update: any) => {
+      if (!update?.taskId) return;
+      const config = TASK_UPDATE_LOG[update.type] || { fmt: () => update.type, type: 'info' };
+      addOrchestrationLog(`${update.taskId} [${update.role || 'worker'}]`, config.fmt(update), config.type as any);
+    });
+
     return () => {
       unsubMessage();
       unsubState();
       unsubOutput();
       unsubError();
       unsubStream();
+      unsubTaskUpdate();
     };
   }, [addOrchestrationLog]);
 

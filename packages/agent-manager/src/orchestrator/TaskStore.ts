@@ -43,9 +43,38 @@ export class TaskStore implements ITaskProvider {
   public readonly queue: RoleTaskQueue;
   private storeCallbacks: TaskStoreCallbacks = {};
 
+  /** Role-filtered event listeners: Map<"role:event", callback[]> */
+  private roleListeners = new Map<string, Array<(task: Task) => void>>();
+
   constructor() {
     this.queue = new RoleTaskQueue();
     log.info("TaskStore initialized");
+  }
+
+  // ═══════════════════════════════════════════════════════════════════
+  // ROLE-FILTERED LISTENERS (for ChatAgent)
+  // ═══════════════════════════════════════════════════════════════════
+
+  /**
+   * Subscribe to task events filtered by role.
+   * Event types: "ready" (status → ready), "completed", "failed"
+   */
+  onRoleEvent(role: string, event: "ready" | "completed" | "failed", cb: (task: Task) => void): void {
+    const key = `${role.toLowerCase()}:${event}`;
+    const listeners = this.roleListeners.get(key) || [];
+    listeners.push(cb);
+    this.roleListeners.set(key, listeners);
+  }
+
+  /** Fire role-filtered event listeners */
+  private fireRoleEvent(task: Task, event: "ready" | "completed" | "failed"): void {
+    const key = `${task.assigned_role}:${event}`;
+    const listeners = this.roleListeners.get(key);
+    if (listeners) {
+      for (const cb of listeners) {
+        try { cb(task); } catch (err) { log.error({ err }, `Role listener error: ${key}`); }
+      }
+    }
   }
 
   // ═══════════════════════════════════════════════════════════════════
@@ -140,6 +169,7 @@ export class TaskStore implements ITaskProvider {
       }
       task.status = "failed"; // map cancelled → failed for compatibility
       this.storeCallbacks.onStatusChanged?.(taskId, oldStatus, "failed");
+      this.fireRoleEvent(task, "failed");
       return;
     }
 
@@ -153,6 +183,12 @@ export class TaskStore implements ITaskProvider {
 
     task.status = newStatus;
     this.storeCallbacks.onStatusChanged?.(taskId, oldStatus, newStatus);
+
+    // Fire role-filtered listeners for ChatAgent
+    if (newStatus === "ready") this.fireRoleEvent(task, "ready");
+    else if (newStatus === "completed") this.fireRoleEvent(task, "completed");
+    else if (newStatus === "failed") this.fireRoleEvent(task, "failed");
+
     log.debug(`Task ${taskId}: ${oldStatus} → ${newStatus}`);
   }
 

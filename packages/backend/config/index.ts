@@ -190,10 +190,19 @@ export function validateConfig(): void {
     console.info("ℹ  MONGODB_URI not set — using file-based storage (lowdb)");
   }
 
-  // LLM keys are only required when agents will be invoked
-  if (!config.azureOpenAi.endpointUrl)
-    missing.push("AZURE_OPENAI_ENDPOINT_URL");
-  if (!config.azureOpenAi.apiKey) missing.push("AZURE_OPENAI_API_KEY");
+  // LLM keys are only required when not using MODEL_ID override
+  // MODEL_ID=ollama:* or groq:* etc. means Azure keys aren't needed
+  const modelId = process.env.MODEL_ID || "";
+  const usingAzure = !modelId || modelId.startsWith("azure-openai");
+
+  if (usingAzure) {
+    if (!config.azureOpenAi.endpointUrl)
+      missing.push("AZURE_OPENAI_ENDPOINT_URL");
+    if (!config.azureOpenAi.apiKey) missing.push("AZURE_OPENAI_API_KEY");
+  } else {
+    const provider = modelId.split(":")[0];
+    console.info(`ℹ  MODEL_ID=${modelId} — using ${provider} provider (Azure keys not required)`);
+  }
 
   if (missing.length > 0) {
     // In desktop/local mode, warn instead of crash — agents just won't work

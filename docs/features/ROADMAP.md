@@ -1,10 +1,15 @@
 # Ping — Phased Roadmap
 
 **Created:** April 1, 2026  
-**Updated:** April 12, 2026  
+**Updated:** April 24, 2026  
 **Model:** Waterfall — each phase delivers a working, evolved app  
 **Principle:** Maximum value, minimum effort. After each phase, Ping works end-to-end.  
 **Master Architecture:** [MASTER-ARCHITECTURE.md](MASTER-ARCHITECTURE.md) — how all features connect, with event/flow/architecture diagrams
+
+> **Phase assignments:** [FEATURE-LIST.md](FEATURE-LIST.md) is the canonical source for feature-to-phase mapping.  
+> This roadmap provides detailed phase descriptions. Phase numbering here (1-7) maps to  
+> FEATURE-LIST.md phases (0-4) as follows: Phases 1-3 = complete, Phase 4 here ≈ Phase 1-2 there,  
+> Phase 5-7 here ≈ Phase 3-4 there. When in doubt, defer to FEATURE-LIST.md.
 
 ---
 

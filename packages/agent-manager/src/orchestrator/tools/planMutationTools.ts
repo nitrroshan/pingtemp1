@@ -55,6 +55,7 @@ export const AddTasksSchema = z.object({
     dependencies: z.array(z.string()).default([]).describe("Task IDs this depends on"),
     expectedOutput: z.string().describe("What this task should produce"),
     context: TaskContextSchema,
+    onDependencyFail: z.enum(["skip", "replan", "fail"]).optional().describe("Strategy when a dependency fails"),
   })).min(1).describe("Tasks to add to the active plan"),
 });
 
@@ -83,9 +84,11 @@ export const ReplanSchema = z.object({
     assignedRole: z.string(),
     priority: z.number().min(1).max(5).default(3),
     complexity: z.enum(["low", "medium", "high"]).default("medium"),
+    type: z.string().optional().describe("Task type hint (e.g. 'feature', 'bugfix')"),
     dependencies: z.array(z.string()).default([]),
     expectedOutput: z.string(),
     context: TaskContextSchema,
+    onDependencyFail: z.enum(["skip", "replan", "fail"]).optional().describe("Strategy when a dependency fails"),
   })).min(1).describe("New tasks to replace remaining pending tasks"),
 });
 

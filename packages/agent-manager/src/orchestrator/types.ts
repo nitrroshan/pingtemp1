@@ -26,6 +26,8 @@ export interface OrchestratorCallbacks {
   onPlanProposed?: (data: { plan: any; teamId: string; timestamp: string }) => void;
   onPlanApproved?: (data: { planId: string; teamId: string; tasksQueued: number; timestamp: string }) => void;
   onTaskUpdate?: (data: { taskId: string; status: string; role?: string; output?: any; timestamp?: number }) => void;
+  /** Channel B — coarse-grained task lifecycle events for ChatAgent + Frontend sidebar */
+  onWorkerTaskUpdate?: (update: import("../types/TaskUpdate.js").TaskUpdate) => void;
   onProgress?: (data: { teamId: string; state: string; message: string; [key: string]: any }) => void;
 
   // Planner-as-Agent callbacks (used when PLANNER_MODE=agent)

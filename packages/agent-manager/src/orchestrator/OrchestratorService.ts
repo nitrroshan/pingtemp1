@@ -201,6 +201,8 @@ export class OrchestratorService {
       },
       // Step 3+4: Priority mention routing — spawn collab workers immediately
       onMentionedRoles: (data) => this.spawnCollabWorkers(data.roles, data.docName, data.sourceRole, data.postContent),
+      // Channel B: forward task updates to ChatAgent + Socket.IO
+      onTaskUpdate: (update) => this.callbacks.onWorkerTaskUpdate?.(update),
     });
 
     // Load active plan for restart recovery

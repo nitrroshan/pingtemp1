@@ -261,6 +261,30 @@ export class HttpServer {
     });
     logger.info("[HttpServer] Goals API mounted at /api/v2/teams/:teamId/goals");
 
+    // Chat Agent — role tasks (Phase 1, Step 1)
+    this.app.get("/api/v2/teams/:teamId/roles/:role/tasks", async (req, res) => {
+      try {
+        const { teamId, role } = req.params;
+        const { agentManagerRegistry } =
+          await import("../agentManager/AgentManagerRegistry.js");
+        if (!agentManagerRegistry.has(teamId)) {
+          res.json({ tasks: [], role, enabled: false });
+          return;
+        }
+        const manager = await agentManagerRegistry.getForTeam(teamId);
+        const snapshot = manager.getChatAgentSnapshot(role);
+        if (!snapshot) {
+          // Chat agents not enabled — fall back to TaskStore directly
+          res.json({ tasks: [], role, enabled: false });
+          return;
+        }
+        res.json({ ...snapshot, enabled: true });
+      } catch (err: any) {
+        res.status(500).json({ error: err.message });
+      }
+    });
+    logger.info("[HttpServer] Chat Agent tasks API mounted at /api/v2/teams/:teamId/roles/:role/tasks");
+
     // Session restore — returns everything needed to rebuild UI in one call
     this.app.get("/api/v2/sessions/:teamId/restore", async (req, res) => {
       try {

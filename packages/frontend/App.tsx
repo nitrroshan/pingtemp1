@@ -38,6 +38,7 @@ import { agentServiceV2, type Task as BackendTask } from './services/AgentServic
 import type { Agent, Message } from './types';
 import { useSession, signOut } from './lib/auth-client';
 import { LoginPage } from './components/Auth/LoginPage';
+import { FEATURES } from './lib/features';
 import { Skeleton } from './components/ui/skeleton';
 import { TeamsPage } from './components/TeamsPage/TeamsPage';
 import { PlanViewerPage } from './components/PlanViewer/PlanViewerPage';
@@ -306,6 +307,7 @@ function InnerApp() {
 
   const handleSelectAgent = useCallback((agent: Agent) => {
     setActiveAgentId(agent.id);
+    setSelectedTaskId(null); // Clear task selection — show ChatAgent R1 chat, not worker stream
     if (isMobileViewport) {
       setIsMobileSidebarOpen(false);
     }
@@ -396,13 +398,36 @@ function InnerApp() {
   const allTasks = Object.values(tasks).flat();
   const activeAgent = findAgentById(activeAgentId);
   const activeAgentTasks = tasks[activeAgentId] ?? [];
-  const activeAgentMessages = chatHistories[activeAgentId] ?? [];
   const showTaskSkeleton = (sessionState === 'planning' || sessionState === 'executing') && allTasks.length === 0;
   const selectedTeam = selectedTeamId ? agents.find(a => a.id === selectedTeamId) : undefined;
   const selectedTeamAgentCount = selectedTeam ? 1 + (selectedTeam.subAgents?.length ?? 0) : 0;
 
   // Task selection state for DetailPanel
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
+
+  // For sub-agents (ChatAgents): show R1 chat messages (keyed as "chat:{id}")
+  // For orchestrator: show planner messages (keyed by team id)
+  // When a task is selected: show worker stream (keyed by agent id)
+  const isChatAgent = !!(activeAgent?.parentId && FEATURES.chatAgentChat);
+  const activeAgentMessages = isChatAgent && !selectedTaskId
+    ? (chatHistories[`chat:${activeAgentId}`] ?? [])
+    : (chatHistories[activeAgentId] ?? []);
+
+  // Click task → switch main area to that role's agent + select the task
+  const handleTaskClick = useCallback((taskId: string) => {
+    setSelectedTaskId(taskId);
+    // Find the task to get its role
+    const task = allTasks.find(t => t.id === taskId);
+    if (task?.assignedRole && selectedTeam?.subAgents) {
+      const roleAgent = selectedTeam.subAgents.find(
+        a => a.role.toLowerCase() === task.assignedRole!.toLowerCase()
+      );
+      if (roleAgent) {
+        setActiveAgentId(roleAgent.id);
+      }
+    }
+    setIsPanelOpen(true);
+  }, [allTasks, selectedTeam, setActiveAgentId]);
 
   // Plans list for switcher (from localStorage)
   const storedPlans = React.useMemo<PlanSummary[]>(() => {
@@ -429,7 +454,7 @@ function InnerApp() {
       planTasks={allTasks}
       planName={currentPlan?.[0]?.title ?? undefined}
       selectedTaskId={selectedTaskId}
-      onSelectTask={(taskId) => { setSelectedTaskId(taskId); setIsPanelOpen(true); }}
+      onSelectTask={handleTaskClick}
       activePlanId={activePlanId}
       sessionState={sessionState}
       onBackToGoals={() => {
@@ -736,12 +761,32 @@ function InnerApp() {
                   {activeAgent?.name ?? 'Ping'}
                 </span>
               )}
-              {!activePlanId && activeAgent?.role && (
+              {/* Show task info when a task is selected (worker view) */}
+              {selectedTaskId && (() => {
+                const task = allTasks.find(t => t.id === selectedTaskId);
+                return task ? (
+                  <>
+                    <span className="text-muted-foreground">/</span>
+                    <span className="text-xs font-medium text-foreground truncate">
+                      {task.title || task.id}
+                    </span>
+                    <span className={`text-[9px] px-1.5 py-0.5 rounded-full shrink-0 ${
+                      task.status === 'in_progress' ? 'bg-emerald-500/20 text-emerald-400' :
+                      task.status === 'completed' ? 'bg-blue-500/20 text-blue-400' :
+                      task.status === 'failed' ? 'bg-red-500/20 text-red-400' :
+                      'bg-muted text-muted-foreground'
+                    }`}>
+                      {task.status.replace('_', ' ')}
+                    </span>
+                  </>
+                ) : null;
+              })()}
+              {!activePlanId && !selectedTaskId && activeAgent?.role && (
                 <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-muted text-muted-foreground uppercase tracking-wider shrink-0">
                   {activeAgent.role}
                 </span>
               )}
-              {!activePlanId && sessionState && sessionState !== 'idle' && (
+              {!activePlanId && !selectedTaskId && sessionState && sessionState !== 'idle' && (
                 <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-blue-500/20 text-blue-400 shrink-0">
                   {sessionState.replace('_', ' ')}
                 </span>
@@ -780,7 +825,11 @@ function InnerApp() {
                 messages={activeAgentMessages}
                 tasks={activeAgentTasks}
                 teamId={selectedTeamId}
-                onUpdateMessages={(agentId, msg) => updateMessages(agentId, msg)}
+                onUpdateMessages={(agentId, msg) => {
+                  // Route user messages to the right history key
+                  const key = isChatAgent && !selectedTaskId ? `chat:${agentId}` : agentId;
+                  updateMessages(key, msg);
+                }}
                 onAddTask={() => { /* tasks come from backend plan only */ }}
                 onToggleTask={() => { /* status managed by backend */ }}
                 onDeleteTask={() => { /* deletion not yet supported */ }}
@@ -797,7 +846,7 @@ function InnerApp() {
                 compactHeader={!!activePlanId}
                 taskScope={!activeAgent.parentId ? 'plan' : 'agent'}
                 allTasks={allTasks}
-                onSelectTask={(taskId) => { setSelectedTaskId(taskId); setIsPanelOpen(true); }}
+                onSelectTask={handleTaskClick}
                 selectedTaskId={selectedTaskId}
               />
             </div>

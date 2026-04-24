@@ -51,7 +51,9 @@ async function resolveDatabase(): Promise<any> {
 
   // Local mode: bun:sqlite (native Bun SQLite, no external deps)
   const { Database } = await import("bun:sqlite");
+  const fs = await import("fs");
   const dataDir = process.env.DATA_DIR || "./data";
+  fs.mkdirSync(dataDir, { recursive: true });
   const dbPath = path.join(dataDir, "auth.db");
   const db = new Database(dbPath, { create: true });
   db.exec("PRAGMA journal_mode = WAL");

@@ -77,6 +77,7 @@ function AgentRow({
   onSelectAgent,
   onToggleCollapse,
   onAddAgent,
+  planTasks,
 }: {
   agent: Agent;
   depth: number;
@@ -85,11 +86,17 @@ function AgentRow({
   onSelectAgent: (a: Agent) => void;
   onToggleCollapse: (id: string) => void;
   onAddAgent: (parentId?: string) => void;
+  planTasks?: Task[];
 }) {
   const isActive = activeAgentId === agent.id;
   const hasChildren = !!agent.subAgents?.length;
   const isCollapsed = agent.collapsed;
   const isTeam = depth === 0;
+
+  // Compute active worker count for this role
+  const activeWorkerCount = planTasks
+    ? planTasks.filter(t => t.assignedRole?.toLowerCase() === agent.role?.toLowerCase() && t.status === 'in_progress').length
+    : 0;
 
   const row = (
     <div
@@ -132,6 +139,13 @@ function AgentRow({
 
           {/* Mode indicator (shown for non-team agents) */}
           {!isTeam && <ModeIndicator />}
+
+          {/* Active worker count badge */}
+          {!isTeam && activeWorkerCount > 0 && (
+            <span className="text-[9px] px-1 py-0.5 rounded-full bg-emerald-500/20 text-emerald-400 font-medium flex-shrink-0">
+              {activeWorkerCount}
+            </span>
+          )}
 
           {/* Add sub-agent button (teams only) */}
           {isTeam && (
@@ -176,6 +190,7 @@ function AgentRow({
               onSelectAgent={onSelectAgent}
               onToggleCollapse={onToggleCollapse}
               onAddAgent={onAddAgent}
+              planTasks={planTasks}
             />
           ))}
         </div>
@@ -260,6 +275,7 @@ function SidebarPlanLayout({
               onSelectAgent={() => onSelectAgent(activeTeam)}
               onToggleCollapse={onToggleCollapse}
               onAddAgent={onAddAgent}
+              planTasks={planTasks}
             />
             {activeTeam.subAgents && activeTeam.subAgents.length > 0 && (
               <>
@@ -274,6 +290,7 @@ function SidebarPlanLayout({
                     onSelectAgent={onSelectAgent}
                     onToggleCollapse={onToggleCollapse}
                     onAddAgent={onAddAgent}
+                    planTasks={planTasks}
                   />
                 ))}
               </>

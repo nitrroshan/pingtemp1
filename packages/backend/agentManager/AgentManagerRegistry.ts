@@ -197,6 +197,19 @@ export class AgentManagerRegistry {
       teamRoles,
     );
 
+    // Enable Chat Agents if feature flag is on
+    if (config.featureFlags.enableChatAgents) {
+      const allowedRoles = config.featureFlags.chatAgentRoles
+        ? config.featureFlags.chatAgentRoles.split(",").map((r: string) => r.trim().toLowerCase()).filter(Boolean)
+        : [];
+      const rolesToEnable = allowedRoles.length > 0
+        ? teamRoles.map(r => r.role).filter(r => allowedRoles.includes(r.toLowerCase()))
+        : teamRoles.map(r => r.role);
+      if (rolesToEnable.length > 0) {
+        manager.enableChatAgents(rolesToEnable);
+      }
+    }
+
     // Cache it
     this.managers.set(teamId, manager);
     logger.info(

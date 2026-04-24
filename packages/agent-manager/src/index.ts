@@ -14,6 +14,14 @@
 export { AgentManager } from "./AgentManagerV2.js";
 export type { ManagerStreamCallbacks } from "./AgentManagerV2.js";
 
+// Chat Agent (L2)
+export { ChatAgent } from "./chatAgent/index.js";
+export type { ChatAgentConfig, ChatAgentSnapshot } from "./chatAgent/index.js";
+
+// Channel B (Task Updates)
+export type { TaskUpdate } from "./types/TaskUpdate.js";
+export { MILESTONE_TOOLS } from "./types/TaskUpdate.js";
+
 // WorkerPool
 export { WorkerPool } from "./services/WorkerPool.js";
 export type { WorkerCallbacks } from "./services/WorkerPool.js";

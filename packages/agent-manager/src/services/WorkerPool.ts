@@ -40,6 +40,8 @@ export interface WorkerCallbacks {
   onBounce?: (data: { taskId: string; role: string; reason: string; suggestedRole?: string; timestamp: number }) => void;
   /** Fired when an agent mentions roles in a discussion — triggers priority collab worker spawn */
   onMentionedRoles?: (data: { roles: string[]; sourceTaskId: string; docName: string; sourceRole?: string; postContent?: string }) => void;
+  /** Channel B — coarse-grained task-level updates for ChatAgent + Frontend sidebar */
+  onTaskUpdate?: (update: import("../types/TaskUpdate.js").TaskUpdate) => void;
 }
 
 /**
@@ -363,6 +365,14 @@ export class WorkerPool {
         threadId: taskId, // Use taskId as thread for conversation continuity
       };
 
+      // Channel B: emit "started"
+      const role = this.workerRoles.get(taskId) || roleKey;
+      this.callbacks.onTaskUpdate?.({ type: "started", taskId, role, ts: Date.now() });
+
+      let stepCount = 0;
+      let totalTokens = 0;
+      const PROGRESS_INTERVAL = 3; // Emit progress every N steps
+
       for await (const event of agent.execute(input)) {
         // Forward stream_part events directly on onStream callback
         if (event.type === "stream_part") {
@@ -371,6 +381,36 @@ export class WorkerPool {
             agentId: roleKey,
             part: event.part,
           });
+
+          // Channel B: synthesize from stream_part subtypes
+          const part = event.part;
+          if (part?.type === "finish-step") {
+            stepCount++;
+            totalTokens += part.usage?.totalTokens || 0;
+            // Emit progress every N steps
+            if (stepCount % PROGRESS_INTERVAL === 0) {
+              this.callbacks.onTaskUpdate?.({
+                type: "progress", taskId, role,
+                note: `Step ${stepCount}`,
+                stepIdx: stepCount,
+                tokensSoFar: totalTokens,
+                ts: Date.now(),
+              });
+            }
+          } else if (part?.type === "tool-output-available") {
+            // Check if this is a milestone tool
+            const toolName = part.toolName || "";
+            const { MILESTONE_TOOLS } = await import("../types/TaskUpdate.js");
+            if (MILESTONE_TOOLS.has(toolName)) {
+              this.callbacks.onTaskUpdate?.({
+                type: "tool_milestone", taskId, role,
+                tool: toolName,
+                summary: typeof part.output === "string" ? part.output.slice(0, 200) : JSON.stringify(part.output).slice(0, 200),
+                ts: Date.now(),
+              });
+            }
+          }
+
           continue; // Don't emit stream_parts on onEvent (legacy channel)
         }
 
@@ -384,16 +424,36 @@ export class WorkerPool {
           const role = this.workerRoles.get(taskId) || "worker";
           this.callbacks.onDone?.({ taskId, role, output });
 
-
+          // Channel B: emit "completed"
+          this.callbacks.onTaskUpdate?.({
+            type: "completed", taskId, role,
+            summary: typeof output === "string" ? output.slice(0, 500) : "Task completed",
+            ts: Date.now(),
+          });
         }
 
         if (event.type === "error") {
           this.callbacks.onError?.({ taskId, error: event.error });
+
+          // Channel B: emit "failed"
+          this.callbacks.onTaskUpdate?.({
+            type: "failed", taskId, role,
+            error: event.error || "Unknown error",
+            ts: Date.now(),
+          });
         }
       }
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
       this.callbacks.onError?.({ taskId, error: msg });
+
+      // Channel B: emit "failed" on exception
+      const role = this.workerRoles.get(taskId) || roleKey;
+      this.callbacks.onTaskUpdate?.({
+        type: "failed", taskId, role,
+        error: msg,
+        ts: Date.now(),
+      });
 
       throw error;
     }

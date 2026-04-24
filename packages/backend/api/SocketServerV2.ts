@@ -508,6 +508,14 @@ export class SocketServerV2 {
       onPlanProposed: (_data) => {
         // Plan proposed: handled via state update when pending plan is queried
       },
+
+      // Channel B: broadcast task updates to frontend sidebar + thread cards
+      onWorkerTaskUpdate: (update) => {
+        this.io.to(room).emit("task_update", {
+          ...update,
+          teamId,
+        });
+      },
     });
 
     // Wire discussion event emission from CollabServer → Socket.IO
@@ -739,6 +747,10 @@ export class SocketServerV2 {
           sessionId,
           content,
         );
+      } else if (agentId.startsWith("chat-") && manager.isChatAgentEnabled()) {
+        // Chat Agent message — route to the role's persistent L2 agent
+        const role = agentId.replace("chat-", "");
+        await this.handleChatAgentMessage(socket, manager, teamId, role, sessionId, content);
       } else {
         await this.handleWorkerMessage(
           socket,
@@ -790,6 +802,58 @@ export class SocketServerV2 {
           `[SocketServerV2] Orchestrator message processed, sent ${allTasks.length} tasks`,
         );
       }
+    }
+  }
+
+  /**
+   * Handle a user message to a persistent Chat Agent (L2).
+   * Streams the response using the same stream channel as workers.
+   */
+  private async handleChatAgentMessage(
+    socket: Socket,
+    manager: AgentManager,
+    teamId: string,
+    role: string,
+    sessionId: string | undefined,
+    content: string,
+  ) {
+    logger.info(`[SocketServerV2] ChatAgent message for role '${role}'`);
+
+    try {
+      const agentId = `chat-${role}`;
+      const stream = manager.chatAgentMessage(role, content);
+
+      // Stream events to the same 'stream' channel — frontend handles them identically
+      for await (const event of stream) {
+        if (event.type === "stream_part") {
+          socket.emit("stream", {
+            teamId,
+            agentId,
+            sessionId: sessionId || "default",
+            part: event.part,
+          });
+
+          // Persist on finish
+          if (event.part?.type === "finish" && this.services) {
+            this.services.chat.addMessage({
+              teamId,
+              sessionId: sessionId || "default",
+              role: "assistant",
+              agentId,
+              content: `[Chat Agent: ${role}] Response completed`,
+              timestamp: new Date().toISOString(),
+            }).catch(err => logger.warn("[SocketServerV2] Failed to save chat agent message:", err));
+          }
+        }
+      }
+    } catch (err: any) {
+      logger.error(`[SocketServerV2] ChatAgent error for role '${role}':`, err);
+      socket.emit("stream", {
+        teamId,
+        agentId: `chat-${role}`,
+        sessionId: sessionId || "default",
+        part: { type: "error", error: err.message || String(err) },
+      });
     }
   }
 

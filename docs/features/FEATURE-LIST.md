@@ -35,7 +35,7 @@
 | A8 | **Git-Based Task Context** | 🆕 New | [git-task-context](git-task-context/) | Preserve agent work as git commits. Branch-per-task. New sessions can pull branches. Branches persist until project completes. |
 | A9 | **Approval System** | 🆕 New | [approval-system](approval-system/) | Structured approval for plans, tools, artifacts. Leverages Mastra's `requireApproval` + `suspend()`. Depends on A1. Auto-approve rules per team. Audit trail. |
 | A10 | **Persistent Agents & Three-Layer Hierarchy** | 🆕 New | [persistent-agents](persistent-agents/) | Three-layer agent hierarchy: persistent Planner (team leader) → persistent Chat Agents (role employees) → transient Task Sub-Agents (workers). Always-on chat, parallel plans, AI SDK sub-agents. Extends A5. |
-| A11 | **Parallel Plans** | 🔬 Research | [parallel-plans](parallel-plans/) | Multiple plans running concurrently within a team. GoalContext abstraction, per-plan workspace isolation, parallel management with serialized or parallel execution. Depends on A8, A10. |
+| A11 | **Parallel Plans** | ✅ Approved (3 versions) | [parallel-plans](parallel-plans/) | v1.0: GoalContext + serial queue (Phase 4). v2.0: workspace isolation + per-task clone (Phase 5). v3.0: full parallel execution (Phase 6). Depends on Chat Agent Layer, A8. See [cross-feature roadmap](parallel-plans/feature_architecture.md#cross-feature-dependency-map). |
 
 ### B. Platform Architecture (Packaging & Deployment)
 
@@ -122,11 +122,16 @@ D2 L2 Search & Indexing ──────────────────�
 
 E1 Orchestrator Agent + A5 Planner as Agent ───────────────────
  ├── A6 Task Orchestration Redesign (better task lifecycle)
- ├── A10 Persistent Agents (extends A5, needs 3B Event Refactor)
- └── A11 Parallel Plans (needs A8 workspace isolation + A10 persistent agents)
+ ├── Chat Agent Layer (A10 L2, no blockers — Phase 1 in parallel-plans roadmap)
+ │    ├── Conversation Persistence (Phase 2)
+ │    ├── A8 Git Task Context (Phase 3)
+ │    └── A11 Parallel Plans v1.0→v2.0→v3.0 (Phases 4-6)
+ └── A10 Persistent Agents (vision doc — implemented via Chat Agent Layer + Parallel Plans)
 ```
 
 ## Execution Phases
+
+> **Note:** Phases 0-3 (below) are the original roadmap. Phases 1-6 in the [Parallel Plans cross-feature roadmap](parallel-plans/feature_architecture.md#cross-feature-dependency-map) are the current active plan for new features.
 
 ### Phase 0 — Finish In-Progress (ongoing)
 > Complete stalled work. No new features.
@@ -136,48 +141,50 @@ E1 Orchestrator Agent + A5 Planner as Agent ────────────
 - B5 Bun Monorepo — finish Phase 4 cleanup
 - D1 Memory System — L2 collaboration stabilization
 
-### Phase 1 — Foundation (Weeks 1-4)
+### Phase 1 — Foundation (Weeks 1-4) ✅ Done
 > Swap the engine. Two parallel tracks.
 
 **Track A: AI SDK Migration**
-- **A1** Mastra/AI SDK Migration
-- **A2** Agentic Streaming
+- **A1** Mastra/AI SDK Migration ✅
+- **A2** Agentic Streaming ✅
 - **A3** Tools as MCP Servers (start defining)
 
 **Track B: Infrastructure (parallel)**
 - **D2** L2 Search & Indexing
 - **B3** Dev/Prod Environment Setup
-- **B4** Seed Data System
+- **B4** Seed Data System ✅
 
-### Phase 2 — Platform Shape (Weeks 4-8)
+### Phase 2 — Platform Shape (Weeks 4-8) ✅ Done
 > Package things properly. Prove e2e pipeline.
 
 - **B1** Team Package Extraction
 - **B2** CLI App Revamp (consumes AgentManager package)
-- **A5** Planner as Agent
+- **A5** Planner as Agent ✅
 - **F2** MCP Integration (one real MCP server end-to-end)
-- **C3** Skills Integration
+- **C3** Skills Integration ✅
 - **E5** Team Service + **E6** Teams Integration
 
-### Phase 3 — Hardening (Weeks 8-12)
+### Phase 3 — Hardening (Weeks 8-12) ✅ Done
 > Isolation, quality, context preservation.
 
 - **A4** Worker Sandboxing
 - **A8** Git-Based Task Context
 - **C1** LLM Response Grading
 - **D3** L2 as Deployed Service
-- **A6** Task Orchestration Redesign (research + implement)
+- **A6** Task Orchestration Redesign ✅
 - **A7** External Agent Invocation (research + prototype)
 
-### Phase 4 — Polish & Ecosystem (Weeks 12+)
-> Integration, research features, frontend.
+### Phase 4+ — Parallel Plans Roadmap (Active)
+> See [cross-feature roadmap](parallel-plans/feature_architecture.md#cross-feature-dependency-map) for the current phased plan.
 
-- **A11** Parallel Plans (GoalContext + workspace-per-plan)
-- **F1** Frontend Orchestrator Integration (complete Step 1.3)
-- **C2** Skills System (full design + community model)
-- **G3** Open-Source Research (ongoing)
-- **G1/G2** Vision features as capacity allows
-- **F3** OpenClaw Integration (if prioritized)
+| Phase | Feature | Effort | FF Flag |
+|-------|---------|--------|---------|
+| 1 | Chat Agent Layer (A10 L2) | 2-3 weeks | `ENABLE_CHAT_AGENTS` |
+| 2 | Conversation Persistence | 1 week | `ENABLE_CONV_PERSISTENCE` |
+| 3 | Git Task Context (A8) | 1-2 weeks | `GIT_MODEL=dual` |
+| 4 | **A11** Parallel Plans v1.0 | 2 weeks | `FF_PARALLEL_PLANS` |
+| 5 | **A11** Parallel Plans v2.0 | 2 weeks | `FF_WORKSPACE_ISOLATION` |
+| 6 | **A11** Parallel Plans v3.0 — Full Parallel | 2 weeks | `FF_PARALLEL_EXECUTION` |
 
 ---
 
