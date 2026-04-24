@@ -43,6 +43,11 @@ function filenameToDocName(filename: string): string {
  * Convention-based: inspects Yjs shared types and writes to
  * `.ping/collaboration/` in the workspace repo.
  *
+ * Special handling for task/plan/goal docs:
+ *   - {teamId}/{goalId}/{taskId}/task → YAML frontmatter + markdown body (.md)
+ *   - {teamId}/{goalId}/plan          → YAML frontmatter + markdown body (.md)
+ *   - {teamId}/{goalId}/goal          → YAML frontmatter + markdown body (.md)
+ *
  * A single Yjs doc may contain multiple shared types (e.g. a Y.Map named
  * after the doc for data, plus a "default" Y.Map for _meta). We merge all
  * Y.Map shared types into a single JSON file and concatenate all Y.Array
@@ -61,6 +66,69 @@ async function projectToFilesystem(
   const base = repoPath || ".";
   const projDir = path.join(base, ".ping", "collaboration");
   await fs.mkdir(projDir, { recursive: true });
+
+  // ─── Special handling: task/plan/goal docs → YAML frontmatter + markdown ───
+  // Fix #6: Use regex patterns for more robust detection
+  // Patterns:
+  //   goal         → goal.md
+  //   plan         → plan.md
+  //   {taskId}/task → {taskId}/task.md  (regex: ^[^/]+\/task$)
+  const isTaskDoc = /^[^/]+\/task$/.test(docType);
+  const isPlanDoc = docType === "plan";
+  const isGoalDoc = docType === "goal";
+
+  if (isTaskDoc || isPlanDoc || isGoalDoc) {
+    try {
+      const mapName = isTaskDoc ? "task" : isGoalDoc ? "goal" : "plan";
+      const sharedType = doc.share.get(mapName);
+      if (sharedType && sharedType instanceof Y.Map) {
+        const data = sharedType.toJSON();
+        if (data && data.id) {
+          const body = data.body || "";
+          const { body: _body, ...frontmatter } = data;
+
+          // Build YAML frontmatter
+          const yamlLines = ["---"];
+          for (const [key, val] of Object.entries(frontmatter)) {
+            if (val == null) continue;
+            if (Array.isArray(val)) {
+              yamlLines.push(`${key}:`);
+              for (const item of val) {
+                if (typeof item === "object") {
+                  yamlLines.push(`  - ${JSON.stringify(item)}`);
+                } else {
+                  yamlLines.push(`  - ${item}`);
+                }
+              }
+            } else if (typeof val === "object") {
+              yamlLines.push(`${key}: ${JSON.stringify(val)}`);
+            } else {
+              yamlLines.push(`${key}: ${JSON.stringify(val)}`);
+            }
+          }
+          yamlLines.push("---");
+          yamlLines.push("");
+          yamlLines.push(body);
+
+          const mdContent = yamlLines.join("\n");
+
+          // Ensure parent directory exists for task docs (e.g., task-003/)
+          const mdDir = path.join(projDir, path.dirname(docType));
+          await fs.mkdir(mdDir, { recursive: true });
+
+          await fs.writeFile(
+            path.join(projDir, `${docType}.md`),
+            mdContent,
+          );
+          return; // Done — skip generic projection
+        }
+      }
+    } catch (err) {
+      logger.warn(`Markdown projection failed for ${docName}: ${err}`);
+      // Fall through to generic projection
+    }
+  }
+  // ───────────────────────────────────────────────────────────────────────────
 
   // Collect all shared types, then write once per output type
   const mergedMap: Record<string, any> = {};
@@ -93,8 +161,10 @@ async function projectToFilesystem(
   // Write merged Y.Map data
   if (Object.keys(mergedMap).length > 0) {
     try {
+      const jsonPath = path.join(projDir, `${docType}.json`);
+      await fs.mkdir(path.dirname(jsonPath), { recursive: true });
       await fs.writeFile(
-        path.join(projDir, `${docType}.json`),
+        jsonPath,
         JSON.stringify(mergedMap, null, 2),
       );
     } catch (err) {
@@ -184,6 +254,21 @@ function xmlFragmentToMarkdown(fragment: Y.XmlFragment): string {
         case "blockquote":
           lines.push(`> ${text}`);
           break;
+        // Fix #17: Handle additional BlockNote block types
+        case "image": {
+          const src = child.getAttribute("url") || child.getAttribute("src") || "";
+          const alt = child.getAttribute("caption") || child.getAttribute("alt") || "image";
+          lines.push(`![${alt}](${src})`);
+          break;
+        }
+        case "table":
+          lines.push(`[Table content]`);
+          break;
+        case "checkListItem": {
+          const checked = child.getAttribute("checked") === "true";
+          lines.push(`- [${checked ? "x" : " "}] ${text}`);
+          break;
+        }
         default:
           // Unknown element — emit plain text
           if (text.length > 0) lines.push(text);
@@ -221,6 +306,16 @@ function xmlElementText(el: Y.XmlElement): string {
  * - Azure: pass AzureBlobStorageProvider
  * - S3: pass S3BlobStorageProvider
  */
+/** Payload emitted when a discussion doc changes */
+export interface DiscussionChangeEvent {
+  teamId: string;
+  goalId: string;
+  taskId: string;
+  docName: string;
+  blockCount: number;
+  mentions: string[];
+}
+
 export class CollabServer implements ICollabProvider {
   /** The Server wraps Hocuspocus + HTTP/WebSocket. We use server.hocuspocus for everything. */
   private server: HocuspocusHTTPServer;
@@ -228,6 +323,7 @@ export class CollabServer implements ICollabProvider {
   private blobAdapter: HocuspocusBlobStorageAdapter;
   private repoPath?: string;
   private started = false;
+  private discussionChangeCallbacks: Set<(event: DiscussionChangeEvent) => void> = new Set();
 
   constructor(storageDir = "./data/collab", repoPath?: string, blobStorage?: BlobStorageProvider) {
     this.storageDir = storageDir;
@@ -236,6 +332,9 @@ export class CollabServer implements ICollabProvider {
     // Use provided blob storage or default to filesystem
     const storage = blobStorage ?? new FsBlobStorage(storageDir);
     this.blobAdapter = new HocuspocusBlobStorageAdapter(storage);
+
+    // Capture `this` for use in onChange
+    const self = this;
 
     // Create Server — it internally creates ONE Hocuspocus instance
     // We use server.hocuspocus for both WebSocket AND in-process access
@@ -256,12 +355,61 @@ export class CollabServer implements ICollabProvider {
         documentName: string;
       }) {
         await projectToFilesystem(documentName, document, repoPath);
+
+        // Emit discussion change events for Socket.IO notification pipeline
+        if (documentName.endsWith("/discussion")) {
+          self.emitDiscussionChange(documentName, document);
+        }
       },
 
       async onAuthenticate({ token }: { token: string }) {
         return { user: token || "anonymous" };
       },
     });
+  }
+
+  /**
+   * Register a callback for discussion doc changes.
+   * Used by SocketServerV2 to emit real-time notifications.
+   */
+  onDiscussionChange(callback: (event: DiscussionChangeEvent) => void): () => void {
+    this.discussionChangeCallbacks.add(callback);
+    return () => this.discussionChangeCallbacks.delete(callback);
+  }
+
+  private emitDiscussionChange(documentName: string, document: Y.Doc): void {
+    if (this.discussionChangeCallbacks.size === 0) return;
+
+    const parts = documentName.split("/");
+    // Expected: {teamId}/{goalId}/{taskId}/discussion
+    if (parts.length < 4) return;
+
+    const teamId = parts[0]!;
+    const goalId = parts[1]!;
+    const taskId = parts[2]!;
+    const discussion = document.getArray("discussion");
+    const blocks = discussion.toJSON() as Array<{ mentions?: string[] }>;
+
+    // Extract @mentions from the latest block (last item)
+    const latestBlock = blocks[blocks.length - 1];
+    const mentions = Array.isArray(latestBlock?.mentions) ? latestBlock.mentions : [];
+
+    const event: DiscussionChangeEvent = {
+      teamId,
+      goalId,
+      taskId,
+      docName: documentName,
+      blockCount: blocks.length,
+      mentions,
+    };
+
+    for (const cb of this.discussionChangeCallbacks) {
+      try {
+        cb(event);
+      } catch (err) {
+        logger.warn(`Discussion change callback error: ${err}`);
+      }
+    }
   }
 
   /**

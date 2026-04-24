@@ -297,9 +297,9 @@ class WorkspacePublishTool extends StructuredTool {
     try {
       const manifest = await this.workspace.publish();
       if (manifest.outputs.length === 0) {
-        return "No artifacts to publish";
+        return "Published (no files in workspace). Workspace is now in 'published' state — branch is ready for merge.";
       }
-      return `Published ${manifest.outputs.length} outputs:\n${manifest.outputs.map((o) => `  - ${o.path} (${o.category})`).join("\n")}`;
+      return `Published ${manifest.outputs.length} file(s):\n${manifest.outputs.map((o) => `  - ${o.path} (${o.category})`).join("\n")}`;
     } catch (error: any) {
       return `Error publishing: ${error.message}`;
     }
@@ -850,13 +850,13 @@ class WorkspaceKeywordSearchTool extends StructuredTool {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// IDENTITY TOOLS (Phase 9)
+// IDENTITY & PROGRESS TOOLS (simplified — read from files, not classes)
 // ═══════════════════════════════════════════════════════════════════════════════
 
 class WhoAmITool extends StructuredTool {
   name = "whoami";
   description =
-    "Get your identity: role, skills, current task, and goal. Use this to understand who you are and what you should be doing.";
+    "Get your identity: role, name, goal, skills, and team info. Reads from .ping/identity.json.";
   schema = z.object({});
 
   constructor(private workspace: AgentWorkspace) {
@@ -864,25 +864,19 @@ class WhoAmITool extends StructuredTool {
   }
 
   async _call(): Promise<string> {
-    const card = this.workspace.identityCard;
-    if (!card) return "Identity card not configured for this workspace.";
     try {
-      const snap = await card.toJSON();
-      return JSON.stringify(
-        { identity: snap.identity, task: snap.task },
-        null,
-        2,
-      );
-    } catch (error: any) {
-      return `Error: ${error.message}`;
+      const content = await this.workspace.readFile(".ping/identity.json");
+      return content;
+    } catch {
+      return "Identity not configured. Use workspace_read_file to explore .ping/ directory.";
     }
   }
 }
 
-class MyProgressTool extends StructuredTool {
-  name = "my_progress";
+class WorkspaceProgressTool extends StructuredTool {
+  name = "workspace_progress";
   description =
-    "See what you have accomplished so far: files created, commits made, scratchpad notes, elapsed time.";
+    "See what you have accomplished so far: files changed, commits made, scratchpad notes.";
   schema = z.object({});
 
   constructor(private workspace: AgentWorkspace) {
@@ -890,56 +884,18 @@ class MyProgressTool extends StructuredTool {
   }
 
   async _call(): Promise<string> {
-    const card = this.workspace.identityCard;
-    if (!card) return "Identity card not configured for this workspace.";
     try {
-      const progress = await card.getProgress();
-      return JSON.stringify(progress, null, 2);
-    } catch (error: any) {
-      return `Error: ${error.message}`;
-    }
-  }
-}
-
-class MyToolsTool extends StructuredTool {
-  name = "my_tools";
-  description =
-    "List all tools available to you with their descriptions. Use this to discover capabilities you may not be aware of.";
-  schema = z.object({});
-
-  constructor(private workspace: AgentWorkspace) {
-    super();
-  }
-
-  async _call(): Promise<string> {
-    const card = this.workspace.identityCard;
-    if (!card) return "Identity card not configured for this workspace.";
-    try {
-      const tools = card.getToolManifest();
-      if (tools.length === 0) return "No tools registered in identity card.";
-      return tools.map((t) => `- ${t.name}: ${t.description}`).join("\n");
-    } catch (error: any) {
-      return `Error: ${error.message}`;
-    }
-  }
-}
-
-class MyContextTool extends StructuredTool {
-  name = "my_context";
-  description =
-    "See the big picture: team goal, loaded knowledge, dependency outputs, plan overview.";
-  schema = z.object({});
-
-  constructor(private workspace: AgentWorkspace) {
-    super();
-  }
-
-  async _call(): Promise<string> {
-    const card = this.workspace.identityCard;
-    if (!card) return "Identity card not configured for this workspace.";
-    try {
-      const context = card.getCurrentContext();
-      return JSON.stringify(context, null, 2);
+      const status = await this.workspace.getWorkspaceStatus();
+      const history = await this.workspace.getHistory();
+      const todos = await this.workspace.scratchpad.listTodos();
+      const scratchFiles = await this.workspace.scratchpad.listFiles();
+      return JSON.stringify({
+        uncommittedChanges: status.uncommittedChanges,
+        scratchFiles,
+        commits: history.map((c) => ({ hash: c.hash, message: c.message })),
+        todosCompleted: todos.filter((t: any) => t.completed).length,
+        todosTotal: todos.length,
+      }, null, 2);
     } catch (error: any) {
       return `Error: ${error.message}`;
     }
@@ -1263,11 +1219,9 @@ export function createWorkspaceTools(
     new PromoteToWorkspaceTool(workspace),
     // Keyword search (Phase 8)
     new WorkspaceKeywordSearchTool(workspace),
-    // Identity (Phase 9)
+    // Identity & progress
     new WhoAmITool(workspace),
-    new MyProgressTool(workspace),
-    new MyToolsTool(workspace),
-    new MyContextTool(workspace),
+    new WorkspaceProgressTool(workspace),
   ];
 
   // Code intelligence tools (Phase 10) — only for code-type agents

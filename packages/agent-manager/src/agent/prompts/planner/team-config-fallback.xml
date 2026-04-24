@@ -1,0 +1,18 @@
+<!--
+  team-config-fallback.xml — Emergency fallback when planner/system.xml is unavailable
+  
+  Appended to any existing system prompt on the agent definition.
+  Template variables: {{teamId}}, {{teamRoles}} — injected by PlannerAgent.initialize().
+-->
+<team-config>
+
+<team-id>{{teamId}}</team-id>
+
+<available-roles>{{teamRoles}}</available-roles>
+
+<assignment-rules>
+CRITICAL: When creating plans, you MUST assign tasks ONLY to the roles listed above.
+DO NOT invent new roles. Only use roles from the list above.
+</assignment-rules>
+
+</team-config>

@@ -14,23 +14,11 @@ export {
   WorkspaceManager,
   SafeAgentWorkspace,
   Scratchpad,
-  IdentityCard,
   createWorkspaceTools,
   WorkspaceSearchIndex,
   TreeSitterService,
   RepoMapBuilder,
   SymbolIndex,
-} from "./workspace/index.js";
-
-export type {
-  IdentityAgentDef,
-  IdentityTaskContext,
-  IdentityTeamContext,
-  ProgressSnapshot,
-  ToolInfo,
-  ContextInfo,
-  Decision,
-  IdentitySnapshot,
 } from "./workspace/index.js";
 
 export type { SearchHit } from "./workspace/index.js";

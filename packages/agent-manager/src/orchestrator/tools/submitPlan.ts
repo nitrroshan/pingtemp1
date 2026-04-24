@@ -13,6 +13,7 @@ import { tool } from "@langchain/core/tools";
 import type { OrchestratorContext } from "../types.js";
 import type { DependencyResolver } from "../DependencyResolver.js";
 import { toGoalId } from "../../plugin/utils.js";
+import { PromptLoader } from "../PromptLoader.js";
 
 // ─── Schema ───────────────────────────────────────────────────────────────────
 
@@ -35,7 +36,9 @@ export const SubmitPlanSchema = z.object({
     complexity: z.enum(["low", "medium", "high"]).default("medium"),
     dependencies: z.array(z.string()).default([]).describe("Task IDs this depends on"),
     onDependencyFail: z.enum(["fail", "skip", "replan"]).default("fail"),
+    type: z.enum(["work", "discussion", "review", "research"]).default("work").describe("Task type: work (default), discussion (cross-role alignment), review, research"),
     expectedOutput: z.string().describe("What this task should produce"),
+    references: z.array(z.string()).optional().describe("Cross-plan task references: ['plan-001/task-003']. Agents get prior outputs as context."),
     context: TaskContextSchema,
   })).min(1).describe("At least one task required"),
 });
@@ -53,6 +56,12 @@ export function createSubmitPlanTool(ctx: SubmitPlanContext) {
   return tool(
     async (plan) => {
       try {
+        // Block submit_plan during research phase
+        const state = octx.getState();
+        if (state === "researching") {
+          return "Error: Cannot submit plan while research tasks are still running. Wait for research to complete, or ask the user to skip research.";
+        }
+
         // Validate all assigned roles exist
         for (const task of plan.tasks) {
           const lowerRole = task.assignedRole.toLowerCase();
@@ -100,14 +109,7 @@ export function createSubmitPlanTool(ctx: SubmitPlanContext) {
     },
     {
       name: "submit_plan",
-      description: `Submit a task plan and start execution. The plan must have:
-- Valid task IDs with no duplicate IDs  
-- Dependencies that form a valid DAG (no cycles)
-- Roles assigned only from the available team roles
-- DEPENDENCIES ARE CRITICAL: tasks that need output from earlier tasks MUST list dependencies.
-  Example: frontend depends on backend API, testing depends on implementation, deployment depends on everything.
-  Only tasks with zero dependencies will run first. Others wait for their dependencies to complete.
-Plan is auto-approved and tasks begin executing immediately.`,
+      description: PromptLoader.loadTemplate("tools", "submit_plan"),
       schema: SubmitPlanSchema,
     },
   );

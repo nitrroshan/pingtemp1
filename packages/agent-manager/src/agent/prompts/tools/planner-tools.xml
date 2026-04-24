@@ -1,0 +1,160 @@
+<!--
+  tools/planner-tools.xml — Tool descriptions for planner agent tools
+  
+  Each <tool-desc> maps to a tool's `description` field in the tool() definition.
+  Loaded by PromptLoader.loadTemplate("tools", toolName) at tool creation time.
+  
+  Tool schemas (Zod) stay in TypeScript — only the prose descriptions live here.
+-->
+<tool-descriptions>
+
+<!-- ═══ Execution Tools (executionTools.ts) ═══ -->
+
+<template id="cancel_task">
+Cancel a running or pending task. If the task is in progress, its worker will be aborted.
+Use when: upstream dependency failed, scope changed, budget exceeded, or plan replaced.
+</template>
+
+<template id="get_blocked">
+Get all tasks that are blocked by incomplete dependencies. Shows what each task is waiting for.
+</template>
+
+<template id="get_critical_path">
+Get the longest dependency chain in the plan. Identifies the bottleneck path that determines minimum completion time.
+</template>
+
+<template id="search_agents">
+Search for available agent roles by capability. Useful when you need to find the right role for a task.
+</template>
+
+<!-- ═══ Knowledge Tools (knowledgeTools.ts) ═══ -->
+
+<template id="research_domain">
+Research a specific domain topic before planning. Use this to:
+- Understand architecture patterns for the tech stack
+- Learn about common pitfalls in the problem domain
+- Gather best practices before decomposing the goal
+Call this BEFORE creating a plan — research first, plan second.
+</template>
+
+<template id="analyze_requirements">
+Decompose a user's goal into structured requirements. Returns:
+- Core components needed
+- Hard vs soft constraints  
+- Risks and unknowns
+- Assumptions
+Use after clarifying with user but before creating the plan.
+</template>
+
+<template id="get_team_capabilities">
+Query the team's available agent roles and their capabilities. Returns:
+- Role names and IDs
+- Descriptions and goals
+- Skills available to each role
+Use this to understand what your team can do before assigning tasks.
+</template>
+
+<!-- ═══ Workflow Tools (submitPlan.ts, submitResearch.ts) ═══ -->
+
+<template id="submit_plan">
+Submit a task plan and start execution. The plan must have:
+- Valid task IDs with no duplicate IDs  
+- Dependencies that form a valid DAG (no cycles)
+- Roles assigned only from the available team roles
+- DEPENDENCIES ARE CRITICAL: tasks that need output from earlier tasks MUST list dependencies.
+  Example: frontend depends on backend API, testing depends on implementation, deployment depends on everything.
+  Only tasks with zero dependencies will run first. Others wait for their dependencies to complete.
+Plan is auto-approved and tasks begin executing immediately.
+</template>
+
+<template id="submit_research">
+Start a pre-plan research phase. Use this BEFORE submit_plan when you need more information to create a good plan.
+
+Examples of when to use:
+- "What tech stack are we using?" → create a research task for a researcher
+- "What compliance requirements apply?" → create a research task for a security reviewer
+- "What did we build last time?" → create a research task to review prior work
+
+Research tasks execute via the normal pipeline. You cannot call submit_plan until all research tasks complete.
+You CAN still chat with the user while research is running.
+</template>
+
+<!-- ═══ Monitoring Tools (getStatus.ts, getContext.ts) ═══ -->
+
+<template id="get_status">
+Get the current execution status of all tasks.
+Returns counts of tasks by status (ready, in_progress, completed, failed) 
+and a list of all tasks with their current status.
+Use this to monitor progress and report to the user.
+</template>
+
+<template id="get_context">
+Retrieve context and output manifests from previous task executions.
+Use this to:
+- Get outputs from prerequisite tasks
+- Access code/documentation from related tasks
+- Review previous analyses or decisions
+
+You can query by taskId for specific task outputs, or filter by role.
+</template>
+
+<!-- ═══ Plan Mutation Tools (planMutationTools.ts) ═══ -->
+
+<template id="update_task">
+Modify a pending/ready task's properties. Cannot modify in_progress or completed tasks.
+</template>
+
+<template id="add_tasks">
+Add new tasks to the active plan. Tasks must have valid dependencies (no cycles) and valid role assignments.
+</template>
+
+<template id="remove_task">
+Remove a pending/ready task from the plan. Optionally cascades to orphaned dependents.
+</template>
+
+<template id="reprioritize">
+Change a task's priority (1=highest, 5=lowest). Affects dispatch order for ready tasks.
+</template>
+
+<template id="reassign_task">
+Move a task to a different worker role. The new role must exist in the team.
+</template>
+
+<template id="replan">
+Replace the remaining plan. Cancels all pending/ready tasks and submits new ones. Use as a last resort when the current plan can't be salvaged.
+</template>
+
+<!-- ═══ Approval Tool (requestApproval.ts) ═══ -->
+
+<template id="request_approval">
+Request user approval for the submitted plan. Blocks until user approves or rejects.
+Call this AFTER submit_plan. If rejected, modify the plan and resubmit.
+</template>
+
+<!-- ═══ User Interaction Tools (userTools.ts) ═══ -->
+
+<template id="ask_user">
+Ask the user a question and wait for their response. Use this to:
+- Clarify ambiguous requirements
+- Get user decisions on trade-offs  
+- Request feedback on proposals
+The agent will pause until the user responds (max 5 minutes).
+</template>
+
+<template id="tell_user">
+Send the user an informational message. Does NOT wait for a response. Use for:
+- Sharing research findings
+- Reporting progress milestones
+- Warning about risks or delays
+- Status updates during execution
+</template>
+
+<template id="discuss_approach">
+Present multiple approaches/options to the user for their decision. Use when:
+- Multiple valid architectures exist
+- Trade-offs need user input (speed vs quality, cost vs features)
+- Risk decisions require user approval
+Blocks until the user selects an option.
+</template>
+
+</tool-descriptions>

@@ -7,6 +7,7 @@
 
 import { z } from "zod";
 import { tool } from "@langchain/core/tools";
+import { PromptLoader } from "../../../orchestrator/PromptLoader.js";
 
 /**
  * Status values that agents can report
@@ -52,11 +53,7 @@ export function createReportStatusTool(
     },
     {
       name: "report_status",
-      description: `Report your current task status to the user. Call this when:
-- You've made progress and want to update the user
-- You need clarification on requirements  
-- Your work is ready for user review
-- You are blocked and need help`,
+      description: PromptLoader.loadTemplate("tools", "report_status"),
       schema: TaskStatusSchema,
     }
   );

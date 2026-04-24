@@ -52,19 +52,13 @@ export class PlannerAgent {
           teamMembers: memberSummaries,
         });
       } else {
-        // Fallback: use inline YAML prompt + append team config
+        // Fallback: use inline YAML prompt + append team config from XML
         const original = this.agent.definition.systemPrompt || "";
-        this.agent.definition.systemPrompt = `${original}
-
-<team-config>
-## TEAM CONFIGURATION
-**Team ID**: ${this.config.teamId}
-**Available Team Roles**: ${this.config.teamRoles.join(", ")}
-
-CRITICAL: When creating plans, you MUST assign tasks ONLY to these roles.
-DO NOT invent new roles. Only use roles from the list above.
-</team-config>
-`;
+        const fallbackConfig = PromptLoader.loadFile("planner", "team-config-fallback.xml", {
+          teamId: this.config.teamId,
+          teamRoles: this.config.teamRoles.join(", "),
+        });
+        this.agent.definition.systemPrompt = `${original}\n\n${fallbackConfig}`;
       }
     }
 

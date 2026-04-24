@@ -140,6 +140,9 @@ export class AgentServiceV2 {
   private progressCallbacks: Set<(progress: Progress) => void> = new Set();
   private errorCallbacks: Set<(error: ErrorInfo) => void> = new Set();
   private streamCallbacks: Set<(payload: any) => void> = new Set();
+  // Discussion notification callbacks (v2.0)
+  private discussionActivityCallbacks: Set<(data: any) => void> = new Set();
+  private discussionMentionCallbacks: Set<(data: any) => void> = new Set();
 
   constructor(baseUrl: string = API_BASE_URL) {
     this.baseUrl = baseUrl;
@@ -268,6 +271,14 @@ export class AgentServiceV2 {
     // Stream event (Phase 2 — AI SDK streaming)
     this.socket.on("stream", (data: any) => {
       this.streamCallbacks.forEach((cb) => cb(data));
+    });
+
+    // Discussion events (v2.0 — discussion UI)
+    this.socket.on("discussion:activity", (data: any) => {
+      this.discussionActivityCallbacks.forEach((cb) => cb(data));
+    });
+    this.socket.on("discussion:mention", (data: any) => {
+      this.discussionMentionCallbacks.forEach((cb) => cb(data));
     });
   }
 
@@ -466,6 +477,22 @@ export class AgentServiceV2 {
   onStream(callback: (payload: any) => void): () => void {
     this.streamCallbacks.add(callback);
     return () => this.streamCallbacks.delete(callback);
+  }
+
+  /**
+   * Subscribe to discussion activity events (v2.0)
+   */
+  onDiscussionActivity(callback: (data: any) => void): () => void {
+    this.discussionActivityCallbacks.add(callback);
+    return () => this.discussionActivityCallbacks.delete(callback);
+  }
+
+  /**
+   * Subscribe to discussion @mention events (v2.0)
+   */
+  onDiscussionMention(callback: (data: any) => void): () => void {
+    this.discussionMentionCallbacks.add(callback);
+    return () => this.discussionMentionCallbacks.delete(callback);
   }
 
   // ============================================================================

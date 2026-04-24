@@ -1,0 +1,53 @@
+<!--
+  orchestrator/notifications.xml — Notification templates for OrchestratorService
+  
+  These are messages sent to the planner agent via notifyPlanner() when
+  task lifecycle events occur. Each template is identified by its id attribute.
+  
+  Template variables use {{variableName}} syntax, replaced at runtime by PromptLoader.loadTemplate().
+-->
+<notifications>
+
+<!-- Task created by an agent (via request_task tool) -->
+<template id="task-created">
+📋 Agent {{createdBy}} created task {{taskId}} for {{targetRole}}{{blocksSuffix}}. Use get_status to see updated task list.
+</template>
+
+<!-- Task bounced by a worker (via bounce_task tool) -->
+<template id="task-bounced">
+⚠️ Task {{taskId}} bounced by {{role}}: {{reason}}{{suggestedSuffix}}. Use reassign_task or replan to handle this.
+</template>
+
+<!-- All research tasks completed successfully -->
+<template id="research-complete">
+All research tasks completed. You now have the context to create a plan. Use submit_plan to create and execute the plan.
+</template>
+
+<!-- All tasks in the plan completed successfully -->
+<template id="all-complete">
+All tasks completed successfully.
+</template>
+
+<!-- Research phase ended with some failed tasks -->
+<template id="research-failed">
+⚠️ Research phase ended with 1+ failed tasks. You can:
+- Continue with partial results: call submit_plan
+- Retry research: call submit_research again
+Use get_status to review what succeeded and what failed.
+</template>
+
+<!-- A task failed during execution -->
+<template id="task-failed">
+❌ Task "{{description}}" ({{role}}) failed: {{error}}
+{{blockedSuffix}}
+ACTION REQUIRED — call one of these tools NOW (do NOT just describe what you'd do):
+- Call `get_status` to assess the situation
+- Call `add_tasks` to add recovery/diagnostic tasks
+- Call `reassign_task` to retry with a different role
+- Call `replan` to replace the remaining plan
+- Call `remove_task` to drop blocked downstream tasks
+
+You MUST call a tool. Do not respond with text only.
+</template>
+
+</notifications>

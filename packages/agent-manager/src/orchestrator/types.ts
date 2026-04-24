@@ -5,7 +5,6 @@
  */
 
 import type { ITaskProvider } from "./ITaskProvider.js";
-import type { MemoryManager } from "../memory/MemoryManager.js";
 import type { WorkerPool } from "../services/WorkerPool.js";
 import type { AgentPlanOutput } from "./schemas.js";
 
@@ -15,6 +14,7 @@ import type { AgentPlanOutput } from "./schemas.js";
 export type OrchestratorState =
   | "idle" // No active session
   | "gathering" // Gathering requirements through conversation
+  | "researching" // Pre-plan research tasks running (planner can't submit_plan yet)
   | "awaiting_approval" // Plan created, waiting for user approval
   | "executing"; // Plan approved, tasks being executed
 
@@ -48,7 +48,7 @@ export interface OrchestratorCallbacks {
  */
 export interface OrchestratorContext {
   // Core dependencies
-  memoryManager: ITaskProvider;
+  taskProvider: ITaskProvider;
   callbacks: OrchestratorCallbacks;
   planStore: any;
 
@@ -79,7 +79,7 @@ export interface OrchestratorContext {
 export interface OrchestratorConfig {
   teamId: string;
   teamRoles: string[];
-  memoryManager: MemoryManager;
+  taskProvider: ITaskProvider;
   workerPool: WorkerPool;
   callbacks?: OrchestratorCallbacks;
   /** Injected plan store (required in @ping/agent-manager). */

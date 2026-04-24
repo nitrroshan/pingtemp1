@@ -107,7 +107,7 @@ export interface MergeResult {
 }
 
 // Task types (from MemoryManager)
-export type { Task, TaskStatus, BranchStatus } from "./Task.types.js";
+export type { Task, TaskStatus, BranchStatus, CompletionSource } from "./Task.types.js";
 export type {
   TaskWithContext,
   QueueMetrics,

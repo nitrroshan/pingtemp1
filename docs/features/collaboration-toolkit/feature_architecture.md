@@ -1,7 +1,7 @@
 # Collaboration Toolkit — Tool Inventory & Build Plan
 
-**Status:** Architecture Draft  
-**Date:** April 11, 2026  
+**Status:** Partially implemented — Track 1 done, Tracks 2-3 pending  
+**Date:** April 17, 2026 (updated from April 11 draft)  
 **Scope:** All tools needed to enable collaboration, MCP server, and team stacking  
 **Deferred:** Dual-agent / DPT pattern (tracked separately in agent-collab-docs)
 
@@ -15,43 +15,58 @@ The tools are organized by **who uses them** (worker agents, planner, external a
 
 ---
 
-## Current Tool Inventory (What Exists)
+## Current Tool Inventory (April 2026)
 
 | Category | Count | Key Tools |
 |---|---|---|
-| **Workspace (L1)** | 31-36 | `workspace_read_file`, `workspace_write_file`, `workspace_commit`, `workspace_grep`, `keyword_search`, `whoami`, `my_context`, code intel (5 optional) |
-| **Collaboration (L2)** | 1 | `collab` — unified tool with 6 actions: `discover`, `list`, `read`, `read-block`, `write`, `write-block` |
-| **Planner coordination** | 20 | `submit_plan`, `get_status`, `get_context`, `add_tasks`, `cancel_task`, `ask_user`, `tell_user`, `discuss_approach`, `request_approval`, etc. |
-| **Worker lifecycle** | 2 | `report_status`, `complete_task` |
+| **Workspace (L1)** | 28-33 | `workspace_read_file`, `workspace_write_file`, `workspace_commit`, `workspace_grep`, `keyword_search`, `whoami`, `workspace_progress`, code intel (5 optional) |
+| **Collaboration (L2)** | 1 | `collab` — unified tool with 8 actions: `discover`, `list`, `read`, `read-block`, `write`, `write-block`, `discuss` (post/read/decide) |
+| **Planner coordination** | 15 | `submit_plan`, `submit_research`, `get_status`, `get_context`, `add_tasks`, `remove_task`, `reassign_task`, `reprioritize`, `replan`, `cancel_task`, `get_blocked`, `get_critical_path`, `search_agents`, `research_domain`, `analyze_requirements` |
+| **Worker lifecycle** | 4 | `report_status`, `complete_task`, `request_task`, `bounce_task` |
 | **Knowledge (L3)** | 0 | Stub — `L3KnowledgePlugin` exists but no tools registered |
-| **Total** | ~57 | |
+| **Total** | ~48 | |
 
-### What's Missing
+**Changes since original draft:**
+- `my_context`, `my_tools` removed (redundant — task context in prompt, tools known to LLM)
+- `my_progress` renamed to `workspace_progress` (standalone, no IdentityCard)
+- `whoami` simplified (reads `.ping/identity.json` instead of IdentityCard class)
+- `discuss` action added to `collab` tool (post/read/decide with guard rails)
+- `request_task` + `bounce_task` added as worker lifecycle tools
+- `submit_research` added as planner tool (pre-plan research phase)
+- Self-assign guard removed from `request_task` (R9-1 fix)
 
-The `collab` tool today supports **data sharing** (read/write to CRDT docs) but NOT:
-- Structured discussions between agents
-- Agent-to-agent task delegation
-- Decision recording with quorum
-- Cross-plan output queries
-- MCP-exposed equivalents for external agents
-- Team-level goal delegation
+### What's Still Missing
+
+Track 1 (Collaboration) is implemented. Remaining gaps:
+- **Priority mention routing** — `discuss post` with mentions should spawn collaboration workers immediately (see `inter-agent-collaboration/collaboration-audit.md`)
+- **`waitForResponse` in discuss tool** — blocking primitive for multi-turn agent discussions
+- MCP-exposed equivalents for external agents (Track 2 — not started)
+- Team-level goal delegation (Track 3 — not started)
+- Cross-plan output queries (partial — `references` field exists but basic)
 
 ---
 
 ## Tools to Build — Complete Catalog
 
-### Track 1: Collaboration Tools (for Worker Agents)
+### Track 1: Collaboration Tools (for Worker Agents) — ✅ IMPLEMENTED
 
-These 4 tools (plus one behavioral extension to `submit_plan`) extend what agents can do when collaborating with each other and with humans. All operate on the existing CRDT/Hocuspocus infrastructure.
+All 4 tools are built and wired. See `task-orchestration/markdown-tasks/issues-v1.md` for review history.
+
+**Implementation differs from original design in storage:** Tasks use CRDT persistence (CrdtTaskSync) instead of filesystem `.ping/tasks/` — see `task-orchestration/markdown-tasks/feature_implementation_planning.md` for the CRDT storage decision.
 
 ---
+
+#### T1. `discuss` — Structured Discussion Threads — ✅ DONE
+
+**Status:** Fully implemented in `packages/collaboration/src/L2/tools/index.ts` lines 643-780  
+**Implementation:** `collab({ action: "discuss", key: "post|read|decide" })` — Y.Array append-only threads with cursor-based read tracking, guard rails (maxRounds, maxTokens, timeout), and Y.Map decisions recording.", "oldString": "---
 
 #### T1. `discuss` — Structured Discussion Threads
 
 **Who uses it:** Worker agents  
 **Where it lives:** New action on existing `collab` tool  
 **Depends on:** Existing `CollaborationSpace`, `Y.Array`  
-**Ships in:** v1.0
+**Ships in:** v1.0"
 
 **What it does:** Posts a structured message block to a discussion thread (Y.Array) on a CRDT doc. Agents discuss design decisions, unblock each other, and record outcomes — all without blocking task execution.
 
@@ -93,7 +108,15 @@ collab({
 
 ---
 
-#### T2. `request_task` — Agent-to-Agent Task Delegation (Including Collaboration)
+#### T2. `request_task` — Agent-to-Agent Task Delegation — ✅ DONE
+
+**Status:** Fully implemented in `packages/agent-manager/src/agent/internal/tools/requestTaskTool.ts`  
+**Changes from original design:**
+- Self-assign guard REMOVED (R9-1 fix) — agents can create tasks for their own role
+- Sequential IDs (`task-N`) instead of timestamp IDs (R6-5 fix)
+- Task count derived from TaskStore, not module-scoped map (Fix #2)
+- Tasks persist to CRDT via CrdtTaskSync (not `.ping/tasks/` filesystem)
+- `collaboration` config object NOT implemented yet — collaboration uses `discuss` tool directly (see `inter-agent-collaboration/collaboration-audit.md`)
 
 **Who uses it:** Worker agents  
 **Where it lives:** New standalone tool in `packages/agent-manager/src/agent/internal/tools/`  
@@ -193,7 +216,7 @@ request_task({
 
 **Guard rails:**
 - `maxAgentCreatedTasks` = 5 per agent per plan (prevents infinite loops)
-- No self-assignment (can't create tasks for own role)
+- Agents CAN assign tasks to their own role (self-assign guard removed — R9-1)
 - Priority ceiling = 2 (priority 1 reserved for planner) — but auto-elevation can reach 2
 - Planner notified via `get_status` (sees `createdBy: agent:{role}`)
 - Planner can cancel via `cancel_task`
@@ -243,7 +266,10 @@ request_task({
 
 ---
 
-#### T3. `record_decision` — Record a Structured Decision
+#### T3. `record_decision` — Record a Structured Decision — ✅ DONE
+
+**Status:** Implemented as `collab({ action: "discuss", key: "decide" })` in tools/index.ts  
+**Note:** Merged into the `discuss` action rather than a separate `record-decision` action. Records to `Y.Map("decisions")` with decidedBy, agreedBy, timestamp.
 
 **Who uses it:** Worker agents, users  
 **Where it lives:** New action on `collab` tool  
@@ -283,7 +309,10 @@ collab({
 
 ---
 
-#### T4. `get_decisions` — Query Recorded Decisions
+#### T4. `get_decisions` — Query Recorded Decisions — ✅ DONE
+
+**Status:** Available via `collab({ action: "read", docName: "{taskId}/decisions" })` or `collab({ action: "list", docName: "{taskId}/decisions" })`.  
+**Note:** No separate `get-decisions` action — uses standard `read`/`list` actions on the decisions Y.Map doc.
 
 **Who uses it:** Worker agents, planner  
 **Where it lives:** New action on `collab` tool  
@@ -307,7 +336,10 @@ collab({
 
 ---
 
-#### Pre-Plan Research — Handled by `submit_plan` (No Separate Tool)
+#### Pre-Plan Research — ✅ DONE
+
+**Status:** Implemented as `submit_research` planner tool in `packages/agent-manager/src/orchestrator/tools/submitResearch.ts`  
+**Note:** Ended up as a separate tool (not an extension of `submit_plan` as originally planned). OrchestratorService has `researching` state that blocks `submit_plan` until research tasks complete.
 
 **Why no `submit_research` tool?** Same reasoning as `create_collaboration`: research is just task creation. The planner already has `submit_plan` and `replan`. A "research phase" is simply a plan where all tasks have `type: "research"`.
 
@@ -691,7 +723,10 @@ These aren't agent-facing tools but are required backend infrastructure for the 
 
 ---
 
-#### I1. Task.md File Format + TaskSyncer
+#### I1. Task.md File Format + TaskSyncer — ✅ DONE (as CRDT)
+
+**Status:** Implemented as `CrdtTaskSync` in `packages/collaboration/src/L2/collaboration/CrdtTaskSync.ts`  
+**Note:** Storage changed from filesystem `.ping/tasks/` to CRDT Y.Map documents via Hocuspocus. TaskStore remains in-memory runtime engine; CRDT is persistence layer. `projectToFilesystem` auto-creates readable projections.
 
 **Ships in:** v1.0
 
@@ -705,7 +740,10 @@ Markdown-first task storage. Tasks are `.ping/tasks/{taskId}.md` with YAML front
 
 ---
 
-#### I2. Plan.md File Format
+#### I2. Plan.md File Format — ✅ DONE (as CRDT)
+
+**Status:** Plans persist to CRDT via `CrdtTaskSync.persistPlan()` + existing PlanStore JSON files.  
+**Note:** Plans stored as CRDT Y.Map at `{teamId}/{goalId}/plan`, not `.ping/plans/` filesystem.
 
 **Ships in:** v1.0
 
@@ -780,7 +818,9 @@ Each team gets its own MCP server (same host, different path).
 
 ---
 
-#### I7. Discussion Guard Rail Engine
+#### I7. Discussion Guard Rail Engine — ✅ DONE
+
+**Status:** Implemented in `collab discuss` post handler (tools/index.ts). Tracks `totalTokensUsed`, `roundsPerAgent`, `config.status` in Y.Map("config"). Warns at 80% token budget, rejects at limit. maxRounds enforced per-agent.
 
 **Ships in:** v1.0 (with T1)
 
@@ -797,51 +837,56 @@ Enforces `maxRounds`, `maxTokens`, `timeoutMinutes` on discussions.
 
 ## Shipping Plan — What Goes When
 
-### v1.0 — Collaboration Primitives + MCP Server
+### v1.0 — Collaboration Primitives — ✅ COMPLETE
 
-**Goal:** Agents can discuss, delegate, record decisions. External agents can connect.
+**All collaboration tools built and wired.** See `task-orchestration/markdown-tasks/issues-v1.md` for 9 rounds of review (67 issues found, 52 fixed).
 
-| ID | Tool/Component | Track | New/Extend | Effort |
-|---|---|---|---|---|
-| T1 | `discuss` action | Collaboration | Extend `collab` | 2-3 days |
-| T2 | `request_task` (work + review + collaboration) | Collaboration | New tool | 4-5 days |
-| T3 | `record-decision` action | Collaboration | Extend `collab` | 1 day |
-| T4 | `get-decisions` action | Collaboration | Extend `collab` | 0.5 day |
-| I1 | TaskSyncer (Task.md) | Infrastructure | New | 3-4 days |
-| I2 | Plan.md format | Infrastructure | Modify `submit_plan` | 1-2 days |
-| I3 | MCP Server setup | MCP | New | 2-3 days |
-| I4 | MCP Auth | MCP | New | 1 day |
-| I5 | Capability negotiation (basic) | MCP | New | 1-2 days |
-| I7 | Discussion guard rails | Infrastructure | New | 2 days |
-| M1-M8 | MCP coordination + collab tools | MCP | Proxies | 2-3 days |
-| M9-M11 | MCP context + skills tools | MCP | Proxies | 1-2 days |
-| S4 | ExternalAgent class | Team Stacking | New | 3-4 days |
+| ID | Tool/Component | Status |
+|---|---|---|
+| T1 | `discuss` action (post/read/decide) | ✅ Done |
+| T2 | `request_task` (work/review/subtask) | ✅ Done |
+| T3 | `record-decision` (via discuss decide) | ✅ Done |
+| T4 | `get-decisions` (via collab read) | ✅ Done |
+| I1 | CrdtTaskSync (replaced TaskSyncer) | ✅ Done |
+| I2 | CRDT plan docs (replaced Plan.md files) | ✅ Done |
+| I7 | Discussion guard rails | ✅ Done |
+| — | `submit_research` (pre-plan research) | ✅ Done |
+| — | `bounce_task` | ✅ Done |
+| — | Task lifecycle SKILL.md | ✅ Done |
 
-**Total v1.0 estimate:** ~23-28 days of work
+**Still pending from original v1.0 scope (MCP — moved to separate phase):**
 
-### v1.1 — Team Stacking + Full Workspace MCP
+| ID | Tool/Component | Status |
+|---|---|---|
+| I3 | MCP Server setup | ❌ Not started |
+| I4 | MCP Auth | ❌ Not started |
+| I5 | Capability negotiation | ❌ Not started |
+| M1-M8 | MCP coordination + collab tools | ❌ Not started |
+| M9-M11 | MCP context + skills tools | ❌ Not started |
+| S4 | ExternalAgent class | ❌ Not started |
 
-**Goal:** Teams delegate to child teams. Research-before-planning via `type: "research"` tasks.
+### Next: Inter-Agent Collaboration Improvements
 
-| ID | Tool/Component | Track | New/Extend | Effort |
-|---|---|---|---|---|
-| — | `type: "research"` on tasks | Collaboration | Extend `submit_plan` | 1-2 days |
-| S1 | `submit_goal` (team MCP) | Team Stacking | New | 3-4 days |
-| S2 | `get_capabilities` (team MCP) | Team Stacking | New | 1 day |
-| S3 | `cancel` (team MCP) | Team Stacking | New | 1 day |
-| I6 | Team MCP server lifecycle | Infrastructure | New | 2-3 days |
-| M12-M20 | Workspace MCP tools | MCP | Proxies | 2-3 days |
+**See:** `docs/features/inter-agent-collaboration/collaboration-audit.md`
 
-**Total v1.1 estimate:** ~11-15 days of work
+| ID | Feature | Status | Effort |
+|---|---|---|---|
+| — | `waitForResponse` in discuss tool | ❌ Not started | 1.5 days |
+| — | `onMentionedRoles` → spawn collab worker | ❌ Not started | 1 day |
+| — | Collaboration prompt in dispatchTask | ❌ Not started | 0.5 day |
+| — | Frontend Hocuspocus URL verification | ❌ Not started | 0.5 day |
+| — | Sidebar discussion badge | ❌ Not started | 0.5 day |
 
-### v2.0 — Recursive Composition + Advanced Negotiation
+### Future: MCP Server + Team Stacking
 
 | ID | Tool/Component | Track | Notes |
 |---|---|---|---|
-| — | Recursive team stacking (depth limit, cycle detection) | Team Stacking | `delegationChain` already designed |
-| — | MCP `initialize` capability negotiation | MCP | Full handshake vs frontmatter detection |
-| — | Cross-team shared CRDT docs | Collaboration | Teams share docs across boundaries |
-| — | Cross-team dependency resolution | Team Stacking | Child team A output → child team B input |
+| I3-I6 | MCP Server infrastructure | MCP | Phase 5 roadmap |
+| M1-M20 | MCP tool proxies | MCP | Phase 5 roadmap |
+| S1-S3 | Team stacking tools | Team Stacking | Phase 6 roadmap |
+| S4 | ExternalAgent class | Team Stacking | Phase 6 roadmap |
+| — | Recursive team stacking | Team Stacking | v2.0 |
+| — | Cross-team CRDT docs | Collaboration | v2.0 |
 
 ---
 

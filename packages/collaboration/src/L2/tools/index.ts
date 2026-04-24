@@ -225,9 +225,83 @@ async function ensureMeta(
   });
 }
 
+/**
+ * R5-2 + R6-1 FIX: Resolve the correct Y.Map name for a CRDT doc.
+ *
+ * System docs (task, plan, goal) store data in a Y.Map named by type ("task", "plan", "goal"),
+ * NOT by the full docName ("task-5/task"). Custom agent docs use docName as the Y.Map name.
+ *
+ * This function introspects the doc's shared types to find the correct data map.
+ */
+const KNOWN_MAP_NAMES = ["task", "plan", "goal", "_index", "config", "cursors", "decisions", "discussion"];
+
+function resolveDataMap(doc: CollabDocument, docName: string): { mapName: string; map: Y.Map<any> } {
+  // Check ydoc.share directly — more reliable than toJSON() which may miss empty-but-registered maps
+  for (const name of KNOWN_MAP_NAMES) {
+    if (doc.ydoc.share.has(name)) {
+      const shared = doc.ydoc.share.get(name);
+      if (shared instanceof Y.Map) {
+        return { mapName: name, map: shared as Y.Map<any> };
+      }
+    }
+  }
+
+  // Also try toJSON for docs where share types aren't registered yet
+  const json = doc.toJSON();
+  for (const name of KNOWN_MAP_NAMES) {
+    if (json[name] !== undefined && name !== "default") {
+      return { mapName: name, map: doc.getMap(name) };
+    }
+  }
+
+  // Fallback: use docName as map name (custom agent docs)
+  return { mapName: docName, map: doc.getMap(docName) };
+}
+
+/**
+ * R5-2 FIX: Extract clean data from a CRDT doc for full reads.
+ * Strips the "default" meta map and returns only the data map.
+ */
+function extractDocData(doc: CollabDocument, docName: string): any {
+  const json = doc.toJSON();
+
+  // Try known map names first
+  for (const name of KNOWN_MAP_NAMES) {
+    if (json[name] !== undefined && typeof json[name] === "object") {
+      const data = json[name];
+      if (Object.keys(data).length > 0) return data;
+    }
+  }
+
+  // Try docName as map name
+  if (json[docName] !== undefined) {
+    const data = json[docName];
+    if (typeof data === "object" && "_meta" in data) {
+      const { _meta, ...rest } = data;
+      return rest;
+    }
+    return data;
+  }
+
+  // Return everything except "default"
+  const { default: _default, ...rest } = json;
+  const keys = Object.keys(rest);
+  if (keys.length === 1 && keys[0]) return rest[keys[0]];
+  if (keys.length > 1) return rest;
+  return json;
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // COLLAB TOOL — Unified L2 progressive-discovery tool
 // ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Callbacks for collab tool events (wired by WorkerPool → OrchestratorService).
+ */
+export interface CollabToolCallbacks {
+  /** Fired when discuss post mentions other roles — triggers priority worker spawn */
+  onMentionedRoles?: (roles: string[], sourceTaskId: string, docName: string, sourceRole?: string, postContent?: string) => void;
+}
 
 /**
  * Create the unified `collab` tool for agent L2 access.
@@ -239,6 +313,8 @@ export function createCollabTool(
   agentRole: string,
   l2: IL2CollaborationPlugin,
   repoPath: string,
+  taskId?: string,
+  callbacks?: CollabToolCallbacks,
 ): StructuredToolInterface {
   return tool(
     async ({
@@ -254,7 +330,8 @@ export function createCollabTool(
         | "read"
         | "write"
         | "write-block"
-        | "read-block";
+        | "read-block"
+        | "discuss";
       docName?: string;
       key?: string;
       value?: any;
@@ -267,15 +344,67 @@ export function createCollabTool(
           const crdtDocs = await space.listDocs();
           const plans = await l2.planStore.listAllPlans();
           const manifests = await l2.getAllManifests(repoPath);
+
+          // Count task docs ({taskId}/task pattern)
+          const taskDocs = crdtDocs.filter((d: string) => d.endsWith("/task") && d !== "goal" && d !== "plan");
+          // Check if goal exists
+          const hasGoal = crdtDocs.includes("goal");
+
           return [
             "Available L2 team state (use discover with docName to drill in):",
             "",
             `  crdt    — ${crdtDocs.length} real-time docs (${crdtDocs.join(", ") || "none yet"})`,
+            `  tasks   — ${taskDocs.length} task documents (CRDT-backed, read-only)`,
+            `  goal    — ${hasGoal ? "1 active goal" : "no goal yet"}`,
             `  plans   — ${plans.length} plan files`,
             `  outputs — ${manifests.length} task output manifests`,
             "",
-            'Use: collab({ action: "discover", docName: "crdt" | "plans" | "outputs" })',
+            'Use: collab({ action: "discover", docName: "crdt" | "tasks" | "goal" | "plans" | "outputs" })',
           ].join("\n");
+        }
+
+        if (docName === "tasks") {
+          const crdtDocs = await space.listDocs();
+          const taskDocs = crdtDocs.filter((d: string) => d.endsWith("/task") && d !== "goal" && d !== "plan");
+          if (!taskDocs.length) return "No tasks found. Plan has not been approved yet.";
+
+          const summaries: string[] = [];
+          for (const docPath of taskDocs) {
+            try {
+              const doc = await space.openDoc(docPath);
+              const map = doc.getMap("task");
+              const data = map.toJSON();
+              const taskId = docPath.replace("/task", "");
+              summaries.push(`  ${data.id || taskId} [${data.status || "?"}] — ${data.title || "untitled"} (${data.assignedRole || "?"})`);
+            } catch {
+              summaries.push(`  ${docPath} — (failed to read)`);
+            }
+          }
+          return [
+            "Tasks (read-only — managed by orchestrator):",
+            ...summaries,
+            "",
+            'Read task details: collab({ action: "read", docName: "{taskId}/task" })',
+            'List task docs: collab({ action: "list", docName: "{taskId}" }) — shows discussion, decisions, etc.',
+          ].join("\n");
+        }
+
+        if (docName === "goal") {
+          try {
+            const doc = await space.openDoc("goal");
+            const map = doc.getMap("goal");
+            const data = map.toJSON();
+            if (!data.id) return "No goal document found.";
+            return [
+              "Goal (read-only):",
+              `  ${data.id} [${data.status}] — "${data.title}"`,
+              `  Submitted by: ${data.submittedBy} · Created: ${data.createdAt}`,
+              "",
+              'Read full goal: collab({ action: "read", docName: "goal" })',
+            ].join("\n");
+          } catch {
+            return "No goal document found.";
+          }
         }
 
         if (docName === "crdt") {
@@ -337,6 +466,24 @@ export function createCollabTool(
         if (!docName)
           return "Provide docName. Use discover to see available categories.";
 
+        // List all tasks
+        if (docName === "tasks") {
+          const crdtDocs = await space.listDocs();
+          const taskDocs = crdtDocs.filter((d: string) => d.endsWith("/task") && d !== "goal" && d !== "plan");
+          if (!taskDocs.length) return "No tasks found.";
+          const items: string[] = [];
+          for (const docPath of taskDocs) {
+            try {
+              const doc = await space.openDoc(docPath);
+              const data = doc.getMap("task").toJSON();
+              items.push(`  - ${data.id} [${data.status}] — ${data.title} (${data.assignedRole})`);
+            } catch {
+              items.push(`  - ${docPath} (unreadable)`);
+            }
+          }
+          return items.join("\n") || "No tasks.";
+        }
+
         if (docName === "plans") {
           const plans = await l2.planStore.listAllPlans();
           return (
@@ -357,9 +504,38 @@ export function createCollabTool(
           );
         }
 
+        // R5-5 FIX: Auto-redirect bare task names to task data doc
+        // e.g., "task-1" → "task-1/task" if "task-1/task" exists in CRDT
+        if (!docName.includes("/") && /^task-/.test(docName)) {
+          const taskDocName = `${docName}/task`;
+          const allDocs = await space.listDocs();
+          if (allDocs.includes(taskDocName)) {
+            docName = taskDocName;
+          }
+        }
+
+        // STEP 1a: Discussion docs → return discussion blocks, not config map
+        if (docName.endsWith("/discussion")) {
+          const doc = await space.openDoc(docName);
+          const discussion = doc.getArray("discussion");
+          const blocks = discussion.toJSON();
+          if (!blocks.length) return `"${docName}" has no discussion blocks yet. Use discuss action to post.`;
+          const config = doc.getMap("config").toJSON();
+          const lines = blocks.map((b: any) =>
+            `  - [${b.type || "message"}] **${b.role}** (${b.timestamp}): ${(b.content || "").slice(0, 120)}${b.mentions?.length ? ` @${b.mentions.join(", @")}` : ""}`
+          );
+          return [
+            `Discussion "${docName}" — ${blocks.length} block(s), status: ${config.status || "active"}, tokens: ${config.totalTokensUsed || 0}/${config.maxTokens || 50000}`,
+            ...lines,
+            "",
+            'Use collab({ action: "discuss", key: "read" }) for cursor-based reading.',
+          ].join("\n");
+        }
+
         // CRDT doc — list keys with value previews (filter out _meta)
         const doc = await space.openDoc(docName);
-        const map = doc.getMap(docName);
+        // R5-2 + R6-1 FIX: Resolve correct Y.Map name instead of using docName
+        const { map } = resolveDataMap(doc, docName);
         const keys = Array.from(map.keys()).filter(
           (k: string) => k !== "_meta",
         );
@@ -398,22 +574,61 @@ export function createCollabTool(
             : `Output manifest "${key}" not found.`;
         }
 
+        // R5-5 FIX: Auto-redirect bare task names to task data doc
+        if (!docName.includes("/") && /^task-/.test(docName)) {
+          const taskDocName = `${docName}/task`;
+          const allDocs = await space.listDocs();
+          if (allDocs.includes(taskDocName)) {
+            docName = taskDocName;
+          }
+        }
+
+        // R9-5 FIX: Auto-redirect "plans" → "plan" (CRDT doc is singular)
+        if (docName === "plans" && !key) {
+          docName = "plan";
+        }
+
+        // STEP 1b: Discussion docs → return discussion blocks, not config map
+        if (docName.endsWith("/discussion")) {
+          const doc = await space.openDoc(docName);
+          const discussion = doc.getArray("discussion");
+          const blocks = discussion.toJSON();
+          if (!blocks.length) {
+            const config = doc.getMap("config").toJSON();
+            return `Discussion "${docName}" — 0 blocks, status: ${config.status || "active"}. Use collab({ action: "discuss", key: "post", ... }) to start.`;
+          }
+          const decisions = doc.getMap("decisions").toJSON();
+          const config = doc.getMap("config").toJSON();
+          const formatted = blocks.map((b: any) =>
+            `[${b.type || "message"}] ${b.role} (${b.timestamp}): ${b.content}${b.mentions?.length ? ` @${b.mentions.join(", @")}` : ""}`
+          ).join("\n\n");
+          const decisionCount = Object.keys(decisions).length;
+          return [
+            `Discussion "${docName}" — ${blocks.length} block(s), ${decisionCount} decision(s), status: ${config.status || "active"}`,
+            "",
+            formatted,
+            decisionCount > 0 ? `\nDecisions: ${JSON.stringify(decisions, null, 2)}` : "",
+          ].join("\n");
+        }
+
         // CRDT doc
         const doc = await space.openDoc(docName);
         if (key) {
           if (key === "_meta") return JSON.stringify(doc.getMeta(), null, 2);
-          const val = doc.getMap(docName).get(key);
+          // R5-2 FIX: Resolve correct Y.Map name instead of using docName
+          const { mapName, map } = resolveDataMap(doc, docName);
+          // R7-1 FIX: If key matches the map name (e.g., key="task" on a task doc),
+          // the agent wants the full data, not a literal key called "task"
+          if (key === mapName) {
+            return JSON.stringify(map.toJSON(), null, 2);
+          }
+          const val = map.get(key);
           return val != null
             ? JSON.stringify(val, null, 2)
             : `Key "${key}" not found in "${docName}".`;
         }
-        // Full doc read — strip _meta from output
-        const json = doc.toJSON();
-        const data = json[docName] ?? json;
-        if (data && typeof data === "object" && "_meta" in data) {
-          const { _meta, ...rest } = data;
-          return JSON.stringify(rest, null, 2);
-        }
+        // Full doc read — R5-2 FIX: extract clean data from doc
+        const data = extractDocData(doc, docName);
         return JSON.stringify(data, null, 2);
       }
 
@@ -421,8 +636,12 @@ export function createCollabTool(
       if (action === "write") {
         if (!docName || !key)
           return "Both docName and key required for writes.";
-        if (docName === "plans" || docName === "outputs")
-          return `"${docName}" is read-only. Only CRDT docs are writable.`;
+        // Fix #5: Comprehensive read-only protection for all system docs
+        const isSystemDoc = ["plans", "outputs", "tasks", "goal", "plan", "_index"].includes(docName);
+        const isTaskInternalDoc = /\/(task|discussion|decisions|config)$/.test(docName);
+        if (isSystemDoc || isTaskInternalDoc) {
+          return `"${docName}" is read-only. Use 'discuss' action for discussions, or write to custom CRDT docs.`;
+        }
 
         const doc = await space.openDoc(docName);
         const parsed = typeof value === "string" ? JSON.parse(value) : value;
@@ -438,6 +657,11 @@ export function createCollabTool(
       if (action === "write-block") {
         if (!docName || !value)
           return "docName and value (text content) required for write-block.";
+
+        // STEP 2: Block write-block on discussion docs — force agents to use discuss post
+        if (docName.endsWith("/discussion")) {
+          return `Cannot write-block to discussion docs. Use: collab({ action: "discuss", docName: "${docName}", key: "post", value: { content: "...", mentions: [...] } })`;
+        }
 
         const doc = await space.openDoc(docName);
         const fragment = doc.getXmlFragment("content");
@@ -472,23 +696,230 @@ export function createCollabTool(
         return text;
       }
 
-      return `Unknown action "${action}". Use: discover, list, read, read-block, write, write-block.`;
+      // === DISCUSS: Agent discussion protocol using Y.Array + cursor tracking ===
+      if (action === "discuss") {
+        if (!docName)
+          return "Provide docName (e.g., 'task-5' or 'task-5/discussion') for discuss action.";
+
+        // STEP 3: Auto-append /discussion suffix if missing
+        if (!docName.endsWith("/discussion")) {
+          docName = `${docName}/discussion`;
+        }
+
+        const doc = await space.openDoc(docName);
+
+        // Auto-initialize discussion docs if not yet initialized
+        // (handles case where discuss is called without prior initCollabDocs)
+        const earlyConfigMap = doc.getMap("config");
+        if (!earlyConfigMap.has("status")) {
+          earlyConfigMap.set("maxRounds", 10);
+          earlyConfigMap.set("maxTokens", 50000);
+          earlyConfigMap.set("timeoutMinutes", 15);
+          earlyConfigMap.set("totalTokensUsed", 0);
+          earlyConfigMap.set("roundsPerAgent", {});
+          earlyConfigMap.set("mode", "auto");
+          earlyConfigMap.set("status", "active");
+          earlyConfigMap.set("lastActivity", new Date().toISOString());
+        }
+
+        // Operation determined by key parameter:
+        // key = "post" → push a new discussion block
+        // key = "read" → read new blocks since cursor
+        // key = "decide" → record a decision
+        // key = undefined → read all blocks
+        const op = key || "read";
+
+        if (op === "post") {
+          // Push a discussion block to Y.Array
+          if (!value) return "Provide value with { content, type?, mentions? } for discuss post.";
+
+          // Check guard rails
+          const configMap = doc.getMap("config");
+          const config = configMap.toJSON();
+
+          if (config.status === "closed" || config.status === "escalated") {
+            return `Discussion is ${config.status}. No new posts allowed.`;
+          }
+
+          // BUG-3 FIX: Check-on-access timeout enforcement
+          const lastActivity = config.lastActivity ? new Date(config.lastActivity).getTime() : Date.now();
+          const timeoutMs = (config.timeoutMinutes || 15) * 60 * 1000;
+          if (Date.now() - lastActivity > timeoutMs && config.status === "active") {
+            configMap.set("status", "escalated");
+            return `Discussion timed out (no activity for ${config.timeoutMinutes || 15}min). Status: escalated. Use request_task to create a formal task instead.`;
+          }
+
+          const totalTokens = config.totalTokensUsed || 0;
+          const maxTokens = config.maxTokens || 50000;
+          if (totalTokens >= maxTokens) {
+            // BUG-2 FIX: Actually set status to closed
+            configMap.set("status", "closed");
+            return `Token limit reached (${totalTokens}/${maxTokens}). Discussion closed.`;
+          }
+
+          const roundsPerAgent = config.roundsPerAgent || {};
+          const myRounds = roundsPerAgent[agentRole] || 0;
+          const maxRounds = config.maxRounds || 10;
+          if (myRounds >= maxRounds) {
+            return `You have reached the round limit (${myRounds}/${maxRounds}). Cannot post more.`;
+          }
+
+          const parsed = typeof value === "string" ? JSON.parse(value) : value;
+          const block = {
+            id: crypto.randomUUID(),
+            role: agentRole,
+            timestamp: new Date().toISOString(),
+            content: parsed.content || "",
+            mentions: parsed.mentions || [],
+            replyTo: parsed.replyTo || undefined,
+            type: parsed.type || "message",
+            tokens: Math.ceil((parsed.content || "").length / 4), // rough estimate
+          };
+
+          // Push to discussion array
+          const discussion = doc.getArray("discussion");
+          discussion.push([block]);
+
+          // Fire mention routing callback — spawns collab workers for mentioned roles
+          if (block.mentions.length > 0 && callbacks?.onMentionedRoles && docName) {
+            callbacks.onMentionedRoles(block.mentions, taskId || "unknown", docName, agentRole, block.content);
+          }
+
+          // Update guard rail counters
+          configMap.set("totalTokensUsed", totalTokens + block.tokens);
+          configMap.set("roundsPerAgent", {
+            ...roundsPerAgent,
+            [agentRole]: myRounds + 1,
+          });
+          configMap.set("lastActivity", block.timestamp);
+
+          // Update cursor
+          const cursors = doc.getMap("cursors");
+          cursors.set(agentRole, block.timestamp);
+
+          // Warn if approaching token limit
+          const newTotal = totalTokens + block.tokens;
+          let warning = newTotal > maxTokens * 0.8
+            ? ` ⚠️ Token usage at ${Math.round(newTotal / maxTokens * 100)}% — wrap up soon.`
+            : "";
+
+          // Phase 4: Check if all participants have posted → transition to all_posted
+          const participants = configMap.get("participants") as string[] || [];
+          if (participants.length > 0) {
+            const allBlocks = discussion.toJSON();
+            const posters = new Set(allBlocks.map((b: any) => b.role));
+            if (participants.every((p: string) => posters.has(p)) && configMap.get("status") === "active") {
+              configMap.set("status", "all_posted");
+              warning += " All participants have posted. Record a decision when ready.";
+            }
+          }
+
+          // Fix 4: Non-blocking mentions — return immediately, agent reads response later
+          if (parsed.waitForResponse && block.mentions.length > 0) {
+            return [
+              `Posted discussion block. ${block.mentions.join(", ")} notified.`,
+              `Round ${myRounds + 1}/${maxRounds}, tokens ${newTotal}/${maxTokens}.${warning}`,
+              ``,
+              `Their response will appear in the discussion.`,
+              `Read it with: collab({ action: "discuss", docName: "${docName}", key: "read" })`,
+            ].join("\n");
+          }
+
+          return `Posted discussion block (${block.type}). Round ${myRounds + 1}/${maxRounds}, tokens ${newTotal}/${maxTokens}.${warning}`;
+        }
+
+        if (op === "read") {
+          // Read new blocks since cursor
+          const cursors = doc.getMap("cursors");
+          const myLastRead = cursors.get(agentRole) as string ?? "1970-01-01T00:00:00Z";
+
+          const discussion = doc.getArray("discussion");
+          const allBlocks = discussion.toJSON();
+          const newBlocks = allBlocks.filter((b: any) => b.timestamp > myLastRead);
+
+          // Update cursor to now
+          cursors.set(agentRole, new Date().toISOString());
+
+          if (newBlocks.length === 0) {
+            return "No new discussion blocks since your last read.";
+          }
+
+          const formatted = newBlocks.map((b: any) =>
+            `[${b.type}] ${b.role} (${b.timestamp}): ${b.content}${b.mentions?.length ? ` @${b.mentions.join(", @")}` : ""}`
+          ).join("\n\n");
+
+          return `${newBlocks.length} new block(s):\n\n${formatted}`;
+        }
+
+        if (op === "decide") {
+          // Record a decision with quorum verification
+          if (!value) return "Provide value with { key, decision, agreedBy? } for discuss decide.";
+
+          const parsed = typeof value === "string" ? JSON.parse(value) : value;
+
+          // Phase 2: Quorum verification — only roles that posted can be in agreedBy
+          const allBlocks = doc.getArray("discussion").toJSON();
+          const posterRoles = new Set<string>(allBlocks.map((b: any) => b.role));
+          const requested = parsed.agreedBy || [agentRole];
+          const verified = requested.filter((r: string) => posterRoles.has(r));
+          const missing = requested.filter((r: string) => !posterRoles.has(r));
+
+          if (missing.length > 0) {
+            return `Cannot include ${missing.join(", ")} in agreedBy — they haven't posted. ` +
+              `Roles that posted: ${[...posterRoles].join(", ")}`;
+          }
+
+          const decisions = doc.getMap("decisions");
+          decisions.set(parsed.key || "decision", {
+            decision: parsed.decision,
+            decidedBy: agentRole,
+            agreedBy: verified,
+            posterCount: posterRoles.size,
+            timestamp: new Date().toISOString(),
+          });
+
+          // Phase 3: Auto-resolve matching agenda item
+          const configMap = doc.getMap("config");
+          const agenda = configMap.get("agenda") as any[];
+          if (agenda) {
+            const updated = agenda.map((item: any) =>
+              (item.id === parsed.key || item.text?.toLowerCase().includes((parsed.key || "").toLowerCase()))
+                ? { ...item, resolved: true }
+                : item
+            );
+            configMap.set("agenda", updated);
+          }
+
+          // Phase 4: Auto-close discussion on decide
+          configMap.set("status", "closed");
+
+          return `Decision recorded: "${parsed.decision}" by ${agentRole}. Agreed by: ${verified.join(", ")}. Discussion closed.`;
+        }
+
+        return `Unknown discuss operation "${op}". Use key = "post" | "read" | "decide".`;
+      }
+
+      return `Unknown action "${action}". Use: discover, list, read, read-block, write, write-block, discuss.`;
     },
     {
       name: "collab",
       description: [
-        "Access shared team state — CRDT docs, plans, and output manifests.",
+        "Access shared team state — CRDT docs, tasks, goals, plans, and output manifests.",
         "Progressive discovery: start with discover, then list, read, or write.",
         "",
         "Actions:",
-        "  discover     — browse L2 categories (no docName) or items in a category (docName = crdt|plans|outputs)",
-        "  list         — show keys in a CRDT doc, or items in plans/outputs",
-        "  read         — get a specific key/item as JSON",
+        "  discover     — browse L2 categories (no docName) or items in a category (docName = crdt|tasks|goal|plans|outputs)",
+        "  list         — show keys in a CRDT doc, tasks, or items in plans/outputs",
+        "  read         — get a specific key/item as JSON (read {taskId}/task for task details, read goal for goal)",
         "  read-block   — read the rich text content from a collaborative document (what humans and agents wrote in the editor)",
-        "  write        — set a key/value in a CRDT doc (structured JSON data)",
+        "  write        — set a key/value in a CRDT doc (structured JSON data) — tasks/goals/plans are read-only",
         "  write-block  — insert rich text into a collaborative document (visible in the shared editor)",
         "               Use markdown: # headings, ## subheadings, - bullets, plain paragraphs",
         '               Use "key" as a section title. Content appears in BlockNote editor for all users.',
+        "  discuss      — discussion protocol with cursor tracking (key = post | read | decide)",
+        '               post: push a message block { content, type?, mentions? }',
+        '               read: get new blocks since your last read (cursor-based)',
+        '               decide: record a decision { key, decision, agreedBy? }',
       ].join("\n"),
       schema: z.object({
         action: z
@@ -499,9 +930,10 @@ export function createCollabTool(
             "read-block",
             "write",
             "write-block",
+            "discuss",
           ])
           .describe(
-            "discover | list | read | read-block | write | write-block",
+            "discover | list | read | read-block | write | write-block | discuss",
           ),
         docName: z
           .string()

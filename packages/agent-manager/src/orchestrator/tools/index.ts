@@ -11,6 +11,7 @@ import type { DependencyResolver } from "../DependencyResolver.js";
 // Planner tools (no user interaction tools — planner talks naturally via text)
 import { createResearchDomainTool, createAnalyzeRequirementsTool, createGetTeamCapabilitiesTool, type KnowledgeToolContext } from "./knowledgeTools.js";
 import { createSubmitPlanTool } from "./submitPlan.js";
+import { createSubmitResearchTool } from "./submitResearch.js";
 import { createGetStatusTool } from "./getStatus.js";
 import { createGetContextTool } from "./getContext.js";
 import { createCancelTaskTool, createGetBlockedTool, createGetCriticalPathTool, createSearchAgentsTool, type ExecutionToolContext } from "./executionTools.js";
@@ -33,7 +34,7 @@ export interface PlannerToolsContext {
 
 /**
  * Creates the planner tool set (for PLANNER_MODE=agent)
- * 14 tools: knowledge (3) + execution (6) + plan mutation (5)
+ * 15 tools: knowledge (3) + execution (7) + plan mutation (5)
  * User interaction is natural text — no ask_user/tell_user tools.
  */
 export function createPlannerTools(ctx: PlannerToolsContext) {
@@ -44,14 +45,14 @@ export function createPlannerTools(ctx: PlannerToolsContext) {
   };
 
   const execCtx: ExecutionToolContext = {
-    tasks: octx.memoryManager,
+    tasks: octx.taskProvider,
     dagResolver: ctx.dagResolver,
     agentFactory: ctx.agentFactory,
     onCancelTask: ctx.onCancelTask,
   };
 
   const mutCtx: PlanMutationContext = {
-    tasks: octx.memoryManager,
+    tasks: octx.taskProvider,
     dagResolver: ctx.dagResolver,
     availableRoles: octx.teamRoles,
     onMutation: ctx.onMutation,
@@ -63,8 +64,9 @@ export function createPlannerTools(ctx: PlannerToolsContext) {
     createAnalyzeRequirementsTool(knowledgeCtx),
     createGetTeamCapabilitiesTool(knowledgeCtx),
 
-    // Execution (6)
+    // Execution (7)
     createSubmitPlanTool({ orchestratorContext: octx, dagResolver: ctx.dagResolver }),
+    createSubmitResearchTool({ orchestratorContext: octx, dagResolver: ctx.dagResolver }),
     createGetStatusTool(octx),
     createGetContextTool(octx),
     createCancelTaskTool(execCtx),
@@ -86,6 +88,7 @@ export function createPlannerTools(ctx: PlannerToolsContext) {
 export { createGetStatusTool } from "./getStatus.js";
 export { createGetContextTool } from "./getContext.js";
 export { createSubmitPlanTool } from "./submitPlan.js";
+export { createSubmitResearchTool } from "./submitResearch.js";
 export { createResearchDomainTool, createAnalyzeRequirementsTool, createGetTeamCapabilitiesTool } from "./knowledgeTools.js";
 export { createCancelTaskTool, createGetBlockedTool, createGetCriticalPathTool, createSearchAgentsTool } from "./executionTools.js";
 export { createUpdateTaskTool, createAddTasksTool, createRemoveTaskTool, createReprioritizeTool, createReassignTaskTool, createReplanTool } from "./planMutationTools.js";

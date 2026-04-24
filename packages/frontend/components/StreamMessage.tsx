@@ -11,6 +11,7 @@
  */
 
 import React from 'react';
+import Markdown from 'react-markdown';
 import type { RenderedPart } from '../types';
 import ReasoningSection from './ReasoningSection';
 import ToolCard from './ToolCard';
@@ -26,8 +27,8 @@ interface StreamMessageProps {
 const StreamMessage: React.FC<StreamMessageProps> = ({ parts, isStreaming, fallbackContent }) => {
   if (parts.length === 0) {
     return (
-      <div className="whitespace-pre-wrap font-mono text-[13px]">
-        {fallbackContent || ''}
+      <div className="text-sm [&_h1]:text-base [&_h1]:font-bold [&_h1]:mt-2 [&_h1]:mb-1 [&_h2]:text-sm [&_h2]:font-bold [&_h2]:mt-2 [&_h2]:mb-1 [&_h3]:text-sm [&_h3]:font-semibold [&_h3]:mt-1 [&_p]:my-1 [&_ul]:list-disc [&_ul]:pl-4 [&_ul]:my-1 [&_ol]:list-decimal [&_ol]:pl-4 [&_ol]:my-1 [&_li]:my-0.5 [&_code]:bg-muted [&_code]:px-1 [&_code]:rounded [&_code]:text-xs [&_pre]:bg-muted [&_pre]:p-2 [&_pre]:rounded [&_pre]:my-1 [&_pre]:overflow-x-auto [&_pre]:text-xs [&_strong]:font-semibold [&_a]:text-primary [&_a]:underline">
+        <Markdown>{fallbackContent || ''}</Markdown>
         {isStreaming && <span className="animate-pulse text-primary">▍</span>}
       </div>
     );
@@ -39,8 +40,8 @@ const StreamMessage: React.FC<StreamMessageProps> = ({ parts, isStreaming, fallb
         switch (part.type) {
           case 'text':
             return (
-              <div key={`text-${part.id}-${idx}`} className="whitespace-pre-wrap font-mono text-[13px]">
-                {part.text}
+              <div key={`text-${part.id}-${idx}`} className="text-sm [&_h1]:text-base [&_h1]:font-bold [&_h1]:mt-2 [&_h1]:mb-1 [&_h2]:text-sm [&_h2]:font-bold [&_h2]:mt-2 [&_h2]:mb-1 [&_h3]:text-sm [&_h3]:font-semibold [&_h3]:mt-1 [&_p]:my-1 [&_ul]:list-disc [&_ul]:pl-4 [&_ul]:my-1 [&_ol]:list-decimal [&_ol]:pl-4 [&_ol]:my-1 [&_li]:my-0.5 [&_code]:bg-muted [&_code]:px-1 [&_code]:rounded [&_code]:text-xs [&_pre]:bg-muted [&_pre]:p-2 [&_pre]:rounded [&_pre]:my-1 [&_pre]:overflow-x-auto [&_pre]:text-xs [&_strong]:font-semibold [&_a]:text-primary [&_a]:underline">
+                <Markdown>{part.text}</Markdown>
                 {!part.done && isStreaming && (
                   <span className="animate-pulse text-primary">▍</span>
                 )}

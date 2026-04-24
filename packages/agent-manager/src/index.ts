@@ -20,7 +20,7 @@ export type { WorkerCallbacks } from "./services/WorkerPool.js";
 
 // OrchestratorService
 export { OrchestratorService } from "./orchestrator/OrchestratorService.js";
-export type { OrchestratorServiceConfig } from "./orchestrator/OrchestratorService.js";
+export type { OrchestratorServiceConfig, CrdtProxy } from "./orchestrator/OrchestratorService.js";
 
 export type {
   OrchestratorState,
@@ -63,6 +63,19 @@ export type {
 export { AiSdkAgent } from "./agent/internal/AiSdkAgent.js";
 export { AgentFactory, getAgentFactory } from "./agent/AgentFactory.js";
 export { BaseAgent } from "./agent/BaseAgent.js";
+// Fix #19: Export worker tool factories and types
+export {
+  createReportStatusTool,
+  createCompleteTaskTool,
+  createRequestTaskTool,
+  createBounceTaskTool,
+} from "./agent/internal/tools/index.js";
+export type {
+  RequestTaskContext,
+  RequestTaskInput,
+  BounceTaskContext,
+  BounceTaskInput,
+} from "./agent/internal/tools/index.js";
 export type {
   AgentDefinition,
   AgentEvent,
@@ -73,8 +86,7 @@ export type {
   InternalConfig,
 } from "./agent/types.js";
 
-// MemoryManager
-export { MemoryManager } from "./memory/MemoryManager.js";
+// Task types
 export type { Task, TaskStatus } from "./memory/types/index.js";
 
 // Persistence (built-in defaults)

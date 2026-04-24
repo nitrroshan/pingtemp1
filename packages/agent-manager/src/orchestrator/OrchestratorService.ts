@@ -21,6 +21,7 @@ import type { PluginRegistry } from "../plugin/PluginRegistry.js";
 import { toGoalId } from "../plugin/utils.js";
 import { classifyError } from "./types/workerTypes.js";
 import { rootLogger } from "../logging.js";
+import { PromptLoader } from "./PromptLoader.js";
 import type {
   OrchestratorState,
   OrchestratorCallbacks,
@@ -33,6 +34,16 @@ const log = rootLogger.child({ module: "OrchestratorService" });
 const MAX_TASK_RETRIES = 3;
 /** Max concurrent task dispatches to avoid overwhelming the LLM provider */
 const MAX_CONCURRENT_DISPATCHES = 2;
+
+// ═══════════════════════════════════════════════════════════════════
+// CRDT Proxy Interface (lazy resolution per goal)
+// ═══════════════════════════════════════════════════════════════════
+
+/** Lazy proxy for goal-scoped CRDT stores. Resolved when approvePlan sets goalId. */
+export interface CrdtProxy<T = any> {
+  get(): T | null;
+  resolveForGoal(goalId: string): void;
+}
 
 // ═══════════════════════════════════════════════════════════════════
 // CONFIG
@@ -52,6 +63,10 @@ export interface OrchestratorServiceConfig {
   userInteractionManager?: UserInteractionManager;
   notificationQueue?: NotificationQueue;
   planStore?: any;
+
+  // CRDT task persistence (injected by AgentManager from CollaborationPlugin)
+  crdtTaskSync?: CrdtProxy;
+  crdtGoalStore?: CrdtProxy;
 
   // Callbacks → AgentManager → SocketServerV2 → Frontend
   callbacks?: OrchestratorCallbacks;
@@ -80,6 +95,9 @@ export class OrchestratorService {
   private uim?: UserInteractionManager;
   private notificationQueue?: NotificationQueue;
   private planStore: any;
+  // CRDT persistence — lazy proxies that resolve per-goal
+  private crdtTaskSyncProxy: CrdtProxy | undefined;
+  private crdtGoalStoreProxy: CrdtProxy | undefined;
 
   // State — only 2 states in planner mode (planner manages its own phases)
   private state: OrchestratorState = "idle";
@@ -111,6 +129,8 @@ export class OrchestratorService {
     this.uim = config.userInteractionManager;
     this.notificationQueue = config.notificationQueue;
     this.planStore = config.planStore;
+    this.crdtTaskSyncProxy = config.crdtTaskSync;
+    this.crdtGoalStoreProxy = config.crdtGoalStore;
     this.callbacks = config.callbacks || {};
     this.sessionId = `team-${config.teamId}`;
     this.autoExecute = config.autoExecute ?? false;
@@ -136,6 +156,51 @@ export class OrchestratorService {
       onDone: (data) => this.callbacks.onDone?.(data),
       onError: (data) => this.callbacks.onError?.(data),
       onAgentComplete: (data) => this.onWorkerDone(data),
+      // R10-3 FIX: Track last reported status on task for blocked detection
+      onStatusUpdate: (data) => {
+        const task = this.taskStore.get(data.taskId);
+        if (task) {
+          task.lastReportedStatus = data.status;
+        }
+      },
+      // R2-#4 FIX: Wire agent-initiated task callbacks so planner is notified
+      onTaskCreated: (data) => {
+        log.info(`Agent-created task: ${data.taskId} by ${data.createdBy} → ${data.targetRole}`);
+        this.callbacks.onTaskUpdate?.({
+          taskId: data.taskId, status: "pending", role: data.targetRole, timestamp: Date.now(),
+        });
+        // Notify planner so it can track agent-created tasks
+        this.notifyPlanner(
+          PromptLoader.loadTemplate("orchestrator", "task-created", {
+            createdBy: data.createdBy,
+            taskId: data.taskId,
+            targetRole: data.targetRole,
+            blocksSuffix: data.relationship === "blocks-me" ? ` (blocks ${data.parentTaskId})` : "",
+          }),
+        );
+        // R6-6 FIX: Dispatch newly ready tasks (agent-created independent tasks have no prereqs)
+        if (this.autoExecute) {
+          this.dispatchReadyTasks();
+        }
+      },
+      onBounce: (data) => {
+        log.info(`Task bounced: ${data.taskId} by ${data.role} — ${data.reason}`);
+
+        // R9-2 FIX: Handle dependency failure for bounced task
+        // Bounced tasks are marked "failed" — notify planner with blocked downstream info
+        this.handleTaskFailure(data.taskId, `Bounced by ${data.role}: ${data.reason}`);
+
+        this.notifyPlanner(
+          PromptLoader.loadTemplate("orchestrator", "task-bounced", {
+            taskId: data.taskId,
+            role: data.role,
+            reason: data.reason,
+            suggestedSuffix: data.suggestedRole ? `. Suggested role: ${data.suggestedRole}` : "",
+          }),
+        );
+      },
+      // Step 3+4: Priority mention routing — spawn collab workers immediately
+      onMentionedRoles: (data) => this.spawnCollabWorkers(data.roles, data.docName, data.sourceRole, data.postContent),
     });
 
     // Load active plan for restart recovery
@@ -208,11 +273,16 @@ export class OrchestratorService {
       let tasksQueued = 0;
       for (const task of planToApprove.tasks) {
         const taskContext = (task as any).context || {};
+        const taskType = (task as any).type || taskContext.type || "work";
         this.taskStore.create({
           id: task.id,
+          title: task.title,
           description: `${task.title}: ${task.description}`,
           assigned_role: task.assignedRole.toLowerCase(),
           status: "pending",
+          priority: task.priority,
+          type: taskType,
+          expectedOutput: task.expectedOutput,
           prerequisites: new Map<string, boolean>(
             task.dependencies.map((depId: string) => [depId, false] as [string, boolean]),
           ),
@@ -224,11 +294,12 @@ export class OrchestratorService {
             priority: task.priority,
             complexity: task.complexity,
             expectedOutput: task.expectedOutput,
-            // Include structured context from PlanBuilder
             notes: taskContext.notes || "",
             files: taskContext.files || [],
             artifacts: taskContext.artifacts || [],
             relatedTasks: taskContext.relatedTasks || [],
+            references: (task as any).references || [],
+            type: taskType,
           },
         });
         tasksQueued++;
@@ -242,6 +313,81 @@ export class OrchestratorService {
       const goalId = toGoalId(planToApprove.goal || planId);
       this.currentGoalId = goalId;
       this.workerPool.setTeamId(this.teamId);
+
+      // ─── CRDT Persistence ───────────────────────────────────────────
+      // Resolve CRDT stores for this goal (lazy — goal-scoped)
+      if (this.crdtTaskSyncProxy?.resolveForGoal) {
+        this.crdtTaskSyncProxy.resolveForGoal(goalId);
+      }
+
+      // R5-1 FIX: Update CollaborationPlugin goalId so collab tool reads from correct space
+      const collabPlugin = this.pluginRegistry?.get("collaboration");
+      if (collabPlugin && typeof (collabPlugin as any).setGoalId === 'function') {
+        (collabPlugin as any).setGoalId(goalId);
+        log.info(`[approvePlan] CollaborationPlugin goalId set to "${goalId}"`);
+
+        // Wire collab callbacks so discuss mentions trigger priority worker spawn
+        if (typeof (collabPlugin as any).setCollabCallbacks === 'function') {
+          (collabPlugin as any).setCollabCallbacks({
+            onMentionedRoles: (roles: string[], sourceTaskId: string, docName: string, sourceRole?: string, postContent?: string) => {
+              this.spawnCollabWorkers(roles, docName, sourceRole, postContent);
+            },
+          });
+        }
+      }
+
+      // R2-#1 FIX: Update WorkerPool with resolved CRDT instance
+      const resolvedCrdtSync = this.crdtTaskSyncProxy?.get?.();
+      if (resolvedCrdtSync) {
+        this.workerPool.setTaskServices({
+          taskStore: this.taskStore,
+          dagResolver: this.dagResolver,
+          teamRoles: this.teamRoles,
+          crdtTaskSync: resolvedCrdtSync,
+          planId,
+          goalId,
+        });
+      }
+
+      // Persist goal, plan, and tasks to CRDT (durable, agent-browseable)
+      const crdtGoalStore = this.crdtGoalStoreProxy?.get?.();
+      if (crdtGoalStore) {
+        await crdtGoalStore.saveGoal(
+          goalId,
+          planToApprove.goal || planId,
+          planToApprove.goal || "",
+        );
+        await crdtGoalStore.updateStatus("executing", planId);
+      }
+
+      const crdtTaskSync = this.crdtTaskSyncProxy?.get?.();
+      if (crdtTaskSync) {
+        // R6-4 FIX: Persist each task to CRDT with error handling
+        let persistedCount = 0;
+        const allTasks = this.taskStore.getAll();
+        for (const task of allTasks) {
+          try {
+            await crdtTaskSync.persistTask(task);
+            persistedCount++;
+          } catch (err) {
+            log.error(`[approvePlan] Failed to persist task ${task.id} to CRDT: ${err}`);
+          }
+        }
+        log.info(`[approvePlan] Persisted ${persistedCount}/${allTasks.length} tasks to CRDT`);
+        // Persist plan overview to CRDT
+        try {
+          await crdtTaskSync.persistPlan(planToApprove, goalId);
+        } catch (err) {
+          log.error(`[approvePlan] Failed to persist plan to CRDT: ${err}`);
+        }
+        // Update task index
+        try {
+          await crdtTaskSync.updateIndex(allTasks);
+        } catch (err) {
+          log.error(`[approvePlan] Failed to update CRDT task index: ${err}`);
+        }
+      }
+      // ────────────────────────────────────────────────────────────────
 
       // Persist plan
       if (this.planStore) {
@@ -286,6 +432,51 @@ export class OrchestratorService {
   getUserInteractionManager(): UserInteractionManager | undefined { return this.uim; }
 
   // ═══════════════════════════════════════════════════════════════════
+  // PLAN MUTATION DISPATCH (single entry point — replaces scattered onMutation handlers)
+  // ═══════════════════════════════════════════════════════════════════
+
+  /**
+   * React to plan mutations from planner tools.
+   * Dispatches newly ready tasks that were created/unblocked by the mutation.
+   *
+   * This is the SINGLE place where mutation→dispatch happens (SRP).
+   * AgentManagerV2 only forwards events here — no dispatch logic there.
+   */
+  onPlanMutation(event: { type: string; data: any }): void {
+    // Dispatch reassigned tasks whose status was reset to ready
+    if (event.type === "plan:task_reassigned" && event.data?.statusReset && event.data?.taskId) {
+      this.manualDispatch(event.data.taskId).catch((err) => {
+        log.warn(`Failed to dispatch reassigned task ${event.data.taskId}: ${err}`);
+      });
+      return;
+    }
+
+    // Dispatch newly ready tasks after add_tasks or replan
+    if (event.type === "plan:tasks_added" || event.type === "plan:replanned") {
+      const taskIds: string[] = event.data?.tasks || event.data?.newTasks || [];
+      for (const tid of taskIds) {
+        const task = this.taskStore.get(tid);
+        if (task && task.status === "ready") {
+          this.manualDispatch(tid).catch((err) => {
+            log.warn(`Failed to dispatch new task ${tid}: ${err}`);
+          });
+        }
+      }
+      return;
+    }
+
+    // Dispatch updated tasks whose dependencies resolved to ready
+    if (event.type === "plan:task_updated" && event.data?.patch?.dependencies && event.data?.taskId) {
+      const task = this.taskStore.get(event.data.taskId);
+      if (task && task.status === "ready") {
+        this.manualDispatch(event.data.taskId).catch((err) => {
+          log.warn(`Failed to dispatch updated task ${event.data.taskId}: ${err}`);
+        });
+      }
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════
   // TASK LIFECYCLE CALLBACKS (wired from RoleTaskQueue via TaskStore)
   // ═══════════════════════════════════════════════════════════════════
 
@@ -299,6 +490,52 @@ export class OrchestratorService {
       if (this.activeDispatches.has(task.id)) continue;
       // Re-use the same onTaskReady path which handles concurrency limits
       this.onTaskReady({ taskId: task.id, role: task.assigned_role });
+    }
+  }
+
+  /**
+   * Spawn collab workers for mentioned roles. Validates roles, includes context.
+   * Single implementation — called from both initialize() and approvePlan() callbacks.
+   */
+  private spawnCollabWorkers(
+    roles: string[], docName: string, sourceRole?: string, postContent?: string,
+  ): void {
+    // Fix 1: Validate mentions against team roles
+    const validRoles = roles.filter(r => this.teamRoles.some(tr => tr.toLowerCase() === r.toLowerCase()));
+    const invalidRoles = roles.filter(r => !this.teamRoles.some(tr => tr.toLowerCase() === r.toLowerCase()));
+    if (invalidRoles.length > 0) {
+      log.warn(`Mention validation: unknown roles ignored: ${invalidRoles.join(", ")}`);
+    }
+    // Filter self-mentions (agent mentioning own role)
+    const effectiveRoles = validRoles.filter(r => r.toLowerCase() !== sourceRole?.toLowerCase());
+    if (effectiveRoles.length === 0) return;
+
+    log.info(`Spawning collab workers: ${effectiveRoles.join(", ")} for ${docName}`);
+
+    for (const role of effectiveRoles) {
+      const collabWorkerId = `collab-${docName.replace(/\//g, "-")}-${role}`;
+      if (this.workerPool.hasActiveWorker(collabWorkerId)) continue;
+
+      // Fix 2: Context-aware collab worker prompt
+      const excerpt = postContent ? postContent.slice(0, 500) : "(no content available)";
+      const collabMessage = [
+        `## You were mentioned by ${sourceRole || "another agent"} in a discussion`,
+        ``,
+        `### What they said:`,
+        `> ${excerpt}`,
+        ``,
+        `### Your task:`,
+        `1. Read the discussion: \`collab({ action: "discuss", docName: "${docName}", key: "read" })\``,
+        `2. Post your response: \`collab({ action: "discuss", docName: "${docName}", key: "post", value: { content: "YOUR RESPONSE" } })\``,
+        `3. Complete: \`complete_task({ summary: "Responded to ${sourceRole || "discussion"}" })\``,
+        ``,
+        `If you have no expertise on this topic, call \`bounce_task()\`.`,
+        `Keep it brief — this is alignment, not implementation.`,
+      ].join("\n");
+
+      this.workerPool.runTask(collabWorkerId, role, collabMessage)
+        .catch((err) => log.error(`Collab worker ${collabWorkerId} error: ${err}`))
+        .finally(() => { this.workerPool.dispose(collabWorkerId).catch(() => {}); });
     }
   }
 
@@ -391,13 +628,124 @@ export class OrchestratorService {
     });
 
     if (this.taskStore.isAllComplete()) {
-      this.state = "idle";
-      this.notifyPlanner("All tasks completed successfully.");
-      this.callbacks.onProgress?.({
-        teamId: this.teamId, state: "idle",
-        message: "All tasks completed successfully",
-        timestamp: new Date().toISOString(),
-      });
+      // Check if we're in research phase → transition to planning, not idle
+      if (this.state === "researching") {
+        this.state = "idle"; // Back to idle — planner can now call submit_plan
+        this.notifyPlanner(
+          PromptLoader.loadTemplate("orchestrator", "research-complete"),
+        );
+        this.callbacks.onProgress?.({
+          teamId: this.teamId, state: "idle",
+          message: "Research complete — ready for planning",
+          timestamp: new Date().toISOString(),
+        });
+      } else {
+        // R10-6 FIX: Differentiate success vs failure notifications
+        const allTasks = this.taskStore.getAll();
+        const failedTasks = allTasks.filter(t => t.status === "failed");
+        const discardedTasks = allTasks.filter(t => t.status === "discarded");
+        const completedTasks = allTasks.filter(t => t.status === "completed");
+
+        this.state = "idle";
+
+        if (failedTasks.length > 0) {
+          // Some tasks failed — planner MUST act
+          this.notifyPlanner(
+            `⚠️ All tasks finished but ${failedTasks.length} failed:\n` +
+            failedTasks.map(t => `- ${t.id} (${t.assigned_role}): ${t.description?.slice(0, 80)}`).join("\n") +
+            `\n\n${completedTasks.length} completed, ${discardedTasks.length} discarded.` +
+            `\n\nACTION REQUIRED — call a tool NOW:` +
+            `\n- Call \`get_status\` to review details` +
+            `\n- Call \`reassign_task\` to retry failed tasks` +
+            `\n- Call \`replan\` to replace the plan` +
+            `\n- Or tell the user the results if no recovery is possible` +
+            `\nDo NOT just describe what happened — take action.`,
+          );
+          this.callbacks.onProgress?.({
+            teamId: this.teamId, state: "idle",
+            message: `${completedTasks.length} completed, ${failedTasks.length} failed`,
+            timestamp: new Date().toISOString(),
+          });
+        } else {
+          // All succeeded — sync plan status and notify
+          const crdtSyncComplete = this.crdtTaskSyncProxy?.get?.();
+          if (crdtSyncComplete?.syncPlanStatus) {
+            crdtSyncComplete.syncPlanStatus("completed").catch((err: any) => {
+              log.warn(`Failed to sync plan completion to CRDT: ${err}`);
+            });
+          }
+          this.notifyPlanner(PromptLoader.loadTemplate("orchestrator", "all-complete"));
+          this.callbacks.onProgress?.({
+            teamId: this.teamId, state: "idle",
+            message: "All tasks completed successfully",
+            timestamp: new Date().toISOString(),
+          });
+        }
+      }
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════
+  // R9-2 FIX: Dependency failure cascade
+  // When a task fails or bounces, handle its downstream dependants
+  // based on the onDependencyFail strategy (default: notify planner)
+  // ═══════════════════════════════════════════════════════════════════
+
+  /**
+   * Handle dependency failure — applies onDependencyFail strategy to downstream tasks.
+   * Called from both onTaskFailed() and onBounce().
+   *
+   * Strategies:
+   * - "replan" (default for bounced tasks): notify planner, keep dependants pending
+   * - "fail": cascade failure to all dependants recursively
+   * - "skip": mark dependants as completed with skip note
+   */
+  private handleTaskFailure(taskId: string, reason: string): void {
+    const task = this.taskStore.get(taskId);
+    if (!task) return;
+
+    // Find direct dependants
+    const dependants = this.taskStore.getAll().filter(
+      (t) => t.prerequisites?.has(taskId) && t.status !== "completed" && t.status !== "failed"
+    );
+
+    if (dependants.length === 0) return;
+
+    for (const dep of dependants) {
+      const strategy = (dep.context as any)?.onDependencyFail || "replan";
+
+      switch (strategy) {
+        case "fail":
+          // Cascade failure
+          this.taskStore.updateStatus(dep.id, "failed");
+          this.callbacks.onTaskUpdate?.({
+            taskId: dep.id, status: "failed", role: dep.assigned_role, timestamp: Date.now(),
+          });
+          log.info(`[DependencyFail] Cascaded failure: ${taskId} → ${dep.id} (${dep.assigned_role})`);
+          // Recurse for transitive dependants
+          this.handleTaskFailure(dep.id, `Upstream dependency ${taskId} failed`);
+          break;
+
+        case "skip":
+          // Mark as completed with skip note
+          this.taskStore.completeTask(dep.id, {
+            summary: `Skipped: upstream dependency ${taskId} failed`,
+            skipped: true,
+            skipReason: reason,
+          });
+          this.callbacks.onTaskUpdate?.({
+            taskId: dep.id, status: "completed", role: dep.assigned_role, timestamp: Date.now(),
+          });
+          log.info(`[DependencyFail] Skipped: ${dep.id} (upstream ${taskId} failed)`);
+          break;
+
+        case "replan":
+        default:
+          // Keep pending — planner will decide what to do
+          // The planner notification from onTaskFailed/onBounce includes blocked task info
+          log.info(`[DependencyFail] Awaiting planner decision for ${dep.id} (blocked by ${taskId})`);
+          break;
+      }
     }
   }
 
@@ -406,18 +754,67 @@ export class OrchestratorService {
     log.error(`onTaskFailed: ${taskId}: ${error}`);
     const task = this.taskStore.get(taskId);
 
+    // Store failure reason on task for downstream context enrichment
+    if (task) {
+      task.output = { error, failedAt: new Date().toISOString(), summary: `FAILED: ${error}` };
+    }
+
     // Notify plugins (workspace cleanup, etc.)
     this.pluginRegistry?.onTaskFailed(taskId).catch((err) => {
       log.warn(`Plugin onTaskFailed error for ${taskId}: ${err}`);
     });
 
+    // ─── CRDT Persistence ───
+    // Fix #3: Explicit null guard with warning log
+    const crdtSync = this.crdtTaskSyncProxy?.get?.();
+    if (crdtSync) {
+      crdtSync.syncStatus(taskId, "failed").catch((err: any) => {
+        log.warn(`CRDT sync failed for task ${taskId}: ${err}`);
+      });
+      crdtSync.updateIndex(this.taskStore.getAll()).catch(() => {});
+    } else {
+      log.debug(`CRDT not resolved — skipping failed status sync for ${taskId}`);
+    }
+    // ───────────────────────
+
+    // R2-#2 FIX: Check if we're in researching state and all tasks are done (including failures)
+    const allTasksDone = this.taskStore.getAll().every(
+      (t) => t.status === "completed" || t.status === "failed"
+    );
+    if (this.state === "researching" && allTasksDone) {
+      this.state = "idle";
+      this.notifyPlanner(
+        PromptLoader.loadTemplate("orchestrator", "research-failed"),
+      );
+      this.callbacks.onProgress?.({
+        teamId: this.teamId, state: "idle",
+        message: "Research phase completed with failures",
+        timestamp: new Date().toISOString(),
+      });
+    }
+
     this.callbacks.onTaskUpdate?.({
       taskId, status: "failed", role: task?.assigned_role, timestamp: Date.now(),
     });
 
+    // R9-2 FIX: Handle dependency failure cascade for downstream tasks
+    this.handleTaskFailure(taskId, error);
+
+    // Identify downstream tasks blocked by this failure (for planner notification)
+    const blockedTasks = this.taskStore.getAll()
+      .filter(t => t.prerequisites?.has(taskId) && t.status !== "completed" && t.status !== "failed")
+      .map(t => `${t.id} (${t.assigned_role})`)
+      .join(", ") || null;
+
     this.notifyPlanner(
-      `❌ Task "${task?.description || taskId}" (${task?.assigned_role || "unknown"}) failed: ${error}\n` +
-      `Use get_status to see current state. Options: replan, add_tasks, remove_task.`,
+      PromptLoader.loadTemplate("orchestrator", "task-failed", {
+        description: task?.description || taskId,
+        role: task?.assigned_role || "unknown",
+        error,
+        blockedSuffix: blockedTasks
+          ? `⚠️ Blocked downstream tasks: ${blockedTasks}\n`
+          : "",
+      }),
     );
   }
 
@@ -428,29 +825,90 @@ export class OrchestratorService {
   }): Promise<void> {
     console.log(`[OrchestratorService] Worker done: ${data.taskId}`);
 
+    // Guard: skip if task is already completed (prevents double-completion crash)
+    const currentTask = this.taskStore.get(data.taskId);
+
+    // Fix 3: Collab workers have IDs like "collab-task-5-discussion-frontend" — not in TaskStore
+    if (!currentTask && data.taskId.startsWith("collab-")) {
+      log.debug(`Collab worker ${data.taskId} completed — no TaskStore entry (expected)`);
+      return;
+    }
+
+    if (currentTask && (currentTask.status === "completed" || currentTask.status === "discarded")) {
+      log.debug(`Task ${data.taskId} already ${currentTask.status} — skipping onWorkerDone`);
+      return;
+    }
+
+    // Mark that agent called complete_task — prevents auto-complete race condition
+    if (currentTask) {
+      currentTask.completionSource = "tool";
+    }
+
     // Notify plugins (workspace publish + merge, etc.)
-    let mergeWarning = "";
     if (this.pluginRegistry) {
       try {
         const result = await this.pluginRegistry.onTaskComplete(data.taskId, this.currentGoalId || undefined);
         if (!result.success) {
-          mergeWarning = `Warning: plugin onTaskComplete failed for task ${data.taskId}: ${result.error}. ` +
-            `Work may be on branch but not merged to main.`;
-          console.warn(`[OrchestratorService] ${mergeWarning}`);
+          // BUG A FIX: Merge failure → fail the task, don't complete it.
+          // This prevents dependent tasks from dispatching against a main branch
+          // that's missing the predecessor's files.
+          const mergeError = `Workspace merge failed: ${result.error}`;
+          log.error(`[OrchestratorService] ${mergeError}`);
+          try { this.taskStore.updateStatus(data.taskId, "failed"); } catch { /* already failed */ }
+          this.taskStore.queue.failTask(data.taskId, mergeError);
+          this.callbacks?.onTaskUpdate?.({ taskId: data.taskId, status: "failed", timestamp: data.timestamp });
+          return;
         }
       } catch (err) {
-        mergeWarning = `Warning: plugin cleanup failed for task ${data.taskId}: ${err}`;
-        console.warn(`[OrchestratorService] ${mergeWarning}`);
+        const mergeError = `Plugin cleanup crashed for task ${data.taskId}: ${err}`;
+        log.error(`[OrchestratorService] ${mergeError}`);
+        try { this.taskStore.updateStatus(data.taskId, "failed"); } catch { /* already failed */ }
+        this.taskStore.queue.failTask(data.taskId, mergeError);
+        this.callbacks?.onTaskUpdate?.({ taskId: data.taskId, status: "failed", timestamp: data.timestamp });
+        return;
+      }
+    }
+
+    // Auto-close discussion CRDT if this is a discussion task
+    const completingTask = this.taskStore.get(data.taskId);
+    if (completingTask && (completingTask.type === "discussion" || completingTask.type === "collaboration")) {
+      try {
+        const crdtSync = this.crdtTaskSyncProxy?.get?.();
+        if (crdtSync) {
+          const discussionDoc = await crdtSync.space.openDoc(`${data.taskId}/discussion`);
+          const configMap = discussionDoc.getMap("config");
+          if (configMap.get("status") !== "closed") {
+            configMap.set("status", "closed");
+            log.info(`Auto-closed discussion for completed task ${data.taskId}`);
+          }
+        }
+      } catch (err) {
+        log.debug(`Failed to auto-close discussion for ${data.taskId}: ${err}`);
       }
     }
 
     // Mark complete in TaskStore → triggers onTaskComplete via RoleTaskQueue
     // Newly ready dependants are queued → onTaskReady fires → auto-dispatch if enabled
     this.taskStore.completeTask(data.taskId, {
-      summary: data.summary + (mergeWarning ? `\n${mergeWarning}` : ""),
+      summary: data.summary,
       deliverables: data.deliverables,
       nextSteps: data.nextSteps, completedBy: "agent", timestamp: data.timestamp,
     });
+
+    // ─── CRDT Persistence ───────────────────────────────────────────
+    // Fix #3: Explicit null guard with warning log
+    const crdtSyncDone = this.crdtTaskSyncProxy?.get?.();
+    if (crdtSyncDone) {
+      await crdtSyncDone.syncStatus(data.taskId, "completed", {
+        summary: data.summary,
+        deliverables: data.deliverables,
+        nextSteps: data.nextSteps,
+      });
+      await crdtSyncDone.updateIndex(this.taskStore.getAll());
+    } else {
+      log.debug(`CRDT not resolved — skipping completed status sync for ${data.taskId}`);
+    }
+    // ────────────────────────────────────────────────────────────────
   }
 
   // ═══════════════════════════════════════════════════════════════════
@@ -475,6 +933,33 @@ export class OrchestratorService {
     });
 
     try {
+      // ─── CollabTaskDispatcher: Initialize CRDT docs for collaboration/discussion tasks ───
+      const taskType = task.type || task.context?.type;
+      if ((taskType === "collaboration" || taskType === "discussion") && this.crdtTaskSyncProxy?.get?.()) {
+        try {
+          const collabConfig = task.context?.collaboration || {};
+
+          // Phase 3: Extract agenda from task description (numbered items)
+          const agendaLines = task.description
+            .split("\n")
+            .filter((l: string) => /^\d+\./.test(l.trim()))
+            .map((l: string) => l.trim().replace(/^\d+\.\s*/, ""));
+
+          // Phase 4: Set participants from team roles
+          const participants = this.teamRoles.map(r => r.toLowerCase());
+
+          await this.crdtTaskSyncProxy.get().initCollabDocs(taskId, {
+            ...collabConfig,
+            agenda: agendaLines.length > 0 ? agendaLines : undefined,
+            participants,
+          });
+          log.info(`Initialized discussion CRDT docs for task ${taskId} (agenda: ${agendaLines.length} items, participants: ${participants.length})`);
+        } catch (err) {
+          log.warn(`Failed to initialize collab docs for ${taskId}: ${err}`);
+        }
+      }
+      // ──────────────────────────────────────────────────────────────────────────
+
       // Context is pre-built by TaskStore.enrichDependantContext() at upstream completion time.
       // Planner-provided context (notes, files, artifacts) is already on task.context from create().
       // We just read — no assembly logic here.
@@ -487,8 +972,35 @@ export class OrchestratorService {
         ...(Array.isArray(taskCtx.artifacts) ? taskCtx.artifacts : []),
       ];
 
+      // ─── CRDT Context Enrichment ─────────────────────────────────────
+      // Inject CRDT references so agents can use `collab read` to access task details
+      let crdtRefs: Record<string, any> | undefined;
+      const crdtSyncDispatch = this.crdtTaskSyncProxy?.get?.();
+      if (crdtSyncDispatch) {
+        crdtRefs = crdtSyncDispatch.getCrdtRefs(taskId, task);
+        // Sync status to in_progress in CRDT
+        await crdtSyncDispatch.syncStatus(taskId, "in_progress");
+      } else {
+        log.debug(`CRDT not resolved — agent won't have collab read access for ${taskId}`);
+      }
+      // ────────────────────────────────────────────────────────────────
+
       // Enrich description with planner notes + upstream notes + expected output
       let enrichedDescription = task.description;
+
+      // Inject upstream task outputs into the description so the agent knows what was done
+      if (previousOutputs.length > 0) {
+        enrichedDescription += `\n\n## Completed Upstream Work`;
+        enrichedDescription += `\nThese tasks completed before yours. Their output files are already in your workspace (merged to main).`;
+        for (const po of previousOutputs) {
+          enrichedDescription += `\n\n### ${po.taskId} (${po.role})${po.status === "failed" ? " ❌ FAILED" : ""}`;
+          enrichedDescription += `\n${po.summary}`;
+        }
+        if (artifacts.length > 0) {
+          enrichedDescription += `\n\n**Files/artifacts from upstream:** ${artifacts.join(", ")}`;
+        }
+        enrichedDescription += `\n\nUse \`workspace_list_files\` to see all available files in your workspace.`;
+      }
 
       const allNotes: string[] = [
         ...(Array.isArray(taskCtx.notes) ? taskCtx.notes : taskCtx.notes ? [taskCtx.notes] : []),
@@ -501,25 +1013,149 @@ export class OrchestratorService {
         enrichedDescription += `\n\nExpected output: ${taskCtx.expectedOutput}`;
       }
 
+      // ─── Cross-Plan Reference Resolution (v1.1) ─────────────────────
+      const references = Array.isArray(taskCtx.references) ? taskCtx.references : [];
+      const unresolvedRefs: string[] = [];  // R2-#5: Track failures
+      if (references.length > 0 && this.planStore) {
+        const priorOutputs: string[] = [];
+        for (const ref of references) {
+          try {
+            // ref format: "plan-001/task-003" or "{goalId}/task-003"
+            const [refPlanOrGoal, refTaskId] = ref.split("/");
+            if (!refTaskId) {
+              unresolvedRefs.push(`${ref} (invalid format)`);
+              continue;
+            }
+
+            // Try loading from PlanStore
+            const allPlans = await this.planStore.listAllPlans();
+            const matchPlan = allPlans.find((p: any) => p.planId === refPlanOrGoal || p.goalId === refPlanOrGoal);
+            if (matchPlan) {
+              const stored = await this.planStore.loadPlan(matchPlan.planId, matchPlan.goalId);
+              const refTask = stored?.plan?.tasks?.find((t: any) => t.id === refTaskId);
+              if (refTask?.output) {
+                const summary = typeof refTask.output === "string" ? refTask.output : JSON.stringify(refTask.output).slice(0, 500);
+                priorOutputs.push(`- ${ref}: ${summary}`);
+              } else {
+                unresolvedRefs.push(`${ref} (task found, no output)`);
+              }
+            } else {
+              unresolvedRefs.push(`${ref} (plan/goal not found)`);
+            }
+          } catch (err) {
+            unresolvedRefs.push(`${ref} (error: ${err})`);
+          }
+        }
+        if (priorOutputs.length > 0) {
+          enrichedDescription += `\n\n## Prior Work (from previous plans)\n${priorOutputs.join("\n")}`;
+        }
+        // R2-#5 FIX: Warn agent about unresolved references
+        if (unresolvedRefs.length > 0) {
+          log.warn(`Task ${taskId}: ${unresolvedRefs.length}/${references.length} cross-plan refs unresolved`);
+          enrichedDescription += `\n\n⚠️ Unresolved references (${unresolvedRefs.length}): ${unresolvedRefs.join(", ")}`;
+        }
+      }
+      // ────────────────────────────────────────────────────────────────
+
+      // Fix #15: Add CRDT references to agent prompt so agents know how to access task details
+      if (crdtRefs) {
+        enrichedDescription += `\n\n## Context Sources (use collab read to access)`;
+        enrichedDescription += `\n- Your task: collab read ${crdtRefs.task}`;
+        enrichedDescription += `\n- Plan: collab read ${crdtRefs.plan}`;
+        enrichedDescription += `\n- Goal: collab read ${crdtRefs.goal}`;
+        if (crdtRefs.dependencies?.length) {
+          enrichedDescription += `\n- Completed dependencies: ${crdtRefs.dependencies.join(", ")}`;
+        }
+        if (crdtRefs.dependants?.length) {
+          enrichedDescription += `\n- Downstream (depends on you): ${crdtRefs.dependants.join(", ")}`;
+        }
+      }
+
+      // R8: Inject team roster so agents know who they can create tasks for
+      if (this.teamRoles.length > 0) {
+        const otherRoles = this.teamRoles.filter(r => r.toLowerCase() !== role.toLowerCase());
+        if (otherRoles.length > 0) {
+          enrichedDescription += `\n\n## Your Team`;
+          enrichedDescription += `\nOther roles you can collaborate with or create tasks for:`;
+          enrichedDescription += otherRoles.map(r => `\n- ${r}`).join("");
+          enrichedDescription += `\n\nIf you need work from another role, use request_task({ targetRole: "role-name", relationship: "blocks-me" }).`;
+          enrichedDescription += `\nIf this task is wrong for your role, use bounce_task().`;
+        }
+      }
+
+      // Step 5: Discussion-specific prompt for type: "discussion" or "collaboration" tasks
+      if (task.type === "collaboration" || task.type === "discussion" || task.context?.type === "collaboration") {
+        const discussionDocName = `${taskId}/discussion`;
+        const otherRoles = this.teamRoles.filter(r => r.toLowerCase() !== role.toLowerCase());
+        enrichedDescription += `\n\n## ⚡ Discussion Task`;
+        enrichedDescription += `\nYou are participating in a cross-role discussion. Other team roles: ${otherRoles.join(", ")}.`;
+
+        // Phase 3: Inject agenda if present
+        const agendaLines = task.description
+          .split("\n")
+          .filter((l: string) => /^\d+\./.test(l.trim()))
+          .map((l: string) => l.trim().replace(/^\d+\.\s*/, ""));
+        if (agendaLines.length > 0) {
+          enrichedDescription += `\n\n### Agenda:`;
+          enrichedDescription += agendaLines.map((a, i) => `\n${i + 1}. ${a}`).join("");
+          enrichedDescription += `\nAddress each item. Use decide with matching key to resolve each.`;
+        }
+        enrichedDescription += `\n\n### Protocol (follow these steps exactly):`;
+        enrichedDescription += `\n1. **Read** existing discussion:`;
+        enrichedDescription += `\n   \`collab({ action: "discuss", docName: "${discussionDocName}", key: "read" })\``;
+        enrichedDescription += `\n2. **Post** your perspective (mention other roles for their input):`;
+        enrichedDescription += `\n   \`collab({ action: "discuss", docName: "${discussionDocName}", key: "post", value: { content: "YOUR INPUT HERE", mentions: [${otherRoles.map(r => `"${r}"`).join(", ")}] } })\``;
+        enrichedDescription += `\n3. **Read** again to check for responses:`;
+        enrichedDescription += `\n   \`collab({ action: "discuss", docName: "${discussionDocName}", key: "read" })\``;
+        enrichedDescription += `\n4. **Decide** when consensus is reached:`;
+        enrichedDescription += `\n   \`collab({ action: "discuss", docName: "${discussionDocName}", key: "decide", value: { key: "outcome", decision: "...", agreedBy: ["${role}", ...] } })\``;
+        enrichedDescription += `\n5. **Complete**: \`complete_task({ summary: "Decision: ..." })\``;
+        enrichedDescription += `\n\n### Rules:`;
+        enrichedDescription += `\n- Post ONCE with your expert perspective. Don't repeat yourself.`;
+        enrichedDescription += `\n- Read other participants' posts before recording a decision.`;
+        enrichedDescription += `\n- Do NOT use write-block — only use discuss post/read/decide.`;
+        enrichedDescription += `\n- Keep it brief — this is alignment, not implementation.`;
+      }
+
       await this.workerPool.runTask({
         id: taskId, assigned_role: role, description: enrichedDescription,
         priority: task.priority || 0,
-        context: { previousOutputs, artifacts },
+        context: { previousOutputs, artifacts, crdtRefs },
         createdAt: Date.now(), status: "in_progress",
       });
 
       // If worker finished without calling complete_task (generated text and stopped),
       // auto-complete the task. The worker's text response is its output.
+      // Guard: check status AFTER runTask returns — onWorkerDone may have already completed it
       const afterTask = this.taskStore.get(taskId);
-      if (afterTask && afterTask.status === "in_progress") {
-        console.log(`[OrchestratorService] Worker finished without complete_task, auto-completing ${taskId}`);
-        this.taskStore.completeTask(taskId, {
-          summary: "Task completed (auto-completed — worker finished without calling complete_task)",
-          completedBy: "auto",
-          timestamp: Date.now(),
-        });
-        // Newly ready tasks are handled by RoleTaskQueue → onTaskReady callback.
-        // No need to emit onTaskUpdate(ready) here — onTaskReady does it.
+      if (afterTask && afterTask.status === "in_progress" && !afterTask.completionSource) {
+        // R10-3 FIX: Don't auto-complete if the task was reported as blocked
+        const wasBlocked = afterTask.lastReportedStatus === "blocked";
+        if (wasBlocked) {
+          log.info(`[OrchestratorService] Worker for ${taskId} was blocked — marking as failed, not auto-completing`);
+          try { this.taskStore.updateStatus(taskId, "failed"); } catch { /* guard */ }
+          this.taskStore.queue.failTask(taskId, "Agent reported blocked and could not complete");
+        } else {
+          console.log(`[OrchestratorService] Worker finished without complete_task, auto-completing ${taskId}`);
+
+          // Publish + merge workspace before completing (same as onWorkerDone path)
+          if (this.pluginRegistry) {
+            try {
+              const result = await this.pluginRegistry.onTaskComplete(taskId, this.currentGoalId || undefined);
+              if (!result.success) {
+                console.warn(`[OrchestratorService] Auto-complete merge warning for ${taskId}: ${result.error}`);
+              }
+            } catch (err) {
+              console.warn(`[OrchestratorService] Auto-complete plugin error for ${taskId}: ${err}`);
+            }
+          }
+
+          this.taskStore.completeTask(taskId, {
+            summary: "Task completed (auto-completed — worker finished without calling complete_task)",
+            completedBy: "auto",
+            timestamp: Date.now(),
+          });
+        }
       }
     } catch (error: any) {
       if (this.taskStore.get(taskId)?.status === "completed") return;
@@ -625,6 +1261,11 @@ export class OrchestratorService {
         const s = await this.planStore.getLatestActivePlan();
         if (s && (s.metadata.status === "executing" || s.metadata.status === "approved")) {
           await this.planStore.archivePlan(s.plan.planId, s.metadata.goalId);
+          // BUG-1 FIX: Sync plan status to CRDT
+          const crdtSync = this.crdtTaskSyncProxy?.get?.();
+          if (crdtSync?.syncPlanStatus) {
+            await crdtSync.syncPlanStatus("interrupted").catch(() => {});
+          }
           this.reset(); return { deleted: true, planId: s.plan.planId };
         }
       }
@@ -638,6 +1279,11 @@ export class OrchestratorService {
       const s = await this.planStore.getLatestActivePlan();
       if (s?.metadata.status === "executing") {
         await this.planStore.updatePlanStatus(s.plan.planId, s.metadata.goalId, "interrupted");
+        // BUG-1 FIX: Sync plan status to CRDT
+        const crdtSync = this.crdtTaskSyncProxy?.get?.();
+        if (crdtSync?.syncPlanStatus) {
+          await crdtSync.syncPlanStatus("interrupted").catch(() => {});
+        }
       }
     } catch { /* best effort */ }
   }

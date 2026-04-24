@@ -8,7 +8,7 @@
  *   2. Structured Output Mode — generateText() with Output.object() schema
  */
 
-import { streamText, generateText, Output, tool, stepCountIs, isLoopFinished } from "ai";
+import { streamText, generateText, Output, tool, stepCountIs, isLoopFinished, hasToolCall } from "ai";
 import type { ModelMessage, StopCondition, ToolSet } from "ai";
 import { z } from "zod";
 import { rootLogger } from "../../logging.js";
@@ -281,6 +281,9 @@ export class AiSdkAgent extends BaseAgent {
       stopConditions.push(isLoopFinished());
       stopConditions.push(stepCountIs(200)); // absolute safety cap
     }
+    // Terminal tools: stop the loop immediately after these are called
+    stopConditions.push(hasToolCall("complete_task"));
+    stopConditions.push(hasToolCall("bounce_task"));
 
     const agentId = this.id;
 

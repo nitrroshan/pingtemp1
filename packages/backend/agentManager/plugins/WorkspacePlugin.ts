@@ -160,11 +160,13 @@ export class WorkspacePlugin implements IPlugin {
     const workspace = this.l1.getWorkspace(taskId);
     if (!workspace) return { success: true }; // No workspace for this task
 
-    // Publish outputs (artifacts, manifests)
-    try {
-      await workspace.publish(goalId);
-    } catch (err: any) {
-      return { success: false, error: `publish failed: ${err.message}` };
+    // Publish outputs if not already published (agent may have called workspace_publish)
+    if (workspace.status === "active") {
+      try {
+        await workspace.publish(goalId);
+      } catch (err: any) {
+        return { success: false, error: `publish failed: ${err.message}` };
+      }
     }
 
     // Merge task branch to main and cleanup
@@ -186,5 +188,43 @@ export class WorkspacePlugin implements IPlugin {
   /** Get root workspace path */
   get workspacesRoot(): string {
     return this.l1.workspacesRoot;
+  }
+
+  /**
+   * Write identity file to workspace so agent can read it via workspace_read_file.
+   * Replaces the old IdentityCard class with a simple JSON file.
+   */
+  async writeIdentityFile(params: {
+    taskId: string;
+    role: string;
+    name?: string;
+    goal?: string;
+    skills?: string[];
+    teamId?: string | null;
+    teamRoles?: string[];
+  }): Promise<void> {
+    if (!this.l1.isReady) return;
+
+    const workspace = this.l1.getWorkspace(params.taskId);
+    if (!workspace) return;
+
+    const identity = {
+      role: params.role,
+      name: params.name || params.role,
+      goal: params.goal || `Execute ${params.role} tasks`,
+      skills: params.skills || [],
+      team: {
+        id: params.teamId || null,
+        roles: params.teamRoles || [],
+      },
+    };
+
+    try {
+      // BUG C FIX: workspace.writeFile() doesn't exist — use createFile()
+      await workspace.createFile(".ping/identity.json", JSON.stringify(identity, null, 2));
+    } catch (err) {
+      // Non-fatal — agent can still work without identity file
+      // createFile may throw if .ping/ dir or file already exists (retry scenario)
+    }
   }
 }

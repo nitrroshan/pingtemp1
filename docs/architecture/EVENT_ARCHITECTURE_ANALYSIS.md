@@ -1,7 +1,9 @@
 # Event Architecture Analysis
 
+> ⚠️ **STALE — January 2026.** This document describes 7 internal `EventEmitter`s that **no longer exist**. The codebase has since migrated to AsyncGenerator (worker streaming) + callbacks (lifecycle) + Socket.IO (frontend only). For the current event flow truth, see [chat-agent-layer/feature_architecture.md § Event flow today](../features/chat-agent-layer/feature_architecture.md#event-flow-today-the-truth--and-what-changes). Kept for historical context on the EventEmitter-removal refactor.
+
 **Created:** January 30, 2026  
-**Status:** Architectural Review
+**Status:** Architectural Review (HISTORICAL)
 
 ## Executive Summary
 

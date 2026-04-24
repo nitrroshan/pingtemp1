@@ -13,6 +13,7 @@
 import { z } from "zod";
 import { tool } from "@langchain/core/tools";
 import type { UserInteractionManager } from "../UserInteractionManager.js";
+import { PromptLoader } from "../PromptLoader.js";
 
 // ─── Schemas ──────────────────────────────────────────────────────────────────
 
@@ -75,11 +76,7 @@ export function createAskUserTool(ctx: UserToolContext) {
     },
     {
       name: "ask_user",
-      description: `Ask the user a question and wait for their response. Use this to:
-- Clarify ambiguous requirements
-- Get user decisions on trade-offs  
-- Request feedback on proposals
-The agent will pause until the user responds (max 5 minutes).`,
+      description: PromptLoader.loadTemplate("tools", "ask_user"),
       schema: AskUserSchema,
     },
   );
@@ -99,11 +96,7 @@ export function createTellUserTool(ctx: UserToolContext) {
     },
     {
       name: "tell_user",
-      description: `Send the user an informational message. Does NOT wait for a response. Use for:
-- Sharing research findings
-- Reporting progress milestones
-- Warning about risks or delays
-- Status updates during execution`,
+      description: PromptLoader.loadTemplate("tools", "tell_user"),
       schema: TellUserSchema,
     },
   );
@@ -127,11 +120,7 @@ export function createDiscussApproachTool(ctx: UserToolContext) {
     },
     {
       name: "discuss_approach",
-      description: `Present multiple approaches/options to the user for their decision. Use when:
-- Multiple valid architectures exist
-- Trade-offs need user input (speed vs quality, cost vs features)
-- Risk decisions require user approval
-Blocks until the user selects an option.`,
+      description: PromptLoader.loadTemplate("tools", "discuss_approach"),
       schema: DiscussApproachSchema,
     },
   );

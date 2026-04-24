@@ -13,6 +13,7 @@ import { tool } from "@langchain/core/tools";
 import type { DependencyResolver } from "../DependencyResolver.js";
 import type { ITaskProvider } from "../ITaskProvider.js";
 import type { AgentFactory } from "../../agent/AgentFactory.js";
+import { PromptLoader } from "../PromptLoader.js";
 
 // ─── Schemas ──────────────────────────────────────────────────────────────────
 
@@ -71,8 +72,7 @@ export function createCancelTaskTool(ctx: ExecutionToolContext) {
     },
     {
       name: "cancel_task",
-      description: `Cancel a running or pending task. If the task is in progress, its worker will be aborted.
-Use when: upstream dependency failed, scope changed, budget exceeded, or plan replaced.`,
+      description: PromptLoader.loadTemplate("tools", "cancel_task"),
       schema: CancelTaskSchema,
     },
   );
@@ -102,7 +102,7 @@ export function createGetBlockedTool(ctx: ExecutionToolContext) {
     },
     {
       name: "get_blocked",
-      description: `Get all tasks that are blocked by incomplete dependencies. Shows what each task is waiting for.`,
+      description: PromptLoader.loadTemplate("tools", "get_blocked"),
       schema: GetBlockedSchema,
     },
   );
@@ -126,7 +126,7 @@ export function createGetCriticalPathTool(ctx: ExecutionToolContext) {
     },
     {
       name: "get_critical_path",
-      description: `Get the longest dependency chain in the plan. Identifies the bottleneck path that determines minimum completion time.`,
+      description: PromptLoader.loadTemplate("tools", "get_critical_path"),
       schema: GetCriticalPathSchema,
     },
   );
@@ -159,7 +159,7 @@ export function createSearchAgentsTool(ctx: ExecutionToolContext) {
     },
     {
       name: "search_agents",
-      description: `Search for available agent roles by capability. Useful when you need to find the right role for a task.`,
+      description: PromptLoader.loadTemplate("tools", "search_agents"),
       schema: SearchAgentsSchema,
     },
   );

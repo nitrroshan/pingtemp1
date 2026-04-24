@@ -1,7 +1,7 @@
 # Ping — Master Feature List
 
-**Last Updated:** April 12, 2026  
-**Total Features:** 34 (18 existing + 16 new)  
+**Last Updated:** April 22, 2026  
+**Total Features:** 35 (18 existing + 17 new)  
 **Master Architecture:** [MASTER-ARCHITECTURE.md](MASTER-ARCHITECTURE.md) — unified reference with diagrams for how all features connect
 
 ---
@@ -35,6 +35,7 @@
 | A8 | **Git-Based Task Context** | 🆕 New | [git-task-context](git-task-context/) | Preserve agent work as git commits. Branch-per-task. New sessions can pull branches. Branches persist until project completes. |
 | A9 | **Approval System** | 🆕 New | [approval-system](approval-system/) | Structured approval for plans, tools, artifacts. Leverages Mastra's `requireApproval` + `suspend()`. Depends on A1. Auto-approve rules per team. Audit trail. |
 | A10 | **Persistent Agents & Three-Layer Hierarchy** | 🆕 New | [persistent-agents](persistent-agents/) | Three-layer agent hierarchy: persistent Planner (team leader) → persistent Chat Agents (role employees) → transient Task Sub-Agents (workers). Always-on chat, parallel plans, AI SDK sub-agents. Extends A5. |
+| A11 | **Parallel Plans** | 🔬 Research | [parallel-plans](parallel-plans/) | Multiple plans running concurrently within a team. GoalContext abstraction, per-plan workspace isolation, parallel management with serialized or parallel execution. Depends on A8, A10. |
 
 ### B. Platform Architecture (Packaging & Deployment)
 
@@ -80,6 +81,7 @@
 | F1 | **Frontend Orchestrator Integration** | 📋 Planned | [frontend-orchestrator-integration](frontend-orchestrator-integration/) | Plan approval UI, task list, task chat view. Backend handlers ready, frontend Step 1.3 pending. |
 | F2 | **MCP Server Integration** | 🆕 New | [mcp-integration](mcp-integration/) | Integrate at least one real MCP server (Docker MCP, filesystem MCP, or Brave Search). Prove the pipeline works end-to-end. |
 | F3 | **OpenClaw Integration** | 🔬 Research | [openclaw-integration](openclaw-integration/) | External agent via OpenClaw Gateway (WhatsApp, Telegram, Discord channels). |
+| F4 | **Plan Viewer** | 📋 Planned | [plan-viewer](plan-viewer/) | Full-screen plan management UI. Two-panel master-detail: plan list + task detail with List/Board views, agents bar, task slide-over. Route: `/plans`. |
 
 ### G. Research & Vision
 
@@ -120,7 +122,8 @@ D2 L2 Search & Indexing ──────────────────�
 
 E1 Orchestrator Agent + A5 Planner as Agent ───────────────────
  ├── A6 Task Orchestration Redesign (better task lifecycle)
- └── A10 Persistent Agents (extends A5, needs 3B Event Refactor)
+ ├── A10 Persistent Agents (extends A5, needs 3B Event Refactor)
+ └── A11 Parallel Plans (needs A8 workspace isolation + A10 persistent agents)
 ```
 
 ## Execution Phases
@@ -169,6 +172,7 @@ E1 Orchestrator Agent + A5 Planner as Agent ────────────
 ### Phase 4 — Polish & Ecosystem (Weeks 12+)
 > Integration, research features, frontend.
 
+- **A11** Parallel Plans (GoalContext + workspace-per-plan)
 - **F1** Frontend Orchestrator Integration (complete Step 1.3)
 - **C2** Skills System (full design + community model)
 - **G3** Open-Source Research (ongoing)

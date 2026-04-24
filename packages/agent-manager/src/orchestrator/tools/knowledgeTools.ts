@@ -10,6 +10,7 @@
 import { z } from "zod";
 import { tool } from "@langchain/core/tools";
 import type { AgentFactory } from "../../agent/AgentFactory.js";
+import { PromptLoader } from "../PromptLoader.js";
 
 // ─── Schemas ──────────────────────────────────────────────────────────────────
 
@@ -70,11 +71,7 @@ export function createResearchDomainTool(ctx: KnowledgeToolContext) {
     },
     {
       name: "research_domain",
-      description: `Research a specific domain topic before planning. Use this to:
-- Understand architecture patterns for the tech stack
-- Learn about common pitfalls in the problem domain
-- Gather best practices before decomposing the goal
-Call this BEFORE creating a plan — research first, plan second.`,
+      description: PromptLoader.loadTemplate("tools", "research_domain"),
       schema: ResearchDomainSchema,
     },
   );
@@ -97,12 +94,7 @@ export function createAnalyzeRequirementsTool(ctx: KnowledgeToolContext) {
     },
     {
       name: "analyze_requirements",
-      description: `Decompose a user's goal into structured requirements. Returns:
-- Core components needed
-- Hard vs soft constraints  
-- Risks and unknowns
-- Assumptions
-Use after clarifying with user but before creating the plan.`,
+      description: PromptLoader.loadTemplate("tools", "analyze_requirements"),
       schema: AnalyzeRequirementsSchema,
     },
   );
@@ -142,11 +134,7 @@ export function createGetTeamCapabilitiesTool(ctx: KnowledgeToolContext) {
     },
     {
       name: "get_team_capabilities",
-      description: `Query the team's available agent roles and their capabilities. Returns:
-- Role names and IDs
-- Descriptions and goals
-- Skills available to each role
-Use this to understand what your team can do before assigning tasks.`,
+      description: PromptLoader.loadTemplate("tools", "get_team_capabilities"),
       schema: GetTeamCapabilitiesSchema,
     },
   );

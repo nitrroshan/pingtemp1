@@ -104,19 +104,6 @@ export class AgentWorkspace {
   /** Keyword search index (Phase 8 — MiniSearch BM25-like) */
   public readonly search: WorkspaceSearchIndex;
 
-  /** Identity card (Zone 4 — set by WorkerPool after workspace creation) */
-  private _identityCard: import("./IdentityCard.js").IdentityCard | null = null;
-
-  /** Set the identity card (called by WorkerPool after assembling tools) */
-  setIdentityCard(card: import("./IdentityCard.js").IdentityCard): void {
-    this._identityCard = card;
-  }
-
-  /** Get the identity card (null if not yet configured) */
-  get identityCard(): import("./IdentityCard.js").IdentityCard | null {
-    return this._identityCard;
-  }
-
   // ═══════════════════════════════════════════════════════════════════════════
   // CONSTRUCTOR
   // ═══════════════════════════════════════════════════════════════════════════
@@ -783,16 +770,18 @@ export class AgentWorkspace {
       // Non-critical
     }
 
-    // Collect all files in artifacts/ directory as OutputEntry[]
+    // Collect all workspace files as OutputEntry[] (excluding .git, .ping, .scratch, workspace.json)
     const outputs: OutputEntry[] = [];
-    const artifactsDir = path.join(this.basePath, "artifacts");
+    const excludeDirs = new Set([".git", ".ping", ".scratch", "node_modules"]);
+    const excludeFiles = new Set(["workspace.json"]);
 
     const collectFiles = async (dir: string, prefix: string): Promise<void> => {
       try {
         const entries = await fs.promises.readdir(dir, { withFileTypes: true });
         for (const entry of entries) {
+          if (excludeDirs.has(entry.name) || excludeFiles.has(entry.name)) continue;
           const entryPath = path.join(dir, entry.name);
-          const relativePath = path.join(prefix, entry.name);
+          const relativePath = prefix ? path.join(prefix, entry.name) : entry.name;
           if (entry.isFile()) {
             const stat = await fs.promises.stat(entryPath);
             const content = await fs.promises.readFile(entryPath);
@@ -801,7 +790,7 @@ export class AgentWorkspace {
               .update(content)
               .digest("hex");
             outputs.push({
-              path: `artifacts/${relativePath}`,
+              path: relativePath,
               category: this.inferCategory(entry.name),
               sizeBytes: stat.size,
               contentHash: hash,
@@ -815,7 +804,7 @@ export class AgentWorkspace {
       }
     };
 
-    await collectFiles(artifactsDir, "");
+    await collectFiles(this.basePath, "");
 
     // Generate activity summary
     const activitySummary =

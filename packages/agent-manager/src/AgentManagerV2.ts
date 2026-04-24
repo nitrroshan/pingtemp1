@@ -18,6 +18,7 @@ import { AiSdkAgent } from "./agent/internal/AiSdkAgent.js";
 import type { AgentDefinition } from "./agent/types.js";
 import type { TaskWithContext } from "./util/RoleTaskQueue.types.js";
 import { OrchestratorService } from "./orchestrator/OrchestratorService.js";
+import type { ITaskProvider } from "./orchestrator/ITaskProvider.js";
 import type { PlanProposedEvent } from "./orchestrator/types.js";
 import { TaskStore } from "./orchestrator/TaskStore.js";
 import { DependencyResolver } from "./orchestrator/DependencyResolver.js";
@@ -28,6 +29,7 @@ import { createPlannerTools } from "./orchestrator/tools/index.js";
 import { PluginRegistry } from "./plugin/PluginRegistry.js";
 import type { IPlugin } from "./plugin/types.js";
 import { FileTaskStore } from "./persistence/FileTaskStore.js";
+import { PromptLoader } from "./orchestrator/PromptLoader.js";
 
 const logger = rootLogger.child({ module: "AgentManager" });
 
@@ -63,90 +65,10 @@ interface TaskPlan {
 
 /**
  * Generic worker prompt for agents without plugin-sourced system prompts.
- * Used as fallback when a team is created via LLM role discovery (no plugin).
+ * Loaded from agent/prompts/generic-worker/system.xml.
  */
 function getGenericWorkerPrompt(role: string): string {
-  return `You are a **${role}** agent in a multi-agent team. Execute tasks assigned to your role with expertise and precision.
-
-## Your Tools
-
-You have been provided with a set of tools. Some are always available, others may vary by task. Use \`my_tools\` to see the full list at any time.
-
-### Always Available — Core Workflow
-
-| Tool | Purpose |
-|------|---------|
-| **report_status** | Send a status update (progress %, blockers, notes). Use frequently so the orchestrator can track you. |
-| **complete_task** | Signal that your task is finished. Provide a short summary. Call this when done — do NOT simply stop responding. |
-
-### Workspace — File & Version Control
-
-You work inside a **git-based workspace** (a branch isolated to your task). Key tools:
-
-- **workspace_create_file / workspace_write_file** — create or overwrite files. Always supply the full file content.
-- **workspace_read_file** — read a file from your workspace.
-- **workspace_list_files** — list files/directories. Use this to orient yourself.
-- **workspace_delete_file / workspace_file_exists** — manage files.
-- **workspace_grep / workspace_glob / workspace_keyword_search** — search across files. Use before duplicating work.
-- **workspace_search_and_replace** — regex-powered find-and-replace within a file.
-- **workspace_commit** — commit your changes with a clear message. **Commit frequently** (after each logical step).
-- **workspace_publish** — publish your workspace when the task is complete (called automatically by complete_task, but you can call manually if needed).
-- **workspace_status / workspace_info** — check current workspace state and branch info.
-- **workspace_get_history** — view commit log.
-- **workspace_file_stats** — file sizes/counts for planning.
-
-### Scratchpad — Private Working Memory
-
-- **scratch_note** — jot down private notes or reasoning (not shared).
-- **scratch_todo** — track your internal subtask checklist.
-- **scratch_remember** — store a key-value fact for later recall.
-- **scratch_file** — save a scratch file (draft, temp data).
-- **promote_to_workspace** — move a scratch file into your real workspace when it's ready.
-
-### Collaboration — Shared Team State (L2)
-
-- **collab** — access shared CRDT documents that all agents can read and write.
-  - \`discover\` → browse categories: \`crdt\`, \`plans\`, \`outputs\`
-  - \`list\` → see keys in a doc (structured data keys)
-  - \`read\` → fetch a key's value (structured JSON from Y.Map)
-  - \`read-block\` → **read the editor content** — returns text written by humans and agents in the collaborative editor
-  - \`write\` → set structured JSON data (for agent-statuses, configs, machine-readable data)
-  - \`write-block\` → **preferred for shared documents** — insert rich text (headings, paragraphs, bullets) into the collaborative editor visible to humans and other agents
-
-  **When to use which:**
-  - Use \`write\` for: \`agent-statuses\` (status updates), structured configs, API contracts (JSON data)
-  - Use \`write-block\` for: reports, research findings, specs, summaries — anything meant to be **read by humans or other agents as text**
-  - Use \`read\` for: reading structured JSON data (agent-statuses, configs)
-  - Use \`read-block\` for: **reading the collaborative document** — see what humans typed and what other agents wrote via write-block
-  - \`write-block\` supports markdown: \`# Heading\`, \`## Subheading\`, \`- bullet points\`, plain paragraphs
-  - Use \`key\` parameter as a section title (e.g., key: "Research Findings")
-
-  **Use collab to:**
-  - Report blockers or issues to the team (\`write\` to \`agent-statuses\` doc with your role as key)
-  - Share research, analysis, or summaries (\`write-block\` to a shared doc like \`crdt\` or a custom doc)
-  - **Read the shared document** (\`read-block\` on \`crdt\` or any doc) — see what humans and other agents wrote
-  - Read decisions from \`chat-outcomes\`
-  - Check what other agents have produced (\`outputs\` category)
-  - Create new shared docs by writing to any name — auto-created on first use
-
-### Identity
-
-- **who_am_i** — your role, task ID, workspace info.
-- **my_progress** — your commit history and activity summary.
-- **my_tools** — full list of available tools with descriptions.
-- **my_context** — task context, notes, and prerequisites.
-
-## Guidelines
-
-1. **Start** by reading your task context (\`my_context\`) and checking existing workspace files (\`workspace_list_files\`).
-2. **Plan** your approach — use \`scratch_todo\` to break the task into steps.
-3. **Execute** — create/edit files, commit after each meaningful change.
-4. **Collaborate** — share findings with the team using \`collab write-block\` (preferred for text content). Use \`collab write\` only for structured data like \`agent-statuses\`.
-5. **Report** — call \`report_status\` periodically (especially before and after major steps).
-6. **Finish** — call \`complete_task\` with a summary when done. Never just stop.
-
-Do NOT invent tools you don't have. If unsure, use \`my_tools\` to check.
-`;
+  return PromptLoader.load("generic-worker", { role });
 }
 
 export class AgentManager {
@@ -328,6 +250,11 @@ export class AgentManager {
     const collabStorage = this.pluginRegistry.getPluginStorage("collaboration");
     const planStore = collabStorage?.planStore as any;
 
+    // Get CRDT task/goal stores from CollaborationPlugin (if registered)
+    // These persist tasks and goals to CRDT for durability + agent access via collab tool
+    // The L2CollaborationPlugin is stored as `crdt` in IPluginStorage
+    const l2Plugin = collabStorage?.crdt as any;
+
     // SOLID architecture — TaskStore + OrchestratorService + PlannerAgent as peers
     this.taskStoreInstance = new TaskStore();
     const dagResolver = new DependencyResolver();
@@ -360,6 +287,19 @@ export class AgentManager {
       onFlush: (batchedMessage) => executePlannerTurn(batchedMessage),
     });
 
+    // Create a lazy CRDT resolver — goal-scoped stores created when approvePlan sets goalId
+    // Fix #1: Use this-scoped properties instead of captured let variables
+    const crdtResolver = {
+      taskSync: null as any,
+      goalStore: null as any,
+      resolveForGoal(goalId: string) {
+        if (l2Plugin?.getCrdtTaskSync) {
+          this.taskSync = l2Plugin.getCrdtTaskSync(goalId);
+          this.goalStore = l2Plugin.getCrdtGoalStore(goalId);
+        }
+      },
+    };
+
     // Create OrchestratorService (reactive runtime)
     this.orchestrator = new OrchestratorService({
       teamId,
@@ -369,6 +309,8 @@ export class AgentManager {
       dagResolver,
       notificationQueue,
       planStore,
+      crdtTaskSync: { get: () => crdtResolver.taskSync, resolveForGoal: crdtResolver.resolveForGoal.bind(crdtResolver) },
+      crdtGoalStore: { get: () => crdtResolver.goalStore, resolveForGoal: crdtResolver.resolveForGoal.bind(crdtResolver) },
       pluginRegistry: this.pluginRegistry,
       autoExecute: false,
       callbacks: {
@@ -392,6 +334,15 @@ export class AgentManager {
 
     await this.orchestrator.initialize();
 
+    // Fix #8: Inject task services AFTER orchestrator init but resolver is already bound
+    // The crdtTaskSync will be null initially — it resolves when approvePlan sets goalId
+    this.workerPool.setTaskServices({
+      taskStore: this.taskStoreInstance,
+      dagResolver,
+      teamRoles,
+      crdtTaskSync: null, // resolved lazily via crdtResolver when goal is known
+    });
+
     // Create PlannerAgent (peer to OrchestratorService)
     const agentFactory = getAgentFactory();
 
@@ -404,7 +355,7 @@ export class AgentManager {
 
     // Create and inject planner tools (close over shared services)
     const orchestratorContext = {
-      memoryManager: this.taskStoreInstance as any, // TaskStore satisfies the interface
+      taskProvider: this.taskStoreInstance as ITaskProvider,
       callbacks: this.orchestrator.getCallbacks(),
       planStore,
       teamId,
@@ -422,11 +373,15 @@ export class AgentManager {
       agentFactory,
       dagResolver,
       onMutation: (event) => {
+        // Notify frontend of plan mutation
         this.streamCallbacks?.onTaskUpdate?.({
           taskId: "plan",
           status: "mutation",
           ...event,
         });
+
+        // Delegate dispatch to OrchestratorService (single responsibility)
+        this.orchestrator?.onPlanMutation(event);
       },
     });
     await this.plannerAgent.setTools(tools);
@@ -662,7 +617,7 @@ export class AgentManager {
   }
 
   /**
-   * Get memory manager (deprecated — returns null, use getTaskStore())
+   * @deprecated Use getTaskStore() instead.
    */
   getMemoryManager(): null {
     return null;
@@ -797,7 +752,7 @@ export class AgentManager {
       id: taskId,
       assigned_role: task.assigned_role,
       description: task.description,
-      priority: (task as any).priority || 0,
+      priority: task.priority || 0,
       context: {
         previousOutputs: Array.isArray(taskContext.upstreamOutputs) ? taskContext.upstreamOutputs : [],
         artifacts: [
@@ -1033,16 +988,13 @@ export class AgentManager {
 
     // Apply changes
     if (changes.description !== undefined) {
-      (task as any).description = changes.description;
+      task.description = changes.description;
     }
     if (changes.priority !== undefined) {
-      (task as any).context = {
-        ...(task as any).context,
-        priority: changes.priority,
-      };
+      task.priority = changes.priority;
     }
     if (changes.assignedRole !== undefined) {
-      (task as any).assigned_role = changes.assignedRole.toLowerCase();
+      task.assigned_role = changes.assignedRole.toLowerCase();
     }
 
     logger.info({ taskId, changes }, `Modified task ${taskId}`);

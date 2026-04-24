@@ -9,6 +9,7 @@ import { tool } from "@langchain/core/tools";
 import { z } from "zod";
 import type { OrchestratorContext } from "../types.js";
 import type { TaskStatusSummary } from "../schemas.js";
+import { PromptLoader } from "../PromptLoader.js";
 
 /**
  * Creates the get_status tool with injected context
@@ -17,8 +18,8 @@ export function createGetStatusTool(context: OrchestratorContext) {
   return tool(
     async (): Promise<TaskStatusSummary> => {
       try {
-        // Get all tasks from provider (works with both MemoryManager and TaskStore)
-        const allTasks = context.memoryManager.getAllTasks();
+        // Get all tasks from provider
+        const allTasks = context.taskProvider.getAllTasks();
 
         // Count by status
         const counts = {
@@ -36,7 +37,8 @@ export function createGetStatusTool(context: OrchestratorContext) {
             | "pending"
             | "in_progress"
             | "completed"
-            | "failed" = task.status || "pending";
+            | "failed"
+            | "discarded" = task.status || "pending";
 
           // Map status variations
           if (status === "in_progress") {
@@ -54,7 +56,7 @@ export function createGetStatusTool(context: OrchestratorContext) {
 
           return {
             id: task.id,
-            title: (task as any).title || (task.context as any)?.title || task.id,
+            title: task.title || task.context?.title || task.id,
             status,
             assignedRole: task.assigned_role || "unknown",
           };
@@ -86,10 +88,7 @@ export function createGetStatusTool(context: OrchestratorContext) {
     },
     {
       name: "get_status",
-      description: `Get the current execution status of all tasks.
-Returns counts of tasks by status (ready, in_progress, completed, failed) 
-and a list of all tasks with their current status.
-Use this to monitor progress and report to the user.`,
+      description: PromptLoader.loadTemplate("tools", "get_status"),
       schema: z.object({}), // No input needed
     },
   );

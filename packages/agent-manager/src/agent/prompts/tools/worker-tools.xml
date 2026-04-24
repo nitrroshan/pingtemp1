@@ -1,0 +1,55 @@
+<!--
+  tools/worker-tools.xml — Tool descriptions for worker agent tools
+  
+  Each <template> maps to a tool's `description` field in the tool() definition.
+  Loaded by PromptLoader.loadTemplate("tools", toolName) at tool creation time.
+  
+  Tool schemas (Zod) stay in TypeScript — only the prose descriptions live here.
+-->
+<tool-descriptions>
+
+<template id="complete_task">
+Mark the current task as complete. Call this ONLY when:
+- You have fully accomplished the task objectives
+- All deliverables are ready
+- No further work is needed from you on this task
+
+Do NOT call this if:
+- You need more information from the user
+- The task is partially done
+- You're waiting for user feedback
+</template>
+
+<template id="report_status">
+Report your current task status to the user. Call this when:
+- You've made progress and want to update the user
+- You need clarification on requirements  
+- Your work is ready for user review
+- You are blocked and need help
+</template>
+
+<template id="request_task">
+Create a task for another agent role. Use this when:
+- You discover work that another role should do
+- You need a review of your output
+- You need a decision from the planner
+- You need to collaborate with another agent
+
+Relationships:
+- "independent": Someone should do this, it doesn't block me
+- "subtask": Part of my work, tracked as child task
+- "blocks-me": I can't continue until this is done (my task pauses)
+
+Guard rails: max {{maxTasks}} tasks per plan, priority 2-5 only.
+</template>
+
+<template id="bounce_task">
+Bounce a task back when you can't complete it. Use this when:
+- The task requires expertise you don't have
+- The task description is wrong or incomplete
+- You discover the task should be done by a different role
+
+The planner will be notified and can reassign the task.
+</template>
+
+</tool-descriptions>
