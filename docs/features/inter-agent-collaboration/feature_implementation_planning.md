@@ -1,33 +1,545 @@
-# Inter-Agent Collaboration — Implementation Planning
+# Inter-Agent Collaboration — Implementation Planning v3
 
-**Architecture:** [collaboration-audit.md](collaboration-audit.md)  
-**Parent:** [Collaboration Toolkit](../collaboration-toolkit/feature_architecture.md)
+**Architecture:** [discussion-redesign.md](discussion-redesign.md)  
+**Date:** April 20, 2026
+
+---
+
+## Phase 1: Core Fixes ✅ DONE
+
+- [x] `read`/`list` on discussion docs returns blocks
+- [x] `write-block` blocked on discussion docs
+- [x] Auto-append `/discussion` suffix
+- [x] Discussion task prompt with exact tool syntax
+- [x] `type: "discussion"` in schemas + planner prompt
+- [x] Mention validation in `spawnCollabWorkers()`
+- [x] Context-aware collab worker prompt
+- [x] `onWorkerDone` guard for collab workers
+- [x] Non-blocking mentions (removed 120s polling)
+- [x] E2E tests 14/14
+
+---
+
+## Phase 2: Quorum-Verified Decisions
+
+### What
+Validate that `agreedBy` roles actually posted before recording a decision.
+
+### Code — discuss `decide` handler
+**File:** `packages/collaboration/src/L2/tools/index.ts` ~line 850
+
+```typescript
+// BEFORE (current — no validation):
+decisions.set(parsed.key || "decision", {
+  decision: parsed.decision,
+  decidedBy: agentRole,
+  agreedBy: parsed.agreedBy || [agentRole],
+  timestamp: new Date().toISOString(),
+});
+
+// AFTER (quorum-verified):
+const allBlocks = doc.getArray("discussion").toJSON();
+const posterRoles = new Set<string>(allBlocks.map((b: any) => b.role));
+const requested = parsed.agreedBy || [agentRole];
+const verified = requested.filter((r: string) => posterRoles.has(r));
+const missing = requested.filter((r: string) => !posterRoles.has(r));
+
+if (missing.length > 0) {
+  return `Cannot include ${missing.join(", ")} in agreedBy — they haven't posted. ` +
+    `Roles that posted: ${[...posterRoles].join(", ")}`;
+}
+
+decisions.set(parsed.key || "decision", {
+  decision: parsed.decision,
+  decidedBy: agentRole,
+  agreedBy: verified,
+  posterCount: posterRoles.size,
+  timestamp: new Date().toISOString(),
+});
+```
+
+### Code — Frontend quorum display
+**File:** `packages/frontend/components/DecisionPanel/DecisionPanel.tsx` line 22
+
+```tsx
+// BEFORE:
+quorumRequired = 1
+
+// AFTER:
+const quorum = decision.posterCount || decision.agreedBy.length;
+```
+
+### E2E Test
+```typescript
+// Post from backend + frontend, then try decide with agreedBy including "qa" (never posted)
+const result = await invokeTool(tool, {
+  action: "discuss", docName: "task-X/discussion", key: "decide",
+  value: { key: "api", decision: "REST", agreedBy: ["backend", "frontend", "qa"] }
+});
+assertIncludes(result, "Cannot include qa", "rejects non-poster in agreedBy");
+```
+
+- [ ] Step 1: Validate agreedBy in decide handler
+- [ ] Step 2: Frontend quorum display
+- [ ] Step 3: E2E test
+
+---
+
+## Phase 3: Discussion Agenda
+
+### What
+Parse numbered items from task description, store in CRDT config, auto-resolve on decide.
+
+### Code — Store agenda in initCollabDocs
+**File:** `packages/collaboration/src/L2/collaboration/CrdtTaskSync.ts` ~line 387
+
+```typescript
+async initCollabDocs(taskId: string, collabConfig?: Record<string, any>): Promise<void> {
+  // ... existing config ...
+  
+  // NEW: Store agenda items
+  const agenda = collabConfig?.agenda || [];
+  if (agenda.length > 0) {
+    configMap.set("agenda", agenda.map((item: string, i: number) => ({
+      id: `item-${i + 1}`,
+      text: item,
+      resolved: false,
+    })));
+  }
+}
+```
+
+### Code — Extract agenda from task description in OrchestratorService
+**File:** `packages/agent-manager/src/orchestrator/OrchestratorService.ts` — dispatchTask
+
+```typescript
+// In the discussion task section, before calling initCollabDocs:
+const agendaLines = task.description
+  .split("\n")
+  .filter(l => /^\d+\./.test(l.trim()))
+  .map(l => l.trim().replace(/^\d+\.\s*/, ""));
+
+await crdtTaskSync.initCollabDocs(taskId, { ...collabConfig, agenda: agendaLines });
+
+// Inject into prompt:
+if (agendaLines.length > 0) {
+  enrichedDescription += `\n\n### Agenda:\n${agendaLines.map((a, i) => `${i+1}. ${a}`).join("\n")}`;
+}
+```
+
+### Code — Auto-resolve agenda on decide
+**File:** `packages/collaboration/src/L2/tools/index.ts` — decide handler, after recording
+
+```typescript
+const agenda = configMap.get("agenda") as any[];
+if (agenda) {
+  const updated = agenda.map((item: any) =>
+    (item.id === parsed.key || item.text.toLowerCase().includes((parsed.key || "").toLowerCase()))
+      ? { ...item, resolved: true }
+      : item
+  );
+  configMap.set("agenda", updated);
+}
+```
+
+### Code — Frontend agenda checklist
+**File:** `packages/frontend/components/DiscussionThread/DiscussionThread.tsx`
+
+```tsx
+function AgendaBar({ config }: { config: DiscussionConfig | null }) {
+  const agenda = (config as any)?.agenda as Array<{id: string; text: string; resolved: boolean}>;
+  if (!agenda?.length) return null;
+  const resolved = agenda.filter(a => a.resolved).length;
+  return (
+    <div className="px-4 py-2 bg-muted/30 border-b border-border text-xs">
+      <span className="text-[10px] font-semibold text-muted-foreground">📋 AGENDA ({resolved}/{agenda.length})</span>
+      <div className="flex flex-wrap gap-x-3 gap-y-0.5 mt-1">
+        {agenda.map(item => (
+          <span key={item.id} className={item.resolved ? "line-through text-muted-foreground" : ""}>
+            {item.resolved ? "☑" : "☐"} {item.text}
+          </span>
+        ))}
+      </div>
+    </div>
+  );
+}
+// Insert between header and blocks in DiscussionThread render
+```
+
+- [ ] Step 1: Store agenda in initCollabDocs
+- [ ] Step 2: Extract agenda from task description
+- [ ] Step 3: Auto-resolve on decide
+- [ ] Step 4: Frontend agenda checklist
+
+---
+
+## Phase 4: Discussion Lifecycle States
+
+### What
+Track `active → all_posted → decided → closed` with participant tracking.
+
+### Code — Store participants
+**File:** `packages/collaboration/src/L2/collaboration/CrdtTaskSync.ts`
+
+```typescript
+// In initCollabDocs:
+configMap.set("participants", collabConfig?.participants || []);
+```
+
+**File:** `packages/agent-manager/src/orchestrator/OrchestratorService.ts` — discussion dispatch
+
+```typescript
+const participants = this.teamRoles.map(r => r.toLowerCase());
+await crdtTaskSync.initCollabDocs(taskId, { ...collabConfig, participants });
+```
+
+### Code — Auto-detect all_posted
+**File:** `packages/collaboration/src/L2/tools/index.ts` — discuss post, after pushing block
+
+```typescript
+const participants = configMap.get("participants") as string[] || [];
+if (participants.length > 0) {
+  const allBlocks = discussion.toJSON();
+  const posters = new Set(allBlocks.map((b: any) => b.role));
+  if (participants.every(p => posters.has(p)) && configMap.get("status") === "active") {
+    configMap.set("status", "all_posted");
+    warning += " All participants have posted. Record a decision when ready.";
+  }
+}
+```
+
+### Code — Auto-close on decide
+**File:** `packages/collaboration/src/L2/tools/index.ts` — decide handler
+
+```typescript
+// After recording quorum-verified decision:
+configMap.set("status", "closed");
+```
+
+### Code — Frontend lifecycle badge + participant status
+**File:** `packages/frontend/components/DiscussionThread/DiscussionThread.tsx`
+
+```tsx
+const STATUS_BADGE: Record<string, string> = {
+  active: "🟢 Active",
+  all_posted: "🟡 Awaiting Decision",
+  decided: "✅ Decided",
+  closed: "⬛ Closed",
+  escalated: "🔴 Escalated",
+};
+
+function ParticipantBar({ config, blocks }: { config: any; blocks: DiscussionBlock[] }) {
+  const participants = config?.participants as string[] || [];
+  if (!participants.length) return null;
+  const posters = new Set(blocks.map(b => b.role));
+  return (
+    <div className="px-4 py-1 text-[10px] text-muted-foreground flex gap-2 border-b border-border">
+      {participants.map(p => (
+        <span key={p}>{posters.has(p) ? "✅" : "⏳"} {p}</span>
+      ))}
+    </div>
+  );
+}
+```
+
+- [ ] Step 1: Store participants
+- [ ] Step 2: Auto-detect all_posted
+- [ ] Step 3: Auto-close on decide
+- [ ] Step 4: Frontend lifecycle badge + participant status
+
+---
+
+## Phase 5: Frontend Minimalist Redesign
+
+### 5a: Inline Decisions (remove sidebar DecisionPanel)
+
+```tsx
+// NEW component in DiscussionThread.tsx
+function InlineDecision({ k, d }: { k: string; d: Decision }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="mx-4 my-2 rounded border border-green-200 dark:border-green-800 bg-green-50/50 dark:bg-green-950/20">
+      <button onClick={() => setOpen(!open)} className="w-full text-left px-3 py-2 text-xs flex items-center gap-2">
+        <span>✅</span>
+        <span className="font-semibold">{k.replace(/-/g, " ")}</span>
+        <span className="text-muted-foreground ml-auto text-[10px]">
+          {d.agreedBy.length} agreed · {new Date(d.timestamp).toLocaleTimeString([], {hour:"2-digit",minute:"2-digit"})}
+        </span>
+      </button>
+      {open && (
+        <div className="px-3 pb-2 text-xs border-t border-green-200 dark:border-green-800 pt-1 space-y-0.5">
+          <p className="italic">"{d.decision}"</p>
+          <p className="text-[10px] text-muted-foreground">by {d.decidedBy} · {d.agreedBy.map(r => `✓${r}`).join(" ")}</p>
+        </div>
+      )}
+    </div>
+  );
+}
+```
+
+Remove `DecisionPanel` from `DetailPanel.tsx` sidebar.
+
+### 5b: Simplify Composer
+
+```tsx
+// REMOVE from DiscussionComposer.tsx:
+// - TYPE_OPTIONS array (lines 23-27)
+// - Type selector buttons (lines 111-126)
+// AUTO-INFER:
+const type = content.includes("?") ? "question" : "message";
+```
+
+### 5c: Thread List REST Endpoint
+
+**File:** `packages/backend/api/HttpServer.ts`
+
+```typescript
+app.get("/api/v2/teams/:teamId/discussions", async (req, res) => {
+  const collabPlugin = pluginRegistry.get("collaboration");
+  if (!collabPlugin) return res.json([]);
+  const space = collabPlugin.getOrCreateSpace(currentGoalId);
+  const docs = await space.listDocs();
+  const threads = await Promise.all(
+    docs.filter(d => d.endsWith("/discussion")).map(async docName => {
+      const doc = await space.openDoc(docName);
+      const blocks = doc.getArray("discussion").length;
+      const config = doc.getMap("config").toJSON();
+      return { taskId: docName.replace("/discussion",""), blockCount: blocks, status: config.status };
+    })
+  );
+  res.json(threads);
+});
+```
+
+Frontend: fetch on mount, replace event-driven thread discovery in App.tsx.
+
+- [ ] 5a: Inline decisions
+- [ ] 5b: Simplify composer  
+- [ ] 5c: Thread list API
+
+---
+
+## Order: 2 → 3 → 5b → 4 → 5a → 5c
+
+## Files Summary
+
+| Phase | Backend | Frontend |
+|-------|---------|----------|
+| 2 | `collab tools/index.ts` | `DecisionPanel.tsx` |
+| 3 | `CrdtTaskSync.ts`, `OrchestratorService.ts`, `collab tools/index.ts` | `DiscussionThread.tsx` |
+| 4 | `collab tools/index.ts`, `OrchestratorService.ts`, `CrdtTaskSync.ts` | `DiscussionThread.tsx` |
+| 5a | — | `DiscussionThread.tsx`, `DetailPanel.tsx` |
+| 5b | — | `DiscussionComposer.tsx` |
+| 5c | `HttpServer.ts` | `App.tsx` |
+# Inter-Agent Collaboration — Implementation Planning v3
+
+**Architecture:** [discussion-redesign.md](discussion-redesign.md)  
+**Issues:** [issues-v1.md](../task-orchestration/markdown-tasks/issues-v1.md) (R11 section)  
+**Date:** April 20, 2026
 
 ---
 
 ## Branch
-`feature/inter-agent-collab`
+`user/nitrroshan/tasksmd`
 
 ## Scope
-Enable real-time agent-to-agent collaboration via the discuss-as-priority-interrupt model. Agent-1 posts a question with @mention → system spawns agent-2 immediately → both discuss on CRDT → agent-1 gets response in the same execution loop.
+Full discussion system: fixes + quorum + agenda + lifecycle + frontend redesign.
 
 ---
 
-## Current State (What Exists vs What's Broken)
+## Phase 1: Core Fixes ✅ DONE
 
-### Backend — Working
-- `discuss post/read/decide` handler in `packages/collaboration/src/L2/tools/index.ts:663-780` ✅
-- Guard rails (maxRounds, maxTokens, status) ✅  
-- Y.Array push + cursor tracking ✅
-- `HocuspocusServer.emitDiscussionChange` → Socket.IO `discussion:activity`/`discussion:mention` ✅
-- `initCollabDocs()` initializes Y.Array, Y.Map(decisions/config/cursors) ✅
+All completed April 20, 2026.
 
-### Backend — Broken/Missing
-- `createCollabTool()` receives NO callbacks — mentions parsed but isolated (line 303)
-- `WorkerCallbacks` has no `onMentionedRoles` callback
-- No `waitForResponse` — discuss post returns immediately, agent can't wait
-- No `runCollaborationWorker()` method on WorkerPool
-- No collaboration-specific prompt for `type: "collaboration"` tasks in `dispatchTask()`
+- [x] Step 1: `read`/`list` on discussion docs → returns blocks, not config
+- [x] Step 2: `write-block` blocked on discussion docs
+- [x] Step 3: Auto-append `/discussion` suffix
+- [x] Step 4: Discussion task prompt with exact tool syntax
+- [x] Step 5: `type: "discussion"` in submit_plan + add_tasks schemas
+- [x] Step 6: Planner prompt explains discussion tasks
+- [x] Step 7: E2E tests (14/14 pass)
+- [x] Fix 1: Mention validation in `spawnCollabWorkers()`
+- [x] Fix 2: Context-aware collab worker prompt (excerpt + source role)
+- [x] Fix 3: `onWorkerDone` guard for collab worker IDs
+- [x] Fix 4: Removed 120s `waitForResponse` blocking → non-blocking
+
+---
+
+## Phase 2: Quorum-Verified Decisions
+
+- [ ] Step 1: In discuss `decide` handler, read all posts and extract poster roles
+- [ ] Step 2: Validate `agreedBy` — reject roles that never posted
+- [ ] Step 3: Store `verifiedAgreedBy` on the decision
+- [ ] Step 4: Frontend DecisionPanel — show actual quorum (posters/total) instead of hardcoded 1
+- [ ] Step 5: E2E test — decision rejected when non-poster is in agreedBy
+
+**Files:** `collab tools/index.ts`, `DecisionPanel.tsx`  
+**Risk:** Low
+
+---
+
+## Phase 3: Discussion Agenda
+
+- [ ] Step 1: In `CrdtTaskSync.initCollabDocs()`, parse task description for numbered items → store as `config.agenda`
+- [ ] Step 2: In discussion task prompt, inject agenda items
+- [ ] Step 3: In discuss `decide` handler, auto-resolve matching agenda item on decision
+- [ ] Step 4: Frontend DiscussionThread — render agenda checklist at top
+- [ ] Step 5: E2E test — agenda stored and resolved on decide
+
+**Files:** `CrdtTaskSync.ts`, `OrchestratorService.ts`, `collab tools/index.ts`, `DiscussionThread.tsx`  
+**Risk:** Medium
+
+---
+
+## Phase 4: Discussion Lifecycle States
+
+- [ ] Step 1: Add `participants` list to discussion config (from task context or mentioned roles)
+- [ ] Step 2: After each post, check if all participants have posted → transition to `all_posted`
+- [ ] Step 3: After quorum-verified decide → transition to `decided` → auto-close
+- [ ] Step 4: On timeout → `escalated` → notify planner
+- [ ] Step 5: Frontend StatusBar — show lifecycle badge + participant status
+- [ ] Step 6: E2E test — lifecycle transitions correctly
+
+**Files:** `collab tools/index.ts`, `OrchestratorService.ts`, `DiscussionThread.tsx`  
+**Risk:** Medium  
+**Depends on:** Phase 2 (quorum triggers "decided")
+
+---
+
+## Phase 5: Frontend Redesign
+
+### 5a: Inline Decisions
+- [ ] Step 1: Create `InlineDecision` component — collapsed one-liner, click to expand
+- [ ] Step 2: Interleave decisions with discussion blocks by timestamp in DiscussionThread
+- [ ] Step 3: Remove DecisionPanel from DetailPanel sidebar
+
+**Files:** `DiscussionThread.tsx`, `DecisionPanel.tsx`, `DetailPanel.tsx`
+
+### 5b: Simplify Composer
+- [ ] Step 1: Remove Message/Question/Decision type selector buttons
+- [ ] Step 2: Auto-infer type (contains `?` → question, else message)
+
+**Files:** `DiscussionComposer.tsx`
+
+### 5c: Participant Status Bar
+- [ ] Step 1: Read `config.participants` from CRDT
+- [ ] Step 2: Show each participant with ✅ (posted) or ⏳ (waiting)
+
+**Files:** `DiscussionThread.tsx`  
+**Depends on:** Phase 4
+
+### 5d: Thread List REST Endpoint
+- [ ] Step 1: Add `GET /api/v2/teams/:teamId/discussions` endpoint
+- [ ] Step 2: Frontend loads threads on mount instead of event-driven only
+
+**Files:** `HttpServer.ts`, `App.tsx` or `useDiscussion.ts`
+
+---
+
+## Implementation Order
+
+```
+Phase 2 (Quorum)     ← independent
+Phase 3 (Agenda)     ← independent
+Phase 5b (Composer)  ← independent, smallest frontend change
+Phase 4 (Lifecycle)  ← after Phase 2
+Phase 5a (Inline)    ← after Phase 4
+Phase 5c (Status)    ← after Phase 4
+Phase 5d (Thread API)← independent
+```
+
+---
+
+## Testing Strategy
+
+- Backend: `bun run packages/collaboration/src/__tests__/collab-e2e.test.ts` (add tests per phase)
+- Agent-manager: `npx tsc --build --force` (type check)
+- Live test prompt: "Build a REST API for a todo list app. Backend and frontend must discuss API contract first."
+- Frontend: manual visual verification
+2. `write-block` on `/discussion` docs writes to BlockNote XmlFragment, not discussion Y.Array — agents use it instead of `discuss post`
+3. `discuss` requires exact docName (`task-5/discussion`) — agents guess wrong names
+4. Collaboration task prompt is too vague — doesn't tell agents which tool actions to use
+5. Planner has no concept of `type: "discussion"` tasks — can't create multi-participant discussions
+6. No `type` field on submit_plan or add_tasks task schemas
+
+---
+
+## Implementation Steps
+
+### Step 1: Redirect `read`/`list` on discussion docs → discussion blocks
+**Files:** `packages/collaboration/src/L2/tools/index.ts` (list action ~line 517, read action ~line 580)  
+**Change:** Before the generic CRDT doc handler, check if `docName.endsWith("/discussion")`. If so, read `Y.Array("discussion")` and format as discussion blocks instead of reading the config Y.Map.
+
+```
+if (docName.endsWith("/discussion")) {
+  const doc = await space.openDoc(docName);
+  const discussion = doc.getArray("discussion").toJSON();
+  // Format and return blocks
+}
+```
+
+### Step 2: Block `write-block` on discussion docs
+**Files:** `packages/collaboration/src/L2/tools/index.ts` (write-block action ~line 618)  
+**Change:** Add guard: if `docName.endsWith("/discussion")`, return error directing agent to use `discuss post`.
+
+### Step 3: Auto-append `/discussion` suffix for `discuss` action
+**Files:** `packages/collaboration/src/L2/tools/index.ts` (discuss action ~line 660)  
+**Change:** Remove the validation error for non-`/discussion` docNames. Instead, auto-append `/discussion` if missing. This lets agents say `discuss task-5` instead of requiring exact `task-5/discussion`.
+
+### Step 4: Improve discussion task prompt
+**Files:** `packages/agent-manager/src/orchestrator/OrchestratorService.ts` (~line 1036)  
+**Change:** Replace the vague collaboration prompt with explicit discuss instructions including exact tool call syntax with the task's docName.
+
+```
+## ⚡ Discussion Task: {title}
+Participants: {otherParticipants}
+
+### Protocol:
+1. Read discussion: collab({ action: "discuss", docName: "{taskId}/discussion", key: "read" })
+2. Post your input: collab({ action: "discuss", docName: "{taskId}/discussion", key: "post", value: { content: "...", mentions: [{roles}] } })
+3. If you need a response, add waitForResponse: true
+4. Record decision: collab({ action: "discuss", key: "decide", value: { key: "...", decision: "...", agreedBy: [...] } })
+5. Complete: complete_task({ summary: "Decision: ..." })
+```
+
+### Step 5: Add `type` field to submit_plan and add_tasks schemas
+**Files:** `packages/agent-manager/src/orchestrator/tools/submitPlan.ts` (schema ~line 30), `packages/agent-manager/src/orchestrator/tools/planMutationTools.ts` (AddTasksSchema ~line 46)  
+**Change:** Add optional `type` field to task schema: `z.enum(["work", "discussion", "review", "research"]).default("work")`. Flow through to `Task.type` in normalizeAndAddTasks and approvePlan.
+
+### Step 6: Add discussion guidance to planner prompt
+**Files:** `packages/agent-manager/src/agent/prompts/planner/system.xml`  
+**Change:** Add section telling planner WHEN to create discussion tasks:
+- When task requires cross-role alignment (API contracts, data schemas)
+- When multiple roles need to agree before proceeding
+- Use `type: "discussion"` with dependencies so downstream tasks get the decision
+
+### Step 7: Update collab E2E test
+**Files:** `packages/collaboration/src/__tests__/collab-e2e.test.ts`  
+**Change:** Add tests for:
+- `read` on discussion doc returns blocks (not config)
+- `list` on discussion doc returns blocks
+- `write-block` on discussion doc is rejected
+- Auto-append `/discussion` suffix
+
+---
+
+## Testing Strategy
+- Run updated collab E2E tests: `bun run packages/collaboration/src/__tests__/collab-e2e.test.ts`
+- `tsc --build --force` on agent-manager
+- Live test with prompt: "Build auth API — backend and frontend must discuss API contract first"
+
+## Dependencies Between Steps
+```
+Step 1 (read/list redirect) ← independent
+Step 2 (block write-block)  ← independent  
+Step 3 (auto-append suffix) ← independent
+Step 4 (prompt)             ← depends on Step 3 (uses auto-append docName format)
+Step 5 (schema type field)  ← independent
+Step 6 (planner prompt)     ← depends on Step 5 (planner needs to know about type field)
+Step 7 (tests)              ← depends on Steps 1-3
+```
+
+Steps 1-3 can be done in parallel. Step 4-6 after. Step 7 last.
 - `task.context.type` not set in `approvePlan()` path
 
 ### Frontend — Working

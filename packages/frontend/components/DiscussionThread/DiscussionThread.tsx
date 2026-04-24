@@ -7,12 +7,14 @@
  * @see docs/features/task-orchestration/markdown-tasks/diagrams/06-discussion-channels.md
  */
 
-import React, { useEffect, useRef } from "react";
-import type { DiscussionBlock, DiscussionConfig } from "../../hooks/useDiscussion";
+import React, { useEffect, useRef, useState } from "react";
+import Markdown from "react-markdown";
+import type { DiscussionBlock, DiscussionConfig, Decision } from "../../hooks/useDiscussion";
 import { DiscussionComposer } from "../DiscussionComposer/DiscussionComposer";
 
 interface DiscussionThreadProps {
   blocks: DiscussionBlock[];
+  decisions?: Record<string, Decision>;
   config: DiscussionConfig | null;
   title: string;
   subtitle?: string;
@@ -74,8 +76,8 @@ function BlockItem({ block }: { block: DiscussionBlock }) {
           </span>
         )}
       </div>
-      <div className="text-sm text-foreground whitespace-pre-wrap pl-6">
-        {block.content}
+      <div className="text-sm text-foreground pl-6 [&_h1]:text-base [&_h1]:font-bold [&_h1]:mt-2 [&_h1]:mb-1 [&_h2]:text-sm [&_h2]:font-bold [&_h2]:mt-2 [&_h2]:mb-1 [&_h3]:text-sm [&_h3]:font-semibold [&_h3]:mt-1 [&_p]:my-1 [&_ul]:list-disc [&_ul]:pl-4 [&_ul]:my-1 [&_ol]:list-decimal [&_ol]:pl-4 [&_ol]:my-1 [&_li]:my-0.5 [&_code]:bg-muted [&_code]:px-1 [&_code]:rounded [&_code]:text-xs [&_pre]:bg-muted [&_pre]:p-2 [&_pre]:rounded [&_pre]:my-1 [&_pre]:overflow-x-auto [&_pre]:text-xs [&_strong]:font-semibold [&_a]:text-primary [&_a]:underline">
+        <Markdown>{block.content}</Markdown>
       </div>
       {block.mentions.length > 0 && (
         <div className="flex gap-1 mt-1 pl-6">
@@ -96,26 +98,85 @@ function BlockItem({ block }: { block: DiscussionBlock }) {
 function StatusBar({ config }: { config: DiscussionConfig | null }) {
   if (!config) return null;
 
-  const totalRounds = Object.values(config.roundsPerAgent || {}).reduce((a, b) => a + b, 0);
-  const maxRoundsTotal = (config.maxRounds || 10) * Object.keys(config.roundsPerAgent || {}).length || 1;
   const tokenPercent = Math.round(((config.totalTokensUsed || 0) / (config.maxTokens || 50000)) * 100);
+  const statusBadge: Record<string, string> = {
+    active: "🟢 Active",
+    all_posted: "🟡 Awaiting Decision",
+    decided: "✅ Decided",
+    closed: "⬛ Closed",
+    escalated: "🔴 Escalated",
+  };
 
   return (
     <div className="px-4 py-1.5 bg-muted/50 border-t border-border text-[10px] text-muted-foreground flex items-center gap-3">
-      <span>⚡ {config.mode || "auto"} mode</span>
-      <span>·</span>
-      <span>
-        {totalRounds} rounds
-      </span>
+      <span>{statusBadge[config.status] || config.status}</span>
       <span>·</span>
       <span className={tokenPercent > 80 ? "text-yellow-600 dark:text-yellow-400 font-medium" : ""}>
-        {(config.totalTokensUsed || 0).toLocaleString()}/{(config.maxTokens || 50000).toLocaleString()} tokens ({tokenPercent}%)
+        {(config.totalTokensUsed || 0).toLocaleString()}/{(config.maxTokens || 50000).toLocaleString()} tokens
       </span>
-      {config.status !== "active" && (
-        <>
-          <span>·</span>
-          <span className="font-medium text-red-500">{config.status}</span>
-        </>
+    </div>
+  );
+}
+
+function AgendaBar({ config }: { config: DiscussionConfig | null }) {
+  const agenda = (config as any)?.agenda as Array<{ id: string; text: string; resolved: boolean }>;
+  if (!agenda?.length) return null;
+  const resolved = agenda.filter((a) => a.resolved).length;
+  return (
+    <div className="px-4 py-2 bg-muted/30 border-b border-border text-xs">
+      <span className="text-[10px] font-semibold text-muted-foreground">
+        📋 AGENDA ({resolved}/{agenda.length})
+      </span>
+      <div className="flex flex-wrap gap-x-3 gap-y-0.5 mt-1">
+        {agenda.map((item) => (
+          <span
+            key={item.id}
+            className={item.resolved ? "line-through text-muted-foreground" : ""}
+          >
+            {item.resolved ? "☑" : "☐"} {item.text}
+          </span>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function ParticipantBar({ config, blocks }: { config: DiscussionConfig | null; blocks: DiscussionBlock[] }) {
+  const participants = (config as any)?.participants as string[] || [];
+  if (!participants.length) return null;
+  const posters = new Set(blocks.map((b) => b.role));
+  return (
+    <div className="px-4 py-1 text-[10px] text-muted-foreground flex gap-2 border-b border-border">
+      {participants.map((p) => (
+        <span key={p}>
+          {posters.has(p) ? "✅" : "⏳"} {p}
+        </span>
+      ))}
+    </div>
+  );
+}
+
+function InlineDecision({ decisionKey, decision }: { decisionKey: string; decision: Decision }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="mx-4 my-2 rounded border border-green-200 dark:border-green-800 bg-green-50/50 dark:bg-green-950/20">
+      <button
+        onClick={() => setOpen(!open)}
+        className="w-full text-left px-3 py-2 text-xs flex items-center gap-2 cursor-pointer"
+      >
+        <span>✅</span>
+        <span className="font-semibold">{decisionKey.replace(/-/g, " ")}</span>
+        <span className="text-muted-foreground ml-auto text-[10px]">
+          {decision.agreedBy.length} agreed · {new Date(decision.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+        </span>
+      </button>
+      {open && (
+        <div className="px-3 pb-2 text-xs border-t border-green-200 dark:border-green-800 pt-1 space-y-0.5">
+          <p className="italic">"{decision.decision}"</p>
+          <p className="text-[10px] text-muted-foreground">
+            by {decision.decidedBy} · {decision.agreedBy.map((r) => `✓${r}`).join(" ")}
+          </p>
+        </div>
       )}
     </div>
   );
@@ -123,6 +184,7 @@ function StatusBar({ config }: { config: DiscussionConfig | null }) {
 
 export function DiscussionThread({
   blocks,
+  decisions = {},
   config,
   title,
   subtitle,
@@ -140,10 +202,11 @@ export function DiscussionThread({
   }, [blocks.length]);
 
   const isClosed = config?.status === "closed" || config?.status === "escalated";
+  const decisionEntries = Object.entries(decisions);
 
   return (
     <div className="flex flex-col h-full bg-background">
-      {/* Header */}
+      {/* Header with lifecycle badge */}
       {!compact && (
         <div className="px-4 py-3 border-b border-border shrink-0">
           <h3 className="text-sm font-semibold text-foreground">{title}</h3>
@@ -153,22 +216,33 @@ export function DiscussionThread({
         </div>
       )}
 
-      {/* Blocks */}
+      {/* Participant status bar */}
+      <ParticipantBar config={config} blocks={blocks} />
+
+      {/* Agenda checklist */}
+      <AgendaBar config={config} />
+
+      {/* Blocks + inline decisions */}
       <div ref={scrollRef} className="flex-1 overflow-y-auto">
-        {blocks.length === 0 ? (
+        {blocks.length === 0 && decisionEntries.length === 0 ? (
           <div className="flex items-center justify-center h-full text-sm text-muted-foreground">
             No discussion blocks yet
           </div>
         ) : (
-          blocks.map((block) => <BlockItem key={block.id} block={block} />)
+          <>
+            {blocks.map((block) => <BlockItem key={block.id} block={block} />)}
+            {decisionEntries.map(([key, decision]) => (
+              <InlineDecision key={key} decisionKey={key} decision={decision} />
+            ))}
+          </>
         )}
       </div>
 
       {/* Status bar */}
       <StatusBar config={config} />
 
-      {/* Composer */}
-      {!isClosed && (
+      {/* Composer — feature-gated, humans are observers for now */}
+      {!isClosed && import.meta.env.VITE_ENABLE_DISCUSSION_COMPOSER === "true" && (
         <DiscussionComposer
           teamRoles={teamRoles}
           onPost={onPost}

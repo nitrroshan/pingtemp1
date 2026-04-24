@@ -46,7 +46,7 @@ export interface Task {
   priority?: number;
 
   /** Task type — drives dispatch behavior */
-  type?: "work" | "review" | "collaboration" | "subtask" | "decision" | "research";
+  type?: "work" | "review" | "collaboration" | "discussion" | "subtask" | "decision" | "research";
 
   /** Description of what this task should produce */
   expectedOutput?: string;

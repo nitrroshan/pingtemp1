@@ -51,6 +51,7 @@ export const AddTasksSchema = z.object({
     assignedRole: z.string().describe("Role to execute this task"),
     priority: z.number().min(1).max(5).default(3).describe("Priority (1=highest)"),
     complexity: z.enum(["low", "medium", "high"]).default("medium"),
+    type: z.enum(["work", "discussion", "review", "research"]).default("work").describe("Task type"),
     dependencies: z.array(z.string()).default([]).describe("Task IDs this depends on"),
     expectedOutput: z.string().describe("What this task should produce"),
     context: TaskContextSchema,
@@ -125,6 +126,7 @@ interface RawTaskInput {
   assignedRole: string;
   priority: number;
   complexity: string;
+  type?: string;
   dependencies: string[];
   expectedOutput: string;
   context?: Record<string, any>;
@@ -178,7 +180,7 @@ function normalizeAndAddTasks(
       assigned_role: task.assignedRole.toLowerCase(),
       status: "pending",
       priority: task.priority,
-      type: "work",
+      type: (task.type as any) || "work",
       expectedOutput: task.expectedOutput,
       prerequisites: new Map(normalizedDeps.map(d => {
         const depTask = ctx.tasks.getTask(d);

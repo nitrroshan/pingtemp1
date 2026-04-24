@@ -398,6 +398,21 @@ export class CrdtTaskSync {
     configMap.set("mode", config.mode || "auto");
     configMap.set("status", "active");
     configMap.set("lastActivity", new Date().toISOString());
+
+    // Phase 4: Store participants list
+    if (config.participants) {
+      configMap.set("participants", config.participants);
+    }
+
+    // Phase 3: Store agenda items
+    if (Array.isArray(config.agenda) && config.agenda.length > 0) {
+      configMap.set("agenda", config.agenda.map((item: string, i: number) => ({
+        id: `item-${i + 1}`,
+        text: item,
+        resolved: false,
+      })));
+    }
+
     // Initialize cursors
     discussionDoc.getMap("cursors");
     // Initialize decisions doc

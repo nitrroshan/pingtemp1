@@ -39,7 +39,7 @@ export interface WorkerCallbacks {
   /** Fired when an agent bounces a task via bounce_task tool */
   onBounce?: (data: { taskId: string; role: string; reason: string; suggestedRole?: string; timestamp: number }) => void;
   /** Fired when an agent mentions roles in a discussion — triggers priority collab worker spawn */
-  onMentionedRoles?: (data: { roles: string[]; sourceTaskId: string; docName: string }) => void;
+  onMentionedRoles?: (data: { roles: string[]; sourceTaskId: string; docName: string; sourceRole?: string; postContent?: string }) => void;
 }
 
 /**

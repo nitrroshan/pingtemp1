@@ -300,7 +300,7 @@ function extractDocData(doc: CollabDocument, docName: string): any {
  */
 export interface CollabToolCallbacks {
   /** Fired when discuss post mentions other roles — triggers priority worker spawn */
-  onMentionedRoles?: (roles: string[], sourceTaskId: string, docName: string) => void;
+  onMentionedRoles?: (roles: string[], sourceTaskId: string, docName: string, sourceRole?: string, postContent?: string) => void;
 }
 
 /**
@@ -514,6 +514,24 @@ export function createCollabTool(
           }
         }
 
+        // STEP 1a: Discussion docs → return discussion blocks, not config map
+        if (docName.endsWith("/discussion")) {
+          const doc = await space.openDoc(docName);
+          const discussion = doc.getArray("discussion");
+          const blocks = discussion.toJSON();
+          if (!blocks.length) return `"${docName}" has no discussion blocks yet. Use discuss action to post.`;
+          const config = doc.getMap("config").toJSON();
+          const lines = blocks.map((b: any) =>
+            `  - [${b.type || "message"}] **${b.role}** (${b.timestamp}): ${(b.content || "").slice(0, 120)}${b.mentions?.length ? ` @${b.mentions.join(", @")}` : ""}`
+          );
+          return [
+            `Discussion "${docName}" — ${blocks.length} block(s), status: ${config.status || "active"}, tokens: ${config.totalTokensUsed || 0}/${config.maxTokens || 50000}`,
+            ...lines,
+            "",
+            'Use collab({ action: "discuss", key: "read" }) for cursor-based reading.',
+          ].join("\n");
+        }
+
         // CRDT doc — list keys with value previews (filter out _meta)
         const doc = await space.openDoc(docName);
         // R5-2 + R6-1 FIX: Resolve correct Y.Map name instead of using docName
@@ -570,6 +588,29 @@ export function createCollabTool(
           docName = "plan";
         }
 
+        // STEP 1b: Discussion docs → return discussion blocks, not config map
+        if (docName.endsWith("/discussion")) {
+          const doc = await space.openDoc(docName);
+          const discussion = doc.getArray("discussion");
+          const blocks = discussion.toJSON();
+          if (!blocks.length) {
+            const config = doc.getMap("config").toJSON();
+            return `Discussion "${docName}" — 0 blocks, status: ${config.status || "active"}. Use collab({ action: "discuss", key: "post", ... }) to start.`;
+          }
+          const decisions = doc.getMap("decisions").toJSON();
+          const config = doc.getMap("config").toJSON();
+          const formatted = blocks.map((b: any) =>
+            `[${b.type || "message"}] ${b.role} (${b.timestamp}): ${b.content}${b.mentions?.length ? ` @${b.mentions.join(", @")}` : ""}`
+          ).join("\n\n");
+          const decisionCount = Object.keys(decisions).length;
+          return [
+            `Discussion "${docName}" — ${blocks.length} block(s), ${decisionCount} decision(s), status: ${config.status || "active"}`,
+            "",
+            formatted,
+            decisionCount > 0 ? `\nDecisions: ${JSON.stringify(decisions, null, 2)}` : "",
+          ].join("\n");
+        }
+
         // CRDT doc
         const doc = await space.openDoc(docName);
         if (key) {
@@ -617,6 +658,11 @@ export function createCollabTool(
         if (!docName || !value)
           return "docName and value (text content) required for write-block.";
 
+        // STEP 2: Block write-block on discussion docs — force agents to use discuss post
+        if (docName.endsWith("/discussion")) {
+          return `Cannot write-block to discussion docs. Use: collab({ action: "discuss", docName: "${docName}", key: "post", value: { content: "...", mentions: [...] } })`;
+        }
+
         const doc = await space.openDoc(docName);
         const fragment = doc.getXmlFragment("content");
         const text =
@@ -653,11 +699,11 @@ export function createCollabTool(
       // === DISCUSS: Agent discussion protocol using Y.Array + cursor tracking ===
       if (action === "discuss") {
         if (!docName)
-          return "Provide docName (e.g., 'task-003/discussion') for discuss action.";
+          return "Provide docName (e.g., 'task-5' or 'task-5/discussion') for discuss action.";
 
-        // Fix #12: Validate doc is a discussion doc
+        // STEP 3: Auto-append /discussion suffix if missing
         if (!docName.endsWith("/discussion")) {
-          return `discuss action requires a discussion doc (e.g., "task-003/discussion"). Got: "${docName}".`;
+          docName = `${docName}/discussion`;
         }
 
         const doc = await space.openDoc(docName);
@@ -736,7 +782,7 @@ export function createCollabTool(
 
           // Fire mention routing callback — spawns collab workers for mentioned roles
           if (block.mentions.length > 0 && callbacks?.onMentionedRoles && docName) {
-            callbacks.onMentionedRoles(block.mentions, taskId || "unknown", docName);
+            callbacks.onMentionedRoles(block.mentions, taskId || "unknown", docName, agentRole, block.content);
           }
 
           // Update guard rail counters
@@ -753,35 +799,30 @@ export function createCollabTool(
 
           // Warn if approaching token limit
           const newTotal = totalTokens + block.tokens;
-          const warning = newTotal > maxTokens * 0.8
+          let warning = newTotal > maxTokens * 0.8
             ? ` ⚠️ Token usage at ${Math.round(newTotal / maxTokens * 100)}% — wrap up soon.`
             : "";
 
-          // waitForResponse: block until a mentioned role responds (or timeout)
-          if (parsed.waitForResponse && block.mentions.length > 0) {
-            const TIMEOUT = 120_000; // 2 minutes
-            const POLL_INTERVAL = 3_000; // 3 seconds
-            const startTime = Date.now();
-
-            while (Date.now() - startTime < TIMEOUT) {
-              await new Promise(resolve => setTimeout(resolve, POLL_INTERVAL));
-
-              // Read new blocks since our post
-              const allBlocks = discussion.toJSON();
-              const responseBlock = allBlocks.find((b: any) =>
-                b.timestamp > block.timestamp &&
-                b.role !== agentRole &&
-                (block.mentions.includes(b.role) || b.role.startsWith("user:"))
-              );
-
-              if (responseBlock) {
-                // Update cursor past the response
-                cursors.set(agentRole, new Date().toISOString());
-                return `Response from ${responseBlock.role}: ${responseBlock.content}`;
-              }
+          // Phase 4: Check if all participants have posted → transition to all_posted
+          const participants = configMap.get("participants") as string[] || [];
+          if (participants.length > 0) {
+            const allBlocks = discussion.toJSON();
+            const posters = new Set(allBlocks.map((b: any) => b.role));
+            if (participants.every((p: string) => posters.has(p)) && configMap.get("status") === "active") {
+              configMap.set("status", "all_posted");
+              warning += " All participants have posted. Record a decision when ready.";
             }
+          }
 
-            return `No response within ${TIMEOUT / 1000}s. The mentioned role may not be available. Use request_task to create a formal task instead.`;
+          // Fix 4: Non-blocking mentions — return immediately, agent reads response later
+          if (parsed.waitForResponse && block.mentions.length > 0) {
+            return [
+              `Posted discussion block. ${block.mentions.join(", ")} notified.`,
+              `Round ${myRounds + 1}/${maxRounds}, tokens ${newTotal}/${maxTokens}.${warning}`,
+              ``,
+              `Their response will appear in the discussion.`,
+              `Read it with: collab({ action: "discuss", docName: "${docName}", key: "read" })`,
+            ].join("\n");
           }
 
           return `Posted discussion block (${block.type}). Round ${myRounds + 1}/${maxRounds}, tokens ${newTotal}/${maxTokens}.${warning}`;
@@ -811,19 +852,48 @@ export function createCollabTool(
         }
 
         if (op === "decide") {
-          // Record a decision
+          // Record a decision with quorum verification
           if (!value) return "Provide value with { key, decision, agreedBy? } for discuss decide.";
 
           const parsed = typeof value === "string" ? JSON.parse(value) : value;
+
+          // Phase 2: Quorum verification — only roles that posted can be in agreedBy
+          const allBlocks = doc.getArray("discussion").toJSON();
+          const posterRoles = new Set<string>(allBlocks.map((b: any) => b.role));
+          const requested = parsed.agreedBy || [agentRole];
+          const verified = requested.filter((r: string) => posterRoles.has(r));
+          const missing = requested.filter((r: string) => !posterRoles.has(r));
+
+          if (missing.length > 0) {
+            return `Cannot include ${missing.join(", ")} in agreedBy — they haven't posted. ` +
+              `Roles that posted: ${[...posterRoles].join(", ")}`;
+          }
+
           const decisions = doc.getMap("decisions");
           decisions.set(parsed.key || "decision", {
             decision: parsed.decision,
             decidedBy: agentRole,
-            agreedBy: parsed.agreedBy || [agentRole],
+            agreedBy: verified,
+            posterCount: posterRoles.size,
             timestamp: new Date().toISOString(),
           });
 
-          return `Decision recorded: "${parsed.decision}" by ${agentRole}.`;
+          // Phase 3: Auto-resolve matching agenda item
+          const configMap = doc.getMap("config");
+          const agenda = configMap.get("agenda") as any[];
+          if (agenda) {
+            const updated = agenda.map((item: any) =>
+              (item.id === parsed.key || item.text?.toLowerCase().includes((parsed.key || "").toLowerCase()))
+                ? { ...item, resolved: true }
+                : item
+            );
+            configMap.set("agenda", updated);
+          }
+
+          // Phase 4: Auto-close discussion on decide
+          configMap.set("status", "closed");
+
+          return `Decision recorded: "${parsed.decision}" by ${agentRole}. Agreed by: ${verified.join(", ")}. Discussion closed.`;
         }
 
         return `Unknown discuss operation "${op}". Use key = "post" | "read" | "decide".`;
