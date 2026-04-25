@@ -9,6 +9,7 @@ export interface IGoal extends Document {
   teamId: string;
   userId: string;
   goal: string;
+  goalId?: string;
   status: "pending" | "planning" | "executing" | "completed" | "failed";
   planId?: string;
   result?: string;
@@ -21,6 +22,7 @@ const goalSchema = new Schema<IGoal>(
     teamId: { type: String, required: true, index: true },
     userId: { type: String, required: true },
     goal: { type: String, required: true },
+    goalId: { type: String, default: null },
     status: {
       type: String,
       enum: ["pending", "planning", "executing", "completed", "failed"],

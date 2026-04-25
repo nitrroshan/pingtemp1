@@ -14,7 +14,7 @@ import { useState, useCallback, useRef, useEffect } from 'react';
 import type { MutableRefObject } from 'react';
 import { v4 as uuidv4 } from 'uuid';
 import { agentServiceV2, type Task as BackendTask } from '../services/AgentServiceV2';
-import type { Task, TaskStatus, OrchestrationEvent } from '../types';
+import type { Task, TaskStatus, OrchestrationEvent, PlanSummary } from '../types';
 import type { Agent } from '../types';
 
 export interface OrchestrationState {
@@ -23,6 +23,8 @@ export interface OrchestrationState {
   tasks: Record<string, Task[]>;
   autoExecuteEnabled: boolean;
   orchestrationLogs: OrchestrationEvent[];
+  /** All plans from backend GoalManager (Phase 4) */
+  plans: PlanSummary[];
 }
 
 /** Callback fired when an agent message arrives */
@@ -54,6 +56,7 @@ export interface OrchestrationActions {
     selectedTeamIdRef: MutableRefObject<string | null>,
     onMessage: OnMessageCallback,
     onStreamPart?: OnStreamPartCallback,
+    activePlanGoalIdRef?: MutableRefObject<string | null>,
   ) => () => void;
 }
 
@@ -63,6 +66,7 @@ export function useOrchestration(): OrchestrationState & OrchestrationActions {
   const [tasks, setTasks] = useState<Record<string, Task[]>>({});
   const [autoExecuteEnabled, setAutoExecuteEnabled] = useState(false);
   const [orchestrationLogs, setOrchestrationLogs] = useState<OrchestrationEvent[]>([]);
+  const [plans, setPlans] = useState<PlanSummary[]>([]);
 
   const addOrchestrationLog = useCallback((
     source: string,
@@ -118,6 +122,7 @@ export function useOrchestration(): OrchestrationState & OrchestrationActions {
     selectedTeamIdRef: MutableRefObject<string | null>,
     onMessage: OnMessageCallback,
     onStreamPart?: OnStreamPartCallback,
+    activePlanGoalIdRef?: MutableRefObject<string | null>,
   ) => {
     const findAgentByRole = (roleName: string, searchTeamId: string | null): Agent | undefined => {
       const normalized = roleName.toLowerCase();
@@ -175,6 +180,7 @@ export function useOrchestration(): OrchestrationState & OrchestrationActions {
             dependencies: bt.dependencies,
             completed: bt.status === 'completed',
             createdAt: Date.now(),
+            goalId: bt.goalId || undefined,
           };
           tasksByAgent[agent.id] = [...(tasksByAgent[agent.id] ?? []), ft];
         });
@@ -219,7 +225,13 @@ export function useOrchestration(): OrchestrationState & OrchestrationActions {
     // Routes ALL stream parts through onStreamPart for rich rendering
     const unsubStream = agentServiceV2.onStream((payload: any) => {
       if (!payload?.part) return;
-      const { part, agentId: streamAgentId } = payload;
+      const { part, agentId: streamAgentId, goalId: streamGoalId } = payload;
+
+      // Goal isolation: skip streams from other goals when viewing a specific goal
+      if (streamGoalId && activePlanGoalIdRef?.current
+          && streamGoalId !== activePlanGoalIdRef.current) {
+        return;
+      }
 
       // Handle ChatAgent responses (agentId = "chat-{role}")
       // Route to separate chat history key "chat:{mongoId}" to keep ChatAgent R1 chat
@@ -264,6 +276,13 @@ export function useOrchestration(): OrchestrationState & OrchestrationActions {
       addOrchestrationLog(`${update.taskId} [${update.role || 'worker'}]`, config.fmt(update), config.type as any);
     });
 
+    // Phase 4: Goal/Plan state changes — updates sidebar plan list
+    const unsubGoalState = agentServiceV2.onGoalStateChange((data: any) => {
+      if (data?.allGoals) {
+        setPlans(data.allGoals);
+      }
+    });
+
     return () => {
       unsubMessage();
       unsubState();
@@ -271,6 +290,7 @@ export function useOrchestration(): OrchestrationState & OrchestrationActions {
       unsubError();
       unsubStream();
       unsubTaskUpdate();
+      unsubGoalState();
     };
   }, [addOrchestrationLog]);
 
@@ -280,6 +300,7 @@ export function useOrchestration(): OrchestrationState & OrchestrationActions {
     tasks,
     autoExecuteEnabled,
     orchestrationLogs,
+    plans,
     handleApprovePlan,
     handleStartTask,
     handleCompleteTask,

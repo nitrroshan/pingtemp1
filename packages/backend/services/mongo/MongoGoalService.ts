@@ -44,7 +44,7 @@ export class MongoGoalService implements IGoalService {
     return {
       id: doc._id.toString(),
       teamId: doc.teamId,
-      userId: doc.userId ?? doc.sessionId ?? "default",
+      userId: doc.userId,
       goal: doc.goal,
       status: doc.status,
       planId: doc.planId ?? undefined,

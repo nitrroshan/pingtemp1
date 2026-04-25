@@ -28,7 +28,7 @@ dotenv.config();
 const logger = rootLogger.child({ module: "WorkerPool" });
 
 export interface WorkerCallbacks {
-  onStream?: (data: { taskId: string; agentId: string; part: any }) => void;
+  onStream?: (data: { taskId: string; agentId: string; part: any; goalId?: string }) => void;
   onEvent?: (data: { taskId: string; event: any }) => void;
   onDone?: (data: { taskId: string; role: string; output: any }) => void;
   onError?: (data: { taskId: string; error: string }) => void;
@@ -212,18 +212,22 @@ export class WorkerPool {
     let taskId: string;
     let roleKey: string;
     let finalMessage: string;
+    let taskGoalId: string | undefined;
 
     if (typeof taskIdOrTask === "string") {
       // Chat mode: simple params
       taskId = taskIdOrTask;
       roleKey = role!.toLowerCase();
       finalMessage = message!;
+      // Try to get goalId from TaskStore
+      taskGoalId = this.taskStore?.get(taskId)?.goalId;
     } else {
       // Queue mode: TaskWithContext
       const task = taskIdOrTask;
       taskId = task.id;
       roleKey = task.assigned_role.toLowerCase();
       finalMessage = this.buildMessageWithContext(task);
+      taskGoalId = (task as any).goalId;
       logger.debug(
         `Queue mode: ${taskId} with ${task.context.previousOutputs.length} previous outputs`,
       );
@@ -382,6 +386,7 @@ export class WorkerPool {
             taskId,
             agentId: roleKey,
             part: event.part,
+            goalId: taskGoalId,
           });
 
           // Channel B: synthesize from stream_part subtypes
@@ -511,6 +516,23 @@ export class WorkerPool {
     this.taskStore = null;
     this.dagResolver = null;
     this.crdtTaskSync = null;
+  }
+
+  /**
+   * Dispose workers for a specific goal's tasks only (Phase 4).
+   * Other goals' workers are preserved.
+   */
+  async disposeByGoal(goalId: string): Promise<void> {
+    const toDispose: string[] = [];
+    for (const [taskId, worker] of this.workers) {
+      // Check if this worker's task belongs to the given goal
+      const task = this.taskStore?.get(taskId);
+      if (task?.goalId === goalId) {
+        toDispose.push(taskId);
+      }
+    }
+    await Promise.all(toDispose.map((id) => this.dispose(id)));
+    logger.info(`Disposed ${toDispose.length} workers for goal ${goalId}`);
   }
 
   // ===========================================================================

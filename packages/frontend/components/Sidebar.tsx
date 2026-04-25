@@ -19,8 +19,9 @@ import {
 } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from './ui/tooltip';
-import type { Agent, Task } from '../types';
+import type { Agent, Task, PlanSummary } from '../types';
 import { PlanTaskList } from './Sidebar/PlanTaskList';
+import { SidebarPlanList } from './Sidebar/SidebarPlanList';
 import { ModeIndicator } from './Sidebar/ModeIndicator';
 
 // ─── icon helper ─────────────────────────────────────────────────────────────
@@ -65,6 +66,12 @@ interface SidebarProps {
   activePlanId?: string | null;
   sessionState?: string | null;
   onBackToGoals?: () => void;
+  /** All plans from backend (Phase 4 — shown when 2+ plans exist) */
+  plans?: PlanSummary[];
+  /** Called when user switches to a different plan */
+  onSelectPlan?: (goalId: string) => void;
+  /** Called when user wants to create a new plan */
+  onNewPlan?: () => void;
 }
 
 // ─── AgentRow ─────────────────────────────────────────────────────────────────
@@ -204,6 +211,7 @@ function AgentRow({
 function SidebarPlanLayout({
   planTasks, selectedTaskId, onSelectTask, planName, sessionState,
   activeTeam, activeAgentId, onSelectAgent, onToggleCollapse, onAddAgent,
+  plans, activePlanGoalId, onSelectPlan, onNewPlan,
 }: {
   planTasks: Task[];
   selectedTaskId: string | null;
@@ -215,6 +223,10 @@ function SidebarPlanLayout({
   onSelectAgent: (a: Agent) => void;
   onToggleCollapse: (id: string) => void;
   onAddAgent: (parentId?: string) => void;
+  plans?: PlanSummary[];
+  activePlanGoalId?: string | null;
+  onSelectPlan?: (goalId: string) => void;
+  onNewPlan?: () => void;
 }) {
   const [planCollapsed, setPlanCollapsed] = useState(false);
   const [agentsCollapsed, setAgentsCollapsed] = useState(false);
@@ -223,6 +235,18 @@ function SidebarPlanLayout({
 
   return (
     <div className="flex-1 flex flex-col min-h-0">
+      {/* PLANS section — only shows when 2+ plans exist (Phase 4) */}
+      {plans && plans.length >= 2 && onSelectPlan && (
+        <div className="border-b border-border">
+          <SidebarPlanList
+            plans={plans}
+            activePlanGoalId={activePlanGoalId ?? null}
+            onSelectPlan={onSelectPlan}
+            onNewPlan={onNewPlan}
+          />
+        </div>
+      )}
+
       {/* PLAN section — collapsible, scrollable, max 60% */}
       <div className={cn('flex flex-col border-b border-border', !planCollapsed && 'max-h-[60%]')}>
         <button
@@ -323,6 +347,9 @@ const Sidebar: React.FC<SidebarProps> = ({
   activePlanId,
   sessionState,
   onBackToGoals,
+  plans,
+  onSelectPlan,
+  onNewPlan,
 }) => {
   const [isTeamDropdownOpen, setIsTeamDropdownOpen] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
@@ -441,6 +468,10 @@ const Sidebar: React.FC<SidebarProps> = ({
             onSelectAgent={onSelectAgent}
             onToggleCollapse={onToggleCollapse}
             onAddAgent={onAddAgent}
+            plans={plans}
+            activePlanGoalId={activePlanId}
+            onSelectPlan={onSelectPlan}
+            onNewPlan={onNewPlan}
           />
         ) : (
           <>

@@ -18,8 +18,6 @@ import type { DependencyResolver } from "./DependencyResolver.js";
 import type { NotificationQueue } from "./NotificationQueue.js";
 import type { UserInteractionManager } from "./UserInteractionManager.js";
 import type { PluginRegistry } from "../plugin/PluginRegistry.js";
-import { toGoalId } from "../plugin/utils.js";
-import { classifyError } from "./types/workerTypes.js";
 import { rootLogger } from "../logging.js";
 import { PromptLoader } from "./PromptLoader.js";
 import type {
@@ -28,6 +26,8 @@ import type {
   OrchestratorMessage,
 } from "./types.js";
 import { GoalManager } from "./GoalManager.js";
+import { TaskContextBuilder } from "./TaskContextBuilder.js";
+import { DispatchManager } from "./DispatchManager.js";
 
 const log = rootLogger.child({ module: "OrchestratorService" });
 
@@ -74,6 +74,12 @@ export interface OrchestratorServiceConfig {
 
   // Execution config
   autoExecute?: boolean;
+
+  // Phase 4.5: Agent factories (pass-through to GoalManager)
+  createPlanner: (goalId: string) => Promise<import("./PlannerAgent.js").PlannerAgent>;
+  createChatAgent: (goalId: string, role: string) => import("../chatAgent/ChatAgent.js").ChatAgent;
+  onPlannerStream: (data: { goalId: string; taskId: string; agentId: string; part: any }) => void;
+  chatAgentsEnabled: boolean;
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -105,19 +111,15 @@ export class OrchestratorService {
   // Goal lifecycle — delegated to GoalManager (Phase 3.5 SRP extraction)
   private goalManager: GoalManager;
 
+  // Phase 4.5: Dispatch concurrency + retry — delegated to DispatchManager
+  private dispatchManager: DispatchManager;
+
   private sessionId: string;
   private messages: OrchestratorMessage[] = [];
   private autoExecute: boolean;
 
-  // Dispatch tracking
-  private activeDispatches = new Set<string>();   // taskIds currently being dispatched (prevent double-dispatch)
-  private manualDispatchChain: Promise<void> = Promise.resolve(); // serialized manual dispatches only
+  // Dispatch tracking — delegated to DispatchManager
   private messageChain: Promise<string> = Promise.resolve(""); // serialized user messages
-
-  // Retry tracking: taskId → attempt count
-  private taskAttempts = new Map<string, number>();
-  // Deferred dispatch queue (when concurrency limit reached)
-  private deferredDispatches: Array<{ taskId: string; role: string }> = [];
 
   constructor(config: OrchestratorServiceConfig) {
     this.teamId = config.teamId;
@@ -130,10 +132,20 @@ export class OrchestratorService {
     this.notificationQueue = config.notificationQueue;
     this.planStore = config.planStore;
     this.crdtTaskSyncProxy = config.crdtTaskSync;
-    this.crdtGoalStoreProxy = config.crdtGoalStore;
     this.callbacks = config.callbacks || {};
     this.sessionId = `team-${config.teamId}`;
     this.autoExecute = config.autoExecute ?? false;
+
+    // Phase 4.5: Create DispatchManager — owns concurrency + retry
+    this.dispatchManager = new DispatchManager({
+      maxConcurrent: MAX_CONCURRENT_DISPATCHES,
+      maxRetries: MAX_TASK_RETRIES,
+      executeTask: (taskId, role) => this.dispatchTask(taskId, role),
+      getTask: (taskId) => this.taskStore.get(taskId),
+      updateTaskStatus: (taskId, status) => { try { this.taskStore.updateStatus(taskId, status as any); } catch { /* guard */ } },
+      onTaskUpdate: this.callbacks.onTaskUpdate ? (data) => this.callbacks.onTaskUpdate!(data) : undefined,
+      failTask: (taskId, error) => this.taskStore.queue.failTask(taskId, error),
+    });
 
     // Create GoalManager — owns goal lifecycle, delegates dispatch back to us
     this.goalManager = new GoalManager({
@@ -147,6 +159,10 @@ export class OrchestratorService {
       crdtTaskSync: config.crdtTaskSync,
       crdtGoalStore: config.crdtGoalStore,
       autoExecute: this.autoExecute,
+      createPlanner: config.createPlanner,
+      createChatAgent: config.createChatAgent,
+      onPlannerStream: config.onPlannerStream,
+      chatAgentsEnabled: config.chatAgentsEnabled,
       callbacks: {
         onDispatchTask: (taskId, role) => this.handleReadyTask(taskId, role),
         onNotifyPlanner: (msg) => this.notifyPlanner(msg),
@@ -256,27 +272,28 @@ export class OrchestratorService {
   // ═══════════════════════════════════════════════════════════════════
 
   /**
-   * Handle a user message. Routes to the planner (via onPlannerInput callback).
-   * In planner mode, the orchestrator doesn't run the LLM — the planner does.
+   * Handle a user message. Routes to the planner via GoalManager.
+   * @param content - Message content
+   * @param goalId - goalId from frontend (required correlation ID)
    */
-  async handleMessage(content: string): Promise<string> {
-    const result = this.messageChain.then(() => this._handleMessage(content));
+  async handleMessage(content: string, goalId: string): Promise<string> {
+    const result = this.messageChain.then(() => this._handleMessage(content, goalId));
     this.messageChain = result.catch(() => "");
     return result;
   }
 
-  private async _handleMessage(content: string): Promise<string> {
+  private async _handleMessage(content: string, goalId: string): Promise<string> {
     this.messages.push({ role: "user", content, timestamp: new Date().toISOString() });
 
     if (this.goalManager.getState() === "idle") {
       this.goalManager.setState("executing");
     }
 
-    // Each user message = new planner turn with full conversation history.
-    // The planner talks naturally (text output) and calls tools (research, plan, etc.).
-    // When it generates text, the turn ends. User's next message starts a new turn.
-    // No blocking, no UserInteractionManager — just chat.
-    this.callbacks.onPlannerInput?.(content).catch((err) => {
+    // goalId is always provided by the client. No derivation, no fallback.
+    if (!this.goalManager.getGoalId()) {
+      this.goalManager.getOrCreateGoalPublic(goalId, content);
+    }
+    this.goalManager.executePlannerTurn(goalId, content).catch((err) => {
       console.error("[OrchestratorService] Planner error:", err);
     });
 
@@ -310,43 +327,71 @@ export class OrchestratorService {
   getCurrentGoalId(): string | null { return this.goalManager.getGoalId(); }
   getCallbacks(): OrchestratorCallbacks { return this.callbacks; }
   getTaskStore(): TaskStore { return this.taskStore; }
+  getAllGoalSummaries(): import("./types.js").GoalSummary[] { return this.goalManager.getAllGoalSummaries(); }
+
+  // ═══════════════════════════════════════════════════════════════════
+  // AUTO-APPROVE (Phase 4.5 — moved from AgentManagerV2)
+  // ═══════════════════════════════════════════════════════════════════
+
+  private autoApproveRoles = new Set<string>();
+  private autoApproveAll = false;
+
+  setAutoApproveForRole(role: string, enabled: boolean): void {
+    const normalizedRole = role.toLowerCase();
+    if (enabled) {
+      this.autoApproveRoles.add(normalizedRole);
+      log.info(`Auto-approve enabled for role: ${normalizedRole}`);
+    } else {
+      this.autoApproveRoles.delete(normalizedRole);
+      log.info(`Auto-approve disabled for role: ${normalizedRole}`);
+    }
+  }
+
+  setAutoApproveAllRoles(enabled: boolean): void {
+    this.autoApproveAll = enabled;
+    log.info(`Auto-approve ALL roles: ${enabled ? "enabled" : "disabled"}`);
+  }
+
+  isAutoApproveEnabled(role: string): boolean {
+    return this.autoApproveAll || this.autoApproveRoles.has(role.toLowerCase());
+  }
+
+  getAutoApproveRoles(): string[] {
+    if (this.autoApproveAll) return ["*"];
+    return Array.from(this.autoApproveRoles);
+  }
+
+  /** Get ChatAgent from GoalManager (Phase 4.5). */
+  getChatAgent(role: string, goalId?: string): import("../chatAgent/ChatAgent.js").ChatAgent | null {
+    // Try exact goal lookup first, then fall back to searching all goals
+    if (goalId) {
+      const exact = this.goalManager.getChatAgent(goalId, role);
+      if (exact) return exact;
+    }
+    return this.goalManager.getChatAgentByRole(role);
+  }
+
+  /** Enable chat agents on GoalManager (called after construction). */
+  setChatAgentsEnabled(enabled: boolean): void {
+    this.goalManager.setChatAgentsEnabled(enabled);
+  }
+
+  /** Get GoalManager (for AgentManagerV2 delegation). */
+  getGoalManager(): GoalManager { return this.goalManager; }
 
   /** Step 4: Set dispatch callback to route through ChatAgent instead of direct WorkerPool */
   setChatAgentDispatch(dispatch: (taskId: string, role: string) => Promise<void>): void {
     this.chatAgentDispatch = dispatch;
+    this.dispatchManager.setChatAgentDispatch(dispatch);
     log.info("ChatAgent dispatch enabled — tasks will route through ChatAgent");
   }
 
   /**
-   * Handle a ready task — bridge from GoalManager.onTaskReady → dispatch.
-   * Manages autoExecute check, ChatAgent routing, and concurrency limits.
+   * Handle a ready task — delegates to DispatchManager.
    * GoalManager calls this via the onDispatchTask callback.
    */
   private handleReadyTask(taskId: string, role: string): void {
-    if (!this.autoExecute) return;
-    if (this.activeDispatches.has(taskId)) return;
-
-    // Route through ChatAgent if dispatch callback is set
-    if (this.chatAgentDispatch) {
-      this.chatAgentDispatch(taskId, role).catch((err) => {
-        log.error(`ChatAgent dispatch error for ${taskId}:`, err);
-      });
-      return;
-    }
-
-    // Concurrency limit: defer if too many active dispatches
-    if (this.activeDispatches.size >= MAX_CONCURRENT_DISPATCHES) {
-      this.deferredDispatches.push({ taskId, role });
-      return;
-    }
-
-    this.activeDispatches.add(taskId);
-    this.dispatchTask(taskId, role).catch((err) => {
-      log.error(`Auto-dispatch error for ${taskId}:`, err);
-    }).finally(() => {
-      this.activeDispatches.delete(taskId);
-      this.drainDeferredDispatches();
-    });
+    this.dispatchManager.dispatch(taskId, role, this.autoExecute);
   }
 
   /**
@@ -354,14 +399,7 @@ export class OrchestratorService {
    * Used by ChatAgent.onDispatchTask callback to actually run the task.
    */
   async directDispatchTask(taskId: string, role: string): Promise<void> {
-    if (this.activeDispatches.has(taskId)) return;
-    this.activeDispatches.add(taskId);
-    try {
-      await this.dispatchTask(taskId, role);
-    } finally {
-      this.activeDispatches.delete(taskId);
-      this.drainDeferredDispatches();
-    }
+    await this.dispatchManager.directDispatch(taskId, role);
   }
   getDagResolver(): DependencyResolver { return this.dagResolver; }
   getUserInteractionManager(): UserInteractionManager | undefined { return this.uim; }
@@ -422,7 +460,7 @@ export class OrchestratorService {
   private dispatchReadyTasks(): void {
     const readyTasks = this.taskStore.getByStatus("ready");
     for (const task of readyTasks) {
-      if (this.activeDispatches.has(task.id)) continue;
+      if (this.dispatchManager.isDispatching(task.id)) continue;
       this.handleReadyTask(task.id, task.assigned_role);
     }
   }
@@ -473,61 +511,11 @@ export class OrchestratorService {
     }
   }
 
-  /** Drain deferred dispatches when a slot opens up */
-  private drainDeferredDispatches(): void {
-    while (
-      this.deferredDispatches.length > 0 &&
-      this.activeDispatches.size < MAX_CONCURRENT_DISPATCHES
-    ) {
-      const next = this.deferredDispatches.shift()!;
-      if (this.activeDispatches.has(next.taskId)) continue;
-
-      // Re-check task state (may have been cancelled/completed while waiting)
-      const task = this.taskStore.get(next.taskId);
-      if (!task || task.status === "completed" || task.status === "failed") continue;
-
-      this.activeDispatches.add(next.taskId);
-      this.dispatchTask(next.taskId, next.role).catch((err) => {
-        log.error(`Deferred dispatch error for ${next.taskId}:`, err);
-      }).finally(() => {
-        this.activeDispatches.delete(next.taskId);
-        this.drainDeferredDispatches();
-      });
-    }
-  }
-
   /**
-   * Manually dispatch a ready task. Used when autoExecute is OFF and the user
-   * triggers start-task from the frontend.
+   * Manually dispatch a ready task. Used when autoExecute is OFF.
    */
   async manualDispatch(taskId: string): Promise<void> {
-    const task = this.taskStore.get(taskId);
-    if (!task) throw new Error(`Task ${taskId} not found`);
-    if (task.status !== "ready" && task.status !== "pending") {
-      throw new Error(`Task ${taskId} is not ready (status: ${task.status})`);
-    }
-    if (this.activeDispatches.has(taskId)) {
-      throw new Error(`Task ${taskId} is already being dispatched`);
-    }
-
-    const role = task.assigned_role;
-
-    // Route through ChatAgent if dispatch callback is set
-    if (this.chatAgentDispatch) {
-      this.chatAgentDispatch(taskId, role).catch((err) => {
-        log.error(`ChatAgent manual dispatch error for ${taskId}:`, err);
-      });
-      return;
-    }
-
-    this.activeDispatches.add(taskId);
-
-    // Manual dispatch is serialized (caller awaits) so UI gets immediate feedback
-    this.manualDispatchChain = this.manualDispatchChain
-      .then(() => this.dispatchTask(taskId, role))
-      .catch((err) => { log.error(`Dispatch error for ${taskId}:`, err); })
-      .finally(() => this.activeDispatches.delete(taskId));
-    await this.manualDispatchChain;
+    await this.dispatchManager.manualDispatch(taskId);
   }
 
   // ═══════════════════════════════════════════════════════════════════
@@ -557,189 +545,40 @@ export class OrchestratorService {
       if ((taskType === "collaboration" || taskType === "discussion") && this.crdtTaskSyncProxy?.get?.()) {
         try {
           const collabConfig = task.context?.collaboration || {};
-
-          // Phase 3: Extract agenda from task description (numbered items)
           const agendaLines = task.description
             .split("\n")
             .filter((l: string) => /^\d+\./.test(l.trim()))
             .map((l: string) => l.trim().replace(/^\d+\.\s*/, ""));
-
-          // Phase 4: Set participants from team roles
           const participants = this.teamRoles.map(r => r.toLowerCase());
-
           await this.crdtTaskSyncProxy.get().initCollabDocs(taskId, {
             ...collabConfig,
             agenda: agendaLines.length > 0 ? agendaLines : undefined,
             participants,
           });
-          log.info(`Initialized discussion CRDT docs for task ${taskId} (agenda: ${agendaLines.length} items, participants: ${participants.length})`);
+          log.info(`Initialized discussion CRDT docs for task ${taskId}`);
         } catch (err) {
           log.warn(`Failed to initialize collab docs for ${taskId}: ${err}`);
         }
       }
-      // ──────────────────────────────────────────────────────────────────────────
-
-      // Context is pre-built by TaskStore.enrichDependantContext() at upstream completion time.
-      // Planner-provided context (notes, files, artifacts) is already on task.context from create().
-      // We just read — no assembly logic here.
-      const taskCtx = (typeof task.context === "object" ? task.context : {}) as Record<string, any>;
-
-      const previousOutputs = Array.isArray(taskCtx.upstreamOutputs) ? taskCtx.upstreamOutputs : [];
-      const artifacts = [
-        ...(Array.isArray(taskCtx.upstreamArtifacts) ? taskCtx.upstreamArtifacts : []),
-        ...(Array.isArray(taskCtx.files) ? taskCtx.files : []),
-        ...(Array.isArray(taskCtx.artifacts) ? taskCtx.artifacts : []),
-      ];
 
       // ─── CRDT Context Enrichment ─────────────────────────────────────
-      // Inject CRDT references so agents can use `collab read` to access task details
       let crdtRefs: Record<string, any> | undefined;
       const crdtSyncDispatch = this.crdtTaskSyncProxy?.get?.();
       if (crdtSyncDispatch) {
         crdtRefs = crdtSyncDispatch.getCrdtRefs(taskId, task);
-        // Sync status to in_progress in CRDT
         await crdtSyncDispatch.syncStatus(taskId, "in_progress");
-      } else {
-        log.debug(`CRDT not resolved — agent won't have collab read access for ${taskId}`);
-      }
-      // ────────────────────────────────────────────────────────────────
-
-      // Enrich description with planner notes + upstream notes + expected output
-      let enrichedDescription = task.description;
-
-      // Inject upstream task outputs into the description so the agent knows what was done
-      if (previousOutputs.length > 0) {
-        enrichedDescription += `\n\n## Completed Upstream Work`;
-        enrichedDescription += `\nThese tasks completed before yours. Their output files are already in your workspace (merged to main).`;
-        for (const po of previousOutputs) {
-          enrichedDescription += `\n\n### ${po.taskId} (${po.role})${po.status === "failed" ? " ❌ FAILED" : ""}`;
-          enrichedDescription += `\n${po.summary}`;
-        }
-        if (artifacts.length > 0) {
-          enrichedDescription += `\n\n**Files/artifacts from upstream:** ${artifacts.join(", ")}`;
-        }
-        enrichedDescription += `\n\nUse \`workspace_list_files\` to see all available files in your workspace.`;
       }
 
-      const allNotes: string[] = [
-        ...(Array.isArray(taskCtx.notes) ? taskCtx.notes : taskCtx.notes ? [taskCtx.notes] : []),
-        ...(Array.isArray(taskCtx.upstreamNotes) ? taskCtx.upstreamNotes : []),
-      ];
-      if (allNotes.length > 0) {
-        enrichedDescription += `\n\nNotes:\n${allNotes.map((n: string) => `- ${n}`).join("\n")}`;
-      }
-      if (taskCtx.expectedOutput) {
-        enrichedDescription += `\n\nExpected output: ${taskCtx.expectedOutput}`;
-      }
-
-      // ─── Cross-Plan Reference Resolution (v1.1) ─────────────────────
-      const references = Array.isArray(taskCtx.references) ? taskCtx.references : [];
-      const unresolvedRefs: string[] = [];  // R2-#5: Track failures
-      if (references.length > 0 && this.planStore) {
-        const priorOutputs: string[] = [];
-        for (const ref of references) {
-          try {
-            // ref format: "plan-001/task-003" or "{goalId}/task-003"
-            const [refPlanOrGoal, refTaskId] = ref.split("/");
-            if (!refTaskId) {
-              unresolvedRefs.push(`${ref} (invalid format)`);
-              continue;
-            }
-
-            // Try loading from PlanStore
-            const allPlans = await this.planStore.listAllPlans();
-            const matchPlan = allPlans.find((p: any) => p.planId === refPlanOrGoal || p.goalId === refPlanOrGoal);
-            if (matchPlan) {
-              const stored = await this.planStore.loadPlan(matchPlan.planId, matchPlan.goalId);
-              const refTask = stored?.plan?.tasks?.find((t: any) => t.id === refTaskId);
-              if (refTask?.output) {
-                const summary = typeof refTask.output === "string" ? refTask.output : JSON.stringify(refTask.output).slice(0, 500);
-                priorOutputs.push(`- ${ref}: ${summary}`);
-              } else {
-                unresolvedRefs.push(`${ref} (task found, no output)`);
-              }
-            } else {
-              unresolvedRefs.push(`${ref} (plan/goal not found)`);
-            }
-          } catch (err) {
-            unresolvedRefs.push(`${ref} (error: ${err})`);
-          }
-        }
-        if (priorOutputs.length > 0) {
-          enrichedDescription += `\n\n## Prior Work (from previous plans)\n${priorOutputs.join("\n")}`;
-        }
-        // R2-#5 FIX: Warn agent about unresolved references
-        if (unresolvedRefs.length > 0) {
-          log.warn(`Task ${taskId}: ${unresolvedRefs.length}/${references.length} cross-plan refs unresolved`);
-          enrichedDescription += `\n\n⚠️ Unresolved references (${unresolvedRefs.length}): ${unresolvedRefs.join(", ")}`;
-        }
-      }
-      // ────────────────────────────────────────────────────────────────
-
-      // Fix #15: Add CRDT references to agent prompt so agents know how to access task details
-      if (crdtRefs) {
-        enrichedDescription += `\n\n## Context Sources (use collab read to access)`;
-        enrichedDescription += `\n- Your task: collab read ${crdtRefs.task}`;
-        enrichedDescription += `\n- Plan: collab read ${crdtRefs.plan}`;
-        enrichedDescription += `\n- Goal: collab read ${crdtRefs.goal}`;
-        if (crdtRefs.dependencies?.length) {
-          enrichedDescription += `\n- Completed dependencies: ${crdtRefs.dependencies.join(", ")}`;
-        }
-        if (crdtRefs.dependants?.length) {
-          enrichedDescription += `\n- Downstream (depends on you): ${crdtRefs.dependants.join(", ")}`;
-        }
-      }
-
-      // R8: Inject team roster so agents know who they can create tasks for
-      if (this.teamRoles.length > 0) {
-        const otherRoles = this.teamRoles.filter(r => r.toLowerCase() !== role.toLowerCase());
-        if (otherRoles.length > 0) {
-          enrichedDescription += `\n\n## Your Team`;
-          enrichedDescription += `\nOther roles you can collaborate with or create tasks for:`;
-          enrichedDescription += otherRoles.map(r => `\n- ${r}`).join("");
-          enrichedDescription += `\n\nIf you need work from another role, use request_task({ targetRole: "role-name", relationship: "blocks-me" }).`;
-          enrichedDescription += `\nIf this task is wrong for your role, use bounce_task().`;
-        }
-      }
-
-      // Step 5: Discussion-specific prompt for type: "discussion" or "collaboration" tasks
-      if (task.type === "collaboration" || task.type === "discussion" || task.context?.type === "collaboration") {
-        const discussionDocName = `${taskId}/discussion`;
-        const otherRoles = this.teamRoles.filter(r => r.toLowerCase() !== role.toLowerCase());
-        enrichedDescription += `\n\n## ⚡ Discussion Task`;
-        enrichedDescription += `\nYou are participating in a cross-role discussion. Other team roles: ${otherRoles.join(", ")}.`;
-
-        // Phase 3: Inject agenda if present
-        const agendaLines = task.description
-          .split("\n")
-          .filter((l: string) => /^\d+\./.test(l.trim()))
-          .map((l: string) => l.trim().replace(/^\d+\.\s*/, ""));
-        if (agendaLines.length > 0) {
-          enrichedDescription += `\n\n### Agenda:`;
-          enrichedDescription += agendaLines.map((a, i) => `\n${i + 1}. ${a}`).join("");
-          enrichedDescription += `\nAddress each item. Use decide with matching key to resolve each.`;
-        }
-        enrichedDescription += `\n\n### Protocol (follow these steps exactly):`;
-        enrichedDescription += `\n1. **Read** existing discussion:`;
-        enrichedDescription += `\n   \`collab({ action: "discuss", docName: "${discussionDocName}", key: "read" })\``;
-        enrichedDescription += `\n2. **Post** your perspective (mention other roles for their input):`;
-        enrichedDescription += `\n   \`collab({ action: "discuss", docName: "${discussionDocName}", key: "post", value: { content: "YOUR INPUT HERE", mentions: [${otherRoles.map(r => `"${r}"`).join(", ")}] } })\``;
-        enrichedDescription += `\n3. **Read** again to check for responses:`;
-        enrichedDescription += `\n   \`collab({ action: "discuss", docName: "${discussionDocName}", key: "read" })\``;
-        enrichedDescription += `\n4. **Decide** when consensus is reached:`;
-        enrichedDescription += `\n   \`collab({ action: "discuss", docName: "${discussionDocName}", key: "decide", value: { key: "outcome", decision: "...", agreedBy: ["${role}", ...] } })\``;
-        enrichedDescription += `\n5. **Complete**: \`complete_task({ summary: "Decision: ..." })\``;
-        enrichedDescription += `\n\n### Rules:`;
-        enrichedDescription += `\n- Post ONCE with your expert perspective. Don't repeat yourself.`;
-        enrichedDescription += `\n- Read other participants' posts before recording a decision.`;
-        enrichedDescription += `\n- Do NOT use write-block — only use discuss post/read/decide.`;
-        enrichedDescription += `\n- Keep it brief — this is alignment, not implementation.`;
-      }
+      // ─── Delegate context enrichment to TaskContextBuilder ───────────
+      const { enrichedDescription, previousOutputs, artifacts } = await TaskContextBuilder.enrich({
+        task, role, teamRoles: this.teamRoles, crdtRefs, planStore: this.planStore,
+      });
 
       await this.workerPool.runTask({
         id: taskId, assigned_role: role, description: enrichedDescription,
         priority: task.priority || 0,
         context: { previousOutputs, artifacts, crdtRefs },
+        goalId: task.goalId,
         createdAt: Date.now(), status: "in_progress",
       });
 
@@ -777,62 +616,21 @@ export class OrchestratorService {
         }
       }
     } catch (error: any) {
-      if (this.taskStore.get(taskId)?.status === "completed") return;
-
-      // Classify the error to determine if auto-retry is safe
-      const attempt = this.taskAttempts.get(taskId) || 1;
-      const report = classifyError(taskId, role, error, attempt);
-
-      log.warn(`Task ${taskId} failed (attempt ${attempt}/${MAX_TASK_RETRIES}): [${report.errorCategory}] ${report.message.slice(0, 200)}`);
-
-      if (report.retriable && attempt < MAX_TASK_RETRIES) {
-        // Exponential backoff: 10s, 30s, 60s (generous for 429 retry-after)
-        const backoffMs = Math.min(10_000 * Math.pow(2, attempt - 1), 60_000);
-        log.info(`Auto-retrying task ${taskId} in ${backoffMs / 1000}s (attempt ${attempt + 1}/${MAX_TASK_RETRIES})`);
-
-        this.taskAttempts.set(taskId, attempt + 1);
-
-        this.callbacks.onTaskUpdate?.({
-          taskId, status: "ready", role, timestamp: Date.now(),
-        });
-
-        // Reset to ready so state machine allows re-dispatch
-        try { this.taskStore.updateStatus(taskId, "failed"); } catch { /* already failed */ }
-        try { this.taskStore.updateStatus(taskId, "ready"); } catch { /* guard */ }
-
-        // Schedule retry after backoff
-        setTimeout(() => {
-          const retryTask = this.taskStore.get(taskId);
-          if (!retryTask || retryTask.status !== "ready") return;
-
-          if (this.activeDispatches.has(taskId)) return;
-          this.activeDispatches.add(taskId);
-
-          this.dispatchTask(taskId, role).catch((err) => {
-            log.error(`Retry dispatch error for ${taskId}:`, err);
-          }).finally(() => {
-            this.activeDispatches.delete(taskId);
-            this.drainDeferredDispatches();
-          });
-        }, backoffMs);
-      } else {
-        // Non-retriable or max retries exceeded — fail permanently
-        if (attempt >= MAX_TASK_RETRIES) {
-          log.error(`Task ${taskId} exhausted all ${MAX_TASK_RETRIES} retry attempts, failing permanently`);
-        }
-        this.taskAttempts.delete(taskId);
-        try { this.taskStore.updateStatus(taskId, "failed"); } catch { /* already failed */ }
-        this.taskStore.queue.failTask(taskId, error.message);
-      }
+      // Delegate error handling (retry/fail) to DispatchManager
+      this.dispatchManager.handleError(taskId, role, error);
     }
   }
 
-  /** Notify planner via NotificationQueue (debounce) or direct callback. */
+  /** Notify planner via NotificationQueue (debounce) or direct GoalManager call. */
   private notifyPlanner(message: string): void {
     if (this.notificationQueue) {
       this.notificationQueue.push(message);
     } else {
-      this.callbacks.onPlannerInput?.(message);
+      const goalId = this.goalManager.getGoalId();
+      if (!goalId) return; // No active goal = nothing to notify
+      this.goalManager.executePlannerTurn(goalId, message).catch((err) => {
+        log.error(`Planner notification error: ${err}`);
+      });
     }
   }
 

@@ -427,7 +427,8 @@ export function useChat() {
 
     try {
       const response = await fetch(
-        `${agentServiceV2.getBaseUrl()}/api/v2/teams/${teamId}/agents/${agentId}/messages?limit=50`
+        `${agentServiceV2.getBaseUrl()}/api/v2/teams/${teamId}/agents/${agentId}/messages?limit=50`,
+        { credentials: "include" }
       );
       if (!response.ok) return;
 
@@ -476,14 +477,23 @@ export function useChat() {
    * Server is authoritative — replaces localStorage cache.
    * Called once on team subscription (page load / reconnect).
    */
-  const restoreFromServer = useCallback(async (teamId: string, agents: Array<{ id: string; role: string }>): Promise<{
+  const restoreFromServer = useCallback(async (teamId: string, agents: Array<{ id: string; role: string }>, goalId?: string): Promise<{
     goals: any[];
     plan: any;
     tasks: any[];
     orchestratorState: string | null;
+    allGoalSummaries?: any[];
   } | null> => {
     try {
-      const data = await agentServiceV2.restoreSession(teamId);
+      const data = await agentServiceV2.restoreSession(teamId, goalId);
+      console.log('[useChat] restoreFromServer response:', {
+        hasData: !!data,
+        conversationKeys: data ? Object.keys(data.conversations || {}) : [],
+        conversationCounts: data ? Object.fromEntries(Object.entries(data.conversations || {}).map(([k, v]) => [k, (v as any[]).length])) : {},
+        workerCount: data?.workerMessages?.length ?? 0,
+        goalId,
+        goals: data?.goals?.length ?? 0,
+      });
       if (!data) return null;
 
       const restored: Record<string, Message[]> = {};
@@ -499,12 +509,12 @@ export function useChat() {
             const role = agentId.replace('chat-', '');
             const agent = agents.find(a => a.role?.toLowerCase() === role);
             key = agent ? `chat:${agent.id}` : agentId;
-          } else if (agentId === 'manager' || agentId === 'orchestrator') {
-            // Planner — key is teamId
+          } else if (agentId === 'manager' || agentId === 'orchestrator' || agentId === 'planner') {
+            // Planner — all variants map to teamId
             key = teamId;
           }
 
-          restored[key] = msgs.map((m: any) => ({
+          const mapped: Message[] = msgs.map((m: any) => ({
             id: m.id,
             role: m.role === 'assistant' ? 'model' : m.role,
             content: m.content,
@@ -512,9 +522,16 @@ export function useChat() {
             isStreaming: false,
             streamParts: m.streamParts ? JSON.parse(m.streamParts) : undefined,
           }));
+          // Merge into existing key (planner messages come as "manager" + "planner" → both map to teamId)
+          restored[key] = [...(restored[key] ?? []), ...mapped];
           // Mark as loaded so loadAgentChat doesn't re-fetch
           loadedAgents.current.add(key);
         }
+      }
+
+      // Sort merged conversations by timestamp (user + planner responses interleaved)
+      for (const key of Object.keys(restored)) {
+        restored[key].sort((a, b) => a.timestamp - b.timestamp);
       }
 
       // Restore worker messages (per-agent keyed)
@@ -539,8 +556,13 @@ export function useChat() {
       }
 
       if (Object.keys(restored).length > 0) {
-        // Replace (not merge) — server is authoritative, clears stale agents
-        setChatHistories(restored);
+        console.log('[useChat] Restoring chat keys:', Object.keys(restored), 
+          'msgCounts:', Object.fromEntries(Object.entries(restored).map(([k, v]) => [k, v.length])));
+        // Merge with existing histories — server data takes priority for restored keys,
+        // but preserves in-flight streaming messages for keys not in the restore set.
+        setChatHistories(prev => ({ ...prev, ...restored }));
+      } else {
+        console.log('[useChat] No messages to restore');
       }
 
       // Return plan/goals/tasks so caller can populate plan state
@@ -550,8 +572,8 @@ export function useChat() {
         tasks: data.tasks ?? [],
         orchestratorState: data.orchestratorState ?? null,
       };
-    } catch {
-      // Restore failed — fall back to localStorage cache
+    } catch (err) {
+      console.error('[useChat] restoreFromServer failed:', err);
       return null;
     }
   }, []);

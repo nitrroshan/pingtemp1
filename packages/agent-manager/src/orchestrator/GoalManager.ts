@@ -13,8 +13,10 @@ import type { DependencyResolver } from "./DependencyResolver.js";
 import type { WorkerPool } from "../services/WorkerPool.js";
 import type { PluginRegistry } from "../plugin/PluginRegistry.js";
 import type { CrdtProxy } from "./OrchestratorService.js";
-import type { OrchestratorState, GoalManagerCallbacks, IGoalManager } from "./types.js";
-import { toGoalId } from "../plugin/utils.js";
+import type { OrchestratorState, GoalManagerCallbacks, IGoalManager, GoalContext, GoalSummary } from "./types.js";
+import type { PlannerAgent } from "./PlannerAgent.js";
+import type { ChatAgent } from "../chatAgent/ChatAgent.js";
+import type { AgentEvent } from "../agent/types.js";
 import { PromptLoader } from "./PromptLoader.js";
 import { rootLogger } from "../logging.js";
 
@@ -36,6 +38,15 @@ export interface GoalManagerConfig {
   crdtGoalStore?: CrdtProxy;
   autoExecute: boolean;
   callbacks: GoalManagerCallbacks;
+  // Phase 4.5: Factories for per-goal agents (injected by AgentManagerV2)
+  createPlanner: (goalId: string) => Promise<PlannerAgent>;
+  createChatAgent: (goalId: string, role: string) => ChatAgent;
+  /** Stream callback for planner events — routes to Socket.IO */
+  onPlannerStream: (data: { goalId: string; taskId: string; agentId: string; part: any }) => void;
+  /** Whether chat agents are enabled */
+  chatAgentsEnabled: boolean;
+  /** Optional callback to load prior conversation from storage */
+  loadConversationFn?: ((teamId: string, agentId: string) => Promise<Array<{ role: "user" | "assistant" | "system"; content: string }>>) | null;
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -55,10 +66,15 @@ export class GoalManager implements IGoalManager {
   private autoExecute: boolean;
   private callbacks: GoalManagerCallbacks;
 
-  // Goal state (single-goal — Phase 4 makes this per-goal via Map)
-  private state: OrchestratorState = "idle";
-  private currentGoalId: string | null = null;
-  private pendingPlan: any = null;
+  // Phase 4.5: Agent factories (injected by AgentManagerV2 composition root)
+  private createPlannerFn: (goalId: string) => Promise<PlannerAgent>;
+  private createChatAgentFn: (goalId: string, role: string) => ChatAgent;
+  private onPlannerStream: GoalManagerConfig["onPlannerStream"];
+  private chatAgentsEnabled: boolean;
+
+  // Goal state — Map<goalId, GoalContext> for multi-goal support (Phase 4)
+  private goals = new Map<string, GoalContext>();
+  private activeGoalId: string | null = null;
 
   constructor(config: GoalManagerConfig) {
     this.teamId = config.teamId;
@@ -72,18 +88,213 @@ export class GoalManager implements IGoalManager {
     this.crdtGoalStoreProxy = config.crdtGoalStore;
     this.autoExecute = config.autoExecute;
     this.callbacks = config.callbacks;
+    this.createPlannerFn = config.createPlanner;
+    this.createChatAgentFn = config.createChatAgent;
+    this.onPlannerStream = config.onPlannerStream;
+    this.chatAgentsEnabled = config.chatAgentsEnabled;
     log.info(`GoalManager created for team ${config.teamId}`);
   }
 
   // ═══════════════════════════════════════════════════════════════════
-  // STATE ACCESSORS
+  // GOAL CONTEXT MANAGEMENT
   // ═══════════════════════════════════════════════════════════════════
 
-  getState(): OrchestratorState { return this.state; }
-  setState(state: OrchestratorState): void { this.state = state; }
-  getGoalId(): string | null { return this.currentGoalId; }
-  getPendingPlan(): any | null { return this.pendingPlan; }
-  setPendingPlan(plan: any | null): void { this.pendingPlan = plan; }
+  /** Get or create a GoalContext. FF gate: single-goal when FF_PARALLEL_PLANS is off. */
+  private getOrCreateGoal(goalId: string, title?: string): GoalContext {
+    let goal = this.goals.get(goalId);
+    if (!goal) {
+      if (!process.env.FF_PARALLEL_PLANS && this.goals.size >= 1) {
+        // Single-goal mode: clear existing goals
+        this.goals.clear();
+      }
+      goal = {
+        goalId,
+        state: "idle",
+        pendingPlan: null,
+        currentPlanId: null,
+        title: title || goalId,
+        createdAt: Date.now(),
+        planner: null,
+        chatAgents: new Map(),
+      };
+      this.goals.set(goalId, goal);
+    }
+    return goal;
+  }
+
+  /** Find the goal currently executing (at most one in v1.0). */
+  getExecutingGoal(): GoalContext | undefined {
+    for (const g of this.goals.values()) {
+      if (g.state === "executing") return g;
+    }
+    return undefined;
+  }
+
+  /** Find which goal a task belongs to. */
+  getGoalForTask(taskId: string): GoalContext | undefined {
+    const task = this.taskStore.get(taskId);
+    return task?.goalId ? this.goals.get(task.goalId) : undefined;
+  }
+
+  /** Get summaries of all goals for frontend display. */
+  getAllGoalSummaries(): GoalSummary[] {
+    return Array.from(this.goals.values()).map(g => ({
+      goalId: g.goalId,
+      title: g.title,
+      state: g.state,
+      taskCount: this.taskStore.getByGoal(g.goalId).length,
+      completedCount: this.taskStore.getByGoal(g.goalId).filter(t => t.status === "completed").length,
+      planId: g.currentPlanId || undefined,
+      createdAt: g.createdAt,
+    }));
+  }
+
+  /** Public wrapper for getOrCreateGoal — used by OrchestratorService to pre-create goals. */
+  getOrCreateGoalPublic(goalId: string, title?: string): GoalContext {
+    const goal = this.getOrCreateGoal(goalId, title);
+    this.activeGoalId = goalId;
+    // Ensure ChatAgents exist for this goal (may be new or restored without agents)
+    if (goal.chatAgents.size === 0) {
+      this.enableChatAgentsForGoal(goalId, this.teamRoles);
+    }
+    return goal;
+  }
+
+  // ═══════════════════════════════════════════════════════════════════
+  // PER-GOAL AGENT LIFECYCLE (Phase 4.5 — moved from AgentManagerV2)
+  // ═══════════════════════════════════════════════════════════════════
+
+  /** Execute a planner turn for a specific goal. Creates planner lazily. */
+  async executePlannerTurn(goalId: string, message: string): Promise<void> {
+    const goal = this.getOrCreateGoal(goalId);
+    if (!goal.planner) {
+      goal.planner = await this.createPlannerFn(goalId);
+      log.info(`Created planner for goal ${goalId}`);
+    }
+    const agent = goal.planner.getAgent();
+    const sessionId = `team-${this.teamId}:goal-${goalId}`;
+    try {
+      for await (const event of agent.execute({ message, threadId: sessionId })) {
+        if (event.type === "stream_part") {
+          this.onPlannerStream({
+            goalId,
+            taskId: `team-${this.teamId}`,
+            agentId: "planner",
+            part: event.part,
+          });
+        }
+      }
+    } catch (err) {
+      log.error(`Planner execution error for goal ${goalId}: ${err}`);
+    }
+  }
+
+  /** Enable chat agents (called after GoalManager construction when feature flag confirmed). */
+  setChatAgentsEnabled(enabled: boolean): void {
+    this.chatAgentsEnabled = enabled;
+  }
+
+  /** Create ChatAgents for a specific goal. Creates the goal if it doesn't exist yet. */
+  enableChatAgentsForGoal(goalId: string, roles: string[]): void {
+    if (!this.chatAgentsEnabled) return;
+    // Ensure goal exists (may be called before first message arrives)
+    const goal = this.getOrCreateGoal(goalId);
+    for (const role of roles) {
+      const roleKey = role.toLowerCase();
+      if (goal.chatAgents.has(roleKey)) continue;
+      const agent = this.createChatAgentFn(goalId, roleKey);
+      goal.chatAgents.set(roleKey, agent);
+    }
+    log.info(`ChatAgents created for goal '${goalId}': ${roles.join(", ")}`);
+  }
+
+  /** Dispose all agents for a completed goal. */
+  private disposeGoalAgents(goal: GoalContext): void {
+    // Dispose ChatAgents
+    for (const [, agent] of goal.chatAgents) {
+      agent.dispose();
+    }
+    goal.chatAgents.clear();
+    // Release planner reference
+    goal.planner = null;
+    log.info(`Disposed agents for goal '${goal.goalId}'`);
+  }
+
+  /** Get ChatAgent for a specific goal + role. Lazy-creates ChatAgents if goal has none. */
+  getChatAgent(goalId: string, role: string): ChatAgent | null {
+    const goal = this.goals.get(goalId);
+    if (!goal) return null;
+    // Lazy-create: goal exists but ChatAgents not yet initialized (restored session, etc.)
+    if (goal.chatAgents.size === 0 && this.chatAgentsEnabled) {
+      log.info(`Lazy-creating ChatAgents for goal '${goalId}'`);
+      this.enableChatAgentsForGoal(goalId, this.teamRoles);
+    }
+    return goal.chatAgents.get(role.toLowerCase()) ?? null;
+  }
+
+  /** Get ChatAgent by role, searching across goals. Creates ChatAgents lazily if needed. */
+  getChatAgentByRole(role: string): ChatAgent | null {
+    const roleKey = role.toLowerCase();
+    // Try active goal first
+    if (this.activeGoalId) {
+      const goal = this.goals.get(this.activeGoalId);
+      if (goal) {
+        // Lazy-create ChatAgents if goal has none (e.g., restored from previous session)
+        if (goal.chatAgents.size === 0 && this.chatAgentsEnabled) {
+          this.enableChatAgentsForGoal(this.activeGoalId, this.teamRoles);
+        }
+        const agent = goal.chatAgents.get(roleKey);
+        if (agent) return agent;
+      }
+    }
+    // Fallback: search all goals
+    for (const goal of this.goals.values()) {
+      if (goal.chatAgents.size === 0 && this.chatAgentsEnabled) {
+        this.enableChatAgentsForGoal(goal.goalId, this.teamRoles);
+      }
+      const agent = goal.chatAgents.get(roleKey);
+      if (agent) return agent;
+    }
+    return null;
+  }
+
+  /** Ingest a task update into the appropriate ChatAgent. */
+  ingestTaskUpdateToChatAgent(update: import("../types/TaskUpdate.js").TaskUpdate): void {
+    const role = (update as any).role?.toLowerCase();
+    if (!role) return;
+    const agent = this.getChatAgentByRole(role);
+    agent?.ingestTaskUpdate(update);
+  }
+
+  // ═══════════════════════════════════════════════════════════════════
+  // STATE ACCESSORS (delegate to active goal)
+  // ═══════════════════════════════════════════════════════════════════
+
+  getState(): OrchestratorState {
+    const goal = this.activeGoalId ? this.goals.get(this.activeGoalId) : undefined;
+    return goal?.state ?? "idle";
+  }
+  setState(state: OrchestratorState): void {
+    if (this.activeGoalId) {
+      const goal = this.goals.get(this.activeGoalId);
+      if (goal) goal.state = state;
+    }
+  }
+  getGoalId(): string | null { return this.activeGoalId; }
+  getPendingPlan(): any | null {
+    const goal = this.activeGoalId ? this.goals.get(this.activeGoalId) : undefined;
+    return goal?.pendingPlan ?? null;
+  }
+  setPendingPlan(plan: any | null): void {
+    if (this.activeGoalId) {
+      const goal = this.goals.get(this.activeGoalId);
+      if (goal) goal.pendingPlan = plan;
+    } else if (plan) {
+      // activeGoalId must be set by _handleMessage before plan submission.
+      // If we reach here, it's a bug — log and reject.
+      log.error(`setPendingPlan called without activeGoalId — this is a bug`);
+    }
+  }
   setAutoExecute(enabled: boolean): void { this.autoExecute = enabled; }
   getAutoExecute(): boolean { return this.autoExecute; }
 
@@ -92,18 +303,28 @@ export class GoalManager implements IGoalManager {
   // ═══════════════════════════════════════════════════════════════════
 
   async approvePlan(): Promise<{ success: boolean; tasksQueued?: number; error?: string }> {
-    if (!this.pendingPlan) {
+    // Find the goal with a pending plan
+    let goal: GoalContext | undefined;
+    for (const g of this.goals.values()) {
+      if (g.pendingPlan) { goal = g; break; }
+    }
+    if (!goal || !goal.pendingPlan) {
       return { success: false, error: "No pending plan to approve" };
     }
 
     try {
-      const planToApprove = this.pendingPlan;
+      const planToApprove = goal.pendingPlan;
       const planId = planToApprove.planId;
-      this.pendingPlan = null;
+      // goalId must already be set on GoalContext (by _handleMessage via client correlation ID)
+      const goalId = goal.goalId;
+      if (!goalId) {
+        return { success: false, error: "GoalContext has no goalId — client must provide it" };
+      }
+      goal.pendingPlan = null;
 
-      // Clear previous state
-      await this.workerPool.disposeAll();
-      this.taskStore.clear();
+      // Clear previous state for THIS goal only (preserve other goals)
+      await this.workerPool.disposeByGoal(goalId);
+      this.taskStore.clearByGoal(goalId);
 
       // Build dependants map
       const dependantsMap = new Map<string, string[]>();
@@ -117,7 +338,6 @@ export class GoalManager implements IGoalManager {
 
       // Add tasks to TaskStore (single writer)
       let tasksQueued = 0;
-      const goalId = toGoalId(planToApprove.goal || planId);
       for (const task of planToApprove.tasks) {
         const taskContext = (task as any).context || {};
         const taskType = (task as any).type || taskContext.type || "work";
@@ -157,10 +377,20 @@ export class GoalManager implements IGoalManager {
       // Rebuild DAG from TaskStore
       this.dagResolver.rebuild(this.taskStore);
 
-      // Update state
-      this.state = "executing";
-      this.currentGoalId = goalId;
+      // Update state — execution mutex
+      const executing = this.getExecutingGoal();
+      if (executing && executing.goalId !== goalId) {
+        goal.state = "queued";
+        log.info(`Goal ${goalId} queued — ${executing.goalId} is executing`);
+      } else {
+        goal.state = "executing";
+        this.activeGoalId = goalId;
+      }
+      goal.currentPlanId = planId;
       this.workerPool.setTeamId(this.teamId);
+
+      // Enable per-goal ChatAgents (direct — no callback roundtrip)
+      this.enableChatAgentsForGoal(goalId, this.teamRoles);
 
       // ─── CRDT Persistence ───
       if (this.crdtTaskSyncProxy?.resolveForGoal) {
@@ -264,18 +494,22 @@ export class GoalManager implements IGoalManager {
     this.callbacks.onDispatchTask(taskId, role);
   }
 
-  /** Task completed → check if all done, notify planner */
+  /** Task completed → check if all done for this goal, notify planner */
   onTaskComplete({ taskId, output }: { taskId: string; output: any }): void {
     log.info(`onTaskComplete: ${taskId}`);
     const task = this.taskStore.get(taskId);
+    const goal = task?.goalId ? this.goals.get(task.goalId) : this.activeGoalId ? this.goals.get(this.activeGoalId) : undefined;
 
     this.callbacks.onTaskUpdate?.({
       taskId, status: "completed", role: task?.assigned_role, output, timestamp: Date.now(),
     });
 
-    if (this.taskStore.isAllComplete()) {
-      if (this.state === "researching") {
-        this.state = "idle";
+    const goalId = task?.goalId || this.activeGoalId;
+    const allComplete = goalId ? this.taskStore.isAllCompleteForGoal(goalId) : this.taskStore.isAllComplete();
+
+    if (allComplete && goal) {
+      if (goal.state === "researching") {
+        goal.state = "idle";
         this.callbacks.onNotifyPlanner(
           PromptLoader.loadTemplate("orchestrator", "research-complete"),
         );
@@ -285,12 +519,12 @@ export class GoalManager implements IGoalManager {
           timestamp: new Date().toISOString(),
         });
       } else {
-        const allTasks = this.taskStore.getAll();
-        const failedTasks = allTasks.filter(t => t.status === "failed");
-        const discardedTasks = allTasks.filter(t => t.status === "discarded");
-        const completedTasks = allTasks.filter(t => t.status === "completed");
+        const goalTasks = goalId ? this.taskStore.getByGoal(goalId) : this.taskStore.getAll();
+        const failedTasks = goalTasks.filter(t => t.status === "failed");
+        const discardedTasks = goalTasks.filter(t => t.status === "discarded");
+        const completedTasks = goalTasks.filter(t => t.status === "completed");
 
-        this.state = "idle";
+        goal.state = "done";
 
         if (failedTasks.length > 0) {
           this.callbacks.onNotifyPlanner(
@@ -327,6 +561,36 @@ export class GoalManager implements IGoalManager {
             timestamp: new Date().toISOString(),
           });
         }
+
+        // Auto-advance: if this goal is done, start the next queued goal
+        if (goal.state === "done") {
+          // Dispose agents for the completed goal (direct — no callback roundtrip)
+          this.disposeGoalAgents(goal);
+          this.autoAdvanceToNextGoal();
+        }
+      }
+    }
+  }
+
+  /** Auto-advance: find and start the next queued goal after the current one completes. */
+  private autoAdvanceToNextGoal(): void {
+    for (const candidate of this.goals.values()) {
+      if (candidate.state === "queued") {
+        candidate.state = "executing";
+        this.activeGoalId = candidate.goalId;
+        log.info(`Auto-advancing to queued goal: ${candidate.goalId} ("${candidate.title}")`);
+
+        // Enable ChatAgents for the new executing goal (direct)
+        this.enableChatAgentsForGoal(candidate.goalId, this.teamRoles);
+
+        // Dispatch ready tasks for the new active goal
+        for (const task of this.taskStore.getByGoal(candidate.goalId)) {
+          if (task.status === "ready") {
+            this.callbacks.onDispatchTask(task.id, task.assigned_role);
+          }
+        }
+        this.callbacks.onGoalStatusChange?.({ teamId: this.teamId, status: "executing" as any });
+        return;
       }
     }
   }
@@ -405,11 +669,13 @@ export class GoalManager implements IGoalManager {
     }
 
     // Check research phase completion
-    const allTasksDone = this.taskStore.getAll().every(
-      (t) => t.status === "completed" || t.status === "failed"
-    );
-    if (this.state === "researching" && allTasksDone) {
-      this.state = "idle";
+    const goal = task?.goalId ? this.goals.get(task.goalId) : this.activeGoalId ? this.goals.get(this.activeGoalId) : undefined;
+    const goalId = task?.goalId || this.activeGoalId;
+    const allTasksDone = goalId
+      ? this.taskStore.getByGoal(goalId).every((t) => t.status === "completed" || t.status === "failed")
+      : this.taskStore.getAll().every((t) => t.status === "completed" || t.status === "failed");
+    if (goal?.state === "researching" && allTasksDone) {
+      goal.state = "idle";
       this.callbacks.onNotifyPlanner(
         PromptLoader.loadTemplate("orchestrator", "research-failed"),
       );
@@ -477,7 +743,7 @@ export class GoalManager implements IGoalManager {
     // Notify plugins (workspace publish + merge)
     if (this.pluginRegistry) {
       try {
-        const result = await this.pluginRegistry.onTaskComplete(data.taskId, this.currentGoalId || undefined);
+        const result = await this.pluginRegistry.onTaskComplete(data.taskId, this.activeGoalId || undefined);
         if (!result.success) {
           const mergeError = `Workspace merge failed: ${result.error}`;
           log.error(`[GoalManager] ${mergeError}`);
@@ -563,9 +829,13 @@ export class GoalManager implements IGoalManager {
   // ═══════════════════════════════════════════════════════════════════
 
   reset(): void {
-    this.state = "idle";
-    this.pendingPlan = null;
-    this.currentGoalId = null;
+    // Dispose agents for all goals
+    for (const goal of this.goals.values()) {
+      this.disposeGoalAgents(goal);
+    }
+    // Clear all goals
+    this.goals.clear();
+    this.activeGoalId = null;
   }
 
   async resetPlan(): Promise<{ deleted: boolean; planId?: string }> {
@@ -613,12 +883,17 @@ export class GoalManager implements IGoalManager {
     try {
       const stored = await this.planStore.getLatestActivePlan();
       if (!stored) return;
-      this.currentGoalId = stored.metadata.goalId || null;
+      const goalId = stored.metadata.goalId || null;
+      if (!goalId) return;
+
+      this.activeGoalId = goalId;
+      const goal = this.getOrCreateGoal(goalId, stored.plan?.goal || goalId);
 
       if (stored.metadata.status === "approved") {
-        this.pendingPlan = stored.plan;
-        this.state = "awaiting_approval";
+        goal.pendingPlan = stored.plan;
+        goal.state = "awaiting_approval";
       } else if (stored.metadata.status === "executing") {
+        goal.currentPlanId = stored.plan?.planId || null;
         const dep = new Map<string, string[]>();
         for (const t of stored.plan.tasks) {
           for (const d of t.dependencies) {
@@ -628,10 +903,10 @@ export class GoalManager implements IGoalManager {
 
         // Restore task statuses from CRDT
         let crdtTasks: Map<string, any> | null = null;
-        if (this.currentGoalId && this.crdtTaskSyncProxy) {
+        if (this.crdtTaskSyncProxy) {
           try {
-            this.crdtTaskSyncProxy.resolveForGoal(this.currentGoalId);
-            this.crdtGoalStoreProxy?.resolveForGoal?.(this.currentGoalId);
+            this.crdtTaskSyncProxy.resolveForGoal(goalId);
+            this.crdtGoalStoreProxy?.resolveForGoal?.(goalId);
             const crdtSync = this.crdtTaskSyncProxy.get?.();
             if (crdtSync?.loadAllTasks) {
               const loaded = await crdtSync.loadAllTasks();
@@ -661,19 +936,21 @@ export class GoalManager implements IGoalManager {
             output: crdtTask?.output,
             prerequisites,
             dependants: dep.get(t.id) || [],
+            goalId,
+            planId: stored.plan?.planId,
             context: crdtTask?.context ?? { title: t.title, planId: stored.plan.planId, goal: stored.plan.goal },
           });
         }
-        this.state = "executing";
+        goal.state = "executing";
 
-        if (this.taskStore.isAllComplete()) {
-          this.state = "idle";
+        if (this.taskStore.isAllCompleteForGoal(goalId)) {
+          goal.state = "done";
           log.info("[loadActivePlan] All tasks already completed — plan finished");
         }
       }
 
       if (stored.metadata.status === "completed") {
-        this.state = "idle";
+        goal.state = "done";
       }
     } catch (error) {
       log.error(`[GoalManager] Failed to load active plan: ${error}`);

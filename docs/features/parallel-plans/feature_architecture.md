@@ -199,9 +199,9 @@ Team (AgentManager)
 
 | Version | Option | What | Effort | Cumulative |
 |---------|--------|------|--------|------------|
-| **v1.0** | C (Hybrid) | GoalContext Map, serial execution, plan queue, frontend goal switcher | 12 days | 12 days |
-| **v2.0** | — (Workspace) | Per-task clone, worktree optimization, repoUrl in plans, push-to-remote | 11 days | 23 days |
-| **v3.0** | A (Full Parallel) | Remove execution mutex, per-goal concurrency, cross-goal planner awareness | 14 days | 37 days |
+| **v1.0** | C (Hybrid) | GoalContext Map in GoalManager, serial execution mutex, per-goal ChatAgents, frontend goal switcher | 8 days | 8 days |
+| **v2.0** | — (Workspace) | Per-task clone, worktree optimization, repoUrl in plans, push-to-remote | 11 days | 19 days |
+| **v3.0** | A (Full Parallel) | Remove execution mutex, per-goal dispatch tracking, per-goal planners, cross-goal awareness | 14 days | 33 days |
 
 Each version is independently deployable behind feature flags:
 - `FF_PARALLEL_PLANS` — enables v1.0 (GoalContext, serial queue)

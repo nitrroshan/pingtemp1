@@ -232,7 +232,10 @@ export function getModel(rawConfig: ModelConfig): any {
         baseURL: baseUrl,
         apiKey: process.env.OPENAI_COMPATIBLE_API_KEY || "none",
       });
-      return compatible.chat(config.model || "default");
+      if (!config.model) {
+        throw new Error("model is required for openai-compatible provider");
+      }
+      return compatible.chat(config.model);
     }
 
     default:

@@ -30,6 +30,8 @@ export interface TaskWithContext {
   priority: number;
   /** Context from completed dependencies */
   context: TaskContext;
+  /** Goal this task belongs to (Phase 4.5) */
+  goalId?: string;
   /** Timestamp when task was created */
   createdAt: number;
   /** Current task status */

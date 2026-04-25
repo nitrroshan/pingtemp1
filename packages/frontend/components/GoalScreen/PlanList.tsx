@@ -11,6 +11,7 @@ import { FileText, ChevronRight } from 'lucide-react';
 export type PlanSummary = {
   planId: string;
   goal: string;
+  goalId?: string;
   createdAt: number;
   status: 'active' | 'completed' | 'paused' | 'unknown';
   taskCount?: number;

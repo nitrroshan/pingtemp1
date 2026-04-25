@@ -233,5 +233,6 @@ export interface StreamPayload {
   taskId?: string;
   agentId: string;
   part: StreamPart;
+  goalId?: string;
   timestamp: number;
 }

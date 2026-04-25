@@ -13,7 +13,6 @@
 import { rootLogger } from "./logging.js";
 import { getAgentFactory } from "./agent/AgentFactory.js";
 import { WorkerPool } from "./services/WorkerPool.js";
-import { RoleTaskQueue } from "./util/RoleTaskQueue.js";
 import { AiSdkAgent } from "./agent/internal/AiSdkAgent.js";
 import type { AgentDefinition, AgentEvent } from "./agent/types.js";
 import type { TaskWithContext } from "./util/RoleTaskQueue.types.js";
@@ -36,7 +35,7 @@ import { PromptLoader } from "./orchestrator/PromptLoader.js";
 const logger = rootLogger.child({ module: "AgentManager" });
 
 export interface ManagerStreamCallbacks {
-  onStream?: (data: { taskId: string; agentId: string; part: any }) => void;
+  onStream?: (data: { taskId: string; agentId: string; part: any; goalId?: string }) => void;
   onEvent?: (data: { taskId: string; event: any }) => void;
   onDone?: (data: { taskId: string; role: string; output: any }) => void;
   onError?: (data: { taskId: string; error: string }) => void;
@@ -49,25 +48,7 @@ export interface ManagerStreamCallbacks {
   onGoalStatusChange?: (data: { teamId: string; status: "completed" | "failed" }) => void;
 }
 
-/**
- * Task from plan builder
- */
-interface PlannedTask {
-  id: string;
-  title: string;
-  description: string;
-  assignedRole: string;
-  priority: number;
-  dependencies: string[];
-}
 
-/**
- * Execution plan from plan builder
- */
-interface TaskPlan {
-  tasks: PlannedTask[];
-  rationale?: string;
-}
 
 /**
  * Generic worker prompt for agents without plugin-sourced system prompts.
@@ -80,13 +61,6 @@ function getGenericWorkerPrompt(role: string): string {
 export class AgentManager {
   private workerPool: WorkerPool;
   private definitions: AgentDefinition[] = [];
-  private plan: TaskPlan | null = null;
-
-  /** Central task queue for role-based execution with approval flow */
-  private taskQueue = new RoleTaskQueue();
-
-  /** Task outputs for dependency injection */
-  private taskOutputs = new Map<string, any>();
 
   /** Stream callbacks registered by SocketServerV2 */
   private streamCallbacks: ManagerStreamCallbacks | null = null;
@@ -94,19 +68,11 @@ export class AgentManager {
   // Orchestrator mode properties
   private orchestrator: OrchestratorService | null = null;
   private taskStoreInstance: TaskStore | null = null;
-  private plannerAgent: PlannerAgent | null = null;
   private userInteractionManager: UserInteractionManager | null = null;
   private filePersistence: FileTaskStore | null = null;
   private pluginRegistry: PluginRegistry = new PluginRegistry();
   private teamId: string = "default";
 
-  /** Roles with auto-approve enabled - tasks start immediately without manual approval */
-  private autoApproveRoles = new Set<string>();
-  /** Global auto-approve flag - when true, all roles auto-approve */
-  private autoApproveAll = false;
-
-  /** Chat Agents — persistent per-role L2 agents (Phase 1) */
-  private chatAgents = new Map<string, ChatAgent>();
   /** Feature flag: whether chat agents are enabled */
   private chatAgentsEnabled = false;
   /** Optional callback to load prior conversation from storage (injected by AgentManagerRegistry) */
@@ -114,8 +80,6 @@ export class AgentManager {
 
   constructor() {
     this.workerPool = new WorkerPool();
-    this.setupCompletionHandler();
-
     logger.info(`AgentManager initialized`);
   }
 
@@ -275,33 +239,19 @@ export class AgentManager {
     // Session ID for planner conversation thread
     const sessionId = `team-${teamId}`;
 
-    // Planner callback — extracted so NotificationQueue and direct callbacks share it
-    const executePlannerTurn = async (message: string) => {
-      if (!this.plannerAgent) return;
-      try {
-        const agent = this.plannerAgent.getAgent();
-        for await (const event of agent.execute({ message, threadId: sessionId })) {
-          if (event.type === "stream_part") {
-            this.streamCallbacks?.onStream?.({
-              taskId: sessionId,
-              agentId: "planner",
-              part: event.part,
-            });
-          }
-        }
-      } catch (err) {
-        console.error("[AgentManager] Planner execution error:", err);
-      }
-    };
-
     // NotificationQueue: batches rapid task events (5 completions in 100ms → 1 planner turn)
+    // The onFlush callback delegates to GoalManager.executePlannerTurn (wired after orchestrator creation)
     const notificationQueue = new NotificationQueue({
       debounceMs: 100,
-      onFlush: (batchedMessage) => executePlannerTurn(batchedMessage),
+      onFlush: (batchedMessage) => {
+        const goalId = this.orchestrator?.getCurrentGoalId();
+        if (!goalId) return; // No active goal = nothing to notify
+        this.orchestrator?.getGoalManager().executePlannerTurn(goalId, batchedMessage).catch((err) => {
+          console.error("[AgentManager] Batched planner turn error:", err);
+        });
+      },
     });
-
     // Create a lazy CRDT resolver — goal-scoped stores created when approvePlan sets goalId
-    // Fix #1: Use this-scoped properties instead of captured let variables
     const crdtResolver = {
       taskSync: null as any,
       goalStore: null as any,
@@ -311,6 +261,60 @@ export class AgentManager {
           this.goalStore = l2Plugin.getCrdtGoalStore(goalId);
         }
       },
+    };
+
+    // Planner factory — GoalManager calls this to create per-goal planners
+    const agentFactory = getAgentFactory();
+    const self = this;
+    const createPlanner = async (goalId: string): Promise<PlannerAgent> => {
+      const planner = new PlannerAgent({ agentFactory, teamRoles, teamId });
+      await planner.initialize();
+      // Create goal-scoped orchestrator context for planner tools
+      const goalOrchestratorContext = {
+        taskProvider: self.taskStoreInstance as ITaskProvider,
+        callbacks: self.orchestrator!.getCallbacks(),
+        planStore,
+        teamId,
+        currentGoalId: goalId,
+        teamRoles,
+        planBuilder: { invoke: async () => { throw new Error("PlanBuilder not used"); } },
+        getState: () => self.orchestrator!.getState(),
+        setState: (state: any) => self.orchestrator!.setState(state),
+        getPendingPlan: () => self.orchestrator!.getPendingPlan(),
+        setPendingPlan: (plan: any) => self.orchestrator!.setPendingPlan(plan),
+      };
+      const tools = createPlannerTools({
+        orchestratorContext: goalOrchestratorContext,
+        agentFactory,
+        dagResolver,
+        onMutation: (event) => {
+          self.streamCallbacks?.onTaskUpdate?.({ taskId: "plan", status: "mutation", ...event });
+          self.orchestrator?.onPlanMutation(event);
+        },
+      });
+      await planner.setTools(tools);
+      return planner;
+    };
+
+    // ChatAgent factory — GoalManager calls this to create per-goal chat agents
+    const createChatAgent = (goalId: string, role: string): ChatAgent => {
+      return new ChatAgent({
+        role: role.toLowerCase(),
+        teamId,
+        goalId,
+        taskStore: self.taskStoreInstance!,
+        onDispatchTask: async (taskId, r) => {
+          if (self.orchestrator) {
+            await self.orchestrator.directDispatchTask(taskId, r);
+          }
+        },
+        onNotifyPlanner: (message) => {
+          self.orchestrator?.notifyPlannerFromRole(message);
+        },
+        loadConversation: self.loadConversationFn
+          ? () => self.loadConversationFn!(teamId, `chat-${goalId}-${role.toLowerCase()}`)
+          : undefined,
+      });
     };
 
     // Create OrchestratorService (reactive runtime)
@@ -326,6 +330,11 @@ export class AgentManager {
       crdtGoalStore: { get: () => crdtResolver.goalStore, resolveForGoal: crdtResolver.resolveForGoal.bind(crdtResolver) },
       pluginRegistry: this.pluginRegistry,
       autoExecute: false,
+      // Phase 4.5: Agent factories — GoalManager creates per-goal agents
+      createPlanner,
+      createChatAgent,
+      onPlannerStream: (data) => this.streamCallbacks?.onStream?.(data),
+      chatAgentsEnabled: this.chatAgentsEnabled,
       callbacks: {
         onStream: (data) => this.streamCallbacks?.onStream?.(data),
         onEvent: (data) => this.streamCallbacks?.onEvent?.(data),
@@ -333,9 +342,8 @@ export class AgentManager {
         onError: (data) => this.streamCallbacks?.onError?.(data),
         onTaskUpdate: (data) => this.streamCallbacks?.onTaskUpdate?.(data),
         onWorkerTaskUpdate: (update) => {
-          // Route to ChatAgent (ingest into thread)
-          const agent = this.chatAgents.get(update.role?.toLowerCase());
-          agent?.ingestTaskUpdate(update);
+          // Route to ChatAgent via GoalManager
+          this.orchestrator?.getGoalManager().ingestTaskUpdateToChatAgent(update);
           // Forward to Socket.IO via streamCallbacks
           this.streamCallbacks?.onWorkerTaskUpdate?.(update);
         },
@@ -346,17 +354,13 @@ export class AgentManager {
             console.error("[AgentManager] Auto-approve failed:", err);
           });
         },
-        // Wire onPlannerInput → PlannerAgent.execute() (new turn)
-        // Used for user messages (bypasses NotificationQueue for immediate response)
-        onPlannerInput: (message) => executePlannerTurn(message),
         onGoalStatusChange: (data) => this.streamCallbacks?.onGoalStatusChange?.(data),
       },
     });
 
     await this.orchestrator.initialize();
 
-    // Fix #8: Inject task services AFTER orchestrator init but resolver is already bound
-    // The crdtTaskSync will be null initially — it resolves when approvePlan sets goalId
+    // Inject task services AFTER orchestrator init
     this.workerPool.setTaskServices({
       taskStore: this.taskStoreInstance,
       dagResolver,
@@ -364,50 +368,7 @@ export class AgentManager {
       crdtTaskSync: null, // resolved lazily via crdtResolver when goal is known
     });
 
-    // Create PlannerAgent (peer to OrchestratorService)
-    const agentFactory = getAgentFactory();
-
-    this.plannerAgent = new PlannerAgent({
-      agentFactory,
-      teamRoles,
-      teamId,
-    });
-    await this.plannerAgent.initialize();
-
-    // Create and inject planner tools (close over shared services)
-    const orchestratorContext = {
-      taskProvider: this.taskStoreInstance as ITaskProvider,
-      callbacks: this.orchestrator.getCallbacks(),
-      planStore,
-      teamId,
-      currentGoalId: null,
-      teamRoles,
-      planBuilder: { invoke: async () => { throw new Error("PlanBuilder not used"); } },
-      getState: () => this.orchestrator!.getState(),
-      setState: (state: any) => this.orchestrator!.setState(state),
-      getPendingPlan: () => this.orchestrator!.getPendingPlan(),
-      setPendingPlan: (plan: any) => this.orchestrator!.setPendingPlan(plan),
-    };
-
-    const tools = createPlannerTools({
-      orchestratorContext,
-      agentFactory,
-      dagResolver,
-      onMutation: (event) => {
-        // Notify frontend of plan mutation
-        this.streamCallbacks?.onTaskUpdate?.({
-          taskId: "plan",
-          status: "mutation",
-          ...event,
-        });
-
-        // Delegate dispatch to OrchestratorService (single responsibility)
-        this.orchestrator?.onPlanMutation(event);
-      },
-    });
-    await this.plannerAgent.setTools(tools);
-
-    logger.info(`[AgentManager] PlannerAgent + OrchestratorService + TaskStore initialized`);
+    logger.info(`[AgentManager] OrchestratorService + GoalManager initialized (planners are per-goal)`);
   }
 
   /**
@@ -455,19 +416,22 @@ export class AgentManager {
     }
     this.chatAgentsEnabled = true;
     this.loadConversationFn = loadConversation ?? null;
-    for (const role of roles) {
-      this.getChatAgent(role); // lazy-create for each role
-    }
+
+    // Propagate flag to GoalManager (it captured false at construction time)
+    this.orchestrator?.setChatAgentsEnabled(true);
+
+    // NO agent creation here — GoalManager.approvePlan() creates them with real goalId
 
     // Wire ChatAgent dispatch: OrchestratorService routes ready tasks through ChatAgent
     if (this.orchestrator) {
       this.orchestrator.setChatAgentDispatch(async (taskId: string, role: string) => {
-        const chatAgent = this.chatAgents.get(role.toLowerCase());
+        const task = this.taskStoreInstance?.get(taskId);
+        const gid = task?.goalId;
+        const chatAgent = gid ? this.getChatAgent(role, gid) : null;
         if (chatAgent) {
           await chatAgent.handleTask(taskId, role);
         } else {
-          // Fallback: no ChatAgent for this role — dispatch directly
-          logger.warn(`No ChatAgent for role '${role}', dispatching directly`);
+          logger.warn(`No ChatAgent for role '${role}' goal '${gid}', dispatching directly`);
           await this.orchestrator!.directDispatchTask(taskId, role);
         }
       });
@@ -477,59 +441,25 @@ export class AgentManager {
   }
 
   /**
-   * Get or create a ChatAgent for a role.
-   * Returns null if chat agents are not enabled.
+   * Get ChatAgent for a role, optionally scoped to a goal.
+   * Delegates to GoalManager (Phase 4.5).
    */
-  getChatAgent(role: string): ChatAgent | null {
-    if (!this.chatAgentsEnabled || !this.taskStoreInstance) return null;
-    const key = role.toLowerCase();
-    let agent = this.chatAgents.get(key);
-    if (!agent) {
-      const teamId = this.teamId;
-      const loadConversationFn = this.loadConversationFn;
-      agent = new ChatAgent({
-        role: key,
-        teamId: this.teamId,
-        taskStore: this.taskStoreInstance,
-        onDispatchTask: async (taskId, role) => {
-          if (this.orchestrator) {
-            await this.orchestrator.directDispatchTask(taskId, role);
-          }
-        },
-        onNotifyPlanner: (message) => {
-          this.orchestrator?.notifyPlannerFromRole(message);
-        },
-        loadConversation: loadConversationFn
-          ? () => loadConversationFn(teamId, `chat-${key}`)
-          : undefined,
-      });
-      this.chatAgents.set(key, agent);
-    }
-    return agent;
-  }
-
-  /**
-   * Get snapshot for a specific role's ChatAgent.
-   */
-  getChatAgentSnapshot(role: string): ChatAgentSnapshot | null {
-    const agent = this.chatAgents.get(role.toLowerCase());
-    return agent?.getSnapshot() ?? null;
-  }
-
-  /**
-   * Get all active ChatAgent snapshots.
-   */
-  getAllChatAgentSnapshots(): ChatAgentSnapshot[] {
-    return Array.from(this.chatAgents.values()).map(a => a.getSnapshot());
+  getChatAgent(role: string, goalId?: string): ChatAgent | null {
+    if (!this.chatAgentsEnabled) return null;
+    return this.orchestrator?.getChatAgent(role, goalId) ?? null;
   }
 
   /**
    * Send a user message to a ChatAgent and stream the response.
-   * Returns an async generator of AgentEvents (same as worker/planner streams).
    */
-  async *chatAgentMessage(role: string, content: string): AsyncGenerator<AgentEvent> {
-    const agent = this.getChatAgent(role);
+  async *chatAgentMessage(role: string, content: string, goalId?: string): AsyncGenerator<AgentEvent> {
+    const gid = goalId || this.orchestrator?.getCurrentGoalId() || undefined;
+    const agent = this.getChatAgent(role, gid);
     if (!agent) {
+      const goalManager = this.orchestrator?.getGoalManager();
+      const allGoals = goalManager?.getAllGoalSummaries() ?? [];
+      logger.error(`Chat agent not available for role '${role}' goalId='${gid}'. ` +
+        `chatAgentsEnabled=${this.chatAgentsEnabled}, goals=[${allGoals.map(g => `${g.goalId}(${g.state})`).join(',')}]`);
       throw new Error(`Chat agent not available for role '${role}'. Chat agents may not be enabled.`);
     }
     yield* agent.handleUserMessage(content);
@@ -544,7 +474,6 @@ export class AgentManager {
 
   /**
    * Get serialized ModelMessage[] from a worker agent (for context persistence).
-   * Returns null if worker not found or already disposed.
    */
   getWorkerContext(taskId: string): string | null {
     const messages = this.workerPool.getAgentMessages(taskId);
@@ -558,10 +487,9 @@ export class AgentManager {
 
   /**
    * Get serialized ModelMessage[] from a ChatAgent (for context persistence).
-   * Returns null if ChatAgent not found or not initialized.
    */
   getChatAgentContext(role: string): string | null {
-    const chatAgent = this.chatAgents.get(role.toLowerCase());
+    const chatAgent = this.getChatAgent(role);
     if (!chatAgent) return null;
     return chatAgent.getContextSnapshot();
   }
@@ -580,113 +508,38 @@ export class AgentManager {
   // Auto-Approve API
   // ===========================================================================
 
-  /**
-   * Enable/disable auto-approve for a specific role
-   * When enabled, tasks assigned to this role are automatically approved and started
-   * @param role - Role name (case-insensitive)
-   * @param enabled - true to auto-approve, false to require manual approval
-   */
+  /** Delegate auto-approve to OrchestratorService. */
   setAutoApproveForRole(role: string, enabled: boolean): void {
-    const normalizedRole = role.toLowerCase();
-    if (enabled) {
-      this.autoApproveRoles.add(normalizedRole);
-      logger.info(
-        `[AgentManager] Auto-approve enabled for role: ${normalizedRole}`,
-      );
-    } else {
-      this.autoApproveRoles.delete(normalizedRole);
-      logger.info(
-        `[AgentManager] Auto-approve disabled for role: ${normalizedRole}`,
-      );
-    }
+    this.orchestrator?.setAutoApproveForRole(role, enabled);
   }
 
-  /**
-   * Enable/disable auto-approve for ALL roles
-   * When enabled, all tasks are automatically approved and started without manual approval
-   * @param enabled - true to auto-approve all, false to use per-role settings
-   */
+  /** Delegate auto-approve to OrchestratorService. */
   setAutoApproveAllRoles(enabled: boolean): void {
-    this.autoApproveAll = enabled;
-    logger.info(
-      `[AgentManager] Auto-approve ALL roles: ${enabled ? "enabled" : "disabled"}`,
-    );
+    this.orchestrator?.setAutoApproveAllRoles(enabled);
   }
 
-  /**
-   * Check if auto-approve is enabled for a role
-   */
   isAutoApproveEnabled(role: string): boolean {
-    return this.autoApproveAll || this.autoApproveRoles.has(role.toLowerCase());
+    return this.orchestrator?.isAutoApproveEnabled(role) ?? false;
   }
 
-  /**
-   * Get list of roles with auto-approve enabled
-   */
   getAutoApproveRoles(): string[] {
-    if (this.autoApproveAll) {
-      return ["*"]; // Indicates all roles
-    }
-    return Array.from(this.autoApproveRoles);
-  }
-
-  /**
-   * Try to auto-approve and start a task if auto-approve is enabled for its role
-   * Called internally when tasks are created/ready
-   * @returns true if task was auto-started, false if manual approval required
-   */
-  private async tryAutoApproveTask(taskId: string): Promise<boolean> {
-    if (!this.taskStoreInstance) return false;
-
-    const task = this.taskStoreInstance.get(taskId);
-    if (!task) return false;
-
-    // Check if auto-approve is enabled for this role
-    if (!this.isAutoApproveEnabled(task.assigned_role)) {
-      return false;
-    }
-
-    // Skip if already in progress or completed
-    if (task.status === "in_progress" || task.status === "completed") {
-      return false;
-    }
-
-    logger.info(
-      `[AutoApprove] Auto-approving task ${taskId} for role ${task.assigned_role}`,
-    );
-
-    try {
-      // Approve for chat (moves to ready)
-      if (task.status !== "ready") {
-        this.approveTaskForChat(taskId);
-      }
-
-      // Start execution immediately
-      await this.startTaskExecution(taskId);
-
-      logger.info(
-        `[AutoApprove] Task ${taskId} auto-started for role ${task.assigned_role}`,
-      );
-      return true;
-    } catch (error) {
-      logger.error(
-        `[AutoApprove] Failed to auto-start task ${taskId}: ${error}`,
-      );
-      return false;
-    }
+    return this.orchestrator?.getAutoApproveRoles() ?? [];
   }
 
   /**
    * Send message to orchestrator (conversational planning mode)
    * Returns orchestrator's response
    */
-  async orchestratorMessage(content: string): Promise<string> {
+  async orchestratorMessage(content: string, goalId: string): Promise<string> {
     if (!this.orchestrator) {
       throw new Error(
         "Orchestrator not initialized. Call initializeOrchestrator() first.",
       );
     }
-    return this.orchestrator.handleMessage(content);
+    if (!goalId) {
+      throw new Error("goalId is required — frontend must send it with the message");
+    }
+    return this.orchestrator.handleMessage(content, goalId);
   }
 
   /**
@@ -713,38 +566,7 @@ export class AgentManager {
       });
     }
 
-    // If tasks were queued, check for auto-approve
-    if (result.success && result.tasksQueued && result.tasksQueued > 0) {
-      const autoStarted = await this.processAutoApproveTasks();
-      return { ...result, autoStarted };
-    }
-
     return result;
-  }
-
-  /**
-   * Process all pending tasks and auto-start those with auto-approve enabled
-   * @returns Number of tasks that were auto-started
-   */
-  private async processAutoApproveTasks(): Promise<number> {
-    if (!this.taskStoreInstance) return 0;
-
-    const allTasks = this.taskStoreInstance.getAllTasks();
-    let autoStarted = 0;
-
-    for (const task of allTasks) {
-      // Only process tasks that are pending/ready and not yet in progress
-      if (task.status === "pending" || task.status === "ready") {
-        const wasAutoStarted = await this.tryAutoApproveTask(task.id);
-        if (wasAutoStarted) autoStarted++;
-      }
-    }
-
-    if (autoStarted > 0) {
-      logger.info(`[AutoApprove] Auto-started ${autoStarted} tasks`);
-    }
-
-    return autoStarted;
   }
 
   /**
@@ -759,6 +581,13 @@ export class AgentManager {
    */
   getCurrentGoalId(): string | null {
     return this.orchestrator?.getCurrentGoalId() ?? null;
+  }
+
+  /**
+   * Get summaries of all goals for frontend display (Phase 4).
+   */
+  getAllGoalSummaries(): import("./orchestrator/types.js").GoalSummary[] {
+    return this.orchestrator?.getAllGoalSummaries?.() ?? [];
   }
 
   /**
@@ -1021,15 +850,14 @@ export class AgentManager {
       state = "awaiting_approval";
     else if (orchestratorState === "executing") state = "executing";
 
-    const metrics = this.taskQueue.getMetrics();
-
+    const allTasks = this.taskStoreInstance?.getAllTasks() ?? [];
     const planId = this.orchestrator?.getPendingPlan()?.planId;
 
     return {
       state,
-      pendingTasks: metrics.tasksQueued,
+      pendingTasks: allTasks.filter(t => t.status === "pending" || t.status === "ready").length,
       activeTasks: this.workerPool.workerCount,
-      completedTasks: metrics.tasksCompleted,
+      completedTasks: allTasks.filter(t => t.status === "completed").length,
       ...(planId && { currentPlan: planId }),
     };
   }
@@ -1189,13 +1017,6 @@ export class AgentManager {
     this.taskStoreInstance.updateStatus(taskId, "failed");
     this.filePersistence?.updateStatus(taskId, "failed");
 
-    // Also try to remove from RoleTaskQueue if present
-    try {
-      this.taskQueue.failTask(taskId, "Discarded by user");
-    } catch {
-      // Task may not be in queue, that's ok
-    }
-
     logger.info(`Discarded task ${taskId}`);
   }
 
@@ -1217,6 +1038,7 @@ export class AgentManager {
     const workflowStatus = this.getWorkflowStatus();
     const activeAgents = this.getActiveAgents();
     const activeRoles = new Set(activeAgents.map((a) => a.role));
+    const allStatusTasks = this.taskStoreInstance?.getAllTasks() ?? [];
 
     return {
       state: workflowStatus.state,
@@ -1230,7 +1052,7 @@ export class AgentManager {
         pending: workflowStatus.pendingTasks,
         inProgress: workflowStatus.activeTasks,
         completed: workflowStatus.completedTasks,
-        failed: this.taskQueue.getMetrics().tasksFailed,
+        failed: allStatusTasks.filter(t => t.status === "failed").length,
       },
       ...(workflowStatus.currentPlan && {
         currentPlan: workflowStatus.currentPlan,
@@ -1268,168 +1090,8 @@ export class AgentManager {
     };
   }
 
-  /**
-   * Listen for task completions to queue dependent tasks
-   */
-  private setupCompletionHandler(): void {
-    this.taskQueue.setCallbacks({
-      onTaskComplete: ({ taskId, output }) => {
-        logger.info(`Task ${taskId} completed, checking dependents`);
-        this.taskOutputs.set(taskId, output);
-        this.queueReadyDependents(taskId);
-      },
-      onTaskFailed: ({ taskId, error }) => {
-        logger.error(`Task ${taskId} failed: ${error}`);
-      },
-    });
-  }
-
-  /**
-   * Queue tasks that were waiting on the completed task
-   */
-  private queueReadyDependents(completedTaskId: string): void {
-    if (!this.plan) return;
-
-    for (const task of this.plan.tasks) {
-      // Skip if already queued or completed
-      const existingTask = this.taskQueue.getTask(task.id);
-      if (existingTask) continue;
-
-      // Check if this task depends on the completed one
-      if (!task.dependencies.includes(completedTaskId)) continue;
-
-      // Check if ALL dependencies are now satisfied
-      const allDepsComplete = task.dependencies.every((depId) =>
-        this.taskOutputs.has(depId),
-      );
-
-      if (allDepsComplete) {
-        this.queuePlannedTask(task);
-      }
-    }
-  }
-
-  /**
-   * Convert PlannedTask to TaskWithContext and queue it
-   */
-  private queuePlannedTask(task: PlannedTask): void {
-    const previousOutputs = task.dependencies.map((depId) => ({
-      taskId: depId,
-      output: this.taskOutputs.get(depId) ?? null,
-    }));
-
-    const taskWithContext: TaskWithContext = {
-      id: task.id,
-      description: task.description,
-      assigned_role: task.assignedRole.toLowerCase(),
-      priority: task.priority,
-      context: {
-        previousOutputs,
-        artifacts: [],
-      },
-      createdAt: Date.now(),
-      status: "queued",
-    };
-
-    this.taskQueue.queueTask(taskWithContext);
-    logger.info(`Queued task ${task.id} for role ${task.assignedRole}`);
-  }
-
   // ===========================================================================
-  // Step 1: Configure Workflow (discover roles)
-  // ===========================================================================
-
-  /**
-   * Use DefinitionBuilder to discover and configure agents for a task
-   * @deprecated Use the orchestrator flow instead:
-   *   1. initializeOrchestrator() - sets up orchestrator
-   *   2. handleUserMessage() - conversational planning
-   *   3. approvePlan() - queues tasks to MemoryManager
-   * Or use discoverRoles() for pure role discovery without side effects.
-   */
-  async configureWorkflow(taskDescription: string): Promise<AgentDefinition[]> {
-    console.warn(
-      "[DEPRECATED] configureWorkflow() is deprecated. Use orchestrator flow or discoverRoles() instead.",
-    );
-    logger.info(`Configuring workflow: "${taskDescription.slice(0, 80)}..."`);
-
-    const factory = getAgentFactory();
-    const builder = factory.getDefinitionBuilder() as AiSdkAgent;
-    await builder.initialize();
-
-    const result = await builder.run(
-      `Design a team of AI agents for: ${taskDescription}`,
-    );
-
-    if (!result?.definitions) {
-      throw new Error("DefinitionBuilder failed to produce definitions");
-    }
-
-    this.definitions = result.definitions;
-
-    // Register with WorkerPool
-    this.workerPool.registerDefinitions(this.definitions);
-
-    logger.info(`Configured ${this.definitions.length} agents`);
-    logger.debug(`Team goal: ${result.teamGoal || "N/A"}`);
-
-    return this.definitions;
-  }
-
-  // ===========================================================================
-  // Step 2: Create Plan
-  // ===========================================================================
-
-  /**
-   * Use PlanBuilder to create execution plan for configured roles
-   * @deprecated Use the orchestrator flow instead:
-   *   1. initializeOrchestrator() - sets up orchestrator
-   *   2. handleUserMessage() - conversational planning
-   *   3. approvePlan() - queues tasks to MemoryManager
-   */
-  async createPlan(taskDescription: string): Promise<TaskPlan> {
-    console.warn(
-      "[DEPRECATED] createPlan() is deprecated. Use orchestrator flow instead.",
-    );
-    if (this.definitions.length === 0) {
-      throw new Error("No agents configured. Call configureWorkflow() first.");
-    }
-
-    logger.info("Creating execution plan...");
-
-    const factory = getAgentFactory();
-    const planBuilder = factory.getPlanBuilder() as AiSdkAgent;
-    await planBuilder.initialize();
-
-    const rolesList = this.definitions.map((d) => d.role).join(", ");
-    const result = await planBuilder.run(
-      `Goal: ${taskDescription}\nAvailable roles: ${rolesList}\n\nCreate a detailed execution plan.`,
-    );
-
-    if (!result?.tasks) {
-      // Fallback: single task per role
-      logger.warn("PlanBuilder returned no tasks, using default plan");
-      this.plan = {
-        tasks: this.definitions.map((d, i) => ({
-          id: `task-${i + 1}`,
-          title: `Task for ${d.role}`,
-          description: taskDescription,
-          assignedRole: d.role,
-          priority: 1,
-          dependencies: [],
-        })),
-        rationale: "Default plan: each role handles the task independently",
-      };
-    } else {
-      this.plan = result as TaskPlan;
-    }
-
-    logger.info(`Plan created with ${this.plan.tasks.length} tasks`);
-    return this.plan;
-  }
-
-  // ===========================================================================
-  // Step 3: Execute Tasks
+  // Ad-hoc Task Execution (used by CLI + SocketServerV2)
   // ===========================================================================
 
   /** Track which role handles each task */
@@ -1481,295 +1143,13 @@ export class AgentManager {
 
   /**
    * Execute all planned tasks (respects dependencies)
-   * @deprecated Use the orchestrator flow instead:
-   *   1. approvePlan() - queues tasks to MemoryManager
-   *   2. Tasks auto-execute via WorkerPool, or use manual flow:
-   *      - approveTaskForChat(taskId)
-   *      - startTaskExecution(taskId)
-   *      - completeTaskByUser(taskId)
-   */
-  async executeAllTasks(): Promise<Map<string, any>> {
-    console.warn(
-      "[DEPRECATED] executeAllTasks() is deprecated. Use orchestrator flow with approvePlan() instead.",
-    );
-    if (!this.plan) {
-      throw new Error("No plan created. Call createPlan() first.");
-    }
-
-    const results = new Map<string, any>();
-    const completed = new Set<string>();
-
-    // Simple dependency-aware execution
-    const pending = [...this.plan.tasks];
-
-    while (pending.length > 0) {
-      // Find tasks with all dependencies satisfied
-      const ready = pending.filter((t) =>
-        t.dependencies.every((dep) => completed.has(dep)),
-      );
-
-      if (ready.length === 0 && pending.length > 0) {
-        throw new Error("Circular dependency detected in task plan");
-      }
-
-      // Execute ready tasks in parallel
-      await Promise.all(
-        ready.map(async (task) => {
-          try {
-            const { taskId, response } = await this.startTask(
-              task.assignedRole,
-              task.description,
-            );
-            results.set(taskId, response);
-            completed.add(task.id);
-            logger.info(`Completed: ${taskId}`);
-          } catch (error) {
-            logger.error({ err: error, taskId: task.id }, `Failed: ${task.id}`);
-            results.set(task.id, { error: String(error) });
-            completed.add(task.id); // Mark as done even if failed
-          }
-        }),
-      );
-
-      // Remove completed tasks from pending
-      for (const task of ready) {
-        const idx = pending.indexOf(task);
-        if (idx >= 0) pending.splice(idx, 1);
-      }
-    }
-
-    return results;
-  }
-
-  // ===========================================================================
-  // Queue-Based Execution with Approval Flow
-  // ===========================================================================
-
-  /**
-   * Queue all planned tasks (those with no dependencies are immediately ready)
-   */
-  queueAllPlannedTasks(): void {
-    if (!this.plan) {
-      throw new Error("No plan created. Call createPlan() first.");
-    }
-
-    // Queue tasks with no dependencies first
-    for (const task of this.plan.tasks) {
-      if (task.dependencies.length === 0) {
-        this.queuePlannedTask(task);
-      }
-    }
-
-    const metrics = this.taskQueue.getMetrics();
-    logger.info(`Queued ${metrics.tasksQueued} initial tasks from plan`);
-  }
-
-  /**
-   * Get pending task for approval (peek without removing)
-   */
-  getPendingApproval(role: string): TaskWithContext | undefined {
-    return this.taskQueue.peek(role);
-  }
-
-  /**
-   * Approve and execute a task (non-blocking)
-   */
-  approveTask(taskId: string): void {
-    const task = this.taskQueue.getTask(taskId);
-    if (!task) {
-      throw new Error(`Task ${taskId} not found in queue`);
-    }
-
-    // Poll to remove from queue
-    const polled = this.taskQueue.poll(task.assigned_role);
-    if (!polled || polled.id !== taskId) {
-      // Put it back if we got the wrong one (edge case)
-      if (polled) this.taskQueue.queueTask(polled);
-      throw new Error(
-        `Task ${taskId} is not next in queue for role ${task.assigned_role}`,
-      );
-    }
-
-    logger.info(`Approved task ${taskId}, executing...`);
-    this.executeQueuedTask(polled);
-  }
-
-  /**
-   * Pick a specific task for execution (may not be next in queue)
-   */
-  pickTask(taskId: string): void {
-    const task = this.taskQueue.getTask(taskId);
-    if (!task) {
-      throw new Error(`Task ${taskId} not found in queue`);
-    }
-
-    // Remove from queue regardless of position
-    // This requires iterating and re-queuing others
-    const role = task.assigned_role;
-    const tasksToRequeue: TaskWithContext[] = [];
-    let found: TaskWithContext | null = null;
-
-    // Drain until we find it
-    let polled = this.taskQueue.poll(role);
-    while (polled) {
-      if (polled.id === taskId) {
-        found = polled;
-        break;
-      }
-      tasksToRequeue.push(polled);
-      polled = this.taskQueue.poll(role);
-    }
-
-    // Re-queue the ones we removed
-    for (const t of tasksToRequeue) {
-      this.taskQueue.queueTask(t);
-    }
-
-    if (found) {
-      logger.info(`Picked task ${taskId} for execution`);
-      this.executeQueuedTask(found);
-    } else {
-      throw new Error(`Task ${taskId} not found in queue`);
-    }
-  }
-
-  /**
-   * Skip a task (remove from queue without executing)
-   */
-  skipTask(taskId: string): void {
-    const task = this.taskQueue.getTask(taskId);
-    if (!task) {
-      throw new Error(`Task ${taskId} not found in queue`);
-    }
-
-    // Mark as failed with skip reason
-    this.taskQueue.failTask(taskId, "Skipped by user");
-    logger.info(`Skipped task ${taskId}`);
-  }
-
-  /**
-   * Execute a queued task (non-blocking)
-   * Runs the task and updates queue status on completion
-   */
-  private executeQueuedTask(task: TaskWithContext): void {
-    this.workerPool
-      .runTask(task)
-      .then((output) => {
-        this.taskQueue.completeTask(task.id, output);
-        // Note: completion handler will queue dependents
-      })
-      .catch((error) => {
-        this.taskQueue.failTask(task.id, String(error));
-      });
-  }
-
-  /**
-   * Check if a role has pending tasks
-   */
-  hasPendingTasksForRole(role: string): boolean {
-    return this.taskQueue.hasTasksFor(role);
-  }
-
-  /**
-   * Get queue statistics
-   */
-  getQueueStats(): { total: number; byRole: Record<string, number> } {
-    const metrics = this.taskQueue.getMetrics();
-    const stats = {
-      total: metrics.tasksQueued - metrics.tasksCompleted - metrics.tasksFailed,
-      byRole: {} as Record<string, number>,
-    };
-    for (const role of this.configuredRoles) {
-      stats.byRole[role] = this.taskQueue.getQueueSize(role);
-    }
-    return stats;
-  }
-
-  // ===========================================================================
-  // Convenience: One-shot execution
-  // ===========================================================================
-
-  /**
-   * Full workflow: configure → plan → execute
-   * @deprecated Use the orchestrator flow instead:
-   *   1. initializeOrchestrator()
-   *   2. handleUserMessage() for conversational planning
-   *   3. approvePlan() to queue tasks
-   */
-  async run(taskDescription: string): Promise<Map<string, any>> {
-    console.warn(
-      "[DEPRECATED] run() is deprecated. Use orchestrator flow instead.",
-    );
-    await this.configureWorkflow(taskDescription);
-    await this.createPlan(taskDescription);
-    return this.executeAllTasks();
-  }
-
   // ===========================================================================
   // Status & Cleanup
   // ===========================================================================
 
-  get configuredRoles(): string[] {
-    return this.definitions.map((d) => d.role);
-  }
-
-  get plannedTasks(): PlannedTask[] {
-    return this.plan?.tasks ?? [];
-  }
-
   get activeWorkerCount(): number {
     return this.workerPool.workerCount;
   }
-
-  // ===========================================================================
-  // Compatibility Methods (for existing API)
-  // ===========================================================================
-
-  /**
-   * Compatibility: configureNewWorkflow maps to configureWorkflow + createPlan
-   * @deprecated Use the orchestrator flow instead:
-   *   1. initializeOrchestrator()
-   *   2. handleUserMessage() for conversational planning
-   *   3. approvePlan() to queue tasks
-   */
-  async configureNewWorkflow(
-    workflowDescription: string,
-  ): Promise<AgentDefinition[]> {
-    console.warn(
-      "[DEPRECATED] configureNewWorkflow() is deprecated. Use orchestrator flow instead.",
-    );
-    await this.configureWorkflow(workflowDescription);
-    await this.createPlan(workflowDescription);
-    return this.definitions;
-  }
-
-  /**
-   * Compatibility: getRoles returns configured definitions as AgentConfig-like objects
-   * @deprecated Use discoverRoles() for pure role discovery, or use orchestrator flow:
-   *   1. initializeOrchestrator() - sets up orchestrator with team roles
-   *   2. orchestratorMessage() - conversational planning
-   */
-  async getRoles(taskDescription: string): Promise<AgentDefinition[]> {
-    console.warn(
-      "[DEPRECATED] getRoles() is deprecated. Use discoverRoles() or orchestrator flow instead.",
-    );
-    if (this.definitions.length === 0) {
-      // Use discoverRoles() instead of deprecated configureNewWorkflow()
-      this.definitions = await this.discoverRoles(taskDescription);
-      this.workerPool.registerDefinitions(this.definitions);
-    }
-    return this.definitions;
-  }
-
-  // /**
-  //  * Compatibility: createTask triggers the full workflow
-  //  */
-  // async createTask(taskDescription: string): Promise<void> {
-  //   const desc = typeof taskDescription === "string"
-  //     ? taskDescription
-  //     : JSON.stringify(taskDescription);
-  //   await this.run(desc);
-  // }
 
   /**
    * Reset the current plan — deletes from disk so it won't restore on next init.
@@ -1782,7 +1162,6 @@ export class AgentManager {
     // Also clear tasks and workers
     this.taskStoreInstance?.clear();
     await this.workerPool.disposeAll();
-    this.plan = null;
     return result;
   }
 
@@ -1794,7 +1173,6 @@ export class AgentManager {
     }
     await this.workerPool.disposeAll();
     this.definitions = [];
-    this.plan = null;
     logger.info("AgentManager disposed");
   }
 

@@ -52,6 +52,7 @@ const MessagePayloadSchema = z.object({
   agentId: z.string().min(1).max(200),
   taskId: z.string().max(200).optional(),
   sessionId: z.string().max(200).optional(),
+  goalId: z.string().max(200).optional(),
   content: z.string().min(1).max(100000), // 100KB max message
 });
 
@@ -386,6 +387,18 @@ export class SocketServerV2 {
     socket.on("action", (data) => this.handleAction(socket, connection, data));
     socket.on("disconnect", () => this.handleDisconnect(connection));
 
+    // Phase 4.5: Goal-scoped room subscription
+    socket.on("subscribeToGoal", ({ teamId, goalId }: { teamId: string; goalId: string }) => {
+      // Leave previous goal room (if any)
+      const prevGoalRoom = socket.data.currentGoalRoom as string | undefined;
+      if (prevGoalRoom) socket.leave(prevGoalRoom);
+
+      const goalRoom = `team:${teamId}:goal:${goalId}`;
+      socket.join(goalRoom);
+      socket.data.currentGoalRoom = goalRoom;
+      logger.debug(`[SocketServerV2] Socket ${connectionId} joined goal room ${goalRoom}`);
+    });
+
     logger.info(`[SocketServerV2] User ${userId} registered (${connectionId})`);
   }
 
@@ -429,7 +442,7 @@ export class SocketServerV2 {
     }>();
 
     manager.registerStreamCallbacks({
-      onStream: async ({ taskId, agentId, part }) => {
+      onStream: async ({ taskId, agentId, part, goalId: streamGoalId }) => {
         if (taskId) streamedTasks.add(taskId);
 
         const accKey = taskId || agentId || "unknown";
@@ -479,10 +492,10 @@ export class SocketServerV2 {
               role: "assistant",
               agentId: acc.agentId,
               taskId: taskId || undefined,
-              goalId: manager.getCurrentGoalId() || undefined,
+              goalId: streamGoalId || manager.getCurrentGoalId() || undefined,
               content: acc.text,
               streamParts: acc.parts.length > 0 ? JSON.stringify(acc.parts) : undefined,
-              agentLayer: taskId ? "worker" : "planner",
+              agentLayer: (acc.agentId === "planner" || acc.agentId === "manager" || acc.agentId === "orchestrator") ? "planner" : "worker",
               contextMessages: contextMessages || undefined,
               timestamp: new Date().toISOString(),
             }).catch((err) => logger.warn("[SocketServerV2] Failed to save assistant message:", err));
@@ -495,8 +508,10 @@ export class SocketServerV2 {
           taskId,
           agentId: agentId || "worker",
           part,
+          goalId: streamGoalId,
           timestamp: Date.now(),
         };
+        // Emit to team room. goalId is included in payload for client-side filtering.
         this.io.to(room).emit("stream", payload);
       },
 
@@ -598,8 +613,20 @@ export class SocketServerV2 {
         this.io.to(room).emit("state", stateResponse);
         logger.debug(`[SocketServerV2] Plan ${action}, broadcast to ${room}`);
 
+        // Phase 4.5: When plan is approved, auto-join all team sockets to the goal room.
+        // Uses Socket.IO's built-in server-side room management (no client request needed).
+        if (action === "approved") {
+          const goalId = manager.getCurrentGoalId();
+          if (goalId) {
+            const goalRoom = `team:${teamId}:goal:${goalId}`;
+            this.io.in(room).socketsJoin(goalRoom);
+            logger.info(`[SocketServerV2] Auto-joined team sockets to goal room ${goalRoom}`);
+          }
+        }
+
         // Save goal to database when plan is approved (for cross-browser restore)
         if (action === "approved" && this.services) {
+          const currentGoalId = manager.getCurrentGoalId();
           this.services.chat.getMessages(teamId, { limit: 5 }).then(msgs => {
             const userMsg = msgs.find(m => m.role === "user");
             const goalText = userMsg?.content || "Plan";
@@ -608,6 +635,7 @@ export class SocketServerV2 {
               teamId,
               userId: ownerId,
               goal: goalText,
+              goalId: currentGoalId || undefined,
               status: "executing",
             }).catch(err => logger.warn("[SocketServerV2] Failed to save goal:", err));
           }).catch(() => {});
@@ -646,6 +674,16 @@ export class SocketServerV2 {
             logger.info(`[SocketServerV2] Goal ${activeGoal.id} → ${status}`);
           }
         }).catch(err => logger.warn("[SocketServerV2] Failed to update goal status:", err));
+
+        // Phase 4: Emit goal:stateChange to frontend
+        const goalId = manager.getCurrentGoalId();
+        const allGoals = manager.getAllGoalSummaries?.() ?? [];
+        this.io.to(room).emit("goal:stateChange", {
+          teamId: tid,
+          goalId,
+          state: status,
+          allGoals,
+        });
       },
     });
 
@@ -669,6 +707,21 @@ export class SocketServerV2 {
       }
     }
     socket.join(`team:${teamId}`);
+
+    // Phase 4 v1.1: Emit current goal summaries to newly connected client
+    try {
+      const manager = await agentManagerRegistry.getForTeam(teamId);
+      const allGoals = manager.getAllGoalSummaries?.() ?? [];
+      if (allGoals.length > 0) {
+        socket.emit("goal:stateChange", {
+          teamId,
+          goalId: manager.getCurrentGoalId(),
+          state: "connected",
+          allGoals,
+        });
+      }
+    } catch { /* best effort — manager may not exist yet */ }
+
     return true;
   }
 
@@ -850,7 +903,7 @@ export class SocketServerV2 {
       this.emitError(socket, { error: `Invalid message: ${parsed.error.issues[0]?.message || "validation failed"}` });
       return;
     }
-    const { teamId, agentId, taskId, sessionId, content } = parsed.data;
+    const { teamId, agentId, taskId, sessionId, content, goalId: clientGoalId } = parsed.data;
 
     // Rate limit — prevent LLM API cost abuse
     if (!this.rateLimiter.allow(connection.userId)) {
@@ -867,27 +920,27 @@ export class SocketServerV2 {
     });
 
     // Persist user message via ServiceRegistry
-    if (this.services) {
-      // Determine agent layer from the agentId routing
-      const layer = agentId === "manager" || agentId === "orchestrator" ? "planner" as const
-        : agentId.startsWith("chat-") ? "chat-agent" as const
-        : "worker" as const;
-
-      this.services.chat.addMessage({
-        teamId,
-        userId: connection.userId,
-        role: "user",
-        agentId,
-        taskId: taskId || undefined,
-        goalId: undefined, // Will be set by manager after team loads
-        content,
-        agentLayer: layer,
-        timestamp: new Date().toISOString(),
-      }).catch((err) => logger.warn("[SocketServerV2] Failed to save user message:", err));
-    }
-
     try {
       const manager = await agentManagerRegistry.getForTeam(teamId);
+
+      // Save user message with goalId — use client-provided goalId (required)
+      if (this.services) {
+        const layer = agentId === "manager" || agentId === "orchestrator" ? "planner" as const
+          : agentId.startsWith("chat-") ? "chat-agent" as const
+          : "worker" as const;
+
+        this.services.chat.addMessage({
+          teamId,
+          userId: connection.userId,
+          role: "user",
+          agentId,
+          taskId: taskId || undefined,
+          goalId: clientGoalId || undefined,
+          content,
+          agentLayer: layer,
+          timestamp: new Date().toISOString(),
+        }).catch((err) => logger.warn("[SocketServerV2] Failed to save user message:", err));
+      }
 
       // Join team room (checks access) and ensure event broadcasting is set up
       const joined = await this.joinTeamRoom(socket, teamId);
@@ -901,6 +954,7 @@ export class SocketServerV2 {
           manager,
           sessionId,
           content,
+          clientGoalId,
         );
       } else if (agentId.startsWith("chat-") && manager.isChatAgentEnabled()) {
         // Chat Agent message — route to the role's persistent L2 agent
@@ -930,9 +984,14 @@ export class SocketServerV2 {
     manager: AgentManager,
     sessionId: string | undefined,
     content: string,
+    goalId?: string,
   ) {
-    // Send message to orchestrator (response streams via onStream, not return value)
-    await manager.orchestratorMessage(content);
+    if (!goalId) {
+      this.emitError(socket, { error: "goalId is required — frontend must send it with the message" });
+      return;
+    }
+    // Send message to orchestrator with client-provided goalId
+    await manager.orchestratorMessage(content, goalId);
     const pendingPlan = manager.getOrchestratorPendingPlan();
 
     logger.info(`[SocketServerV2] Orchestrator message processed`);
@@ -990,6 +1049,7 @@ export class SocketServerV2 {
             agentId,
             sessionId: sessionId || "default",
             part: event.part,
+            goalId: manager.getCurrentGoalId() || undefined,
           });
 
           // Accumulate by part type (mirror of worker accumulator in ensureTeamCallbacks)
@@ -1049,6 +1109,7 @@ export class SocketServerV2 {
         agentId: `chat-${role}`,
         sessionId: sessionId || "default",
         part: { type: "error", error: err.message || String(err) },
+        goalId: manager.getCurrentGoalId() || undefined,
       });
     }
   }

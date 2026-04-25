@@ -12,7 +12,6 @@ import { z } from "zod";
 import { tool } from "@langchain/core/tools";
 import type { OrchestratorContext } from "../types.js";
 import type { DependencyResolver } from "../DependencyResolver.js";
-import { toGoalId } from "../../plugin/utils.js";
 import { PromptLoader } from "../PromptLoader.js";
 
 // ─── Schema ───────────────────────────────────────────────────────────────────
@@ -82,8 +81,11 @@ export function createSubmitPlanTool(ctx: SubmitPlanContext) {
         // No separate approval step needed.
         octx.setPendingPlan(plan as any);
 
-        // Derive goalId
-        const goalId = toGoalId(plan.goal || plan.planId);
+        // goalId is always set — planner was created with it via createPlanner(goalId)
+        const goalId = octx.currentGoalId;
+        if (!goalId) {
+          return "Error: No goalId set — this is a bug. The planner should always have a goalId.";
+        }
 
         // Save plan
         if (octx.planStore) {

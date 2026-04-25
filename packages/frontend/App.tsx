@@ -10,7 +10,7 @@
  *   /*  → InnerApp (handles all navigation internally)
  */
 
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { BrowserRouter, Routes, Route } from 'react-router-dom';
 import { v4 as uuidv4 } from 'uuid';
 import { Menu, PanelRight, Search, Sun, Moon, LogOut } from 'lucide-react';
@@ -23,7 +23,7 @@ import { DetailPanel } from './components/DetailPanel/DetailPanel';
 import { PlanApproval } from './components/PlanApproval';
 import { GoalScreen } from './components/GoalScreen';
 import { savePlan } from './components/GoalScreen/PlanList';
-import { makePlanId } from './lib/planId';
+import { makePlanId, toGoalId } from './lib/planId';
 import { PlanSwitcher } from './components/PlanSwitcher';
 import type { PlanSummary } from './components/GoalScreen/PlanList';
 import { ToastContainer, useToast } from './components/Toast/Toast';
@@ -77,15 +77,20 @@ function InnerApp() {
   const { agents, isLoadingTeams, agentsRef, findAgentById, handleToggleCollapse, loadTeams, createTeam, addLocalSubAgent } = useAgentTree();
   const { chatHistories, addMessage, updateMessages, processStreamPart, loadAgentChat, clearAllHistories, restoreFromServer } = useChat();
   const {
-    sessionState, currentPlan, tasks, autoExecuteEnabled, orchestrationLogs,
+    sessionState, currentPlan, tasks, autoExecuteEnabled, orchestrationLogs, plans,
     handleApprovePlan, handleStartTask, handleCompleteTask, handleCancelTask,
     handleToggleAutoExecute, addOrchestrationLog, setSessionState, setCurrentPlan, subscribeToTeam,
   } = useOrchestration();
 
-  const [activeAgentId, setActiveAgentId] = useState<string>(agents[0]?.id ?? '');
+  // Default to stored team (planner view) so restored messages display immediately
+  const [activeAgentId, setActiveAgentId] = useState<string>(() => {
+    const storedTeam = localStorage.getItem('ping:activeTeamId');
+    return storedTeam || (agents[0]?.id ?? '');
+  });
   const activeAgentIdRef = useRef(activeAgentId);
   const [selectedTeamId, setSelectedTeamId] = useState<string | null>(null);
   const selectedTeamIdRef = useRef<string | null>(null);
+  const activePlanGoalIdRef = useRef<string | null>(null);
   const connectedTeamRef = useRef<string | null>(null);
 
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -104,6 +109,25 @@ function InnerApp() {
     }
     return null;
   });
+
+  // Derived: which goalId is currently active (used for stream filtering)
+  // Check backend plans first (from goal:stateChange), then localStorage plans
+  const activePlanGoalId = useMemo(() => {
+    if (!activePlanId) return undefined;
+    // Backend plans (from useOrchestration — have goalId from server)
+    const backendMatch = plans.find(p => p.planId === activePlanId || p.goalId === activePlanId);
+    if (backendMatch?.goalId) return backendMatch.goalId;
+    // localStorage plans (from savePlan — have goalId from toGoalId)
+    if (selectedTeamId) {
+      try {
+        const raw = localStorage.getItem(`ping:plans:${selectedTeamId}`);
+        const stored = raw ? JSON.parse(raw) : [];
+        const localMatch = stored.find((p: any) => p.planId === activePlanId);
+        if (localMatch?.goalId) return localMatch.goalId;
+      } catch { /* ignore */ }
+    }
+    return undefined;
+  }, [activePlanId, plans, selectedTeamId]);
 
   // Discussion state — selected thread for full-view rendering
   const [discussionThreads, setDiscussionThreads] = useState<DiscussionThreadType[]>([]);
@@ -175,6 +199,14 @@ function InnerApp() {
 
   useEffect(() => { activeAgentIdRef.current = activeAgentId; }, [activeAgentId]);
   useEffect(() => { selectedTeamIdRef.current = selectedTeamId; }, [selectedTeamId]);
+  useEffect(() => { activePlanGoalIdRef.current = activePlanGoalId ?? null; }, [activePlanGoalId]);
+
+  // Phase 4.5: Subscribe to goal-scoped Socket.IO room when active plan changes
+  useEffect(() => {
+    if (selectedTeamId && activePlanGoalId) {
+      agentServiceV2.subscribeToGoal(selectedTeamId, activePlanGoalId);
+    }
+  }, [selectedTeamId, activePlanGoalId]);
 
   // Persist active team ID to localStorage whenever it changes
   useEffect(() => {
@@ -278,6 +310,7 @@ function InnerApp() {
       (agentId, part) => {
         processStreamPart(agentId, part);
       },
+      activePlanGoalIdRef,
     );
     return unsub;
   }, [selectedTeamId, subscribeToTeam, agentsRef, addMessage, processStreamPart, showToast]);
@@ -291,8 +324,13 @@ function InnerApp() {
     const team = agents.find(a => a.id === selectedTeamId);
     const subAgents = team?.subAgents ?? [];
 
+    // Set planner view as default when loading a team (matches restored chat key)
+    if (activeAgentId !== selectedTeamId) {
+      setActiveAgentId(selectedTeamId);
+    }
+
     // Try session restore first (single API call for all conversations)
-    restoreFromServer(selectedTeamId, subAgents.map(s => ({ id: s.id, role: s.role }))).then((result) => {
+    restoreFromServer(selectedTeamId, subAgents.map(s => ({ id: s.id, role: s.role })), activePlanGoalId).then((result) => {
       if (result) {
         // Populate PlanList from server goals (replaces stale localStorage)
         if (result.goals?.length) {
@@ -300,6 +338,7 @@ function InnerApp() {
             savePlan(selectedTeamId, {
               planId: goal.planId || goal.id || goal._id,
               goal: goal.goal || goal.title || '',
+              goalId: goal.goalId || undefined,
               createdAt: goal.createdAt ? new Date(goal.createdAt).getTime() : Date.now(),
               status: goal.status || 'unknown',
               taskCount: goal.taskCount,
@@ -315,12 +354,13 @@ function InnerApp() {
             setSessionState(result.orchestratorState);
           }
         }
-      }
-
-      // Fallback: load individual agent chats that weren't in restore response
-      loadAgentChat(selectedTeamId, 'manager');
-      for (const sub of subAgents) {
-        loadAgentChat(selectedTeamId, sub.id);
+        // Session restore succeeded — all conversations loaded, no per-agent fallback needed
+      } else {
+        // Session restore failed — fall back to per-agent message loading
+        loadAgentChat(selectedTeamId, 'manager');
+        for (const sub of subAgents) {
+          loadAgentChat(selectedTeamId, sub.id);
+        }
       }
     });
   }, [selectedTeamId, agents, loadAgentChat, restoreFromServer, setCurrentPlan, setSessionState]);
@@ -360,15 +400,17 @@ function InnerApp() {
   const handleGoalSubmit = useCallback(async (goal: string) => {
     if (!selectedTeamId) { showToast('Please select a team first', 'warning'); return; }
     const planId = makePlanId(selectedTeamId, goal, Date.now());
+    const goalId = toGoalId(goal);
     savePlan(selectedTeamId, {
       planId,
       goal,
+      goalId,
       createdAt: Date.now(),
       status: 'active',
     });
     addMessage(selectedTeamId, { id: uuidv4(), role: 'user', content: goal, timestamp: Date.now() });
     try {
-      agentServiceV2.sendToManager(goal);
+      agentServiceV2.sendToManager(goal, goalId);
     } catch (err: any) {
       showToast(`Failed to send goal: ${err.message}`, 'error');
     }
@@ -382,15 +424,17 @@ function InnerApp() {
     // Defer slightly to let team connection establish
     setTimeout(() => {
       const planId = makePlanId(teamId, goal, Date.now());
+      const goalId = toGoalId(goal);
       savePlan(teamId, {
         planId,
         goal,
+        goalId,
         createdAt: Date.now(),
         status: 'active',
       });
       addMessage(teamId, { id: uuidv4(), role: 'user', content: goal, timestamp: Date.now() });
       try {
-        agentServiceV2.sendToManager(goal);
+        agentServiceV2.sendToManager(goal, goalId);
       } catch (err: any) {
         showToast(`Failed to send goal: ${err.message}`, 'error');
       }
@@ -422,6 +466,10 @@ function InnerApp() {
   }, [createTeam, addLocalSubAgent, showToast, addOrchestrationLog]);
 
   const allTasks = Object.values(tasks).flat();
+  // v1.1: Filter tasks by active plan's goalId when multiple plans exist
+  const planTasks = plans.length > 1 && activePlanGoalId
+    ? allTasks.filter(t => t.goalId === activePlanGoalId)
+    : allTasks;
   const activeAgent = findAgentById(activeAgentId);
   const activeAgentTasks = tasks[activeAgentId] ?? [];
   const showTaskSkeleton = (sessionState === 'planning' || sessionState === 'executing') && allTasks.length === 0;
@@ -435,9 +483,8 @@ function InnerApp() {
   // For orchestrator: show planner messages (keyed by team id)
   // When a task is selected: show worker stream (keyed by agent id)
   const isChatAgent = !!(activeAgent?.parentId && FEATURES.chatAgentChat);
-  const activeAgentMessages = isChatAgent && !selectedTaskId
-    ? (chatHistories[`chat:${activeAgentId}`] ?? [])
-    : (chatHistories[activeAgentId] ?? []);
+  const chatKey = isChatAgent && !selectedTaskId ? `chat:${activeAgentId}` : activeAgentId;
+  const activeAgentMessages = chatHistories[chatKey] ?? [];
 
   // Click task → switch main area to that role's agent + select the task
   const handleTaskClick = useCallback((taskId: string) => {
@@ -477,13 +524,46 @@ function InnerApp() {
       activeTeamId={selectedTeamId}
       onSelectTeam={handleSelectAgent}
       onNavigateToTeams={() => { pushRoute('/manage-teams'); if (isMobileViewport) setIsMobileSidebarOpen(false); }}
-      planTasks={allTasks}
+      planTasks={planTasks}
       planName={currentPlan?.[0]?.title ?? undefined}
       selectedTaskId={selectedTaskId}
       onSelectTask={handleTaskClick}
       activePlanId={activePlanId}
       sessionState={sessionState}
       onBackToGoals={() => {
+        setActivePlanId(null);
+        if (selectedTeamId) pushRoute(`/teams/${encodeURIComponent(selectedTeamId)}`);
+        else pushRoute('/');
+      }}
+      plans={plans}
+      onSelectPlan={(goalId) => {
+        // Switch to a different plan — update URL, tasks, chat, and active agent
+        const plan = plans.find(p => p.goalId === goalId);
+        if (plan?.planId) {
+          setActivePlanId(plan.planId);
+          setSelectedTaskId(null);
+          // Switch to planner view (team orchestrator)
+          if (selectedTeamId) {
+            setActiveAgentId(selectedTeamId);
+            pushRoute(`/teams/${encodeURIComponent(selectedTeamId)}/p/${encodeURIComponent(plan.planId)}`);
+
+            // Load this goal's chat history + tasks from server
+            const selectedTeam = agents.find(a => a.id === selectedTeamId);
+            const subAgents = selectedTeam?.subAgents ?? [];
+            restoreFromServer(
+              selectedTeamId,
+              subAgents.map(s => ({ id: s.id, role: s.role })),
+              goalId,
+            ).then((result) => {
+              if (result?.plan?.length) {
+                setCurrentPlan(result.plan);
+                if (result.orchestratorState) setSessionState(result.orchestratorState);
+              }
+            });
+          }
+        }
+      }}
+      onNewPlan={() => {
         setActivePlanId(null);
         if (selectedTeamId) pushRoute(`/teams/${encodeURIComponent(selectedTeamId)}`);
         else pushRoute('/');
@@ -875,6 +955,7 @@ function InnerApp() {
                 allTasks={allTasks}
                 onSelectTask={handleTaskClick}
                 selectedTaskId={selectedTaskId}
+                goalId={activePlanGoalId}
               />
             </div>
           </div>

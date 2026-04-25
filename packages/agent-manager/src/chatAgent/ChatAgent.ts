@@ -20,6 +20,7 @@ const log = rootLogger.child({ module: "ChatAgent" });
 export interface ChatAgentConfig {
   role: string;
   teamId: string;
+  goalId?: string;
   taskStore: TaskStore;
   /** Model config override — if not set, uses default from MODEL_ID env */
   modelConfig?: { provider: string; model?: string; deployment?: string };
@@ -40,6 +41,7 @@ export interface ChatAgentConfig {
 export class ChatAgent {
   readonly role: string;
   readonly teamId: string;
+  readonly goalId?: string;
   private readonly taskStore: TaskStore;
   private agent: AiSdkAgent | null = null;
   private initialized = false;
@@ -62,6 +64,7 @@ export class ChatAgent {
   constructor(config: ChatAgentConfig) {
     this.role = config.role.toLowerCase();
     this.teamId = config.teamId;
+    this.goalId = config.goalId;
     this.taskStore = config.taskStore;
     this.onDispatchTask = config.onDispatchTask;
     this.onNotifyPlanner = config.onNotifyPlanner;
@@ -255,6 +258,10 @@ export class ChatAgent {
   // ─── Task Queries (Step 1) ─────────────────────────────────────────
 
   getMyTasks(): Task[] {
+    if (this.goalId) {
+      return this.taskStore.getByGoal(this.goalId)
+        .filter(t => t.assigned_role === this.role);
+    }
     return this.taskStore.getByRole(this.role);
   }
 

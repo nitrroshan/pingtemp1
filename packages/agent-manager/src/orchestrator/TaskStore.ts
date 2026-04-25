@@ -166,6 +166,15 @@ export class TaskStore implements ITaskProvider {
     return goalTasks.every((t) => t.status === "completed" || t.status === "failed" || t.status === "discarded");
   }
 
+  /** Remove all tasks for a specific goal. Used when replanning within a goal. */
+  clearByGoal(goalId: string): void {
+    const toRemove = this.getByGoal(goalId);
+    for (const task of toRemove) {
+      this.remove(task.id);
+    }
+    log.info(`Cleared ${toRemove.length} tasks for goal ${goalId}`);
+  }
+
   // ═══════════════════════════════════════════════════════════════════
   // STATE MACHINE
   // ═══════════════════════════════════════════════════════════════════

@@ -96,7 +96,7 @@ export function createRequestTaskTool(ctx: RequestTaskContext) {
       const createdByTag = `agent:${ctx.role}`;
       const currentCount = ctx.taskStore.getAll
         ? ctx.taskStore.getAll().filter((t: any) => (t.context as any)?.createdBy === createdByTag).length
-        : (agentTaskCounts.get(`${ctx.role}:${ctx.planId || "default"}`) || 0);
+        : (agentTaskCounts.get(`${ctx.role}:${ctx.planId}`) || 0);
       if (currentCount >= MAX_AGENT_TASKS_PER_PLAN) {
         return `Error: You have already created ${currentCount} tasks (max ${MAX_AGENT_TASKS_PER_PLAN}). Maximum reached.`;
       }
@@ -188,7 +188,7 @@ export function createRequestTaskTool(ctx: RequestTaskContext) {
       }
 
       // Update runtime cache (secondary — TaskStore.getAll() is primary for guard rail check)
-      const cacheKey = `${ctx.role}:${ctx.planId || "default"}`;
+      const cacheKey = `${ctx.role}:${ctx.planId}`;
       agentTaskCounts.set(cacheKey, currentCount + 1);
 
       // Notify orchestrator

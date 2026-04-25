@@ -69,10 +69,10 @@ export class HttpServer {
       credentials: true,
     }));
 
-    // Rate limiting — per IP
+    // Rate limiting — per IP (generous for dev; restore endpoint reduces burst count)
     this.app.use("/api/v2", rateLimit({
       windowMs: 60 * 1000,
-      max: 100,
+      max: 200,
       standardHeaders: true,
       legacyHeaders: false,
       message: { error: "Too many requests, please try again later" },
@@ -354,6 +354,7 @@ export class HttpServer {
     this.app.get("/api/v2/sessions/:teamId/restore", async (req, res) => {
       try {
         const { teamId } = req.params;
+        const requestedGoalId = req.query.goalId as string | undefined;
 
         let sessionMessages: any[] = [];
         let workerMessages: any[] = [];
@@ -372,10 +373,9 @@ export class HttpServer {
           goals = goalsResult;
 
           // Re-classify: move planner/chat-agent messages from worker bucket to session bucket
-          // (handles pre-v1.0 data without agentLayer, and edge cases)
           const reclassified: any[] = [];
           for (const msg of workerMessages) {
-            if (msg.agentId === "manager" || msg.agentId === "orchestrator" || msg.agentId?.startsWith("chat-")) {
+            if (msg.agentId === "manager" || msg.agentId === "orchestrator" || msg.agentId === "planner" || msg.agentId?.startsWith("chat-")) {
               sessionMessages.push(msg);
             } else {
               reclassified.push(msg);
@@ -384,10 +384,62 @@ export class HttpServer {
           workerMessages = reclassified;
         }
 
-        // Filter by active goal — only show messages from the current plan
-        if (activeGoalId) {
-          sessionMessages = sessionMessages.filter(m => !m.goalId || m.goalId === activeGoalId);
-          workerMessages = workerMessages.filter(m => !m.goalId || m.goalId === activeGoalId);
+        // Get current plan/tasks from AgentManager
+        let plan = null;
+        let tasks: any[] = [];
+        let orchestratorState: string | null = null;
+        let activeGoalId: string | null = requestedGoalId || null;
+        let allGoalSummaries: any[] = [];
+        try {
+          const { agentManagerRegistry } =
+            await import("../agentManager/AgentManagerRegistry.js");
+          const manager = await agentManagerRegistry.getForTeam(teamId);
+
+          orchestratorState = manager.getOrchestratorState();
+          // Use requested goalId, or fall back to manager's current goal
+          if (!activeGoalId) {
+            activeGoalId = manager.getCurrentGoalId();
+          }
+
+          allGoalSummaries = manager.getAllGoalSummaries?.() ?? [];
+
+          const pendingPlan = manager.getOrchestratorPendingPlan();
+          if (pendingPlan) {
+            plan = pendingPlan.tasks || pendingPlan;
+          }
+
+          const taskStore = manager.getTaskStore();
+          if (taskStore) {
+            // Filter tasks by goalId when available
+            const allTasks = activeGoalId
+              ? taskStore.getByGoal(activeGoalId)
+              : taskStore.getAllTasks();
+            if (allTasks.length > 0) {
+              tasks = allTasks.map((t: any) => ({
+                id: t.id,
+                title: t.title || t.description?.slice(0, 80) || t.id,
+                description: t.description,
+                status: t.status,
+                assignedRole: t.assigned_role,
+                priority: t.priority,
+                dependencies: t.dependants || [],
+                goalId: t.goalId,
+              }));
+              if (!plan) {
+                plan = tasks;
+              }
+            }
+          }
+        } catch {
+          // Manager not initialized — return empty plan/tasks
+        }
+
+        // Filter messages by goalId ONLY when explicitly requested by the client.
+        // Don't filter on manager's current goalId — on reload the manager may have
+        // a different active goal, which would hide the user's conversation.
+        if (requestedGoalId) {
+          sessionMessages = sessionMessages.filter(m => !m.goalId || m.goalId === requestedGoalId);
+          workerMessages = workerMessages.filter(m => !m.goalId || m.goalId === requestedGoalId);
         }
 
         // Group session messages by agentId for per-agent conversations
@@ -398,51 +450,6 @@ export class HttpServer {
           conversations[key].push(msg);
         }
 
-        // Get current plan/tasks from AgentManager (lazy-loads if needed, triggers PlanStore recovery)
-        let plan = null;
-        let tasks: any[] = [];
-        let orchestratorState: string | null = null;
-        let activeGoalId: string | null = null;
-        try {
-          const { agentManagerRegistry } =
-            await import("../agentManager/AgentManagerRegistry.js");
-          // Use getForTeam (not has) — triggers lazy loading + loadActivePlan() from disk
-          const manager = await agentManagerRegistry.getForTeam(teamId);
-
-            // Get orchestrator state and active goal
-            orchestratorState = manager.getOrchestratorState();
-            activeGoalId = manager.getCurrentGoalId();
-
-            // Get pending plan if awaiting approval
-            const pendingPlan = manager.getOrchestratorPendingPlan();
-            if (pendingPlan) {
-              plan = pendingPlan.tasks || pendingPlan;
-            }
-
-            // Get current tasks from TaskStore
-            const taskStore = manager.getTaskStore();
-            if (taskStore) {
-              const allTasks = taskStore.getAllTasks();
-              if (allTasks.length > 0) {
-                tasks = allTasks.map((t: any) => ({
-                  id: t.id,
-                  title: t.title || t.description?.slice(0, 80) || t.id,
-                  description: t.description,
-                  status: t.status,
-                  assignedRole: t.assigned_role,
-                  priority: t.priority,
-                  dependencies: t.dependants || [],
-                }));
-                // If tasks exist but no pending plan, use tasks as the plan
-                if (!plan) {
-                  plan = tasks;
-                }
-              }
-            }
-        } catch {
-          // Manager not initialized — return empty plan/tasks
-        }
-
         res.json({
           teamId,
           conversations,
@@ -451,6 +458,8 @@ export class HttpServer {
           plan,
           tasks,
           orchestratorState,
+          activeGoalId,
+          allGoalSummaries,
         });
       } catch (err: any) {
         res.status(500).json({ error: safeError(err) });

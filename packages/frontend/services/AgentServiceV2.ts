@@ -50,6 +50,7 @@ export interface Task {
   status: string;
   priority?: number;
   dependencies?: string[];
+  goalId?: string;
 }
 
 export interface TaskUpdate {
@@ -144,6 +145,7 @@ export class AgentServiceV2 {
   private discussionActivityCallbacks: Set<(data: any) => void> = new Set();
   private discussionMentionCallbacks: Set<(data: any) => void> = new Set();
   private taskUpdateCallbacks: Set<(data: any) => void> = new Set();
+  private goalStateCallbacks: Set<(data: any) => void> = new Set();
 
   constructor(baseUrl: string = API_BASE_URL) {
     this.baseUrl = baseUrl;
@@ -194,7 +196,7 @@ export class AgentServiceV2 {
       // Connect to V2 path
       this.socket = io(this.baseUrl, {
         path: "/socket.io/v2",
-        transports: ["polling"],
+        transports: ["websocket", "polling"],
         reconnection: true,
         reconnectionAttempts: 3,
         reconnectionDelay: 2000,
@@ -299,6 +301,11 @@ export class AgentServiceV2 {
     this.socket.on("task_update", (data: any) => {
       this.taskUpdateCallbacks.forEach((cb) => cb(data));
     });
+
+    // Phase 4: goal:stateChange events (plan list updates)
+    this.socket.on("goal:stateChange", (data: any) => {
+      this.goalStateCallbacks.forEach((cb) => cb(data));
+    });
   }
 
   disconnect() {
@@ -326,7 +333,7 @@ export class AgentServiceV2 {
     return !!(this.socket && this.clientId && this.teamId);
   }
 
-  sendToManager(content: string): void {
+  sendToManager(content: string, goalId?: string): void {
     if (!this.isReady()) {
       logger.error("[AgentServiceV2] Cannot send: socket =", !!this.socket, "clientId =", this.clientId, "teamId =", this.teamId);
       throw new Error("Not connected or no team selected");
@@ -338,7 +345,15 @@ export class AgentServiceV2 {
       agentId: "manager",
       sessionId: this.sessionId,
       content,
+      goalId,
     });
+  }
+
+  /** Phase 4.5: Subscribe to a goal-scoped Socket.IO room for stream isolation. */
+  subscribeToGoal(teamId: string, goalId: string): void {
+    if (!this.socket) return;
+    this.socket.emit("subscribeToGoal", { teamId, goalId });
+    logger.info(`[AgentServiceV2] Subscribed to goal room: team:${teamId}:goal:${goalId}`);
   }
 
   /**
@@ -557,6 +572,14 @@ export class AgentServiceV2 {
     return () => this.taskUpdateCallbacks.delete(callback);
   }
 
+  /**
+   * Subscribe to goal:stateChange events (Phase 4 — Parallel Plans).
+   */
+  onGoalStateChange(callback: (data: any) => void): () => void {
+    this.goalStateCallbacks.add(callback);
+    return () => { this.goalStateCallbacks.delete(callback); };
+  }
+
   // ============================================================================
   // Getters
   // ============================================================================
@@ -589,16 +612,20 @@ export class AgentServiceV2 {
    * Restore session from server — returns per-agent conversations + worker messages + plan/tasks.
    * Called on page load to replace localStorage as source of truth.
    */
-  async restoreSession(teamId: string): Promise<{
+  async restoreSession(teamId: string, goalId?: string): Promise<{
     conversations: Record<string, Array<{ id: string; role: string; content: string; streamParts?: string; timestamp: string }>>;
     workerMessages: Array<{ id: string; role: string; content: string; agentId: string; taskId?: string; streamParts?: string; timestamp: string }>;
     goals: any[];
     plan: any;
     tasks: any[];
     orchestratorState: string | null;
+    allGoalSummaries?: any[];
   } | null> {
     try {
-      const response = await this.authFetch(`${this.baseUrl}/api/v2/sessions/${teamId}/restore`);
+      const url = goalId
+        ? `${this.baseUrl}/api/v2/sessions/${teamId}/restore?goalId=${encodeURIComponent(goalId)}`
+        : `${this.baseUrl}/api/v2/sessions/${teamId}/restore`;
+      const response = await this.authFetch(url);
       if (!response.ok) return null;
       return response.json();
     } catch {

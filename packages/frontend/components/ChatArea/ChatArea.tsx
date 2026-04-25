@@ -49,6 +49,8 @@ interface ChatAreaProps {
   /** Click a task row to open the DetailPanel for it */
   onSelectTask?: (taskId: string) => void;
   selectedTaskId?: string | null;
+  /** Active goalId for message routing */
+  goalId?: string;
 }
 
 function ChatAreaSkeleton() {
@@ -115,6 +117,7 @@ const ChatArea: React.FC<ChatAreaProps> = ({
   allTasks,
   onSelectTask,
   selectedTaskId,
+  goalId,
 }) => {
   const [viewMode, setViewMode] = useState<'chat' | 'tasks'>('chat');
   const [inputValue, setInputValue] = useState('');
@@ -180,7 +183,7 @@ const ChatArea: React.FC<ChatAreaProps> = ({
       
       if (isOrchestrator) {
         // Send to manager/orchestrator for planning
-        agentServiceV2.sendToManager(userMsg.content);
+        agentServiceV2.sendToManager(userMsg.content, goalId);
       } else if (FEATURES.chatAgentChat) {
         // Send to persistent ChatAgent (L2) for the role
         agentServiceV2.sendToChatAgent(agent.role.toLowerCase(), userMsg.content);

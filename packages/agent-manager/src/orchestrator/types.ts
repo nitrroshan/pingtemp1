@@ -7,6 +7,8 @@
 import type { ITaskProvider } from "./ITaskProvider.js";
 import type { WorkerPool } from "../services/WorkerPool.js";
 import type { AgentPlanOutput } from "./schemas.js";
+import type { PlannerAgent } from "./PlannerAgent.js";
+import type { ChatAgent } from "../chatAgent/ChatAgent.js";
 
 /**
  * Orchestrator state machine states
@@ -16,10 +18,41 @@ export type OrchestratorState =
   | "gathering" // Gathering requirements through conversation
   | "researching" // Pre-plan research tasks running (planner can't submit_plan yet)
   | "awaiting_approval" // Plan created, waiting for user approval
-  | "executing"; // Plan approved, tasks being executed
+  | "executing" // Plan approved, tasks being executed
+  | "queued" // Goal approved but another goal is executing (Phase 4)
+  | "done"; // All tasks completed (Phase 4)
+
+/**
+ * Per-goal state container (Phase 4 — Parallel Plans v1.0)
+ * GoalManager holds Map<goalId, GoalContext>.
+ */
+export interface GoalContext {
+  goalId: string;
+  state: OrchestratorState;
+  pendingPlan: any | null;
+  currentPlanId: string | null;
+  title: string;
+  createdAt: number;
+  // Per-goal agents (Phase 4.5 — moved from AgentManagerV2)
+  planner: PlannerAgent | null;
+  chatAgents: Map<string, ChatAgent>;
+}
+
+/**
+ * Summary of a goal for frontend display
+ */
+export interface GoalSummary {
+  goalId: string;
+  title: string;
+  state: OrchestratorState;
+  taskCount: number;
+  completedCount: number;
+  planId?: string;
+  createdAt: number;
+}
 
 export interface OrchestratorCallbacks {
-  onStream?: (data: { taskId: string; agentId: string; part: any }) => void;
+  onStream?: (data: { taskId: string; agentId: string; part: any; goalId?: string }) => void;
   onEvent?: (data: { taskId: string; event: any }) => void;
   onDone?: (data: { taskId: string; role: string; output: any }) => void;
   onError?: (data: { taskId: string; error: string }) => void;

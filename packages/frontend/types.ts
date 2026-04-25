@@ -32,6 +32,17 @@ export interface Message {
 
 export type TaskStatus = 'ready' | 'pending' | 'in_progress' | 'completed' | 'failed';
 
+/** Plan summary from backend GoalManager (Phase 4 — Parallel Plans) */
+export interface PlanSummary {
+  goalId: string;
+  title: string;
+  state: 'idle' | 'gathering' | 'researching' | 'awaiting_approval' | 'executing' | 'queued' | 'done';
+  taskCount: number;
+  completedCount: number;
+  planId?: string;
+  createdAt: number;
+}
+
 export interface Task {
   id: string;
   title: string;
@@ -42,6 +53,7 @@ export interface Task {
   dependencies?: string[];
   completed: boolean; // Computed from status for backward compatibility
   createdAt?: number;
+  goalId?: string; // Phase 4 v1.1 — links task to a specific goal/plan
 }
 
 export interface ChatSession {
@@ -123,6 +135,7 @@ export interface StreamPayload {
   taskId?: string;
   agentId: string;
   part: StreamPart;
+  goalId?: string;
   timestamp: number;
 }
 

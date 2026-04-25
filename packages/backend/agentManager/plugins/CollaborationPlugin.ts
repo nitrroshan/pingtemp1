@@ -46,7 +46,7 @@ class CollabMcpServer implements IMcpServer {
     private repoPath: string,
   ) {}
 
-  private goalId: string = "default";
+  private goalId: string | null = null;
   private collabCallbacks?: CollabToolCallbacks;
 
   setGoalId(goalId: string): void {
