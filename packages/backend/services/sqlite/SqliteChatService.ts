@@ -20,28 +20,47 @@ export class SqliteChatService implements IChatService {
         id TEXT PRIMARY KEY,
         teamId TEXT NOT NULL,
         agentId TEXT NOT NULL,
-        sessionId TEXT NOT NULL,
+        userId TEXT NOT NULL,
         goalId TEXT,
         taskId TEXT,
         role TEXT NOT NULL,
         content TEXT NOT NULL,
         streamParts TEXT,
+        agentLayer TEXT,
+        contextMessages TEXT,
         timestamp TEXT NOT NULL
       );
       CREATE INDEX IF NOT EXISTS idx_messages_team ON messages(teamId, timestamp);
       CREATE INDEX IF NOT EXISTS idx_messages_agent ON messages(teamId, agentId, timestamp);
       CREATE INDEX IF NOT EXISTS idx_messages_goal ON messages(teamId, goalId, timestamp);
     `);
+    // Migration: add agentLayer column if missing (existing databases)
+    try {
+      this.db.exec(`ALTER TABLE messages ADD COLUMN agentLayer TEXT`);
+    } catch {
+      // Column already exists — ignore
+    }
+    try {
+      this.db.exec(`ALTER TABLE messages ADD COLUMN contextMessages TEXT`);
+    } catch {
+      // Column already exists — ignore
+    }
+    // Migration: rename sessionId → userId (existing databases)
+    try {
+      this.db.exec(`ALTER TABLE messages RENAME COLUMN sessionId TO userId`);
+    } catch {
+      // Column already renamed or doesn't exist — ignore
+    }
   }
 
   async addMessage(msg: Omit<ChatMessage, "id">): Promise<ChatMessage> {
     const id = randomUUID();
     const timestamp = msg.timestamp || new Date().toISOString();
     this.db.run(
-      `INSERT INTO messages (id, teamId, agentId, sessionId, goalId, taskId, role, content, streamParts, timestamp)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [id, msg.teamId, msg.agentId, msg.sessionId, msg.goalId ?? null, msg.taskId ?? null,
-       msg.role, msg.content, msg.streamParts ?? null, timestamp],
+      `INSERT INTO messages (id, teamId, agentId, userId, goalId, taskId, role, content, streamParts, agentLayer, contextMessages, timestamp)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [id, msg.teamId, msg.agentId, msg.userId, msg.goalId ?? null, msg.taskId ?? null,
+       msg.role, msg.content, msg.streamParts ?? null, msg.agentLayer ?? null, msg.contextMessages ?? null, timestamp],
     );
     return { ...msg, id, timestamp };
   }
@@ -74,5 +93,30 @@ export class SqliteChatService implements IChatService {
       `SELECT * FROM messages WHERE teamId = ? AND goalId = ? ORDER BY timestamp DESC LIMIT ?`,
     ).all(teamId, goalId, limit) as ChatMessage[];
     return rows.reverse();
+  }
+
+  async getSessionMessages(teamId: string, options?: {
+    sessionLimit?: number;
+    workerLimit?: number;
+  }): Promise<{ session: ChatMessage[]; worker: ChatMessage[] }> {
+    const sessionLimit = options?.sessionLimit ?? 100;
+    const workerLimit = options?.workerLimit ?? 50;
+
+    // Session agent messages (planner + chat-agent) — larger window
+    const sessionRows = this.db.query(
+      `SELECT * FROM messages WHERE teamId = ? AND (agentLayer = 'planner' OR agentLayer = 'chat-agent')
+       ORDER BY timestamp DESC LIMIT ?`,
+    ).all(teamId, sessionLimit) as ChatMessage[];
+
+    // Worker messages — smaller window (recent only)
+    const workerRows = this.db.query(
+      `SELECT * FROM messages WHERE teamId = ? AND (agentLayer = 'worker' OR agentLayer IS NULL)
+       ORDER BY timestamp DESC LIMIT ?`,
+    ).all(teamId, workerLimit) as ChatMessage[];
+
+    return {
+      session: sessionRows.reverse(),
+      worker: workerRows.reverse(),
+    };
   }
 }

@@ -13,13 +13,14 @@
 import path from "path";
 import { resolve, join } from "path";
 import { getConfig } from "../config/index.js";
-import type { IChatService, IGoalService } from "./contracts/index.js";
+import type { IChatService, IGoalService, ITeamRegistryService } from "./contracts/index.js";
 import { PluginTeamService } from "./PluginTeamService.js";
 
 export interface ServiceRegistry {
   teams: PluginTeamService;
   chat: IChatService;
   goals: IGoalService;
+  teamRegistry: ITeamRegistryService;
   mode: "local" | "cloud";
 }
 
@@ -44,12 +45,15 @@ export async function createServiceRegistry(dataDir: string = "./data"): Promise
   // Chat + Goals: MongoDB in cloud mode, SQLite in local mode
   let chatService: IChatService;
   let goalService: IGoalService;
+  let teamRegistryService: ITeamRegistryService;
 
   if (config.mode === "cloud" && config.mongodbUri) {
     const { MongoChatService } = await import("./mongo/MongoChatService.js");
     const { MongoGoalService } = await import("./mongo/MongoGoalService.js");
+    const { MongoTeamRegistryService } = await import("./mongo/MongoTeamRegistryService.js");
     chatService = new MongoChatService();
     goalService = new MongoGoalService();
+    teamRegistryService = new MongoTeamRegistryService();
   } else {
     const { Database } = await import("bun:sqlite");
     const fs = await import("fs");
@@ -65,14 +69,17 @@ export async function createServiceRegistry(dataDir: string = "./data"): Promise
 
     const { SqliteChatService } = await import("./sqlite/index.js");
     const { SqliteGoalService } = await import("./sqlite/index.js");
+    const { SqliteTeamRegistryService } = await import("./sqlite/SqliteTeamRegistryService.js");
     chatService = new SqliteChatService(db);
     goalService = new SqliteGoalService(db);
+    teamRegistryService = new SqliteTeamRegistryService(db);
   }
 
   return {
     teams: teamService,
     chat: chatService,
     goals: goalService,
+    teamRegistry: teamRegistryService,
     mode: config.mongodbUri ? "cloud" : "local",
   };
 }

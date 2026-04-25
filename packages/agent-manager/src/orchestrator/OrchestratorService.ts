@@ -99,6 +99,9 @@ export class OrchestratorService {
   private crdtTaskSyncProxy: CrdtProxy | undefined;
   private crdtGoalStoreProxy: CrdtProxy | undefined;
 
+  /** Step 4: optional callback to route dispatch through ChatAgent instead of direct WorkerPool */
+  private chatAgentDispatch?: (taskId: string, role: string) => Promise<void>;
+
   // State — only 2 states in planner mode (planner manages its own phases)
   private state: OrchestratorState = "idle";
   private sessionId: string;
@@ -162,6 +165,11 @@ export class OrchestratorService {
         if (task) {
           task.lastReportedStatus = data.status;
         }
+        // Gap A: Forward report_status to Channel B
+        this.callbacks.onWorkerTaskUpdate?.(data.status === "blocked"
+          ? { type: "blocked", taskId: data.taskId, role: data.role, reason: data.summary, ts: Date.now() }
+          : { type: "progress", taskId: data.taskId, role: data.role, note: data.summary, pct: data.progress, ts: Date.now() }
+        );
       },
       // R2-#4 FIX: Wire agent-initiated task callbacks so planner is notified
       onTaskCreated: (data) => {
@@ -186,18 +194,29 @@ export class OrchestratorService {
       onBounce: (data) => {
         log.info(`Task bounced: ${data.taskId} by ${data.role} — ${data.reason}`);
 
+        // Channel B: emit blocked event for bounced task
+        this.callbacks.onWorkerTaskUpdate?.({
+          type: "blocked", taskId: data.taskId, role: data.role,
+          reason: `Bounced: ${data.reason}`,
+          suggestedRole: data.suggestedRole,
+          ts: Date.now(),
+        });
+
         // R9-2 FIX: Handle dependency failure for bounced task
         // Bounced tasks are marked "failed" — notify planner with blocked downstream info
         this.handleTaskFailure(data.taskId, `Bounced by ${data.role}: ${data.reason}`);
 
-        this.notifyPlanner(
-          PromptLoader.loadTemplate("orchestrator", "task-bounced", {
-            taskId: data.taskId,
-            role: data.role,
-            reason: data.reason,
-            suggestedSuffix: data.suggestedRole ? `. Suggested role: ${data.suggestedRole}` : "",
-          }),
-        );
+        // Gap D: When ChatAgent handles this role, skip per-bounce planner notification
+        if (!this.chatAgentDispatch) {
+          this.notifyPlanner(
+            PromptLoader.loadTemplate("orchestrator", "task-bounced", {
+              taskId: data.taskId,
+              role: data.role,
+              reason: data.reason,
+              suggestedSuffix: data.suggestedRole ? `. Suggested role: ${data.suggestedRole}` : "",
+            }),
+          );
+        }
       },
       // Step 3+4: Priority mention routing — spawn collab workers immediately
       onMentionedRoles: (data) => this.spawnCollabWorkers(data.roles, data.docName, data.sourceRole, data.postContent),
@@ -430,6 +449,27 @@ export class OrchestratorService {
   getCurrentGoalId(): string | null { return this.currentGoalId; }
   getCallbacks(): OrchestratorCallbacks { return this.callbacks; }
   getTaskStore(): TaskStore { return this.taskStore; }
+
+  /** Step 4: Set dispatch callback to route through ChatAgent instead of direct WorkerPool */
+  setChatAgentDispatch(dispatch: (taskId: string, role: string) => Promise<void>): void {
+    this.chatAgentDispatch = dispatch;
+    log.info("ChatAgent dispatch enabled — tasks will route through ChatAgent");
+  }
+
+  /**
+   * Direct dispatch — bypasses ChatAgent routing.
+   * Used by ChatAgent.onDispatchTask callback to actually run the task.
+   */
+  async directDispatchTask(taskId: string, role: string): Promise<void> {
+    if (this.activeDispatches.has(taskId)) return;
+    this.activeDispatches.add(taskId);
+    try {
+      await this.dispatchTask(taskId, role);
+    } finally {
+      this.activeDispatches.delete(taskId);
+      this.drainDeferredDispatches();
+    }
+  }
   getDagResolver(): DependencyResolver { return this.dagResolver; }
   getUserInteractionManager(): UserInteractionManager | undefined { return this.uim; }
 
@@ -555,6 +595,14 @@ export class OrchestratorService {
     // Guard against double-dispatch (onTaskReady can fire from both create() and completeTask()).
     if (this.activeDispatches.has(taskId)) return;
 
+    // Step 4: Route through ChatAgent if dispatch callback is set
+    if (this.chatAgentDispatch) {
+      this.chatAgentDispatch(taskId, role).catch((err) => {
+        log.error(`ChatAgent dispatch error for ${taskId}:`, err);
+      });
+      return;
+    }
+
     // Concurrency limit: defer if too many active dispatches
     if (this.activeDispatches.size >= MAX_CONCURRENT_DISPATCHES) {
       log.info(`Concurrency limit reached (${this.activeDispatches.size}/${MAX_CONCURRENT_DISPATCHES}), deferring ${taskId}`);
@@ -608,9 +656,19 @@ export class OrchestratorService {
     if (this.activeDispatches.has(taskId)) {
       throw new Error(`Task ${taskId} is already being dispatched`);
     }
-    this.activeDispatches.add(taskId);
 
     const role = task.assigned_role;
+
+    // Route through ChatAgent if dispatch callback is set
+    if (this.chatAgentDispatch) {
+      this.chatAgentDispatch(taskId, role).catch((err) => {
+        log.error(`ChatAgent manual dispatch error for ${taskId}:`, err);
+      });
+      return;
+    }
+
+    this.activeDispatches.add(taskId);
+
     // Manual dispatch is serialized (caller awaits) so UI gets immediate feedback
     this.manualDispatchChain = this.manualDispatchChain
       .then(() => this.dispatchTask(taskId, role))
@@ -663,6 +721,10 @@ export class OrchestratorService {
             `\n- Or tell the user the results if no recovery is possible` +
             `\nDo NOT just describe what happened — take action.`,
           );
+          // If ALL tasks failed (none completed), emit goal failed
+          if (completedTasks.length === 0) {
+            this.callbacks.onGoalStatusChange?.({ teamId: this.teamId, status: "failed" });
+          }
           this.callbacks.onProgress?.({
             teamId: this.teamId, state: "idle",
             message: `${completedTasks.length} completed, ${failedTasks.length} failed`,
@@ -677,6 +739,7 @@ export class OrchestratorService {
             });
           }
           this.notifyPlanner(PromptLoader.loadTemplate("orchestrator", "all-complete"));
+          this.callbacks.onGoalStatusChange?.({ teamId: this.teamId, status: "completed" });
           this.callbacks.onProgress?.({
             teamId: this.teamId, state: "idle",
             message: "All tasks completed successfully",
@@ -807,6 +870,14 @@ export class OrchestratorService {
       .filter(t => t.prerequisites?.has(taskId) && t.status !== "completed" && t.status !== "failed")
       .map(t => `${t.id} (${t.assigned_role})`)
       .join(", ") || null;
+
+    // Gap D: When ChatAgent handles this role, skip per-task planner notification
+    // ChatAgent.ingestTaskUpdate("failed") already fired via Channel B
+    // ChatAgent will call notifyPlannerFromRole with role context
+    if (this.chatAgentDispatch) {
+      log.debug(`Skipping direct planner notification for ${taskId} — ChatAgent handles escalation`);
+      return;
+    }
 
     this.notifyPlanner(
       PromptLoader.loadTemplate("orchestrator", "task-failed", {
@@ -1219,6 +1290,11 @@ export class OrchestratorService {
     }
   }
 
+  /** Public wrapper — used by ChatAgent to send role-level summaries through the same pipe. */
+  notifyPlannerFromRole(message: string): void {
+    this.notifyPlanner(message);
+  }
+
   /** Load active plan from disk for restart recovery. */
   private async loadActivePlan(): Promise<void> {
     if (!this.planStore) return;
@@ -1231,24 +1307,66 @@ export class OrchestratorService {
         this.pendingPlan = stored.plan;
         this.state = "awaiting_approval";
       } else if (stored.metadata.status === "executing") {
+        // Build dependants map from plan structure
         const dep = new Map<string, string[]>();
         for (const t of stored.plan.tasks) {
           for (const d of t.dependencies) {
             const e = dep.get(d) || []; e.push(t.id); dep.set(d, e);
           }
         }
+
+        // Try to restore task statuses from CRDT (survives restart)
+        let crdtTasks: Map<string, any> | null = null;
+        if (this.currentGoalId && this.crdtTaskSyncProxy) {
+          try {
+            this.crdtTaskSyncProxy.resolveForGoal(this.currentGoalId);
+            // Also resolve CRDT goal store if available
+            this.crdtGoalStoreProxy?.resolveForGoal?.(this.currentGoalId);
+            const crdtSync = this.crdtTaskSyncProxy.get?.();
+            if (crdtSync?.loadAllTasks) {
+              const loaded = await crdtSync.loadAllTasks();
+              if (loaded.length > 0) {
+                crdtTasks = new Map(loaded.map((t: any) => [t.id, t]));
+                log.info(`[loadActivePlan] Restored ${loaded.length} tasks from CRDT (${loaded.filter((t: any) => t.status === "completed").length} completed)`);
+              }
+            }
+          } catch (err) {
+            log.warn(`[loadActivePlan] Failed to read CRDT task state, falling back to pending: ${err}`);
+          }
+        }
+
         for (const t of stored.plan.tasks) {
+          const crdtTask = crdtTasks?.get(t.id);
+          // Use CRDT status if available, else default to pending
+          let status = crdtTask?.status ?? "pending";
+          // Reset in_progress tasks to ready (worker was interrupted by restart)
+          if (status === "in_progress") status = "ready";
+
+          const prerequisites = crdtTask?.prerequisites
+            ?? new Map(t.dependencies.map((d: string) => [d, false] as [string, boolean]));
+
           this.taskStore.create({
             id: t.id,
-            description: `${t.title}: ${t.description}`,
+            description: crdtTask?.description ?? `${t.title}: ${t.description}`,
             assigned_role: t.assignedRole.toLowerCase(),
-            status: "pending",
-            prerequisites: new Map(t.dependencies.map((d: string) => [d, false] as [string, boolean])),
+            status,
+            output: crdtTask?.output,
+            prerequisites,
             dependants: dep.get(t.id) || [],
-            context: { title: t.title, planId: stored.plan.planId, goal: stored.plan.goal },
+            context: crdtTask?.context ?? { title: t.title, planId: stored.plan.planId, goal: stored.plan.goal },
           });
         }
         this.state = "executing";
+
+        // Check if all tasks are already complete (plan finished before restart)
+        if (this.taskStore.isAllComplete()) {
+          this.state = "idle";
+          log.info("[loadActivePlan] All tasks already completed — plan finished");
+        }
+      }
+
+      if (stored.metadata.status === "completed") {
+        this.state = "idle";
       }
     } catch (error) {
       console.error("[OrchestratorService] Failed to load active plan:", error);

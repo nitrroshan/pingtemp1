@@ -462,6 +462,16 @@ export class WorkerPool {
   }
 
   // ===========================================================================
+  /**
+   * Get the full ModelMessage[] from a worker agent (for context persistence).
+   * Returns null if worker not found or already disposed.
+   */
+  getAgentMessages(taskId: string): any[] | null {
+    const agent = this.workers.get(taskId);
+    if (!agent) return null;
+    return agent.getMessages();
+  }
+
   // Cleanup
   // ===========================================================================
 

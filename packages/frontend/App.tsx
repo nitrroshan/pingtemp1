@@ -75,11 +75,11 @@ function InnerApp() {
   // ─────────────────────────────────────────────────────────────────────────
 
   const { agents, isLoadingTeams, agentsRef, findAgentById, handleToggleCollapse, loadTeams, createTeam, addLocalSubAgent } = useAgentTree();
-  const { chatHistories, addMessage, updateMessages, processStreamPart, loadAgentChat, clearAllHistories } = useChat();
+  const { chatHistories, addMessage, updateMessages, processStreamPart, loadAgentChat, clearAllHistories, restoreFromServer } = useChat();
   const {
     sessionState, currentPlan, tasks, autoExecuteEnabled, orchestrationLogs,
     handleApprovePlan, handleStartTask, handleCompleteTask, handleCancelTask,
-    handleToggleAutoExecute, addOrchestrationLog, setSessionState, subscribeToTeam,
+    handleToggleAutoExecute, addOrchestrationLog, setSessionState, setCurrentPlan, subscribeToTeam,
   } = useOrchestration();
 
   const [activeAgentId, setActiveAgentId] = useState<string>(agents[0]?.id ?? '');
@@ -288,16 +288,42 @@ function InnerApp() {
   // Load chat history from backend when team is selected
   useEffect(() => {
     if (!selectedTeamId) return;
-    // Load orchestrator/manager chat
-    loadAgentChat(selectedTeamId, 'manager');
-    // Load sub-agent chats
     const team = agents.find(a => a.id === selectedTeamId);
-    if (team?.subAgents) {
-      for (const sub of team.subAgents) {
+    const subAgents = team?.subAgents ?? [];
+
+    // Try session restore first (single API call for all conversations)
+    restoreFromServer(selectedTeamId, subAgents.map(s => ({ id: s.id, role: s.role }))).then((result) => {
+      if (result) {
+        // Populate PlanList from server goals (replaces stale localStorage)
+        if (result.goals?.length) {
+          for (const goal of result.goals) {
+            savePlan(selectedTeamId, {
+              planId: goal.planId || goal.id || goal._id,
+              goal: goal.goal || goal.title || '',
+              createdAt: goal.createdAt ? new Date(goal.createdAt).getTime() : Date.now(),
+              status: goal.status || 'unknown',
+              taskCount: goal.taskCount,
+              completedCount: goal.completedCount,
+            });
+          }
+        }
+
+        // Feed plan/tasks from restore into orchestration state
+        if (result.plan?.length) {
+          setCurrentPlan(result.plan);
+          if (result.orchestratorState) {
+            setSessionState(result.orchestratorState);
+          }
+        }
+      }
+
+      // Fallback: load individual agent chats that weren't in restore response
+      loadAgentChat(selectedTeamId, 'manager');
+      for (const sub of subAgents) {
         loadAgentChat(selectedTeamId, sub.id);
       }
-    }
-  }, [selectedTeamId, agents, loadAgentChat]);
+    });
+  }, [selectedTeamId, agents, loadAgentChat, restoreFromServer, setCurrentPlan, setSessionState]);
 
   useEffect(() => {
     const newLogs = orchestrationLogs.slice(prevLogsLen.current);
@@ -526,6 +552,7 @@ function InnerApp() {
   }
 
   // GoalScreen — shown at `/` or `/teams/{teamId}` when no plan is active anywhere
+  // Only use URL-based signals — currentPlan updates async and causes race conditions
   const urlHasPlan = currentPath.includes('/p/');
   const hasAnyPlan = !!activePlanId || urlHasPlan;
   const showGoalScreen = !hasAnyPlan && (currentPath === '/' || currentPath.startsWith('/teams/'));
@@ -928,8 +955,16 @@ const App: React.FC = () => {
   const isDesktop = !!(window as any).ping?.isDesktop;
   const { data: session, isPending } = useSession();
 
-  // Desktop mode — skip auth, go straight to app
-  if (isDesktop) {
+  // Desktop mode — use auth if available, fall back to local identity
+  // NOTE: Desktop still needs auth for production (browser-auth feature).
+  // For now, desktop uses session if available, else a stable local ID.
+  if (isDesktop && !isPending) {
+    if (session?.user?.id) {
+      agentServiceV2.setUserId(session.user.id);
+    } else {
+      // Local desktop without cloud auth — use machine-stable ID
+      agentServiceV2.setUserId(`desktop-${window.location.hostname}`);
+    }
     return (
       <BrowserRouter>
         <Routes>
@@ -950,6 +985,22 @@ const App: React.FC = () => {
   if (!session) {
     return <LoginPage />;
   }
+
+  // Wire authenticated user identity to AgentServiceV2
+  agentServiceV2.setUserId(session.user.id);
+
+  // Clear stale localStorage if user changed (new login or different account)
+  const lastUserId = localStorage.getItem('ping:lastUserId');
+  if (lastUserId && lastUserId !== session.user.id) {
+    // Different user — clear all cached data
+    localStorage.removeItem('ping:chatHistories');
+    localStorage.removeItem('ping:chatHistories:ts');
+    // Clear plan caches for all teams
+    for (const key of Object.keys(localStorage)) {
+      if (key.startsWith('ping:plans:')) localStorage.removeItem(key);
+    }
+  }
+  localStorage.setItem('ping:lastUserId', session.user.id);
 
   return (
     <BrowserRouter>

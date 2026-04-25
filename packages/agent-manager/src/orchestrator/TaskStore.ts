@@ -90,7 +90,8 @@ export class TaskStore implements ITaskProvider {
     this.tasks.set(task.id, task);
 
     // If task is ready (no unmet prerequisites), queue it
-    if (this.isReady(task)) {
+    // BUT don't override completed/failed status (important for plan recovery from CRDT)
+    if (this.isReady(task) && (task.status === "pending" || task.status === "ready")) {
       task.status = "ready";
 
       // Enrich context with outputs from already-completed/failed upstream tasks

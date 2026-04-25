@@ -47,6 +47,7 @@ export interface OrchestrationActions {
   handleToggleAutoExecute: () => void;
   addOrchestrationLog: (source: string, message: string, type: OrchestrationEvent['type']) => void;
   setSessionState: (state: string | null) => void;
+  setCurrentPlan: (plan: BackendTask[] | null) => void;
   subscribeToTeam: (
     teamId: string,
     agentsRef: MutableRefObject<Agent[]>,
@@ -286,6 +287,7 @@ export function useOrchestration(): OrchestrationState & OrchestrationActions {
     handleToggleAutoExecute,
     addOrchestrationLog,
     setSessionState,
+    setCurrentPlan,
     subscribeToTeam,
   };
 }

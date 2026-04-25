@@ -20,12 +20,14 @@ export class MongoChatService implements IChatService {
     const doc = await ChatMessageModel.create({
       teamId: msg.teamId,
       agentId: msg.agentId,
-      sessionId: msg.sessionId,
+      userId: msg.userId,
       goalId: msg.goalId ?? undefined,
       taskId: msg.taskId ?? undefined,
       role: msg.role,
       content: msg.content,
       streamParts: msg.streamParts ?? undefined,
+      agentLayer: msg.agentLayer ?? undefined,
+      contextMessages: msg.contextMessages ?? undefined,
     });
     return this.toMessage(doc);
   }
@@ -69,13 +71,40 @@ export class MongoChatService implements IChatService {
       id: doc._id.toString(),
       teamId: doc.teamId,
       agentId: doc.agentId,
-      sessionId: doc.sessionId,
+      userId: doc.userId ?? doc.sessionId ?? "default",
       goalId: doc.goalId ?? undefined,
       taskId: doc.taskId ?? undefined,
       role: doc.role,
       content: doc.content,
       streamParts: doc.streamParts ?? undefined,
+      agentLayer: doc.agentLayer ?? undefined,
+      contextMessages: doc.contextMessages ?? undefined,
       timestamp: doc.timestamp?.toISOString?.() ?? new Date().toISOString(),
+    };
+  }
+
+  async getSessionMessages(teamId: string, options?: {
+    sessionLimit?: number;
+    workerLimit?: number;
+  }): Promise<{ session: ChatMessage[]; worker: ChatMessage[] }> {
+    const ChatMessageModel = await this.getModel();
+    const sessionLimit = Math.min(options?.sessionLimit ?? 100, 500);
+    const workerLimit = Math.min(options?.workerLimit ?? 50, 200);
+
+    const [sessionDocs, workerDocs] = await Promise.all([
+      ChatMessageModel.find({ teamId, agentLayer: { $in: ["planner", "chat-agent"] } })
+        .sort({ timestamp: -1 })
+        .limit(sessionLimit)
+        .lean(),
+      ChatMessageModel.find({ teamId, $or: [{ agentLayer: "worker" }, { agentLayer: null }, { agentLayer: { $exists: false } }] })
+        .sort({ timestamp: -1 })
+        .limit(workerLimit)
+        .lean(),
+    ]);
+
+    return {
+      session: sessionDocs.reverse().map(d => this.toMessage(d)),
+      worker: workerDocs.reverse().map(d => this.toMessage(d)),
     };
   }
 }

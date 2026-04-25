@@ -7,7 +7,7 @@ import mongoose, { Schema, Document, Types } from "mongoose";
 export interface IGoal extends Document {
   _id: Types.ObjectId;
   teamId: string;
-  sessionId: string;
+  userId: string;
   goal: string;
   status: "pending" | "planning" | "executing" | "completed" | "failed";
   planId?: string;
@@ -19,7 +19,7 @@ export interface IGoal extends Document {
 const goalSchema = new Schema<IGoal>(
   {
     teamId: { type: String, required: true, index: true },
-    sessionId: { type: String, required: true },
+    userId: { type: String, required: true },
     goal: { type: String, required: true },
     status: {
       type: String,

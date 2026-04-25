@@ -150,8 +150,21 @@ export class AgentServiceV2 {
     this.userId = `user-${Math.random().toString(36).substring(7)}`;
   }
 
+  /**
+   * Set the authenticated user ID from better-auth session.
+   * Called by App.tsx after successful auth. Replaces the random default.
+   */
+  setUserId(userId: string): void {
+    this.userId = userId;
+  }
+
   getBaseUrl(): string {
     return this.baseUrl;
+  }
+
+  /** Fetch with auth credentials — all API calls must include the session cookie */
+  private async authFetch(url: string, init?: RequestInit): Promise<Response> {
+    return fetch(url, { ...init, credentials: "include" });
   }
 
   // ============================================================================
@@ -569,6 +582,31 @@ export class AgentServiceV2 {
   }
 
   // ============================================================================
+  // HTTP Methods - Session Restore
+  // ============================================================================
+
+  /**
+   * Restore session from server — returns per-agent conversations + worker messages + plan/tasks.
+   * Called on page load to replace localStorage as source of truth.
+   */
+  async restoreSession(teamId: string): Promise<{
+    conversations: Record<string, Array<{ id: string; role: string; content: string; streamParts?: string; timestamp: string }>>;
+    workerMessages: Array<{ id: string; role: string; content: string; agentId: string; taskId?: string; streamParts?: string; timestamp: string }>;
+    goals: any[];
+    plan: any;
+    tasks: any[];
+    orchestratorState: string | null;
+  } | null> {
+    try {
+      const response = await this.authFetch(`${this.baseUrl}/api/v2/sessions/${teamId}/restore`);
+      if (!response.ok) return null;
+      return response.json();
+    } catch {
+      return null;
+    }
+  }
+
+  // ============================================================================
   // HTTP Methods - Teams CRUD
   // ============================================================================
 
@@ -584,7 +622,7 @@ export class AgentServiceV2 {
     const body: Record<string, string | undefined> = { name, goal, description };
     if (pluginName) body.pluginName = pluginName;
 
-    const response = await fetch(`${this.baseUrl}/api/v2/teams`, {
+    const response = await this.authFetch(`${this.baseUrl}/api/v2/teams`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
@@ -602,7 +640,7 @@ export class AgentServiceV2 {
    * List available plugins from the registry
    */
   async getPlugins(): Promise<{ plugins: Array<{ name: string; description: string; version: string; tags?: string[] }>; count: number }> {
-    const response = await fetch(`${this.baseUrl}/api/registry/plugins`);
+    const response = await this.authFetch(`${this.baseUrl}/api/registry/plugins`);
     if (!response.ok) return { plugins: [], count: 0 };
     return response.json();
   }
@@ -611,7 +649,7 @@ export class AgentServiceV2 {
    * List all teams
    */
   async getTeams(): Promise<{ teams: TeamResponse[]; count: number }> {
-    const response = await fetch(`${this.baseUrl}/api/v2/teams`);
+    const response = await this.authFetch(`${this.baseUrl}/api/v2/teams`);
 
     if (!response.ok) {
       throw new Error("Failed to fetch teams");
@@ -624,7 +662,7 @@ export class AgentServiceV2 {
    * Get team by ID
    */
   async getTeam(teamId: string): Promise<{ team: TeamResponse }> {
-    const response = await fetch(`${this.baseUrl}/api/v2/teams/${teamId}`);
+    const response = await this.authFetch(`${this.baseUrl}/api/v2/teams/${teamId}`);
 
     if (!response.ok) {
       throw new Error("Failed to fetch team");
@@ -637,7 +675,7 @@ export class AgentServiceV2 {
    * Delete a team
    */
   async deleteTeam(teamId: string): Promise<{ deleted: boolean }> {
-    const response = await fetch(`${this.baseUrl}/api/v2/teams/${teamId}`, {
+    const response = await this.authFetch(`${this.baseUrl}/api/v2/teams/${teamId}`, {
       method: "DELETE",
     });
 
@@ -654,7 +692,7 @@ export class AgentServiceV2 {
   async getAgents(
     teamId: string,
   ): Promise<{ agents: AgentInfo[]; count: number }> {
-    const response = await fetch(
+    const response = await this.authFetch(
       `${this.baseUrl}/api/v2/teams/${teamId}/agents`,
     );
 
@@ -671,7 +709,7 @@ export class AgentServiceV2 {
   async getTeamSkills(
     teamId: string,
   ): Promise<{ skills: Array<{ id: string; name: string; description: string }>; count: number }> {
-    const response = await fetch(
+    const response = await this.authFetch(
       `${this.baseUrl}/api/v2/teams/${teamId}/skills`,
     );
 
@@ -690,7 +728,7 @@ export class AgentServiceV2 {
    * Get session state for a team
    */
   async getSession(teamId: string): Promise<{ session: SessionInfo }> {
-    const response = await fetch(`${this.baseUrl}/api/v2/sessions/${teamId}`);
+    const response = await this.authFetch(`${this.baseUrl}/api/v2/sessions/${teamId}`);
 
     if (!response.ok) {
       throw new Error("Failed to fetch session");
@@ -705,7 +743,7 @@ export class AgentServiceV2 {
   async getTasks(
     teamId: string,
   ): Promise<{ tasks: TaskInfo[]; count: number }> {
-    const response = await fetch(
+    const response = await this.authFetch(
       `${this.baseUrl}/api/v2/sessions/${teamId}/tasks`,
     );
 
@@ -727,9 +765,8 @@ export class AgentServiceV2 {
     if (options?.limit) params.set("limit", String(options.limit));
     if (options?.before) params.set("before", options.before);
 
-    const response = await fetch(
+    const response = await this.authFetch(
       `${this.baseUrl}/api/v2/teams/${teamId}/messages?${params}`,
-      { credentials: "include" },
     );
 
     if (!response.ok) {

@@ -362,7 +362,7 @@ export function createReassignTaskTool(ctx: PlanMutationContext) {
       // R9-3 FIX: Reset failed status so task can be re-dispatched
       let statusReset = false;
       if (task.status === "failed") {
-        task.status = "ready";
+        ctx.tasks.updateTaskStatus(task.id, "ready");
         statusReset = true;
       }
 
@@ -393,7 +393,7 @@ export function createReplanTool(ctx: PlanMutationContext) {
       const discarded: string[] = [];
       for (const task of allTasks) {
         if (task.status === "pending" || task.status === "ready") {
-          task.status = "discarded";
+          ctx.tasks.updateTaskStatus(task.id, "discarded");
           discarded.push(task.id);
         }
       }

@@ -4,17 +4,28 @@
 
 import express from "express";
 import cors from "cors";
+import helmet from "helmet";
+import rateLimit from "express-rate-limit";
 import swaggerUi from "swagger-ui-express";
 import { rootLogger } from "../logging/index.js";
 import { AgentManager } from "../agentManager/AgentManagerV2.js";
 import { createAgentManagerHandlerV2 } from "./agentManagerHandlerV2.js";
 import { swaggerSpec } from "./swagger.js";
-import { getAuthHandler } from "../auth/index.js";
+import { getAuth, getAuthHandler } from "../auth/index.js";
+import { fromNodeHeaders } from "better-auth/node";
 import { FRONTEND_FLAG_KEYS } from "../config/featureFlags.js";
 import { getConfig } from "../config/index.js";
 import type { ServiceRegistry } from "../services/ServiceRegistry.js";
 
 const logger = rootLogger.child({ module: "HttpServer" });
+
+/** Sanitize error messages — hide internals in production */
+function safeError(err: any): string {
+  if (process.env.NODE_ENV === "production") {
+    return "Internal server error";
+  }
+  return err?.message || String(err);
+}
 
 export interface HttpServerOptions {
   agentManager: AgentManager;
@@ -35,11 +46,63 @@ export class HttpServer {
    * Setup Express middleware
    */
   private setupMiddleware() {
-    this.app.use(cors({ origin: true, credentials: true }));
+    // Security headers
+    this.app.use(helmet({
+      contentSecurityPolicy: false, // Disabled — frontend is served separately by Vite
+    }));
+
+    // CORS — allowlist specific origins
+    const allowedOrigins = [
+      process.env.FRONTEND_URL || "http://localhost:3000",
+      process.env.BETTER_AUTH_URL || "http://localhost:3002",
+      "http://localhost:3001",
+    ];
+    this.app.use(cors({
+      origin: (origin, callback) => {
+        // Allow requests with no origin (server-to-server, curl)
+        if (!origin || allowedOrigins.includes(origin)) {
+          callback(null, true);
+        } else {
+          callback(new Error(`CORS: origin ${origin} not allowed`));
+        }
+      },
+      credentials: true,
+    }));
+
+    // Rate limiting — per IP
+    this.app.use("/api/v2", rateLimit({
+      windowMs: 60 * 1000,
+      max: 100,
+      standardHeaders: true,
+      legacyHeaders: false,
+      message: { error: "Too many requests, please try again later" },
+    }));
+
     // Skip express.json() for auth routes — better-auth's toNodeHandler() reads the raw body
     this.app.use((req, res, next) => {
       if (req.path.startsWith("/api/auth")) return next();
       express.json()(req, res, next);
+    });
+
+    // Auth middleware for /api/v2/* routes — validates better-auth session cookie
+    this.app.use("/api/v2", async (req: any, res, next) => {
+      // Skip auth for health check
+      if (req.path === "/health") return next();
+      try {
+        const auth = await getAuth();
+        const session = await auth.api.getSession({
+          headers: fromNodeHeaders(req.headers),
+        });
+        if (!session?.user?.id) {
+          return res.status(401).json({ error: "Authentication required" });
+        }
+        req.userId = session.user.id;
+        req.userEmail = session.user.email;
+        next();
+      } catch (err) {
+        logger.warn("[HttpServer] Auth middleware error:", err);
+        return res.status(401).json({ error: "Authentication failed" });
+      }
     });
   }
 
@@ -129,12 +192,14 @@ export class HttpServer {
     this.mountRegistryRoutes();
     logger.info("[HttpServer] Registry API mounted at /api/registry");
 
-    // Mount Swagger UI
-    this.app.use("/api-docs", swaggerUi.serve, swaggerUi.setup(swaggerSpec));
-    this.app.get("/api-docs.json", (req, res) => {
-      res.json(swaggerSpec);
-    });
-    logger.info("[HttpServer] Swagger UI available at /api-docs");
+    // Mount Swagger UI — dev only (don't expose API surface in production)
+    if (process.env.NODE_ENV !== "production") {
+      this.app.use("/api-docs", swaggerUi.serve, swaggerUi.setup(swaggerSpec));
+      this.app.get("/api-docs.json", (req, res) => {
+        res.json(swaggerSpec);
+      });
+      logger.info("[HttpServer] Swagger UI available at /api-docs");
+    }
 
     // Collab docs listing endpoint — returns CRDT doc names for a team
     this.app.get("/api/collab/:teamId/docs", async (req, res) => {
@@ -165,7 +230,7 @@ export class HttpServer {
           .map((d: string) => d.slice(teamPrefix.length));
         res.json({ docs });
       } catch (err: any) {
-        res.status(500).json({ error: err.message });
+        res.status(500).json({ error: safeError(err) });
       }
     });
     logger.info(
@@ -202,7 +267,7 @@ export class HttpServer {
 
         res.json({ success: true });
       } catch (err: any) {
-        res.status(500).json({ error: err.message });
+        res.status(500).json({ error: safeError(err) });
       }
     });
     logger.info("[HttpServer] Collab doc delete API mounted at /api/collab/:teamId/docs/:docName");
@@ -221,7 +286,7 @@ export class HttpServer {
           res.json({ messages: [] });
         }
       } catch (err: any) {
-        res.status(500).json({ error: err.message });
+        res.status(500).json({ error: safeError(err) });
       }
     });
 
@@ -238,7 +303,7 @@ export class HttpServer {
           res.json({ messages: [] });
         }
       } catch (err: any) {
-        res.status(500).json({ error: err.message });
+        res.status(500).json({ error: safeError(err) });
       }
     });
     logger.info("[HttpServer] Messages API mounted at /api/v2/teams/:teamId/messages");
@@ -256,7 +321,7 @@ export class HttpServer {
           res.json({ goals: [] });
         }
       } catch (err: any) {
-        res.status(500).json({ error: err.message });
+        res.status(500).json({ error: safeError(err) });
       }
     });
     logger.info("[HttpServer] Goals API mounted at /api/v2/teams/:teamId/goals");
@@ -280,7 +345,7 @@ export class HttpServer {
         }
         res.json({ ...snapshot, enabled: true });
       } catch (err: any) {
-        res.status(500).json({ error: err.message });
+        res.status(500).json({ error: safeError(err) });
       }
     });
     logger.info("[HttpServer] Chat Agent tasks API mounted at /api/v2/teams/:teamId/roles/:role/tasks");
@@ -290,43 +355,105 @@ export class HttpServer {
       try {
         const { teamId } = req.params;
 
-        let messages: any[] = [];
+        let sessionMessages: any[] = [];
+        let workerMessages: any[] = [];
         let goals: any[] = [];
 
         if (options.services) {
-          [messages, goals] = await Promise.all([
-            options.services.chat.getMessages(teamId, { limit: 50 }),
+          const [sessionResult, goalsResult] = await Promise.all([
+            options.services.chat.getSessionMessages(teamId, {
+              sessionLimit: 100,
+              workerLimit: 50,
+            }),
             options.services.goals.getGoals(teamId, { limit: 10 }),
           ]);
+          sessionMessages = sessionResult.session;
+          workerMessages = sessionResult.worker;
+          goals = goalsResult;
+
+          // Re-classify: move planner/chat-agent messages from worker bucket to session bucket
+          // (handles pre-v1.0 data without agentLayer, and edge cases)
+          const reclassified: any[] = [];
+          for (const msg of workerMessages) {
+            if (msg.agentId === "manager" || msg.agentId === "orchestrator" || msg.agentId?.startsWith("chat-")) {
+              sessionMessages.push(msg);
+            } else {
+              reclassified.push(msg);
+            }
+          }
+          workerMessages = reclassified;
         }
 
-        // Try to get current plan/tasks from AgentManager if cached
+        // Filter by active goal — only show messages from the current plan
+        if (activeGoalId) {
+          sessionMessages = sessionMessages.filter(m => !m.goalId || m.goalId === activeGoalId);
+          workerMessages = workerMessages.filter(m => !m.goalId || m.goalId === activeGoalId);
+        }
+
+        // Group session messages by agentId for per-agent conversations
+        const conversations: Record<string, any[]> = {};
+        for (const msg of sessionMessages) {
+          const key = msg.agentId;
+          if (!conversations[key]) conversations[key] = [];
+          conversations[key].push(msg);
+        }
+
+        // Get current plan/tasks from AgentManager (lazy-loads if needed, triggers PlanStore recovery)
         let plan = null;
         let tasks: any[] = [];
+        let orchestratorState: string | null = null;
+        let activeGoalId: string | null = null;
         try {
           const { agentManagerRegistry } =
             await import("../agentManager/AgentManagerRegistry.js");
-          if (agentManagerRegistry.has(teamId)) {
-            const manager = await agentManagerRegistry.getForTeam(teamId);
-            const state = manager.getState?.();
-            if (state) {
-              plan = state.plan || null;
-              tasks = state.tasks || [];
+          // Use getForTeam (not has) — triggers lazy loading + loadActivePlan() from disk
+          const manager = await agentManagerRegistry.getForTeam(teamId);
+
+            // Get orchestrator state and active goal
+            orchestratorState = manager.getOrchestratorState();
+            activeGoalId = manager.getCurrentGoalId();
+
+            // Get pending plan if awaiting approval
+            const pendingPlan = manager.getOrchestratorPendingPlan();
+            if (pendingPlan) {
+              plan = pendingPlan.tasks || pendingPlan;
             }
-          }
+
+            // Get current tasks from TaskStore
+            const taskStore = manager.getTaskStore();
+            if (taskStore) {
+              const allTasks = taskStore.getAllTasks();
+              if (allTasks.length > 0) {
+                tasks = allTasks.map((t: any) => ({
+                  id: t.id,
+                  title: t.title || t.description?.slice(0, 80) || t.id,
+                  description: t.description,
+                  status: t.status,
+                  assignedRole: t.assigned_role,
+                  priority: t.priority,
+                  dependencies: t.dependants || [],
+                }));
+                // If tasks exist but no pending plan, use tasks as the plan
+                if (!plan) {
+                  plan = tasks;
+                }
+              }
+            }
         } catch {
           // Manager not initialized — return empty plan/tasks
         }
 
         res.json({
           teamId,
-          messages,
+          conversations,
+          workerMessages,
           goals,
           plan,
           tasks,
+          orchestratorState,
         });
       } catch (err: any) {
-        res.status(500).json({ error: err.message });
+        res.status(500).json({ error: safeError(err) });
       }
     });
     logger.info("[HttpServer] Session restore API mounted at /api/v2/sessions/:teamId/restore");
@@ -339,11 +466,40 @@ export class HttpServer {
         let remoteUrl = req.body.remoteUrl;
         let remoteToken = req.body.remoteToken;
 
+        // SSRF protection — reject private/internal URLs
+        if (remoteUrl) {
+          try {
+            const parsed = new URL(remoteUrl);
+            const hostname = parsed.hostname.toLowerCase();
+            const blockedPatterns = [
+              /^localhost$/i,
+              /^127\./,
+              /^10\./,
+              /^172\.(1[6-9]|2\d|3[01])\./,
+              /^192\.168\./,
+              /^169\.254\./,
+              /^0\./,
+              /^\[::1\]$/,
+              /^metadata\.google/i,
+            ];
+            if (blockedPatterns.some(p => p.test(hostname))) {
+              res.status(400).json({ error: "Internal/private URLs are not allowed" });
+              return;
+            }
+            if (parsed.protocol !== "https:" && parsed.protocol !== "ssh:") {
+              res.status(400).json({ error: "Only HTTPS and SSH git URLs are allowed" });
+              return;
+            }
+          } catch {
+            res.status(400).json({ error: "Invalid remote URL" });
+            return;
+          }
+        }
+
         // Try to get team info via services (validates team exists)
         if (options.services) {
           const team = await options.services.teams.getTeam(teamId);
           if (!team) { res.status(404).json({ error: "Team not found" }); return; }
-          // Git remote config comes from request body or environment
         }
 
         if (!remoteUrl) { res.status(400).json({ error: "No git remote URL configured" }); return; }
@@ -369,7 +525,7 @@ export class HttpServer {
         await gitManager.push("origin");
         res.json({ success: true, message: "Pushed to remote" });
       } catch (err: any) {
-        res.status(500).json({ error: err.message });
+        res.status(500).json({ error: safeError(err) });
       }
     });
     logger.info("[HttpServer] Workspace push API mounted at /api/v2/workspaces/:teamId/push");

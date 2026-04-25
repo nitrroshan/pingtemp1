@@ -42,6 +42,8 @@ export interface OrchestratorCallbacks {
    * OrchestratorService does NOT reference PlannerAgent directly — they are peers.
    */
   onPlannerInput?: (message: string) => Promise<void>;
+  /** Goal status changed — all tasks completed or all failed */
+  onGoalStatusChange?: (data: { teamId: string; status: "completed" | "failed" }) => void;
 }
 
 /**

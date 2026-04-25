@@ -32,6 +32,7 @@
 import { Server as SocketIOServer, Socket } from "socket.io";
 import { rootLogger } from "../logging/index.js";
 import { randomUUID } from "crypto";
+import { z } from "zod";
 import { agentManagerRegistry } from "../agentManager/AgentManagerRegistry.js";
 import {
   socketConnectionManager,
@@ -44,6 +45,25 @@ import type { AgentManager } from "../agentManager/AgentManagerV2.js";
 import type { StreamPayload } from "./types/streamTypes.js";
 
 const logger = rootLogger.child({ module: "SocketServerV2" });
+
+// Input validation schemas
+const MessagePayloadSchema = z.object({
+  teamId: z.string().min(1).max(200),
+  agentId: z.string().min(1).max(200),
+  taskId: z.string().max(200).optional(),
+  sessionId: z.string().max(200).optional(),
+  content: z.string().min(1).max(100000), // 100KB max message
+});
+
+const ActionPayloadSchema = z.object({
+  teamId: z.string().min(1).max(200),
+  type: z.enum(["approve-plan", "start-task", "complete-task", "cancel-task", "modify-task", "auto-execute", "get-state"]),
+  sessionId: z.string().max(200).optional(),
+  taskId: z.string().max(200).optional(),
+  output: z.any().optional(),
+  changes: z.record(z.any()).optional(),
+  enabled: z.boolean().optional(),
+});
 
 // ============================================================================
 // Types
@@ -191,23 +211,93 @@ interface ErrorResponse {
 }
 
 // ============================================================================
+// Socket Rate Limiter — Token Bucket
+// ============================================================================
+
+/**
+ * Token bucket rate limiter — per userId.
+ *
+ * Each user gets a bucket with `capacity` tokens. Each request consumes 1 token.
+ * Tokens refill at `refillRate` tokens per second. Allows controlled bursts
+ * (up to capacity) then enforces a steady rate.
+ *
+ * Example: capacity=5, refillRate=1 → user can send 5 messages instantly,
+ * then 1 per second. After 5 idle seconds, bucket is full again.
+ */
+class TokenBucketLimiter {
+  private buckets = new Map<string, { tokens: number; lastRefill: number }>();
+
+  constructor(
+    private capacity: number = 5,
+    private refillRate: number = 1, // tokens per second
+  ) {}
+
+  /** Returns true if the request is allowed (consumes 1 token), false if throttled */
+  allow(userId: string): boolean {
+    const now = Date.now();
+    let bucket = this.buckets.get(userId);
+
+    if (!bucket) {
+      // New user — full bucket minus this request
+      this.buckets.set(userId, { tokens: this.capacity - 1, lastRefill: now });
+      return true;
+    }
+
+    // Refill tokens based on elapsed time
+    const elapsed = (now - bucket.lastRefill) / 1000; // seconds
+    bucket.tokens = Math.min(this.capacity, bucket.tokens + elapsed * this.refillRate);
+    bucket.lastRefill = now;
+
+    if (bucket.tokens < 1) {
+      return false; // No tokens — throttled
+    }
+
+    bucket.tokens -= 1;
+    return true;
+  }
+
+  /** Cleanup idle buckets (call periodically) */
+  cleanup(): void {
+    const now = Date.now();
+    const idleThreshold = this.capacity / this.refillRate * 1000 * 2; // 2x time to full refill
+    for (const [userId, bucket] of this.buckets) {
+      if (now - bucket.lastRefill > idleThreshold) {
+        this.buckets.delete(userId);
+      }
+    }
+  }
+}
+
+// ============================================================================
 // SocketServerV2
 // ============================================================================
 
 export class SocketServerV2 {
   private io: SocketIOServer;
   private services: ServiceRegistry | null;
+  private rateLimiter = new TokenBucketLimiter(5, 1); // 5 burst, 1 token/sec refill
 
   /** Track teams that have event listeners attached */
   private attachedTeams = new Set<string>();
 
   constructor(httpServer: any, services?: ServiceRegistry) {
     this.services = services ?? null;
+
+    // Cleanup rate limiter windows periodically
+    setInterval(() => this.rateLimiter.cleanup(), 30_000);
+
+    // CORS — allowlist specific origins
+    const allowedOrigins = [
+      process.env.FRONTEND_URL || "http://localhost:3000",
+      process.env.BETTER_AUTH_URL || "http://localhost:3002",
+      "http://localhost:3001",
+    ];
+
     // Initialize Socket.IO
     this.io = new SocketIOServer(httpServer, {
       path: "/socket.io/v2", // V2 path to coexist with V1
       cors: {
-        origin: ["http://localhost:3000", "http://localhost:3002"],
+        origin: allowedOrigins,
         methods: ["GET", "POST"],
         credentials: true,
       },
@@ -220,6 +310,31 @@ export class SocketServerV2 {
 
   private setupSocketIO() {
     logger.info("[SocketServerV2] Initialized on /socket.io/v2");
+
+    // Auth middleware — validate better-auth session cookie on every connection
+    this.io.use(async (socket, next) => {
+      try {
+        const auth = await getAuth();
+        const headers = socket.handshake.headers;
+        const session = await auth.api.getSession({
+          headers: new Headers({
+            cookie: headers.cookie || "",
+            authorization: headers.authorization || "",
+          }),
+        });
+        if (!session?.user?.id) {
+          return next(new Error("Authentication required"));
+        }
+        socket.data.userId = session.user.id;
+        socket.data.userEmail = session.user.email;
+        socket.data.userName = session.user.name;
+        next();
+      } catch (err) {
+        logger.warn("[SocketServerV2] Socket auth failed:", err);
+        next(new Error("Authentication failed"));
+      }
+    });
+
     this.io.on("connection", this.handleConnection.bind(this));
   }
 
@@ -238,27 +353,8 @@ export class SocketServerV2 {
   }
 
   private async handleRegister(socket: Socket, data: { userId: string; token?: string }) {
-    let userId = data.userId;
-
-    // If a session token is provided, validate it via better-auth
-    if (data.token) {
-      try {
-        const auth = getAuth();
-        const session = await auth.api.getSession({
-          headers: new Headers({ authorization: `Bearer ${data.token}` }),
-        });
-        if (session?.user) {
-          userId = session.user.id;
-        } else {
-          this.emitError(socket, { error: "Invalid session token" });
-          socket.disconnect();
-          return;
-        }
-      } catch {
-        // Auth not initialized yet (e.g. first run before DB tables) — fall through
-        logger.warn("[SocketServerV2] Auth validation failed, using provided userId");
-      }
-    }
+    // Use server-verified userId from auth middleware (not client-provided)
+    const userId = socket.data.userId || data.userId;
 
     if (!userId) {
       this.emitError(socket, { error: "userId is required" });
@@ -372,14 +468,22 @@ export class SocketServerV2 {
         // On stream finish: persist complete message
         if (part?.type === "finish" && this.services) {
           if (acc.text.trim() || acc.parts.length > 0) {
+            // Get full ModelMessage[] context for persistence (tool calls/results included)
+            const contextMessages = taskId
+              ? manager.getWorkerContext(taskId)
+              : null; // Planner context saved separately
+
             this.services.chat.addMessage({
               teamId,
-              sessionId: "default",
+              userId: "system",
               role: "assistant",
               agentId: acc.agentId,
               taskId: taskId || undefined,
+              goalId: manager.getCurrentGoalId() || undefined,
               content: acc.text,
               streamParts: acc.parts.length > 0 ? JSON.stringify(acc.parts) : undefined,
+              agentLayer: taskId ? "worker" : "planner",
+              contextMessages: contextMessages || undefined,
               timestamp: new Date().toISOString(),
             }).catch((err) => logger.warn("[SocketServerV2] Failed to save assistant message:", err));
           }
@@ -494,6 +598,21 @@ export class SocketServerV2 {
         this.io.to(room).emit("state", stateResponse);
         logger.debug(`[SocketServerV2] Plan ${action}, broadcast to ${room}`);
 
+        // Save goal to database when plan is approved (for cross-browser restore)
+        if (action === "approved" && this.services) {
+          this.services.chat.getMessages(teamId, { limit: 5 }).then(msgs => {
+            const userMsg = msgs.find(m => m.role === "user");
+            const goalText = userMsg?.content || "Plan";
+            const ownerId = userMsg?.userId || "system";
+            this.services!.goals.addGoal({
+              teamId,
+              userId: ownerId,
+              goal: goalText,
+              status: "executing",
+            }).catch(err => logger.warn("[SocketServerV2] Failed to save goal:", err));
+          }).catch(() => {});
+        }
+
         const payload: StreamPayload = {
           sessionId: "default",
           agentId: "orchestrator",
@@ -516,6 +635,18 @@ export class SocketServerV2 {
           teamId,
         });
       },
+
+      // Goal lifecycle: update goal status in database when plan completes/fails
+      onGoalStatusChange: ({ teamId: tid, status }) => {
+        if (!this.services) return;
+        this.services.goals.getGoals(tid, { limit: 1 }).then(goals => {
+          const activeGoal = goals.find(g => g.status === "executing");
+          if (activeGoal) {
+            this.services!.goals.updateGoal(activeGoal.id, { status });
+            logger.info(`[SocketServerV2] Goal ${activeGoal.id} → ${status}`);
+          }
+        }).catch(err => logger.warn("[SocketServerV2] Failed to update goal status:", err));
+      },
     });
 
     // Wire discussion event emission from CollabServer → Socket.IO
@@ -524,9 +655,21 @@ export class SocketServerV2 {
     logger.info(`[SocketServerV2] Callbacks registered for team ${teamId}`);
   }
 
-  /** Join socket to team's broadcast room */
-  private joinTeamRoom(socket: Socket, teamId: string): void {
+  /** Join socket to team's broadcast room — checks team access */
+  private async joinTeamRoom(socket: Socket, teamId: string): Promise<boolean> {
+    // Check team access if registry is available
+    if (this.services) {
+      const userId = socket.data.userId;
+      if (userId) {
+        const canAccess = await this.services.teamRegistry.canAccess(userId, teamId);
+        if (!canAccess) {
+          this.emitError(socket, { error: "Not authorized to access this team" });
+          return false;
+        }
+      }
+    }
     socket.join(`team:${teamId}`);
+    return true;
   }
 
   /**
@@ -701,7 +844,19 @@ export class SocketServerV2 {
     connection: SocketConnection,
     data: MessagePayload,
   ) {
-    const { teamId, agentId, taskId, sessionId, content } = data;
+    // Validate input
+    const parsed = MessagePayloadSchema.safeParse(data);
+    if (!parsed.success) {
+      this.emitError(socket, { error: `Invalid message: ${parsed.error.issues[0]?.message || "validation failed"}` });
+      return;
+    }
+    const { teamId, agentId, taskId, sessionId, content } = parsed.data;
+
+    // Rate limit — prevent LLM API cost abuse
+    if (!this.rateLimiter.allow(connection.userId)) {
+      this.emitError(socket, { error: "Rate limit exceeded. Please wait before sending more messages." });
+      return;
+    }
 
     logger.info(`[SocketServerV2] handleMessage called:`, {
       teamId,
@@ -711,23 +866,22 @@ export class SocketServerV2 {
       contentPreview: content?.substring(0, 50),
     });
 
-    if (!teamId || !agentId || !content) {
-      this.emitError(socket, {
-        error: "teamId, agentId, and content are required",
-        sessionId,
-      });
-      return;
-    }
-
     // Persist user message via ServiceRegistry
     if (this.services) {
+      // Determine agent layer from the agentId routing
+      const layer = agentId === "manager" || agentId === "orchestrator" ? "planner" as const
+        : agentId.startsWith("chat-") ? "chat-agent" as const
+        : "worker" as const;
+
       this.services.chat.addMessage({
         teamId,
-        sessionId: sessionId || "default",
+        userId: connection.userId,
         role: "user",
         agentId,
         taskId: taskId || undefined,
+        goalId: undefined, // Will be set by manager after team loads
         content,
+        agentLayer: layer,
         timestamp: new Date().toISOString(),
       }).catch((err) => logger.warn("[SocketServerV2] Failed to save user message:", err));
     }
@@ -735,8 +889,9 @@ export class SocketServerV2 {
     try {
       const manager = await agentManagerRegistry.getForTeam(teamId);
 
-      // Join team room and ensure event broadcasting is set up
-      this.joinTeamRoom(socket, teamId);
+      // Join team room (checks access) and ensure event broadcasting is set up
+      const joined = await this.joinTeamRoom(socket, teamId);
+      if (!joined) return;
       this.ensureTeamCallbacks(teamId, manager);
 
       // "manager" is the planning agent (maps to orchestrator internally)
@@ -808,6 +963,7 @@ export class SocketServerV2 {
   /**
    * Handle a user message to a persistent Chat Agent (L2).
    * Streams the response using the same stream channel as workers.
+   * Accumulates response parts for proper persistence (text + tool calls + reasoning).
    */
   private async handleChatAgentMessage(
     socket: Socket,
@@ -823,6 +979,9 @@ export class SocketServerV2 {
       const agentId = `chat-${role}`;
       const stream = manager.chatAgentMessage(role, content);
 
+      // Accumulate response for persistence (same pattern as worker streams)
+      const acc = { text: "", parts: [] as Array<{ type: string; [key: string]: any }> };
+
       // Stream events to the same 'stream' channel — frontend handles them identically
       for await (const event of stream) {
         if (event.type === "stream_part") {
@@ -833,16 +992,53 @@ export class SocketServerV2 {
             part: event.part,
           });
 
-          // Persist on finish
+          // Accumulate by part type (mirror of worker accumulator in ensureTeamCallbacks)
+          switch (event.part?.type) {
+            case "text-delta":
+              if (event.part.delta) acc.text += event.part.delta;
+              break;
+            case "tool-call":
+              acc.parts.push({ type: "tool-call", toolCallId: event.part.toolCallId, toolName: event.part.toolName, args: event.part.args });
+              break;
+            case "tool-result":
+              acc.parts.push({ type: "tool-result", toolCallId: event.part.toolCallId, result: event.part.result });
+              break;
+            case "tool-input-available":
+              acc.parts.push({ type: "tool-input", toolCallId: event.part.toolCallId, toolName: event.part.toolName, input: event.part.input });
+              break;
+            case "tool-output-available":
+              acc.parts.push({ type: "tool-output", toolCallId: event.part.toolCallId, output: event.part.output });
+              break;
+            case "reasoning-delta": {
+              const lastReasoning = acc.parts.findLast((p: any) => p.type === "reasoning");
+              if (lastReasoning) {
+                lastReasoning.text = (lastReasoning.text || "") + (event.part.delta || "");
+              } else {
+                acc.parts.push({ type: "reasoning", id: event.part.id, text: event.part.delta || "" });
+              }
+              break;
+            }
+          }
+
+          // Persist on finish — save actual accumulated content + full context
           if (event.part?.type === "finish" && this.services) {
-            this.services.chat.addMessage({
-              teamId,
-              sessionId: sessionId || "default",
-              role: "assistant",
-              agentId,
-              content: `[Chat Agent: ${role}] Response completed`,
-              timestamp: new Date().toISOString(),
-            }).catch(err => logger.warn("[SocketServerV2] Failed to save chat agent message:", err));
+            if (acc.text.trim() || acc.parts.length > 0) {
+              // Get full ModelMessage[] context (with tool calls/results)
+              const contextMessages = manager.getChatAgentContext(role);
+
+              this.services.chat.addMessage({
+                teamId,
+                userId: "system",
+                role: "assistant",
+                agentId,
+                goalId: manager.getCurrentGoalId() || undefined,
+                content: acc.text,
+                streamParts: acc.parts.length > 0 ? JSON.stringify(acc.parts) : undefined,
+                agentLayer: "chat-agent",
+                contextMessages: contextMessages || undefined,
+                timestamp: new Date().toISOString(),
+              }).catch(err => logger.warn("[SocketServerV2] Failed to save chat agent message:", err));
+            }
           }
         }
       }
@@ -895,10 +1091,17 @@ export class SocketServerV2 {
     connection: SocketConnection,
     data: ActionPayload,
   ) {
-    const { teamId, type, sessionId, taskId, output, changes } = data;
+    // Validate input
+    const parsed = ActionPayloadSchema.safeParse(data);
+    if (!parsed.success) {
+      this.emitError(socket, { error: `Invalid action: ${parsed.error.issues[0]?.message || "validation failed"}` });
+      return;
+    }
+    const { teamId, type, sessionId, taskId, output, changes } = parsed.data;
 
-    if (!teamId || !type) {
-      this.emitError(socket, { error: "teamId and type are required" });
+    // Rate limit actions that trigger LLM calls
+    if (type !== "get-state" && !this.rateLimiter.allow(connection.userId)) {
+      this.emitError(socket, { error: "Rate limit exceeded. Please wait." });
       return;
     }
 
@@ -1091,8 +1294,9 @@ export class SocketServerV2 {
     teamId: string,
     sessionId: string | undefined,
   ) {
-    // Join team room and ensure event broadcasting
-    this.joinTeamRoom(socket, teamId);
+    // Join team room (checks access) and ensure event broadcasting
+    const joined = await this.joinTeamRoom(socket, teamId);
+    if (!joined) return;
     this.ensureTeamCallbacks(teamId, manager);
 
     const pendingPlan = manager.getOrchestratorPendingPlan();

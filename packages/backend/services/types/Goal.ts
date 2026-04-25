@@ -1,7 +1,7 @@
 export interface Goal {
   id: string;
   teamId: string;
-  sessionId: string;
+  userId: string;
   goal: string;
   status: "pending" | "planning" | "executing" | "completed" | "failed";
   planId?: string;

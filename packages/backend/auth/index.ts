@@ -25,6 +25,10 @@ function resolveSecret(): string {
   if (process.env.BETTER_AUTH_SECRET) {
     return process.env.BETTER_AUTH_SECRET;
   }
+  // In production, require an explicit secret — never use a deterministic fallback
+  if (process.env.NODE_ENV === "production") {
+    throw new Error("[Auth] BETTER_AUTH_SECRET is required in production. Set it in your environment.");
+  }
   const devSecret = crypto.createHash("sha256").update(`ping-dev-${baseURL}`).digest("hex");
   console.warn("[Auth] BETTER_AUTH_SECRET not set - using dev fallback. Set it in production.");
   return devSecret;

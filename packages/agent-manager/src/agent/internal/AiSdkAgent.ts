@@ -52,6 +52,51 @@ export class AiSdkAgent extends BaseAgent {
   /** Max tool-use steps. 0 = unlimited (uses isLoopFinished). Default: 0 for autonomous mode. */
   private maxSteps = 0;
 
+  /**
+   * Load prior conversation messages for context restoration.
+   * Called after initialize() to restore session agent conversations on restart.
+   *
+   * Accepts two formats:
+   * - Full ModelMessage[] (with tool calls/results) — preferred, from contextMessages
+   * - Simplified { role, content: string }[] — fallback from v1.0 persistence
+   *
+   * Auto-detects format: if any message has array content → full format.
+   */
+  loadMessages(messages: Array<any>): void {
+    if (!messages?.length) return;
+
+    // Detect format: full ModelMessage[] has content as array (tool calls, etc.)
+    const isFullFormat = messages.some(m =>
+      Array.isArray(m.content) || m.role === "tool"
+    );
+
+    if (isFullFormat) {
+      // Full ModelMessage[] — use directly (already JSON-safe round-tripped)
+      this.messages = messages as ModelMessage[];
+      logger.info(`AiSdkAgent ${this.id} loaded ${messages.length} full-fidelity messages (with tool calls/results)`);
+    } else {
+      // Simplified format — map to ModelMessage
+      this.messages = messages.map(m => ({
+        role: m.role,
+        content: m.content,
+      })) as ModelMessage[];
+      logger.info(`AiSdkAgent ${this.id} loaded ${messages.length} simplified messages for context restoration`);
+    }
+  }
+
+  /**
+   * Get current conversation messages (full AI SDK ModelMessage[] format).
+   * Returns a shallow copy. Used for persistence — JSON.stringify safe.
+   */
+  getMessages(): ModelMessage[] {
+    return [...this.messages];
+  }
+
+  /** Get current message count (for diagnostics) */
+  getMessageCount(): number {
+    return this.messages.length;
+  }
+
   /** Extended thinking/reasoning config (Anthropic thinking + OpenAI reasoningEffort) */
   private thinking?: { enabled: boolean; budgetTokens?: number; reasoningEffort?: "low" | "medium" | "high" };
 

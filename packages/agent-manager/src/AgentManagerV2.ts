@@ -45,6 +45,8 @@ export interface ManagerStreamCallbacks {
   onPlanProposed?: (data: PlanProposedEvent) => void;
   /** Channel B — coarse-grained worker task updates for ChatAgent + Frontend sidebar */
   onWorkerTaskUpdate?: (update: import("./types/TaskUpdate.js").TaskUpdate) => void;
+  /** Goal status changed — plan completed or all tasks failed */
+  onGoalStatusChange?: (data: { teamId: string; status: "completed" | "failed" }) => void;
 }
 
 /**
@@ -107,6 +109,8 @@ export class AgentManager {
   private chatAgents = new Map<string, ChatAgent>();
   /** Feature flag: whether chat agents are enabled */
   private chatAgentsEnabled = false;
+  /** Optional callback to load prior conversation from storage (injected by AgentManagerRegistry) */
+  private loadConversationFn: ((teamId: string, agentId: string) => Promise<Array<{ role: "user" | "assistant" | "system"; content: string }>>) | null = null;
 
   constructor() {
     this.workerPool = new WorkerPool();
@@ -345,6 +349,7 @@ export class AgentManager {
         // Wire onPlannerInput → PlannerAgent.execute() (new turn)
         // Used for user messages (bypasses NotificationQueue for immediate response)
         onPlannerInput: (message) => executePlannerTurn(message),
+        onGoalStatusChange: (data) => this.streamCallbacks?.onGoalStatusChange?.(data),
       },
     });
 
@@ -437,16 +442,37 @@ export class AgentManager {
   /**
    * Enable chat agents for this manager.
    * Call after initializeOrchestrator() when feature flag is on.
+   * @param roles - roles to enable chat agents for
+   * @param loadConversation - optional callback to load prior conversation from storage
    */
-  enableChatAgents(roles: string[]): void {
+  enableChatAgents(
+    roles: string[],
+    loadConversation?: (teamId: string, agentId: string) => Promise<Array<{ role: "user" | "assistant" | "system"; content: string }>>,
+  ): void {
     if (!this.taskStoreInstance) {
       logger.warn("Cannot enable chat agents — TaskStore not initialized");
       return;
     }
     this.chatAgentsEnabled = true;
+    this.loadConversationFn = loadConversation ?? null;
     for (const role of roles) {
       this.getChatAgent(role); // lazy-create for each role
     }
+
+    // Wire ChatAgent dispatch: OrchestratorService routes ready tasks through ChatAgent
+    if (this.orchestrator) {
+      this.orchestrator.setChatAgentDispatch(async (taskId: string, role: string) => {
+        const chatAgent = this.chatAgents.get(role.toLowerCase());
+        if (chatAgent) {
+          await chatAgent.handleTask(taskId, role);
+        } else {
+          // Fallback: no ChatAgent for this role — dispatch directly
+          logger.warn(`No ChatAgent for role '${role}', dispatching directly`);
+          await this.orchestrator!.directDispatchTask(taskId, role);
+        }
+      });
+    }
+
     logger.info(`Chat agents enabled for ${roles.length} roles: ${roles.join(", ")}`);
   }
 
@@ -459,10 +485,23 @@ export class AgentManager {
     const key = role.toLowerCase();
     let agent = this.chatAgents.get(key);
     if (!agent) {
+      const teamId = this.teamId;
+      const loadConversationFn = this.loadConversationFn;
       agent = new ChatAgent({
         role: key,
         teamId: this.teamId,
         taskStore: this.taskStoreInstance,
+        onDispatchTask: async (taskId, role) => {
+          if (this.orchestrator) {
+            await this.orchestrator.directDispatchTask(taskId, role);
+          }
+        },
+        onNotifyPlanner: (message) => {
+          this.orchestrator?.notifyPlannerFromRole(message);
+        },
+        loadConversation: loadConversationFn
+          ? () => loadConversationFn(teamId, `chat-${key}`)
+          : undefined,
       });
       this.chatAgents.set(key, agent);
     }
@@ -501,6 +540,30 @@ export class AgentManager {
    */
   isChatAgentEnabled(): boolean {
     return this.chatAgentsEnabled;
+  }
+
+  /**
+   * Get serialized ModelMessage[] from a worker agent (for context persistence).
+   * Returns null if worker not found or already disposed.
+   */
+  getWorkerContext(taskId: string): string | null {
+    const messages = this.workerPool.getAgentMessages(taskId);
+    if (!messages?.length) return null;
+    try {
+      return JSON.stringify(messages);
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Get serialized ModelMessage[] from a ChatAgent (for context persistence).
+   * Returns null if ChatAgent not found or not initialized.
+   */
+  getChatAgentContext(role: string): string | null {
+    const chatAgent = this.chatAgents.get(role.toLowerCase());
+    if (!chatAgent) return null;
+    return chatAgent.getContextSnapshot();
   }
 
   /**
@@ -689,6 +752,13 @@ export class AgentManager {
    */
   getOrchestratorState(): string | null {
     return this.orchestrator?.getState() ?? null;
+  }
+
+  /**
+   * Get current goal ID from orchestrator (for scoping messages/data by goal)
+   */
+  getCurrentGoalId(): string | null {
+    return this.orchestrator?.getCurrentGoalId() ?? null;
   }
 
   /**

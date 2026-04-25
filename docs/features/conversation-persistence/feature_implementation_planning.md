@@ -1,10 +1,10 @@
 # Conversation Persistence — Implementation Planning
 
 > **Parent:** [feature_architecture.md](./feature_architecture.md)  
-> **Status:** Planning  
-> **Branch:** `feature/conversation-persistence`  
+> **Status:** ✅ Implemented  
+> **Branch:** `user/nitrroshan/fixplans`  
 > **Phase:** 2 in the [Parallel Plans roadmap](../parallel-plans/feature_architecture.md#cross-feature-dependency-map)  
-> **Depends on:** Chat Agent Layer Step 1 (Phase 1)  
+> **Depends on:** Chat Agent Layer Step 1 (Phase 1) ✅  
 > **FF Flag:** `FF_ENABLE_CONVERSATION_PERSISTENCE`
 
 ## Key Design Point
@@ -24,48 +24,28 @@ Only **session agents** (Planner, ChatAgent) have conversations. Workers don't �
 
 ## Implementation Steps
 
-- [ ] **Step 1: Conversation model + IConversationService**  
-  Files: NEW `packages/backend/services/contracts/IConversationService.ts`, NEW `packages/backend/services/mongo/MongoConversationService.ts`, NEW `packages/backend/services/file/FileConversationService.ts`  
-  Types: `Conversation { id, teamId, agentId, agentLayer, userId, goalId?, title?, status }`, `Message { id, conversationId, role, parts: MessagePart[], timestamp }`  
-  `MessagePart` = `text | tool-call | tool-result | reasoning`  
-  Methods: `getOrCreateConversation(teamId, agentId, userId, goalId?)`, `addMessage(conversationId, msg)`, `getMessages(conversationId, { limit, before? })`, `restoreAgentContext(teamId, agentId, limit?)`  
-  Two storage backends: MongoDB (cloud) and JSONL (local)  
-  FF gate: when `FF_ENABLE_CONVERSATION_PERSISTENCE=false`, `addMessage` is a no-op, `getMessages` returns empty  
-  Effort: 2 days
+- [x] **Step 1: agentLayer field + storage migration**
+  Simplified from original plan: instead of a new `Conversation` entity, added `agentLayer` field to existing `ChatMessage` type. Storage backends (SQLite + MongoDB) updated with migration. `getSessionMessages()` method added to `IChatService` for per-layer retrieval.
+  Files: `ChatMessage.ts`, `SqliteChatService.ts`, `MongoChatService.ts`, `ChatMessageSchema.ts`, `IChatService.ts`
 
-- [ ] **Step 2: Wire SocketServerV2 — scope by conversation**  
-  Files: EDIT `packages/backend/api/SocketServerV2.ts`  
-  Current: `handleMessage()` saves flat `ChatMessage` via `IChatService`  
-  Target: Create/get `Conversation` on first message, save structured `Message` with `parts[]`  
-  Worker streams: continue saving as `ChatMessage` (existing path) — NOT as conversations  
-  Planner/ChatAgent responses: save as `Message` with tool-call parts preserved  
-  Effort: 1.5 days
+- [x] **Step 2: Fix ChatAgent response persistence + tag all messages**
+  Critical bug fix: ChatAgent responses were saving a stub string instead of actual content. Now uses same messageAccumulator pattern as worker streams. All messages tagged with `agentLayer` (planner/chat-agent/worker).
+  Files: `SocketServerV2.ts` (handleChatAgentMessage, handleMessage, onStream callback)
 
-- [ ] **Step 3: Session restore endpoint**  
-  Files: EDIT `packages/backend/api/HttpServer.ts`  
-  Implement `/api/v2/sessions/:teamId/restore`:  
-  Returns: `{ conversations: [{ agentId, lastMessages[] }], workerMessages: ChatMessage[], plan?, tasks[] }`  
-  Session agent conversations: structured `Message` with `parts[]`  
-  Worker messages: existing `ChatMessage` records from `IChatService.getMessages()` (already saved with `streamParts`)  
-  Scope: last 7 days of worker messages (configurable via `WORKER_MESSAGE_TTL_DAYS`)  
-  FF gate: returns empty when flag off  
-  Effort: 1 day
+- [x] **Step 3: Session restore endpoint**
+  Enhanced `/api/v2/sessions/:teamId/restore` to return per-agent grouped conversations + worker messages (separated by agentLayer). Returns `{ conversations, workerMessages, goals, plan, tasks }`.
+  Files: `HttpServer.ts`
 
-- [ ] **Step 4: Frontend — load from server on reload**  
-  Files: EDIT `packages/frontend/hooks/useChat.ts`, `packages/frontend/hooks/useOrchestration.ts`  
-  On connect/reconnect: call restore endpoint → populate:  
-  - Session agent chats (planner, ChatAgents) from `conversations[]`  
-  - Worker stream history from `workerMessages[]` — render with `StreamMessage` component (tool cards, reasoning)  
-  Worker messages keyed by `taskId` for thread grouping  
-  Replace localStorage as source of truth → server is authoritative  
-  Effort: 2 days
+- [x] **Step 4: Frontend session restore**
+  Added `restoreFromServer()` to `useChat` — single API call on team select that restores all session agent conversations and worker messages. Replaces per-agent `loadAgentChat` calls. Server is authoritative, localStorage is cache.
+  Files: `AgentServiceV2.ts` (restoreSession), `useChat.ts` (restoreFromServer), `App.tsx` (wiring)
 
-- [ ] **Step 5: Agent context injection on restart**  
-  Files: EDIT `packages/agent-manager/src/agent/internal/AiSdkAgent.ts`, EDIT `packages/agent-manager/src/orchestrator/OrchestratorService.ts`  
-  On backend restart: load planner's last N messages from `IConversationService` → deserialize `parts[]` back into AI SDK `ModelMessage[]` format → inject into `AiSdkAgent.messages`  
-  `loadActivePlan()` already exists — extend to load conversation too  
-  Only for session-mode agents (planner, future ChatAgents). Workers don't need this.  
-  Effort: 1.5 days
+- [x] **Step 5: Agent context injection on restart**
+  Added `AiSdkAgent.loadMessages()` — public method to inject prior conversation as simplified `{ role, content }[]`. `ChatAgent` accepts `loadConversation` callback in config, calls it during `ensureAgent()`. `AgentManagerRegistry` wires the callback to `IChatService.getAgentMessages()` when persistence flag is on.
+  Files: `AiSdkAgent.ts`, `ChatAgent.ts` (ChatAgentConfig + ensureAgent), `AgentManagerV2.ts` (enableChatAgents + getChatAgent), `AgentManagerRegistry.ts`
+
+- [x] **Feature flag added**: `FF_ENABLE_CONVERSATION_PERSISTENCE` (dev: true, prod: false)
+  Files: `featureFlags.ts`
 
 ## Testing
 

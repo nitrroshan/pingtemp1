@@ -21,6 +21,13 @@ export function useChat() {
       // Load from localStorage cache for instant display on refresh
       const stored = localStorage.getItem('ping:chatHistories');
       if (!stored) return {};
+      // Check TTL — expire cache after 24 hours
+      const cacheTs = localStorage.getItem('ping:chatHistories:ts');
+      if (cacheTs && Date.now() - Number(cacheTs) > 24 * 60 * 60 * 1000) {
+        localStorage.removeItem('ping:chatHistories');
+        localStorage.removeItem('ping:chatHistories:ts');
+        return {};
+      }
       const parsed = JSON.parse(stored) as Record<string, Message[]>;
       // Fix messages that were interrupted mid-stream
       return Object.fromEntries(
@@ -36,10 +43,15 @@ export function useChat() {
   /** Track the current streaming message ID per agent */
   const streamingMessageIds = useRef<Record<string, string>>({});
 
-  // Persist chat histories to localStorage on every change
+  // Persist chat histories to localStorage on every change (capped + timestamped)
   useEffect(() => {
     try {
-      localStorage.setItem('ping:chatHistories', JSON.stringify(chatHistories));
+      // Cap: keep last 50 messages per agent to prevent unbounded growth
+      const capped = Object.fromEntries(
+        Object.entries(chatHistories).map(([key, msgs]) => [key, msgs.slice(-50)])
+      );
+      localStorage.setItem('ping:chatHistories', JSON.stringify(capped));
+      localStorage.setItem('ping:chatHistories:ts', String(Date.now()));
     } catch {
       // Storage quota exceeded or unavailable — silently ignore
     }
@@ -459,6 +471,91 @@ export function useChat() {
     loadedAgents.current.clear();
   }, []);
 
+  /**
+   * Restore chat histories from server session restore endpoint.
+   * Server is authoritative — replaces localStorage cache.
+   * Called once on team subscription (page load / reconnect).
+   */
+  const restoreFromServer = useCallback(async (teamId: string, agents: Array<{ id: string; role: string }>): Promise<{
+    goals: any[];
+    plan: any;
+    tasks: any[];
+    orchestratorState: string | null;
+  } | null> => {
+    try {
+      const data = await agentServiceV2.restoreSession(teamId);
+      if (!data) return null;
+
+      const restored: Record<string, Message[]> = {};
+
+      // Restore session agent conversations (planner + chat agents)
+      if (data.conversations) {
+        for (const [agentId, msgs] of Object.entries(data.conversations)) {
+          if (!msgs?.length) continue;
+          // Determine the correct chat history key
+          let key = agentId;
+          if (agentId.startsWith('chat-')) {
+            // ChatAgent — find the agent by role to get its MongoDB ID
+            const role = agentId.replace('chat-', '');
+            const agent = agents.find(a => a.role?.toLowerCase() === role);
+            key = agent ? `chat:${agent.id}` : agentId;
+          } else if (agentId === 'manager' || agentId === 'orchestrator') {
+            // Planner — key is teamId
+            key = teamId;
+          }
+
+          restored[key] = msgs.map((m: any) => ({
+            id: m.id,
+            role: m.role === 'assistant' ? 'model' : m.role,
+            content: m.content,
+            timestamp: new Date(m.timestamp).getTime(),
+            isStreaming: false,
+            streamParts: m.streamParts ? JSON.parse(m.streamParts) : undefined,
+          }));
+          // Mark as loaded so loadAgentChat doesn't re-fetch
+          loadedAgents.current.add(key);
+        }
+      }
+
+      // Restore worker messages (per-agent keyed)
+      if (data.workerMessages?.length) {
+        const workerByAgent: Record<string, any[]> = {};
+        for (const m of data.workerMessages) {
+          const key = m.agentId;
+          if (!workerByAgent[key]) workerByAgent[key] = [];
+          workerByAgent[key].push(m);
+        }
+        for (const [agentId, msgs] of Object.entries(workerByAgent)) {
+          restored[agentId] = msgs.map((m: any) => ({
+            id: m.id,
+            role: m.role === 'assistant' ? 'model' : m.role,
+            content: m.content,
+            timestamp: new Date(m.timestamp).getTime(),
+            isStreaming: false,
+            streamParts: m.streamParts ? JSON.parse(m.streamParts) : undefined,
+          }));
+          loadedAgents.current.add(agentId);
+        }
+      }
+
+      if (Object.keys(restored).length > 0) {
+        // Replace (not merge) — server is authoritative, clears stale agents
+        setChatHistories(restored);
+      }
+
+      // Return plan/goals/tasks so caller can populate plan state
+      return {
+        goals: data.goals ?? [],
+        plan: data.plan ?? null,
+        tasks: data.tasks ?? [],
+        orchestratorState: data.orchestratorState ?? null,
+      };
+    } catch {
+      // Restore failed — fall back to localStorage cache
+      return null;
+    }
+  }, []);
+
   return {
     chatHistories,
     addMessage,
@@ -466,6 +563,7 @@ export function useChat() {
     updateMessages,
     clearHistory,
     clearAllHistories,
+    restoreFromServer,
     getMessages,
     loadAgentChat,
   };

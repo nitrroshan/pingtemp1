@@ -85,6 +85,12 @@ export function createAgentManagerHandlerV2(services: ServiceRegistry): express.
         modes: plugin.modes,
       });
 
+      // Register team ownership — track who created this team
+      const userId = (req as any).userId;
+      if (userId) {
+        await services.teamRegistry.register(teamId, userId, pluginName);
+      }
+
       logger.info(`[V2] Team loaded from plugin: ${teamId} (${pluginName}, ${agentRecords.length} agents)`);
     } catch (error: any) {
       logger.error("[V2] Error loading team:", error);
@@ -97,9 +103,24 @@ export function createAgentManagerHandlerV2(services: ServiceRegistry): express.
    */
   router.get("/teams", async (req: Request, res: Response) => {
     try {
-      const teams = await services.teams.listTeams();
+      const userId = (req as any).userId;
+      const allTeams = await services.teams.listTeams();
+
+      // Filter: show unregistered teams (open) + teams owned by this user
+      // Hide teams registered by OTHER users
+      const filteredTeams = [];
+      for (const t of allTeams) {
+        try {
+          const canAccess = await services.teamRegistry.canAccess(userId, t.id);
+          if (canAccess) filteredTeams.push(t);
+        } catch {
+          // If registry check fails, allow access (fail-open for listing)
+          filteredTeams.push(t);
+        }
+      }
+
       const teamList = [];
-      for (const t of teams) {
+      for (const t of filteredTeams) {
         const agents = await services.teams.getTeamAgents(t.id);
         teamList.push({
           id: t.id,
@@ -144,6 +165,16 @@ export function createAgentManagerHandlerV2(services: ServiceRegistry): express.
       if (!teamId) {
         res.status(400).json({ error: "Team ID is required" });
         return;
+      }
+
+      // Check ownership — only the owner can delete
+      const userId = (req as any).userId;
+      if (userId) {
+        const canAccess = await services.teamRegistry.canAccess(userId, teamId);
+        if (!canAccess) {
+          res.status(403).json({ error: "Not authorized to delete this team" });
+          return;
+        }
       }
 
       // Evict cached AgentManager (teams themselves are read-only plugin projections)

@@ -15,7 +15,7 @@ export class MongoGoalService implements IGoalService {
     const GoalModel = await this.getModel();
     const doc = await GoalModel.create({
       teamId: goal.teamId,
-      sessionId: goal.sessionId,
+      userId: goal.userId,
       goal: goal.goal,
       status: goal.status ?? "pending",
       planId: goal.planId ?? null,
@@ -44,7 +44,7 @@ export class MongoGoalService implements IGoalService {
     return {
       id: doc._id.toString(),
       teamId: doc.teamId,
-      sessionId: doc.sessionId,
+      userId: doc.userId ?? doc.sessionId ?? "default",
       goal: doc.goal,
       status: doc.status,
       planId: doc.planId ?? undefined,

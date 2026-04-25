@@ -206,7 +206,30 @@ export class AgentManagerRegistry {
         ? teamRoles.map(r => r.role).filter(r => allowedRoles.includes(r.toLowerCase()))
         : teamRoles.map(r => r.role);
       if (rolesToEnable.length > 0) {
-        manager.enableChatAgents(rolesToEnable);
+        // Build loadConversation callback if persistence is enabled
+        const loadConversation = config.featureFlags.enableConversationPersistence && this.services
+          ? async (tId: string, agentId: string) => {
+              const messages = await this.services!.chat.getAgentMessages(tId, agentId, { limit: 30 });
+              if (!messages.length) return [];
+
+              // Prefer full-fidelity contextMessages (v1.1) — latest snapshot has full conversation
+              const latest = messages[messages.length - 1];
+              if (latest?.contextMessages) {
+                try {
+                  return JSON.parse(latest.contextMessages);
+                } catch {
+                  // Fall through to simplified format
+                }
+              }
+
+              // Fallback: simplified { role, content } format (v1.0)
+              return messages.map(m => ({
+                role: m.role,
+                content: m.content,
+              }));
+            }
+          : undefined;
+        manager.enableChatAgents(rolesToEnable, loadConversation);
       }
     }
 

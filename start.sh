@@ -159,8 +159,16 @@ do_build() {
 
 do_seed() {
   warn "Seeding..."
+  # Ensure MongoDB is running
+  if command -v docker &>/dev/null; then
+    start_mongo 2>/dev/null
+    sleep 1
+  fi
   cd "$ROOT" && bun run seed
-  info "Seed complete"
+  # Also seed admin user
+  cd "$ROOT/packages/backend" && bun run seed:admin 2>/dev/null
+  cd "$ROOT"
+  info "Seed complete (teams + admin user)"
 }
 
 do_reset_db() {
@@ -174,6 +182,51 @@ do_reset_db() {
   else
     dim "Cancelled"
   fi
+}
+
+do_clean() {
+  printf "  ${red}This will DELETE all data (workspaces, plans, messages, auth). Continue? [y/N]${reset} "
+  read -r confirm
+  if [[ "$confirm" != "y" ]]; then
+    dim "Cancelled"
+    return
+  fi
+
+  local data_dir="$ROOT/packages/backend/data"
+  if [[ -d "$data_dir" ]]; then
+    # Remove workspaces (git clones, agent work)
+    rm -rf "$data_dir/workspaces" 2>/dev/null && info "Workspaces cleared"
+    # Remove task persistence
+    rm -rf "$data_dir/tasks" 2>/dev/null && info "Tasks cleared"
+    # Remove plans
+    rm -rf "$data_dir/plans" 2>/dev/null && info "Plans cleared"
+    # Remove SQLite DBs (auth + local storage)
+    rm -f "$data_dir/auth.db" "$data_dir/auth.db-shm" "$data_dir/auth.db-wal" 2>/dev/null && info "Auth DB cleared"
+    rm -f "$data_dir/ping.db" "$data_dir/ping.db-shm" "$data_dir/ping.db-wal" 2>/dev/null && info "Local DB cleared"
+    # Remove conversations
+    rm -rf "$data_dir/conversations" 2>/dev/null
+    # Remove CRDT collab data
+    rm -rf "$data_dir/collab" 2>/dev/null && info "CRDT data cleared"
+    info "All local data cleared."
+  else
+    dim "No data directory found"
+  fi
+
+  # Also clear MongoDB if docker is available
+  if command -v docker &>/dev/null && docker ps --format '{{.Names}}' 2>/dev/null | grep -q '^ping-mongo$'; then
+    docker exec ping-mongo mongosh "mongodb://localhost:27017/ping" --quiet --eval '
+      db.getCollectionNames().forEach(c => { if (c !== "system.version") db[c].deleteMany({}); });
+    ' 2>/dev/null && info "MongoDB cleared (all collections)"
+
+    # Re-seed admin user into MongoDB (cloud mode)
+    cd "$ROOT/packages/backend" && PING_MODE=cloud bun run seed:admin 2>/dev/null && info "Admin user re-seeded (MongoDB)"
+  else
+    # Re-seed admin user into SQLite (local mode)
+    cd "$ROOT/packages/backend" && bun run seed:admin 2>/dev/null && info "Admin user re-seeded (SQLite)"
+  fi
+  cd "$ROOT"
+
+  info "Clean complete."
 }
 
 start_backend() {
@@ -249,6 +302,7 @@ show_menu() {
   printf "  ${cyan}Tools${reset}\n"
   printf "  ${yellow}8${reset}  Build        ${dim}bun run build${reset}\n"
   printf "  ${yellow}9${reset}  Seed         ${dim}seed admin user${reset}\n"
+  printf "  ${red}c${reset}  Clean        ${dim}delete all local data${reset}\n"
   printf "  ${yellow}s${reset}  Status\n"
   printf "  ${red}0${reset}  ${dim}Exit${reset}\n"
   echo ""
@@ -297,6 +351,7 @@ main() {
       7) stop_all ;;
       8) do_build ;;
       9) do_seed ;;
+      c|C) do_clean ;;
       s|S) show_status ;;
       0) dim "Bye!"; exit 0 ;;
       *) err "Invalid option" ;;
