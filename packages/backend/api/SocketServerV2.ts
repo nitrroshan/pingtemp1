@@ -429,7 +429,7 @@ export class SocketServerV2 {
     }>();
 
     manager.registerStreamCallbacks({
-      onStream: ({ taskId, agentId, part }) => {
+      onStream: async ({ taskId, agentId, part }) => {
         if (taskId) streamedTasks.add(taskId);
 
         const accKey = taskId || agentId || "unknown";
@@ -475,7 +475,7 @@ export class SocketServerV2 {
 
             this.services.chat.addMessage({
               teamId,
-              userId: "system",
+              userId: await this.services.teamRegistry?.getOwner(teamId) ?? "system",
               role: "assistant",
               agentId: acc.agentId,
               taskId: taskId || undefined,
@@ -1028,7 +1028,7 @@ export class SocketServerV2 {
 
               this.services.chat.addMessage({
                 teamId,
-                userId: "system",
+                userId: await this.services.teamRegistry?.getOwner(teamId) ?? "system",
                 role: "assistant",
                 agentId,
                 goalId: manager.getCurrentGoalId() || undefined,

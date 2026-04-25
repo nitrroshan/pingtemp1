@@ -37,9 +37,28 @@ When all tasks in a plan complete, nobody calls `goalService.updateGoal()`. Goal
 
 **Effort:** ~20 lines across 3 files
 
-### Assistant Message userId Threading (DEFERRED)
+### Assistant Message userId Threading
 
-Assistant messages from workers/planner are saved with `userId: "system"` because the `ensureTeamCallbacks` `onStream` handler has no user-specific context. Fixing this requires threading the original requesting user's ID through the worker dispatch chain. Deferred to when we implement per-user conversation scoping.
+**Problem:** Worker and ChatAgent assistant messages are saved with `userId: "system"`. All data should belong to the team owner.
+
+**Design:** User owns teams. All team data (messages, plans, goals) belongs to the owner. `TeamRegistryService.getOwner(teamId)` already stores the owner. Use it at assistant message save points — no Maps, no closures, no callback threading.
+
+**Implementation:**
+
+- [ ] **Step 1: Worker/planner assistant save**  
+  File: `SocketServerV2.ts` (`ensureTeamCallbacks` → `onStream(finish)`)  
+  Change: `userId: await this.services?.teamRegistry?.getOwner(teamId) ?? "system"`
+
+- [ ] **Step 2: ChatAgent assistant save**  
+  File: `SocketServerV2.ts` (`handleChatAgentMessage` → finish)  
+  Change: `userId: await this.services?.teamRegistry?.getOwner(teamId) ?? "system"`
+
+**Total: 2 lines in 1 file.**
+
+**SOLID:**
+- **SRP**: `agent-manager` stays identity-free. Ownership resolved at API layer.
+- **DIP**: Depends on `ITeamRegistryService` abstraction, not sockets/connections.
+- No new data structures. Team ownership table is the single source of truth.
       headers: new Headers({ cookie: cookieHeader }) 
     });
     if (!session?.user?.id) return next(new Error("Invalid session"));
