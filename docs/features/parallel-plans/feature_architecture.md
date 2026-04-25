@@ -241,16 +241,24 @@ PHASE 2 — Conversation Persistence (1 week)
   Session restore on reconnect
   Feature: conversation-persistence/
 
-PHASE 3 — Git Task Context (1-2 weeks)
+PHASE 3 — Git Task Context (1-2 weeks) ✅
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
   Depends on: Phase 1 (ChatAgent), workspace-lifecycle ✅
-  Workspace repo branch-per-task, memory tools split
+  Workspace repo branch-per-task, goalId/planId on Task type
   Feature: git-task-context/
+
+PHASE 3.5 — GoalManager Extraction (2-3 days)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  Depends on: Phase 3
+  Extract goal lifecycle from OrchestratorService into GoalManager (SRP)
+  Single-goal refactor — same behavior, cleaner code
+  Prerequisite for Phase 4 (GoalManager gains Map)
+  Feature: goal-manager/
 
 PHASE 4 — Parallel Plans v1.0 (2 weeks)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  Depends on: Phase 1, Phase 3 (goalId on tasks)
-  GoalContext Map, serial execution, goal sidebar
+  Depends on: Phase 3.5 (GoalManager), Phase 3 (goalId on tasks)
+  GoalContext Map, per-goal planner + ChatAgents, serial execution, goal sidebar
   Feature: parallel-plans/v1.0/
 
 PHASE 5 — Parallel Plans v2.0 (2 weeks)

@@ -1,7 +1,7 @@
 # Ping — Master Feature List
 
-**Last Updated:** April 22, 2026  
-**Total Features:** 35 (18 existing + 17 new)  
+**Last Updated:** April 25, 2026  
+**Total Features:** 37 (18 existing + 19 new)  
 **Master Architecture:** [MASTER-ARCHITECTURE.md](MASTER-ARCHITECTURE.md) — unified reference with diagrams for how all features connect
 
 ---
@@ -33,9 +33,10 @@
 | A6 | **Task Orchestration Redesign** | 🆕 New | [task-orchestration](task-orchestration/) | Research & redesign task lifecycle: DAG-based deps, parallel execution, retry, replan, context passing. |
 | A7 | **External Agent Invocation** | 🆕 New | [external-agent-invocation](external-agent-invocation/) | Worker agents can call external agents (via MCP, HTTP, A2A protocol). Research best interop method. |
 | A8 | **Git-Based Task Context** | 🆕 New | [git-task-context](git-task-context/) | Preserve agent work as git commits. Branch-per-task. New sessions can pull branches. Branches persist until project completes. |
-| A9 | **Approval System** | 🆕 New | [approval-system](approval-system/) | Structured approval for plans, tools, artifacts. Leverages Mastra's `requireApproval` + `suspend()`. Depends on A1. Auto-approve rules per team. Audit trail. |
+| A9 | **Approval System** | 🆕 New | [approval-system](approval-system/) | Structured approval for plans, tools, artifacts. Leverages Mastra's `requireApproval` + `suspend()`. Depends on A1. Auto-approve rules per team. Audit trail. **Artifact trust model:** per-file provenance tags (🤖 Agent / 👤 Reviewed / 🔒 Approved) from ChatAgent review, child teams, external agents, auto-rules. Smart accept actions in UI. |
 | A10 | **Persistent Agents & Three-Layer Hierarchy** | 🆕 New | [persistent-agents](persistent-agents/) | Three-layer agent hierarchy: persistent Planner (team leader) → persistent Chat Agents (role employees) → transient Task Sub-Agents (workers). Always-on chat, parallel plans, AI SDK sub-agents. Extends A5. |
 | A11 | **Parallel Plans** | ✅ Approved (3 versions) | [parallel-plans](parallel-plans/) | v1.0: GoalContext + serial queue (Phase 4). v2.0: workspace isolation + per-task clone (Phase 5). v3.0: full parallel execution (Phase 6). Depends on Chat Agent Layer, A8. See [cross-feature roadmap](parallel-plans/feature_architecture.md#cross-feature-dependency-map). |
+| A12 | **GoalManager Extraction** | 📋 Planned | [goal-manager](goal-manager/) | Extract goal lifecycle from OrchestratorService into GoalManager class. GoalContext Map, per-goal planner/ChatAgent lifecycle, execution mutex, CRDT proxy per goal, restart recovery. Prerequisite for A11 Parallel Plans v1.0. SRP refactor — OrchestratorService keeps dispatch/comms (~900 LOC), GoalManager owns lifecycle (~400 LOC). |
 
 ### B. Platform Architecture (Packaging & Deployment)
 
@@ -54,6 +55,7 @@
 | C1 | **LLM Response Grading** | 📋 Planned | [llm-response-grading](llm-response-grading/) | Mastra evals: LLM-as-judge, rule-based scoring, user feedback. Per-agent quality monitoring. |
 | C2 | **Skills System** | 🔬 Research | [skills-system](skills-system/) | Portable agent capabilities: SKILL.md definitions, progressive disclosure, role templates. |
 | C3 | **Skills Integration** | 🆕 New | [skills-integration](skills-integration/) | Wire skills into agent runtime: skill discovery, loading, execution. Skills as MCP tools or AI SDK tools. |
+| C4 | **Post-Task Learning Extraction** | ⚠️ Needs Rethinking | [post-task-learning](post-task-learning/) | **DO NOT IMPLEMENT** — architecture not reviewed. Concept: ChatAgent reviews completed/failed task outputs, extracts learnings, routes to L2 CRDT. Needs rethinking on: review model (per-task vs per-goal), what triggers extraction, cost/value tradeoff. Depends on Chat Agent Layer (Phase 1), A8 Git Task Context (Phase 3). |
 
 ### D. Memory & Search
 

@@ -149,6 +149,23 @@ export class TaskStore implements ITaskProvider {
     return this.getAll().filter((t) => t.status === status);
   }
 
+  /** Get tasks by goal ID. */
+  getByGoal(goalId: string): Task[] {
+    return this.getAll().filter((t) => t.goalId === goalId);
+  }
+
+  /** Get tasks by plan ID. */
+  getByPlan(planId: string): Task[] {
+    return this.getAll().filter((t) => t.planId === planId);
+  }
+
+  /** Check if all tasks for a specific goal are done. */
+  isAllCompleteForGoal(goalId: string): boolean {
+    const goalTasks = this.getByGoal(goalId);
+    if (goalTasks.length === 0) return false;
+    return goalTasks.every((t) => t.status === "completed" || t.status === "failed" || t.status === "discarded");
+  }
+
   // ═══════════════════════════════════════════════════════════════════
   // STATE MACHINE
   // ═══════════════════════════════════════════════════════════════════

@@ -73,6 +73,16 @@ export interface Task {
   dependants: string[];
 
   // ═══════════════════════════════════════════════════════════════════════════
+  // Orchestration Context (v3.0 — Git Task Context, Phase 3)
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  /** Goal ID this task belongs to — links tasks to a specific user goal */
+  goalId?: string;
+
+  /** Plan ID this task is part of — links tasks to a specific plan version */
+  planId?: string;
+
+  // ═══════════════════════════════════════════════════════════════════════════
   // Workspace Layer Fields (v1.1)
   // ═══════════════════════════════════════════════════════════════════════════
 

@@ -281,6 +281,8 @@ export class WorkerPool {
           consumer: "worker",
           role: roleKey,
           taskId,
+          goalId: this.currentGoalId || undefined,
+          planId: this.currentPlanId || undefined,
         };
 
         // Prepare plugins (e.g. create workspace branch) before resolving tools

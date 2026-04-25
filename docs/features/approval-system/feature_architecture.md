@@ -313,3 +313,348 @@ interface ApprovalAuditEntry {
 | Audit trail | **A9** |
 | `approval:*` Socket.IO events | **A9** |
 | Stream event wiring (Mastra → Socket.IO) | **A9** |
+
+---
+
+## Artifact Trust & Provenance Model
+
+Artifact approval (the 4th approval type above) answers "should this be accepted?" But there's a prior question: **"who produced this, and has anyone reviewed it?"**
+
+Not all task outputs need the same level of human review. Files produced by an internal LLM agent need careful inspection. Files already human-reviewed in a child team or via an external agent's PR workflow can be accepted with a glance.
+
+### Review Tags
+
+Each file in a task's output carries a **review tag** tracking its provenance:
+
+| Tag | Icon | Meaning | User action |
+|-----|------|---------|-------------|
+| `agent` | 🤖 | Raw LLM output, nobody reviewed | Must review before accepting |
+| `reviewed` | 👤 | Human or quality-checked (ChatAgent, external agent human, auto-rule) | Can accept without re-reviewing |
+| `approved` | 🔒 | Formally approved by authorized reviewer (child team human, domain expert) | Auto-accepted, shown for audit |
+
+### ArtifactReviewStatus Type
+
+```typescript
+interface ArtifactReviewStatus {
+  path: string;                 // file path in workspace branch
+  reviewTag: 'agent' | 'reviewed' | 'approved';
+  reviewedBy?: string;          // userId, teamId, or agent identifier
+  reviewSource?:
+    | 'chat_agent'              // ChatAgent quality-checked in onMyTaskCompleted
+    | 'child_team_human'        // Human in child Ping team approved
+    | 'external_agent_human'    // Human reviewed via Claude/Cursor PR flow
+    | 'self'                    // Human contributor authored it directly
+    | 'auto_rule';              // Matched an auto-approve glob pattern
+  reviewedAt?: string;          // ISO timestamp
+}
+```
+
+### How Tags Are Set
+
+| Source | Trigger | Tag set |
+|--------|---------|---------|
+| **Internal worker (Crush)** | Task completes | `agent` (default — no review yet) |
+| **ChatAgent background review** | `onMyTaskCompleted` runs, finds no quality issues | `reviewed` (source: `chat_agent`) |
+| **ChatAgent flags concerns** | `onMyTaskCompleted` finds problems | Stays `agent` — user must review |
+| **Child Ping team** | Child team's human approves output in their review flow | `approved` (source: `child_team_human`) |
+| **External agent (Claude Code)** | External agent reports `{ humanReviewed: true }` on completion | `reviewed` (source: `external_agent_human`) |
+| **Auto-approve glob rules** | File path matches `autoApprovePatterns` in TeamReviewConfig | `reviewed` (source: `auto_rule`) |
+| **Human contributor** | Human authored the file directly (not via agent) | `approved` (source: `self`) |
+
+### TeamReviewConfig Extension
+
+```typescript
+interface TeamReviewConfig {
+  // When does the user get asked to review?
+  reviewTrigger: 'per_task' | 'per_goal' | 'on_escalation' | 'never';
+
+  // What does the user see?
+  reviewScope: 'artifacts_only' | 'artifacts_and_process' | 'summary_only';
+
+  // Glob patterns that auto-set 'reviewed' tag (skip human review)
+  autoApprovePatterns?: string[];
+  // e.g., ["*.test.ts", "docs/**", "*.md", "package.json"]
+
+  // Trust artifacts from child Ping teams that were human-approved there
+  trustChildTeams?: boolean;  // default: true
+
+  // Trust artifacts from these external agents when they report human review
+  trustedExternalAgents?: string[];
+  // e.g., ["claude-code", "cursor", "copilot-workspace"]
+}
+```
+
+### Frontend: Changes Collapsible with Trust Tags
+
+The Changes collapsible (Phase 15 of frontend redesign) shows trust tags per file:
+
+```
+▼ Changes (6 files, +342 lines)
+
+  📄 src/auth/middleware.ts    +45    🤖 Agent      [Diff] [File]
+  📄 src/auth/routes.ts       +89    🤖 Agent      [Diff] [File]
+  📄 src/auth/types.ts        +23    👤 Reviewed    [Diff] [File]
+  📄 tests/auth.test.ts      +112    👤 Reviewed    [Diff] [File]
+  📄 src/config/jwt.ts        +18    🔒 Approved    [Diff] [File]
+  📝 README.md                +55    🤖 Agent      [Diff] [File]
+
+  ──────────────────────────────────────────────
+  2 need review  •  2 reviewed  •  1 approved
+
+  [Accept reviewed ✓]  [Review remaining ↗]
+```
+
+### GoalSummaryCard with Trust Tags
+
+Goal-level review aggregates trust across all tasks:
+
+```
+┌───────────────────────────────────────────────────────┐
+│  ✅  Build Authentication System                       │
+│                                                        │
+│  📊 Review: ████████████░░░░░░  4/6 reviewed          │
+│                                                        │
+│  📄 middleware.ts    +45   🤖 Agent                    │
+│  📄 routes.ts       +89   🤖 Agent                    │
+│  📄 types.ts        +23   👤 ChatAgent                │
+│  📄 auth.test.ts   +112   👤 auto-rule                │
+│  📄 jwt.ts          +18   🔒 child team               │
+│  📝 README.md       +55   👤 Claude Code              │
+│                                                        │
+│  [Accept 4 reviewed ✓]    [Review 2 remaining ↗]      │
+└───────────────────────────────────────────────────────┘
+```
+
+### Smart Accept Actions
+
+| Scenario | Available actions |
+|----------|-------------------|
+| All files 🤖 Agent | `[Review all]` — user must review each file |
+| Mix of 🤖 and 👤/🔒 | `[Accept reviewed ✓]` + `[Review remaining ↗]` — user only reviews unreviewed files |
+| All files 👤 Reviewed or 🔒 Approved | `[Accept all ✓]` — single click, trust the chain |
+
+### How Trust Flows Through the System
+
+```
+Worker completes task
+  → All files tagged 'agent' by default
+  → ChatAgent.onMyTaskCompleted() runs background review
+    → If quality OK: files → 'reviewed' (chat_agent)
+    → If concerns: files stay 'agent'
+  → Auto-approve rules checked: matching files → 'reviewed' (auto_rule)
+
+External agent (Claude Code) completes task
+  → Reports: { humanReviewed: true, reviewer: 'user@...' }
+  → If agent in trustedExternalAgents: files → 'reviewed' (external_agent_human)
+  → If not trusted: files stay 'agent'
+
+Child Ping team completes task
+  → Child team's user approved their goal output
+  → If trustChildTeams=true: files → 'approved' (child_team_human)
+  → If not trusted: files stay 'agent'
+
+Goal review presented to user
+  → GoalSummaryCard / Changes collapsible shows per-file tags
+  → User can accept reviewed files in one click
+  → User only manually reviews 'agent' tagged files
+```
+
+### Depends On
+
+- **A8 Git Task Context (Phase 3):** Workspace branch-per-task provides the files to tag
+- **A7 External Agent Invocation:** External agents report `humanReviewed` flag on completion
+- **A10 Persistent Agents:** ChatAgent `onMyTaskCompleted` runs the background quality review
+- **Phase 15 (Task Changes collapsible):** Frontend displays trust tags per file
+- **Vision: Team Composability:** Child teams reporting approval status to parent teams
+
+---
+
+## Worker Trust Configuration UI
+
+Two surfaces for configuring trust: **per-instance controls** (two collapsibles at chat input, quick override before sending) and **team-level defaults** (settings panel, configure once).
+
+### Per-Instance: Agent + Trust Selectors (Chat Input Area)
+
+Two collapsible pill selectors sit **above the chat input**, pre-populated from team defaults. User can override per-instance before sending a message.
+
+**Collapsed state (default — two pills showing current selection):**
+
+```
+├─────────────────────────────────────────────────────┤
+│ 🤖 Crush             ▾ │ 👤 Reviewed          ▾   │
+├─────────────────────────────────────────────────────┤
+│ [Type a message...]                            [▶]  │
+└─────────────────────────────────────────────────────┘
+      ↑ agent selector         ↑ trust selector
+```
+
+Both pre-populated from team defaults for this role's default worker.
+
+**Agent selector expanded (click left pill):**
+
+```
+│ ▼ Agent                                             │
+│ ┌─────────────────────────────────────────────────┐ │
+│ │ ● 🤖 Crush (internal)             always on    │ │
+│ │ ○ 🔮 Claude Code                  1 connected  │ │
+│ │ ○ 🖥️ Cursor                       0 connected  │ │
+│ │ ○ 👥 Design Team                  1 agent      │ │
+│ └─────────────────────────────────────────────────┘ │
+│                                    👤 Reviewed  ▾   │
+├─────────────────────────────────────────────────────┤
+│ [Type a message...]                            [▶]  │
+```
+
+Shows all available workers with connection status. Selecting a different agent **auto-updates the trust pill** to that agent's team default.
+
+**Trust selector expanded (click right pill):**
+
+```
+│ 🔮 Claude Code       ▾ │ ▼ Trust                   │
+│                         │ ┌───────────────────────┐ │
+│                         │ │ ○ 🤖 Agent (review)  │ │
+│                         │ │ ● 👤 Reviewed (skip)  │ │
+│                         │ │ ○ 🔒 Approved (auto)  │ │
+│                         │ │                       │ │
+│                         │ │ Default: 👤 Reviewed  │ │
+│                         │ │ (from team settings)  │ │
+│                         │ └───────────────────────┘ │
+├─────────────────────────────────────────────────────┤
+│ [Build auth with OAuth2...]                    [▶]  │
+```
+
+Shows team default at the bottom so user knows what they're overriding.
+
+**Override indicator — when trust differs from team default:**
+
+```
+│ 🔮 Claude Code       ▾ │ 🤖 Agent  ⚠️ override ▾  │
+```
+
+`⚠️ override` badge when trust differs from team default for the selected agent.
+
+**Behavior:**
+
+| Action | What happens |
+|--------|-------------|
+| Page load | Both pills populated from team defaults for this role's default worker |
+| Select different agent | Trust auto-updates to that agent's team default |
+| Change trust | Override for this instance only. Badge shows `⚠️ override` |
+| Send message | Worker type + trust level attached to the task dispatch context |
+| Next message | Resets to defaults (override was per-instance, not sticky) |
+
+### Team-Level: Trust Settings Panel
+
+Accessible from: worker config bar `[⚙️]`, or `/manage-teams` → team → Settings tab.
+
+```
+┌─────────────────────────────────────────────────────┐
+│ Engineering Team — Settings                    ✕    │
+├─────────────────────────────────────────────────────┤
+│ General │ Workers │ Review │                        │
+├─────────────────────────────────────────────────────┤
+│                                                     │
+│ INTERNAL WORKERS                                    │
+│ ┌─────────────────────────────────────────────────┐ │
+│ │ 🤖 Crush                                       │ │
+│ │ Trust level: [👤 Reviewed ▾]                    │ │
+│ │ (ChatAgent reviews output before presenting)    │ │
+│ └─────────────────────────────────────────────────┘ │
+│                                                     │
+│ EXTERNAL AGENTS                                     │
+│ ┌─────────────────────────────────────────────────┐ │
+│ │ 🔮 Claude Code        [Trusted ✓]              │ │
+│ │    Trust: [👤 Reviewed ▾]                       │ │
+│ │    Reason: Human reviews PR before merge        │ │
+│ │                                                 │ │
+│ │ 🖥️ Cursor              [Untrusted]              │ │
+│ │    Trust: [🤖 Agent ▾]                          │ │
+│ │    Reason: No human review in workflow          │ │
+│ └─────────────────────────────────────────────────┘ │
+│                                                     │
+│ CHILD TEAMS                                         │
+│ ┌─────────────────────────────────────────────────┐ │
+│ │ 👥 Design Team (3 agents)  [Trusted ✓]          │ │
+│ │    Trust: [🔒 Approved ▾]                       │ │
+│ │    Reason: Human approves in their flow         │ │
+│ │                                                 │ │
+│ │ 👥 QA Team (2 agents)      [Trusted ✓]          │ │
+│ │    Trust: [👤 Reviewed ▾]                       │ │
+│ └─────────────────────────────────────────────────┘ │
+│                                                     │
+│ AUTO-APPROVE PATTERNS                               │
+│ ┌─────────────────────────────────────────────────┐ │
+│ │ *.test.ts                                [✕]   │ │
+│ │ docs/**                                  [✕]   │ │
+│ │ *.md                                     [✕]   │ │
+│ │ [+ Add pattern]                                │ │
+│ └─────────────────────────────────────────────────┘ │
+│                                                     │
+│ REVIEW DEFAULTS                                     │
+│ Review trigger:  [Per goal ▾]                       │
+│ Review scope:    [Artifacts + process ▾]            │
+│                                                     │
+│                        [Save]  [Reset to defaults]  │
+└─────────────────────────────────────────────────────┘
+```
+
+**Trust level dropdown options:**
+- `🤖 Agent` — raw output, always requires human review
+- `👤 Reviewed` — treated as reviewed (ChatAgent or human checked)
+- `🔒 Approved` — treated as formally approved (skip review entirely)
+
+### Precedence: Per-Instance Overrides Team Defaults
+
+```
+Team Settings (defaults)
+  │
+  ├─ "Claude Code: trusted, 👤 Reviewed"
+  │
+  └─ Per-Instance Override (chat input pills)
+      ├─ User sends task with Claude Code → 🔒 Approved  (trusts more for this task)
+      └─ User sends task with Claude Code → 🤖 Agent     (trusts less for this task)
+      └─ Next message → resets to 👤 Reviewed (team default)
+```
+
+Per-instance overrides apply only to that dispatch. Team defaults apply to all subsequent messages unless overridden again.
+
+### Data Model
+
+```typescript
+// Team-level defaults (stored in team config / MongoDB)
+interface WorkerTrustConfig {
+  internalTrustLevel: 'agent' | 'reviewed' | 'approved';  // default: 'reviewed'
+  
+  externalAgents: Record<string, {
+    trusted: boolean;
+    trustLevel: 'agent' | 'reviewed' | 'approved';
+    reason?: string;
+  }>;
+  
+  childTeams: Record<string, {
+    trusted: boolean;
+    trustLevel: 'agent' | 'reviewed' | 'approved';
+  }>;
+  
+  autoApprovePatterns: string[];
+  reviewTrigger: 'per_task' | 'per_goal' | 'on_escalation' | 'never';
+  reviewScope: 'artifacts_only' | 'artifacts_and_process' | 'summary_only';
+}
+
+// Per-instance override (transient, sent with message — NOT stored)
+// Attached to task dispatch context when user overrides at chat input
+interface InstanceWorkerOverride {
+  workerType: string;       // "crush" | "claude-code" | "cursor" | child team ID
+  trustLevel: 'agent' | 'reviewed' | 'approved';
+  isOverride: boolean;      // true if differs from team default
+}
+```
+
+### API Endpoints
+
+| Endpoint | Method | What |
+|----------|--------|------|
+| `/api/v2/teams/:teamId/settings/trust` | `GET` | Get team trust config |
+| `/api/v2/teams/:teamId/settings/trust` | `PUT` | Update team trust config |
+| `/api/v2/teams/:teamId/roles/:role/worker-config` | `GET` | Get per-role worker config |
+| `/api/v2/teams/:teamId/roles/:role/worker-config` | `PUT` | Update per-role worker config |

@@ -127,3 +127,58 @@ export interface PlanApprovedEvent {
  * Re-export AgentPlanOutput as TaskPlan for semantic clarity
  */
 export type TaskPlan = AgentPlanOutput;
+
+// ═══════════════════════════════════════════════════════════════════
+// GOAL MANAGER (Phase 3.5 — SRP extraction from OrchestratorService)
+// ═══════════════════════════════════════════════════════════════════
+
+/**
+ * Callbacks GoalManager uses to communicate with OrchestratorService.
+ * GoalManager NEVER depends on OrchestratorService directly — only through callbacks.
+ */
+export interface GoalManagerCallbacks {
+  /** A task became ready — dispatch it (GoalManager → OrchestratorService) */
+  onDispatchTask: (taskId: string, role: string) => void;
+  /** Send message to planner (GoalManager → planner via OrchestratorService) */
+  onNotifyPlanner: (message: string) => void;
+  /** Forward task status to frontend */
+  onTaskUpdate?: OrchestratorCallbacks["onTaskUpdate"];
+  /** Forward progress to frontend */
+  onProgress?: OrchestratorCallbacks["onProgress"];
+  /** Goal status changed (all complete / all failed) */
+  onGoalStatusChange?: OrchestratorCallbacks["onGoalStatusChange"];
+  /** Plan approved notification */
+  onPlanApproved?: OrchestratorCallbacks["onPlanApproved"];
+  /** Channel B task updates for ChatAgent + frontend */
+  onWorkerTaskUpdate?: OrchestratorCallbacks["onWorkerTaskUpdate"];
+}
+
+/**
+ * GoalManager interface — owns goal lifecycle, delegates dispatch to OrchestratorService.
+ * Single-goal for now. Phase 4 adds Map<goalId, GoalContext>.
+ */
+export interface IGoalManager {
+  // State
+  getState(): OrchestratorState;
+  setState(state: OrchestratorState): void;
+  getGoalId(): string | null;
+  getPendingPlan(): any | null;
+  setPendingPlan(plan: any | null): void;
+
+  // Lifecycle (wired from TaskStore/WorkerPool callbacks)
+  approvePlan(): Promise<{ success: boolean; tasksQueued?: number; error?: string }>;
+  onTaskReady(data: { taskId: string; role: string }): void;
+  onTaskComplete(data: { taskId: string; output: any }): void;
+  onTaskFailed(data: { taskId: string; error: string }): void;
+  onWorkerDone(data: {
+    taskId: string; role: string; summary: string;
+    deliverables?: string[]; nextSteps?: string[]; timestamp: number;
+  }): Promise<void>;
+
+  // State management
+  reset(): void;
+  resetPlan(): Promise<{ deleted: boolean; planId?: string }>;
+  interruptPlan(): Promise<void>;
+  loadActivePlan(): Promise<void>;
+  dispose(): void;
+}

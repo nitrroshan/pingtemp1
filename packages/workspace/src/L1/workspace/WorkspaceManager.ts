@@ -87,7 +87,7 @@ export class WorkspaceManager implements IWorkspaceManager {
   async createWorkspace(
     agentId: string,
     taskId: string,
-    initOptions?: WorkspaceInitOptions,
+    initOptions?: WorkspaceInitOptions & { goalId?: string },
   ): Promise<AgentWorkspace> {
     // Return existing workspace for this task
     if (this.workspaces.has(taskId)) {
@@ -96,7 +96,9 @@ export class WorkspaceManager implements IWorkspaceManager {
     }
 
     const workspaceId = generateWorkspaceId(taskId);
-    const branchName = `task-${taskId}`;
+    const branchName = initOptions?.goalId
+      ? `goal-${initOptions.goalId}/task-${taskId}`
+      : `task-${taskId}`;
 
     // Workspace files live in the repo root (single repo, branch isolation)
     const workspace = new AgentWorkspace({

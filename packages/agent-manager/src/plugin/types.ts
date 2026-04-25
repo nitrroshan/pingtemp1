@@ -21,6 +21,10 @@ export interface ToolContext {
   role?: string;
   /** Current task ID — undefined for planner */
   taskId?: string;
+  /** Goal ID — used for goal-scoped branch naming and context */
+  goalId?: string;
+  /** Plan ID — used for plan-scoped context */
+  planId?: string;
 }
 
 /** Context provided to skills for conditional instruction generation */

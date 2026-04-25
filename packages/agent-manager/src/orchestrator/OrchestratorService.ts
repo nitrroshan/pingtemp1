@@ -27,6 +27,7 @@ import type {
   OrchestratorCallbacks,
   OrchestratorMessage,
 } from "./types.js";
+import { GoalManager } from "./GoalManager.js";
 
 const log = rootLogger.child({ module: "OrchestratorService" });
 
@@ -97,15 +98,14 @@ export class OrchestratorService {
   private planStore: any;
   // CRDT persistence — lazy proxies that resolve per-goal
   private crdtTaskSyncProxy: CrdtProxy | undefined;
-  private crdtGoalStoreProxy: CrdtProxy | undefined;
 
   /** Step 4: optional callback to route dispatch through ChatAgent instead of direct WorkerPool */
   private chatAgentDispatch?: (taskId: string, role: string) => Promise<void>;
 
-  // State — only 2 states in planner mode (planner manages its own phases)
-  private state: OrchestratorState = "idle";
+  // Goal lifecycle — delegated to GoalManager (Phase 3.5 SRP extraction)
+  private goalManager: GoalManager;
+
   private sessionId: string;
-  private currentGoalId: string | null = null;
   private messages: OrchestratorMessage[] = [];
   private autoExecute: boolean;
 
@@ -118,9 +118,6 @@ export class OrchestratorService {
   private taskAttempts = new Map<string, number>();
   // Deferred dispatch queue (when concurrency limit reached)
   private deferredDispatches: Array<{ taskId: string; role: string }> = [];
-
-  // Pending plan (between submit_plan and approve)
-  private pendingPlan: any = null;
 
   constructor(config: OrchestratorServiceConfig) {
     this.teamId = config.teamId;
@@ -137,6 +134,29 @@ export class OrchestratorService {
     this.callbacks = config.callbacks || {};
     this.sessionId = `team-${config.teamId}`;
     this.autoExecute = config.autoExecute ?? false;
+
+    // Create GoalManager — owns goal lifecycle, delegates dispatch back to us
+    this.goalManager = new GoalManager({
+      teamId: config.teamId,
+      teamRoles: config.teamRoles,
+      taskStore: config.taskStore,
+      dagResolver: config.dagResolver,
+      workerPool: config.workerPool,
+      pluginRegistry: config.pluginRegistry,
+      planStore: config.planStore,
+      crdtTaskSync: config.crdtTaskSync,
+      crdtGoalStore: config.crdtGoalStore,
+      autoExecute: this.autoExecute,
+      callbacks: {
+        onDispatchTask: (taskId, role) => this.handleReadyTask(taskId, role),
+        onNotifyPlanner: (msg) => this.notifyPlanner(msg),
+        onTaskUpdate: this.callbacks.onTaskUpdate,
+        onProgress: this.callbacks.onProgress,
+        onGoalStatusChange: this.callbacks.onGoalStatusChange,
+        onPlanApproved: this.callbacks.onPlanApproved,
+        onWorkerTaskUpdate: this.callbacks.onWorkerTaskUpdate,
+      },
+    });
   }
 
   /**
@@ -145,11 +165,11 @@ export class OrchestratorService {
    * Wire worker callbacks from WorkerPool → this.
    */
   async initialize(): Promise<void> {
-    // Wire task lifecycle: RoleTaskQueue → OrchestratorService
+    // Wire task lifecycle: RoleTaskQueue → GoalManager
     this.taskStore.setQueueCallbacks({
-      onTaskReady: (data) => this.onTaskReady(data),
-      onTaskComplete: (data) => this.onTaskComplete(data),
-      onTaskFailed: (data) => this.onTaskFailed(data),
+      onTaskReady: (data) => this.goalManager.onTaskReady(data),
+      onTaskComplete: (data) => this.goalManager.onTaskComplete(data),
+      onTaskFailed: (data) => this.goalManager.onTaskFailed(data),
     });
 
     // Wire worker streaming: WorkerPool → OrchestratorService → callbacks → Socket.IO
@@ -158,7 +178,7 @@ export class OrchestratorService {
       onEvent: (data) => this.callbacks.onEvent?.(data),
       onDone: (data) => this.callbacks.onDone?.(data),
       onError: (data) => this.callbacks.onError?.(data),
-      onAgentComplete: (data) => this.onWorkerDone(data),
+      onAgentComplete: (data) => this.goalManager.onWorkerDone(data),
       // R10-3 FIX: Track last reported status on task for blocked detection
       onStatusUpdate: (data) => {
         const task = this.taskStore.get(data.taskId);
@@ -204,7 +224,7 @@ export class OrchestratorService {
 
         // R9-2 FIX: Handle dependency failure for bounced task
         // Bounced tasks are marked "failed" — notify planner with blocked downstream info
-        this.handleTaskFailure(data.taskId, `Bounced by ${data.role}: ${data.reason}`);
+        this.goalManager.handleTaskFailure(data.taskId, `Bounced by ${data.role}: ${data.reason}`);
 
         // Gap D: When ChatAgent handles this role, skip per-bounce planner notification
         if (!this.chatAgentDispatch) {
@@ -225,9 +245,9 @@ export class OrchestratorService {
     });
 
     // Load active plan for restart recovery
-    await this.loadActivePlan();
+    await this.goalManager.loadActivePlan();
 
-    this.state = "idle";
+    this.goalManager.setState("idle");
     console.log(`[OrchestratorService] Initialized for team ${this.teamId}`);
   }
 
@@ -248,8 +268,8 @@ export class OrchestratorService {
   private async _handleMessage(content: string): Promise<string> {
     this.messages.push({ role: "user", content, timestamp: new Date().toISOString() });
 
-    if (this.state === "idle") {
-      this.state = "executing";
+    if (this.goalManager.getState() === "idle") {
+      this.goalManager.setState("executing");
     }
 
     // Each user message = new planner turn with full conversation history.
@@ -264,189 +284,30 @@ export class OrchestratorService {
   }
 
   /**
-   * Approve the pending plan. Adds tasks to TaskStore → RoleTaskQueue → dispatch.
+   * Approve the pending plan. Delegates to GoalManager.
    */
   async approvePlan(): Promise<{ success: boolean; tasksQueued?: number; error?: string }> {
-    if (!this.pendingPlan) {
-      return { success: false, error: "No pending plan to approve" };
-    }
-
-    try {
-      const planToApprove = this.pendingPlan;
-      const planId = planToApprove.planId;
-      this.pendingPlan = null;
-
-      // Clear previous state- This needs to update as in puture we want to support multiple plans handled in sequence without restarting the service
-      await this.workerPool.disposeAll();
-      this.taskStore.clear();
-
-      // Build dependants map
-      const dependantsMap = new Map<string, string[]>();
-      for (const task of planToApprove.tasks) {
-        for (const depId of task.dependencies) {
-          const existing = dependantsMap.get(depId) || [];
-          existing.push(task.id);
-          dependantsMap.set(depId, existing);
-        }
-      }
-
-      // Add tasks to TaskStore (single writer)
-      let tasksQueued = 0;
-      for (const task of planToApprove.tasks) {
-        const taskContext = (task as any).context || {};
-        const taskType = (task as any).type || taskContext.type || "work";
-        this.taskStore.create({
-          id: task.id,
-          title: task.title,
-          description: `${task.title}: ${task.description}`,
-          assigned_role: task.assignedRole.toLowerCase(),
-          status: "pending",
-          priority: task.priority,
-          type: taskType,
-          expectedOutput: task.expectedOutput,
-          prerequisites: new Map<string, boolean>(
-            task.dependencies.map((depId: string) => [depId, false] as [string, boolean]),
-          ),
-          dependants: dependantsMap.get(task.id) || [],
-          context: {
-            title: task.title,
-            planId,
-            goal: planToApprove.goal,
-            priority: task.priority,
-            complexity: task.complexity,
-            expectedOutput: task.expectedOutput,
-            notes: taskContext.notes || "",
-            files: taskContext.files || [],
-            artifacts: taskContext.artifacts || [],
-            relatedTasks: taskContext.relatedTasks || [],
-            references: (task as any).references || [],
-            type: taskType,
-          },
-        });
-        tasksQueued++;
-      }
-
-      // Rebuild DAG from TaskStore
-      this.dagResolver.rebuild(this.taskStore);
-
-      // Update state
-      this.state = "executing";
-      const goalId = toGoalId(planToApprove.goal || planId);
-      this.currentGoalId = goalId;
-      this.workerPool.setTeamId(this.teamId);
-
-      // ─── CRDT Persistence ───────────────────────────────────────────
-      // Resolve CRDT stores for this goal (lazy — goal-scoped)
-      if (this.crdtTaskSyncProxy?.resolveForGoal) {
-        this.crdtTaskSyncProxy.resolveForGoal(goalId);
-      }
-
-      // R5-1 FIX: Update CollaborationPlugin goalId so collab tool reads from correct space
-      const collabPlugin = this.pluginRegistry?.get("collaboration");
-      if (collabPlugin && typeof (collabPlugin as any).setGoalId === 'function') {
-        (collabPlugin as any).setGoalId(goalId);
-        log.info(`[approvePlan] CollaborationPlugin goalId set to "${goalId}"`);
-
-        // Wire collab callbacks so discuss mentions trigger priority worker spawn
-        if (typeof (collabPlugin as any).setCollabCallbacks === 'function') {
-          (collabPlugin as any).setCollabCallbacks({
-            onMentionedRoles: (roles: string[], sourceTaskId: string, docName: string, sourceRole?: string, postContent?: string) => {
-              this.spawnCollabWorkers(roles, docName, sourceRole, postContent);
-            },
-          });
-        }
-      }
-
-      // R2-#1 FIX: Update WorkerPool with resolved CRDT instance
-      const resolvedCrdtSync = this.crdtTaskSyncProxy?.get?.();
-      if (resolvedCrdtSync) {
-        this.workerPool.setTaskServices({
-          taskStore: this.taskStore,
-          dagResolver: this.dagResolver,
-          teamRoles: this.teamRoles,
-          crdtTaskSync: resolvedCrdtSync,
-          planId,
-          goalId,
-        });
-      }
-
-      // Persist goal, plan, and tasks to CRDT (durable, agent-browseable)
-      const crdtGoalStore = this.crdtGoalStoreProxy?.get?.();
-      if (crdtGoalStore) {
-        await crdtGoalStore.saveGoal(
-          goalId,
-          planToApprove.goal || planId,
-          planToApprove.goal || "",
-        );
-        await crdtGoalStore.updateStatus("executing", planId);
-      }
-
-      const crdtTaskSync = this.crdtTaskSyncProxy?.get?.();
-      if (crdtTaskSync) {
-        // R6-4 FIX: Persist each task to CRDT with error handling
-        let persistedCount = 0;
-        const allTasks = this.taskStore.getAll();
-        for (const task of allTasks) {
-          try {
-            await crdtTaskSync.persistTask(task);
-            persistedCount++;
-          } catch (err) {
-            log.error(`[approvePlan] Failed to persist task ${task.id} to CRDT: ${err}`);
-          }
-        }
-        log.info(`[approvePlan] Persisted ${persistedCount}/${allTasks.length} tasks to CRDT`);
-        // Persist plan overview to CRDT
-        try {
-          await crdtTaskSync.persistPlan(planToApprove, goalId);
-        } catch (err) {
-          log.error(`[approvePlan] Failed to persist plan to CRDT: ${err}`);
-        }
-        // Update task index
-        try {
-          await crdtTaskSync.updateIndex(allTasks);
-        } catch (err) {
-          log.error(`[approvePlan] Failed to update CRDT task index: ${err}`);
-        }
-      }
-      // ────────────────────────────────────────────────────────────────
-
-      // Persist plan
-      if (this.planStore) {
-        await this.planStore.savePlan(planToApprove, { goalId, status: "approved" });
-        await this.planStore.updatePlanStatus(planId, goalId, "executing");
-      }
-
-      // Notify frontend
-      this.callbacks.onPlanApproved?.({
-        planId,
-        teamId: this.teamId,
-        tasksQueued,
-        timestamp: new Date().toISOString(),
-      });
-
-      return { success: true, tasksQueued };
-    } catch (error) {
-      return { success: false, error: error instanceof Error ? error.message : String(error) };
-    }
+    return this.goalManager.approvePlan();
   }
 
   // ═══════════════════════════════════════════════════════════════════
   // STATE QUERIES (read-only — used by tools and AgentManager)
   // ═══════════════════════════════════════════════════════════════════
 
-  getState(): OrchestratorState { return this.state; }
-  setState(state: OrchestratorState) { this.state = state; }
-  getPendingPlan() { return this.pendingPlan; }
-  setPendingPlan(plan: any) { this.pendingPlan = plan; }
+  getState(): OrchestratorState { return this.goalManager.getState(); }
+  setState(state: OrchestratorState) { this.goalManager.setState(state); }
+  getPendingPlan() { return this.goalManager.getPendingPlan(); }
+  setPendingPlan(plan: any) { this.goalManager.setPendingPlan(plan); }
   getAutoExecute(): boolean { return this.autoExecute; }
   setAutoExecute(enabled: boolean) {
     this.autoExecute = enabled;
+    this.goalManager.setAutoExecute(enabled);
     // When toggled ON, dispatch any tasks already sitting in "ready" state
     if (enabled) this.dispatchReadyTasks();
   }
   getTeamId(): string { return this.teamId; }
   getTeamRoles(): string[] { return this.teamRoles; }
-  getCurrentGoalId(): string | null { return this.currentGoalId; }
+  getCurrentGoalId(): string | null { return this.goalManager.getGoalId(); }
   getCallbacks(): OrchestratorCallbacks { return this.callbacks; }
   getTaskStore(): TaskStore { return this.taskStore; }
 
@@ -454,6 +315,38 @@ export class OrchestratorService {
   setChatAgentDispatch(dispatch: (taskId: string, role: string) => Promise<void>): void {
     this.chatAgentDispatch = dispatch;
     log.info("ChatAgent dispatch enabled — tasks will route through ChatAgent");
+  }
+
+  /**
+   * Handle a ready task — bridge from GoalManager.onTaskReady → dispatch.
+   * Manages autoExecute check, ChatAgent routing, and concurrency limits.
+   * GoalManager calls this via the onDispatchTask callback.
+   */
+  private handleReadyTask(taskId: string, role: string): void {
+    if (!this.autoExecute) return;
+    if (this.activeDispatches.has(taskId)) return;
+
+    // Route through ChatAgent if dispatch callback is set
+    if (this.chatAgentDispatch) {
+      this.chatAgentDispatch(taskId, role).catch((err) => {
+        log.error(`ChatAgent dispatch error for ${taskId}:`, err);
+      });
+      return;
+    }
+
+    // Concurrency limit: defer if too many active dispatches
+    if (this.activeDispatches.size >= MAX_CONCURRENT_DISPATCHES) {
+      this.deferredDispatches.push({ taskId, role });
+      return;
+    }
+
+    this.activeDispatches.add(taskId);
+    this.dispatchTask(taskId, role).catch((err) => {
+      log.error(`Auto-dispatch error for ${taskId}:`, err);
+    }).finally(() => {
+      this.activeDispatches.delete(taskId);
+      this.drainDeferredDispatches();
+    });
   }
 
   /**
@@ -530,8 +423,7 @@ export class OrchestratorService {
     const readyTasks = this.taskStore.getByStatus("ready");
     for (const task of readyTasks) {
       if (this.activeDispatches.has(task.id)) continue;
-      // Re-use the same onTaskReady path which handles concurrency limits
-      this.onTaskReady({ taskId: task.id, role: task.assigned_role });
+      this.handleReadyTask(task.id, task.assigned_role);
     }
   }
 
@@ -579,45 +471,6 @@ export class OrchestratorService {
         .catch((err) => log.error(`Collab worker ${collabWorkerId} error: ${err}`))
         .finally(() => { this.workerPool.dispose(collabWorkerId).catch(() => {}); });
     }
-  }
-
-  /** Task became ready → dispatch to WorkerPool (if autoExecute ON), else notify frontend */
-  private async onTaskReady({ taskId, role }: { taskId: string; role: string }): Promise<void> {
-    log.info(`onTaskReady: ${taskId} (${role})`);
-
-    // Always notify frontend that the task is ready
-    this.callbacks.onTaskUpdate?.({
-      taskId, status: "ready", role, timestamp: Date.now(),
-    });
-
-    if (!this.autoExecute) return;
-
-    // Guard against double-dispatch (onTaskReady can fire from both create() and completeTask()).
-    if (this.activeDispatches.has(taskId)) return;
-
-    // Step 4: Route through ChatAgent if dispatch callback is set
-    if (this.chatAgentDispatch) {
-      this.chatAgentDispatch(taskId, role).catch((err) => {
-        log.error(`ChatAgent dispatch error for ${taskId}:`, err);
-      });
-      return;
-    }
-
-    // Concurrency limit: defer if too many active dispatches
-    if (this.activeDispatches.size >= MAX_CONCURRENT_DISPATCHES) {
-      log.info(`Concurrency limit reached (${this.activeDispatches.size}/${MAX_CONCURRENT_DISPATCHES}), deferring ${taskId}`);
-      this.deferredDispatches.push({ taskId, role });
-      return;
-    }
-
-    this.activeDispatches.add(taskId);
-
-    this.dispatchTask(taskId, role).catch((err) => {
-      log.error(`Auto-dispatch error for ${taskId}:`, err);
-    }).finally(() => {
-      this.activeDispatches.delete(taskId);
-      this.drainDeferredDispatches();
-    });
   }
 
   /** Drain deferred dispatches when a slot opens up */
@@ -675,313 +528,6 @@ export class OrchestratorService {
       .catch((err) => { log.error(`Dispatch error for ${taskId}:`, err); })
       .finally(() => this.activeDispatches.delete(taskId));
     await this.manualDispatchChain;
-  }
-
-  /** Task completed → check if all done, notify planner */
-  private onTaskComplete({ taskId, output }: { taskId: string; output: any }): void {
-    log.info(`onTaskComplete: ${taskId}`);
-    this.taskAttempts.delete(taskId); // Clean up retry tracking
-    const task = this.taskStore.get(taskId);
-
-    this.callbacks.onTaskUpdate?.({
-      taskId, status: "completed", role: task?.assigned_role, output, timestamp: Date.now(),
-    });
-
-    if (this.taskStore.isAllComplete()) {
-      // Check if we're in research phase → transition to planning, not idle
-      if (this.state === "researching") {
-        this.state = "idle"; // Back to idle — planner can now call submit_plan
-        this.notifyPlanner(
-          PromptLoader.loadTemplate("orchestrator", "research-complete"),
-        );
-        this.callbacks.onProgress?.({
-          teamId: this.teamId, state: "idle",
-          message: "Research complete — ready for planning",
-          timestamp: new Date().toISOString(),
-        });
-      } else {
-        // R10-6 FIX: Differentiate success vs failure notifications
-        const allTasks = this.taskStore.getAll();
-        const failedTasks = allTasks.filter(t => t.status === "failed");
-        const discardedTasks = allTasks.filter(t => t.status === "discarded");
-        const completedTasks = allTasks.filter(t => t.status === "completed");
-
-        this.state = "idle";
-
-        if (failedTasks.length > 0) {
-          // Some tasks failed — planner MUST act
-          this.notifyPlanner(
-            `⚠️ All tasks finished but ${failedTasks.length} failed:\n` +
-            failedTasks.map(t => `- ${t.id} (${t.assigned_role}): ${t.description?.slice(0, 80)}`).join("\n") +
-            `\n\n${completedTasks.length} completed, ${discardedTasks.length} discarded.` +
-            `\n\nACTION REQUIRED — call a tool NOW:` +
-            `\n- Call \`get_status\` to review details` +
-            `\n- Call \`reassign_task\` to retry failed tasks` +
-            `\n- Call \`replan\` to replace the plan` +
-            `\n- Or tell the user the results if no recovery is possible` +
-            `\nDo NOT just describe what happened — take action.`,
-          );
-          // If ALL tasks failed (none completed), emit goal failed
-          if (completedTasks.length === 0) {
-            this.callbacks.onGoalStatusChange?.({ teamId: this.teamId, status: "failed" });
-          }
-          this.callbacks.onProgress?.({
-            teamId: this.teamId, state: "idle",
-            message: `${completedTasks.length} completed, ${failedTasks.length} failed`,
-            timestamp: new Date().toISOString(),
-          });
-        } else {
-          // All succeeded — sync plan status and notify
-          const crdtSyncComplete = this.crdtTaskSyncProxy?.get?.();
-          if (crdtSyncComplete?.syncPlanStatus) {
-            crdtSyncComplete.syncPlanStatus("completed").catch((err: any) => {
-              log.warn(`Failed to sync plan completion to CRDT: ${err}`);
-            });
-          }
-          this.notifyPlanner(PromptLoader.loadTemplate("orchestrator", "all-complete"));
-          this.callbacks.onGoalStatusChange?.({ teamId: this.teamId, status: "completed" });
-          this.callbacks.onProgress?.({
-            teamId: this.teamId, state: "idle",
-            message: "All tasks completed successfully",
-            timestamp: new Date().toISOString(),
-          });
-        }
-      }
-    }
-  }
-
-  // ═══════════════════════════════════════════════════════════════════
-  // R9-2 FIX: Dependency failure cascade
-  // When a task fails or bounces, handle its downstream dependants
-  // based on the onDependencyFail strategy (default: notify planner)
-  // ═══════════════════════════════════════════════════════════════════
-
-  /**
-   * Handle dependency failure — applies onDependencyFail strategy to downstream tasks.
-   * Called from both onTaskFailed() and onBounce().
-   *
-   * Strategies:
-   * - "replan" (default for bounced tasks): notify planner, keep dependants pending
-   * - "fail": cascade failure to all dependants recursively
-   * - "skip": mark dependants as completed with skip note
-   */
-  private handleTaskFailure(taskId: string, reason: string): void {
-    const task = this.taskStore.get(taskId);
-    if (!task) return;
-
-    // Find direct dependants
-    const dependants = this.taskStore.getAll().filter(
-      (t) => t.prerequisites?.has(taskId) && t.status !== "completed" && t.status !== "failed"
-    );
-
-    if (dependants.length === 0) return;
-
-    for (const dep of dependants) {
-      const strategy = (dep.context as any)?.onDependencyFail || "replan";
-
-      switch (strategy) {
-        case "fail":
-          // Cascade failure
-          this.taskStore.updateStatus(dep.id, "failed");
-          this.callbacks.onTaskUpdate?.({
-            taskId: dep.id, status: "failed", role: dep.assigned_role, timestamp: Date.now(),
-          });
-          log.info(`[DependencyFail] Cascaded failure: ${taskId} → ${dep.id} (${dep.assigned_role})`);
-          // Recurse for transitive dependants
-          this.handleTaskFailure(dep.id, `Upstream dependency ${taskId} failed`);
-          break;
-
-        case "skip":
-          // Mark as completed with skip note
-          this.taskStore.completeTask(dep.id, {
-            summary: `Skipped: upstream dependency ${taskId} failed`,
-            skipped: true,
-            skipReason: reason,
-          });
-          this.callbacks.onTaskUpdate?.({
-            taskId: dep.id, status: "completed", role: dep.assigned_role, timestamp: Date.now(),
-          });
-          log.info(`[DependencyFail] Skipped: ${dep.id} (upstream ${taskId} failed)`);
-          break;
-
-        case "replan":
-        default:
-          // Keep pending — planner will decide what to do
-          // The planner notification from onTaskFailed/onBounce includes blocked task info
-          log.info(`[DependencyFail] Awaiting planner decision for ${dep.id} (blocked by ${taskId})`);
-          break;
-      }
-    }
-  }
-
-  /** Task failed → notify plugins, notify planner for decision */
-  private onTaskFailed({ taskId, error }: { taskId: string; error: string }): void {
-    log.error(`onTaskFailed: ${taskId}: ${error}`);
-    const task = this.taskStore.get(taskId);
-
-    // Store failure reason on task for downstream context enrichment
-    if (task) {
-      task.output = { error, failedAt: new Date().toISOString(), summary: `FAILED: ${error}` };
-    }
-
-    // Notify plugins (workspace cleanup, etc.)
-    this.pluginRegistry?.onTaskFailed(taskId).catch((err) => {
-      log.warn(`Plugin onTaskFailed error for ${taskId}: ${err}`);
-    });
-
-    // ─── CRDT Persistence ───
-    // Fix #3: Explicit null guard with warning log
-    const crdtSync = this.crdtTaskSyncProxy?.get?.();
-    if (crdtSync) {
-      crdtSync.syncStatus(taskId, "failed").catch((err: any) => {
-        log.warn(`CRDT sync failed for task ${taskId}: ${err}`);
-      });
-      crdtSync.updateIndex(this.taskStore.getAll()).catch(() => {});
-    } else {
-      log.debug(`CRDT not resolved — skipping failed status sync for ${taskId}`);
-    }
-    // ───────────────────────
-
-    // R2-#2 FIX: Check if we're in researching state and all tasks are done (including failures)
-    const allTasksDone = this.taskStore.getAll().every(
-      (t) => t.status === "completed" || t.status === "failed"
-    );
-    if (this.state === "researching" && allTasksDone) {
-      this.state = "idle";
-      this.notifyPlanner(
-        PromptLoader.loadTemplate("orchestrator", "research-failed"),
-      );
-      this.callbacks.onProgress?.({
-        teamId: this.teamId, state: "idle",
-        message: "Research phase completed with failures",
-        timestamp: new Date().toISOString(),
-      });
-    }
-
-    this.callbacks.onTaskUpdate?.({
-      taskId, status: "failed", role: task?.assigned_role, timestamp: Date.now(),
-    });
-
-    // R9-2 FIX: Handle dependency failure cascade for downstream tasks
-    this.handleTaskFailure(taskId, error);
-
-    // Identify downstream tasks blocked by this failure (for planner notification)
-    const blockedTasks = this.taskStore.getAll()
-      .filter(t => t.prerequisites?.has(taskId) && t.status !== "completed" && t.status !== "failed")
-      .map(t => `${t.id} (${t.assigned_role})`)
-      .join(", ") || null;
-
-    // Gap D: When ChatAgent handles this role, skip per-task planner notification
-    // ChatAgent.ingestTaskUpdate("failed") already fired via Channel B
-    // ChatAgent will call notifyPlannerFromRole with role context
-    if (this.chatAgentDispatch) {
-      log.debug(`Skipping direct planner notification for ${taskId} — ChatAgent handles escalation`);
-      return;
-    }
-
-    this.notifyPlanner(
-      PromptLoader.loadTemplate("orchestrator", "task-failed", {
-        description: task?.description || taskId,
-        role: task?.assigned_role || "unknown",
-        error,
-        blockedSuffix: blockedTasks
-          ? `⚠️ Blocked downstream tasks: ${blockedTasks}\n`
-          : "",
-      }),
-    );
-  }
-
-  /** Worker completed via complete_task tool → notify plugins, mark complete */
-  private async onWorkerDone(data: {
-    taskId: string; role: string; summary: string;
-    deliverables?: string[]; nextSteps?: string[]; timestamp: number;
-  }): Promise<void> {
-    console.log(`[OrchestratorService] Worker done: ${data.taskId}`);
-
-    // Guard: skip if task is already completed (prevents double-completion crash)
-    const currentTask = this.taskStore.get(data.taskId);
-
-    // Fix 3: Collab workers have IDs like "collab-task-5-discussion-frontend" — not in TaskStore
-    if (!currentTask && data.taskId.startsWith("collab-")) {
-      log.debug(`Collab worker ${data.taskId} completed — no TaskStore entry (expected)`);
-      return;
-    }
-
-    if (currentTask && (currentTask.status === "completed" || currentTask.status === "discarded")) {
-      log.debug(`Task ${data.taskId} already ${currentTask.status} — skipping onWorkerDone`);
-      return;
-    }
-
-    // Mark that agent called complete_task — prevents auto-complete race condition
-    if (currentTask) {
-      currentTask.completionSource = "tool";
-    }
-
-    // Notify plugins (workspace publish + merge, etc.)
-    if (this.pluginRegistry) {
-      try {
-        const result = await this.pluginRegistry.onTaskComplete(data.taskId, this.currentGoalId || undefined);
-        if (!result.success) {
-          // BUG A FIX: Merge failure → fail the task, don't complete it.
-          // This prevents dependent tasks from dispatching against a main branch
-          // that's missing the predecessor's files.
-          const mergeError = `Workspace merge failed: ${result.error}`;
-          log.error(`[OrchestratorService] ${mergeError}`);
-          try { this.taskStore.updateStatus(data.taskId, "failed"); } catch { /* already failed */ }
-          this.taskStore.queue.failTask(data.taskId, mergeError);
-          this.callbacks?.onTaskUpdate?.({ taskId: data.taskId, status: "failed", timestamp: data.timestamp });
-          return;
-        }
-      } catch (err) {
-        const mergeError = `Plugin cleanup crashed for task ${data.taskId}: ${err}`;
-        log.error(`[OrchestratorService] ${mergeError}`);
-        try { this.taskStore.updateStatus(data.taskId, "failed"); } catch { /* already failed */ }
-        this.taskStore.queue.failTask(data.taskId, mergeError);
-        this.callbacks?.onTaskUpdate?.({ taskId: data.taskId, status: "failed", timestamp: data.timestamp });
-        return;
-      }
-    }
-
-    // Auto-close discussion CRDT if this is a discussion task
-    const completingTask = this.taskStore.get(data.taskId);
-    if (completingTask && (completingTask.type === "discussion" || completingTask.type === "collaboration")) {
-      try {
-        const crdtSync = this.crdtTaskSyncProxy?.get?.();
-        if (crdtSync) {
-          const discussionDoc = await crdtSync.space.openDoc(`${data.taskId}/discussion`);
-          const configMap = discussionDoc.getMap("config");
-          if (configMap.get("status") !== "closed") {
-            configMap.set("status", "closed");
-            log.info(`Auto-closed discussion for completed task ${data.taskId}`);
-          }
-        }
-      } catch (err) {
-        log.debug(`Failed to auto-close discussion for ${data.taskId}: ${err}`);
-      }
-    }
-
-    // Mark complete in TaskStore → triggers onTaskComplete via RoleTaskQueue
-    // Newly ready dependants are queued → onTaskReady fires → auto-dispatch if enabled
-    this.taskStore.completeTask(data.taskId, {
-      summary: data.summary,
-      deliverables: data.deliverables,
-      nextSteps: data.nextSteps, completedBy: "agent", timestamp: data.timestamp,
-    });
-
-    // ─── CRDT Persistence ───────────────────────────────────────────
-    // Fix #3: Explicit null guard with warning log
-    const crdtSyncDone = this.crdtTaskSyncProxy?.get?.();
-    if (crdtSyncDone) {
-      await crdtSyncDone.syncStatus(data.taskId, "completed", {
-        summary: data.summary,
-        deliverables: data.deliverables,
-        nextSteps: data.nextSteps,
-      });
-      await crdtSyncDone.updateIndex(this.taskStore.getAll());
-    } else {
-      log.debug(`CRDT not resolved — skipping completed status sync for ${data.taskId}`);
-    }
-    // ────────────────────────────────────────────────────────────────
   }
 
   // ═══════════════════════════════════════════════════════════════════
@@ -1214,7 +760,7 @@ export class OrchestratorService {
           // Publish + merge workspace before completing (same as onWorkerDone path)
           if (this.pluginRegistry) {
             try {
-              const result = await this.pluginRegistry.onTaskComplete(taskId, this.currentGoalId || undefined);
+              const result = await this.pluginRegistry.onTaskComplete(taskId, this.goalManager.getGoalId() || undefined);
               if (!result.success) {
                 console.warn(`[OrchestratorService] Auto-complete merge warning for ${taskId}: ${result.error}`);
               }
@@ -1295,118 +841,15 @@ export class OrchestratorService {
     this.notifyPlanner(message);
   }
 
-  /** Load active plan from disk for restart recovery. */
-  private async loadActivePlan(): Promise<void> {
-    if (!this.planStore) return;
-    try {
-      const stored = await this.planStore.getLatestActivePlan();
-      if (!stored) return;
-      this.currentGoalId = stored.metadata.goalId || null;
-
-      if (stored.metadata.status === "approved") {
-        this.pendingPlan = stored.plan;
-        this.state = "awaiting_approval";
-      } else if (stored.metadata.status === "executing") {
-        // Build dependants map from plan structure
-        const dep = new Map<string, string[]>();
-        for (const t of stored.plan.tasks) {
-          for (const d of t.dependencies) {
-            const e = dep.get(d) || []; e.push(t.id); dep.set(d, e);
-          }
-        }
-
-        // Try to restore task statuses from CRDT (survives restart)
-        let crdtTasks: Map<string, any> | null = null;
-        if (this.currentGoalId && this.crdtTaskSyncProxy) {
-          try {
-            this.crdtTaskSyncProxy.resolveForGoal(this.currentGoalId);
-            // Also resolve CRDT goal store if available
-            this.crdtGoalStoreProxy?.resolveForGoal?.(this.currentGoalId);
-            const crdtSync = this.crdtTaskSyncProxy.get?.();
-            if (crdtSync?.loadAllTasks) {
-              const loaded = await crdtSync.loadAllTasks();
-              if (loaded.length > 0) {
-                crdtTasks = new Map(loaded.map((t: any) => [t.id, t]));
-                log.info(`[loadActivePlan] Restored ${loaded.length} tasks from CRDT (${loaded.filter((t: any) => t.status === "completed").length} completed)`);
-              }
-            }
-          } catch (err) {
-            log.warn(`[loadActivePlan] Failed to read CRDT task state, falling back to pending: ${err}`);
-          }
-        }
-
-        for (const t of stored.plan.tasks) {
-          const crdtTask = crdtTasks?.get(t.id);
-          // Use CRDT status if available, else default to pending
-          let status = crdtTask?.status ?? "pending";
-          // Reset in_progress tasks to ready (worker was interrupted by restart)
-          if (status === "in_progress") status = "ready";
-
-          const prerequisites = crdtTask?.prerequisites
-            ?? new Map(t.dependencies.map((d: string) => [d, false] as [string, boolean]));
-
-          this.taskStore.create({
-            id: t.id,
-            description: crdtTask?.description ?? `${t.title}: ${t.description}`,
-            assigned_role: t.assignedRole.toLowerCase(),
-            status,
-            output: crdtTask?.output,
-            prerequisites,
-            dependants: dep.get(t.id) || [],
-            context: crdtTask?.context ?? { title: t.title, planId: stored.plan.planId, goal: stored.plan.goal },
-          });
-        }
-        this.state = "executing";
-
-        // Check if all tasks are already complete (plan finished before restart)
-        if (this.taskStore.isAllComplete()) {
-          this.state = "idle";
-          log.info("[loadActivePlan] All tasks already completed — plan finished");
-        }
-      }
-
-      if (stored.metadata.status === "completed") {
-        this.state = "idle";
-      }
-    } catch (error) {
-      console.error("[OrchestratorService] Failed to load active plan:", error);
-    }
-  }
-
-  reset(): void { this.state = "idle"; this.pendingPlan = null; this.messages = []; }
+  reset(): void { this.goalManager.reset(); this.messages = []; }
 
   async resetPlan(): Promise<{ deleted: boolean; planId?: string }> {
-    try {
-      if (this.planStore) {
-        const s = await this.planStore.getLatestActivePlan();
-        if (s && (s.metadata.status === "executing" || s.metadata.status === "approved")) {
-          await this.planStore.archivePlan(s.plan.planId, s.metadata.goalId);
-          // BUG-1 FIX: Sync plan status to CRDT
-          const crdtSync = this.crdtTaskSyncProxy?.get?.();
-          if (crdtSync?.syncPlanStatus) {
-            await crdtSync.syncPlanStatus("interrupted").catch(() => {});
-          }
-          this.reset(); return { deleted: true, planId: s.plan.planId };
-        }
-      }
-      this.reset(); return { deleted: false };
-    } catch { this.reset(); return { deleted: false }; }
+    return this.goalManager.resetPlan();
   }
 
   async interruptPlan(): Promise<void> {
-    if (!this.planStore) return;
-    try {
-      const s = await this.planStore.getLatestActivePlan();
-      if (s?.metadata.status === "executing") {
-        await this.planStore.updatePlanStatus(s.plan.planId, s.metadata.goalId, "interrupted");
-        // BUG-1 FIX: Sync plan status to CRDT
-        const crdtSync = this.crdtTaskSyncProxy?.get?.();
-        if (crdtSync?.syncPlanStatus) {
-          await crdtSync.syncPlanStatus("interrupted").catch(() => {});
-        }
-      }
-    } catch { /* best effort */ }
+    return this.goalManager.interruptPlan();
   }
 
-  dispose(): void { this.uim?.cancelAll(); this.notificationQueue?.dispose(); }
+  dispose(): void { this.uim?.cancelAll(); this.notificationQueue?.dispose(); this.goalManager.dispose(); }
 }

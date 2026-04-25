@@ -137,7 +137,9 @@ export class WorkspacePlugin implements IPlugin {
     // Ensure workspace exists — createWorkspace returns existing if already created
     const existing = this.l1.getWorkspace(context.taskId);
     if (!existing) {
-      await this.l1.createWorkspace(context.role, context.taskId);
+      await this.l1.createWorkspace(context.role, context.taskId, {
+        goalId: context.goalId,
+      });
     }
   }
 

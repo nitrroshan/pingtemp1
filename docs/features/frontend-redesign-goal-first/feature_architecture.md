@@ -45,6 +45,7 @@ App (router shell)
     └── DetailPanel (rewritten with tabs)
         ├── TabBar (new primitive)
         ├── OverviewTab (new) — task metadata
+        │   └── TaskChanges (new) — collapsible at bottom: file list with Diff/File toggle
         ├── DiscussionTab (Slack-style)
         │   ├── DiscussionMessages (extracted from DiscussionThread)
         │   ├── DiscussionInfo (new tab content)

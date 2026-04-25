@@ -89,7 +89,7 @@ Researched 7 leading products to validate design decisions and find gaps.
 |---|---|---|---|---|
 | 1 | **No elapsed time per task** | Codex shows time; Cursor shows "worked for 14m" | Add elapsed time to sidebar task rows (computed from Channel B `started` → `completed` timestamps) | Trivial |
 | 2 | **No mode indicator on agents** | Cursor's autonomy slider visible in UI | Show mode icon next to agent in sidebar: 🟢 auto, 🟡 review, ⚪ manual. Click to cycle. | Trivial |
-| 3 | **No files-changed summary** | Codex shows inline diffs; Devin shows PR diffs | On task completion, show compact "N files changed" in task detail Overview tab | Small |
+| 3 | **No files-changed summary** | Codex shows inline diffs; Devin shows PR diffs | `▶ Changes` collapsible at bottom of task Overview — expands to show file list with per-file Diff/File toggle. Syntax highlighted, line numbers, copy button. API: `GET /tasks/:id/changes`. Phase 15. | Medium |
 | 4 | **Channel B events as chat bubbles** | Linear uses compact timeline entries, not full messages | Render Channel B `TaskUpdate` events as **timeline entries** (icon + one-liner + timestamp) not chat bubbles. Saves vertical space. | Small |
 | 5 | **No task-level action buttons** | Codex: "review / request changes / open PR" per task | Add action buttons in task detail panel on completion: Review, Retry, Pause | Small |
 | 6 | **No progress indicator on task row** | Codex shows spinner + step count | Add thin progress bar or percentage on sidebar task row (from Channel B `progress.pct`) | Trivial |
@@ -334,13 +334,11 @@ When user clicks a task in the sidebar, it opens in the **Detail Panel** (right 
 │        │                             │ Blocks:      │
 │        │                             │  T-3, T-4    │
 │        │                             │              │
-│        │                             │ Files: 3     │
-│        │                             │  src/auth.ts │
-│        │                             │  src/db.ts   │
-│        │                             │  tests/...   │
-│        │                             │              │
 │        │                             │ [Review]     │
 │        │                             │ [Retry]      │
+│        │                             │──────────────│
+│        │                             │▶ Changes     │
+│        │                             │ (3 files +157)│
 └────────┴─────────────────────────────┴──────────────┘
 ```
 
@@ -348,8 +346,8 @@ When user clicks a task in the sidebar, it opens in the **Detail Panel** (right 
 - No new route — stays on `/teams/{id}/chat`
 - Same detail panel can show Events, Agents, or Task detail depending on what's selected
 - **Elapsed time** shown for in-progress and completed tasks
-- **Files changed** summary shown on completion (from worker's `complete_task` deliverables)
-- **Action buttons** at bottom: Review (opens diff), Retry (resets to ready), Pause (cancels worker, keeps status)
+- **`▶ Changes` collapsible** pinned at bottom — click expands to show file list with Diff/File toggle per file. Replaces panel content when expanded. `[← Back]` returns to overview.
+- **Action buttons** above the collapsible: Review (opens diff), Retry (resets to ready), Pause (cancels worker, keeps status)
 
 ### Step 4: Viewing a Discussion (Click discussion task)
 
@@ -1375,13 +1373,11 @@ Full-width main area. Hamburger → opens sidebar drawer.
 │ Depends on: (none)       │
 │ Blocks: T-3, T-4         │
 │                          │
-│ Files changed: 3         │
-│  src/auth/register.ts    │
-│  src/auth/login.ts       │
-│  tests/auth.test.ts      │
-│                          │
 │ [Review]  [Retry]        │
 │                          │
+│──────────────────────────│
+│ ▶ Changes                │
+│  (3 files, +157 lines)   │
 └──────────────────────────┘
 ```
 
