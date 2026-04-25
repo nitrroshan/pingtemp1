@@ -793,4 +793,4 @@ User message → PlannerAgent → submit_plan({ repoUrl, tasks })
 | `git worktree` version requirements | Require git ≥ 2.15. Fallback to full clone if worktree fails |
 | Plan cleanup race with late-finishing tasks | `cleanupPlan()` checks all task workspaces are merged/discarded before deleting |
 
-## Estimated Total: 11 days
+## Estimated Total: 10.5 days

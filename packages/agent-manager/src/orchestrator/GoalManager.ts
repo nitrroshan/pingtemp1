@@ -397,6 +397,17 @@ export class GoalManager implements IGoalManager {
         this.crdtTaskSyncProxy.resolveForGoal(goalId);
       }
 
+      // Persist all tasks to CRDT (enables restore on restart)
+      const crdtSync = this.crdtTaskSyncProxy?.get?.();
+      if (crdtSync?.persistTask) {
+        const allTasks = this.taskStore.getByGoal(goalId);
+        for (const task of allTasks) {
+          await crdtSync.persistTask(task);
+        }
+        await crdtSync.updateIndex(allTasks);
+        log.info(`[approvePlan] Persisted ${allTasks.length} tasks to CRDT`);
+      }
+
       // Update CollaborationPlugin goalId
       const collabPlugin = this.pluginRegistry?.get("collaboration");
       if (collabPlugin && typeof (collabPlugin as any).setGoalId === "function") {
@@ -879,12 +890,14 @@ export class GoalManager implements IGoalManager {
   // ═══════════════════════════════════════════════════════════════════
 
   async loadActivePlan(): Promise<void> {
-    if (!this.planStore) return;
+    if (!this.planStore) { log.info("[loadActivePlan] No planStore — skipping"); return; }
     try {
       const stored = await this.planStore.getLatestActivePlan();
-      if (!stored) return;
+      if (!stored) { log.info("[loadActivePlan] No active plan found on disk"); return; }
       const goalId = stored.metadata.goalId || null;
-      if (!goalId) return;
+      if (!goalId) { log.info("[loadActivePlan] Plan has no goalId — skipping"); return; }
+
+      log.info(`[loadActivePlan] Found plan: goalId=${goalId}, planId=${stored.plan?.planId}, status=${stored.metadata.status}, tasks=${stored.plan?.tasks?.length}`);
 
       this.activeGoalId = goalId;
       const goal = this.getOrCreateGoal(goalId, stored.plan?.goal || goalId);
@@ -892,6 +905,7 @@ export class GoalManager implements IGoalManager {
       if (stored.metadata.status === "approved") {
         goal.pendingPlan = stored.plan;
         goal.state = "awaiting_approval";
+        log.info("[loadActivePlan] Plan awaiting approval");
       } else if (stored.metadata.status === "executing") {
         goal.currentPlanId = stored.plan?.planId || null;
         const dep = new Map<string, string[]>();
@@ -903,16 +917,21 @@ export class GoalManager implements IGoalManager {
 
         // Restore task statuses from CRDT
         let crdtTasks: Map<string, any> | null = null;
+        log.info(`[loadActivePlan] crdtTaskSyncProxy exists: ${!!this.crdtTaskSyncProxy}`);
         if (this.crdtTaskSyncProxy) {
           try {
             this.crdtTaskSyncProxy.resolveForGoal(goalId);
             this.crdtGoalStoreProxy?.resolveForGoal?.(goalId);
             const crdtSync = this.crdtTaskSyncProxy.get?.();
+            log.info(`[loadActivePlan] crdtSync resolved: ${!!crdtSync}, hasLoadAllTasks: ${!!crdtSync?.loadAllTasks}`);
             if (crdtSync?.loadAllTasks) {
               const loaded = await crdtSync.loadAllTasks();
+              log.info(`[loadActivePlan] CRDT returned ${loaded.length} tasks`);
               if (loaded.length > 0) {
                 crdtTasks = new Map(loaded.map((t: any) => [t.id, t]));
-                log.info(`[loadActivePlan] Restored ${loaded.length} tasks from CRDT`);
+                for (const t of loaded) {
+                  log.info(`  CRDT task ${t.id}: status=${t.status}, hasOutput=${!!t.output}`);
+                }
               }
             }
           } catch (err) {
@@ -924,6 +943,8 @@ export class GoalManager implements IGoalManager {
           const crdtTask = crdtTasks?.get(t.id);
           let status = crdtTask?.status ?? "pending";
           if (status === "in_progress") status = "ready";
+
+          log.info(`  Restoring task ${t.id} (${t.assignedRole}): crdtStatus=${crdtTask?.status ?? 'NONE'} → finalStatus=${status}`);
 
           const prerequisites = crdtTask?.prerequisites
             ?? new Map(t.dependencies.map((d: string) => [d, false] as [string, boolean]));
@@ -943,6 +964,10 @@ export class GoalManager implements IGoalManager {
         }
         goal.state = "executing";
 
+        const completed = this.taskStore.getByGoal(goalId).filter(t => t.status === "completed").length;
+        const total = this.taskStore.getByGoal(goalId).length;
+        log.info(`[loadActivePlan] Restored ${completed}/${total} tasks completed for goal ${goalId}`);
+
         if (this.taskStore.isAllCompleteForGoal(goalId)) {
           goal.state = "done";
           log.info("[loadActivePlan] All tasks already completed — plan finished");
@@ -951,6 +976,7 @@ export class GoalManager implements IGoalManager {
 
       if (stored.metadata.status === "completed") {
         goal.state = "done";
+        log.info("[loadActivePlan] Plan already completed");
       }
     } catch (error) {
       log.error(`[GoalManager] Failed to load active plan: ${error}`);
