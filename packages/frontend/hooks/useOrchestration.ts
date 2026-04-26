@@ -50,6 +50,7 @@ export interface OrchestrationActions {
   addOrchestrationLog: (source: string, message: string, type: OrchestrationEvent['type']) => void;
   setSessionState: (state: string | null) => void;
   setCurrentPlan: (plan: BackendTask[] | null) => void;
+  resetOrchestrationState: () => void;
   subscribeToTeam: (
     teamId: string,
     agentsRef: MutableRefObject<Agent[]>,
@@ -67,6 +68,16 @@ export function useOrchestration(): OrchestrationState & OrchestrationActions {
   const [autoExecuteEnabled, setAutoExecuteEnabled] = useState(false);
   const [orchestrationLogs, setOrchestrationLogs] = useState<OrchestrationEvent[]>([]);
   const [plans, setPlans] = useState<PlanSummary[]>([]);
+
+  /** Clear all orchestration state — call when switching teams */
+  const resetOrchestrationState = useCallback(() => {
+    setSessionState(null);
+    setCurrentPlan(null);
+    setTasks({});
+    setAutoExecuteEnabled(false);
+    setOrchestrationLogs([]);
+    setPlans([]);
+  }, []);
 
   const addOrchestrationLog = useCallback((
     source: string,
@@ -309,6 +320,7 @@ export function useOrchestration(): OrchestrationState & OrchestrationActions {
     addOrchestrationLog,
     setSessionState,
     setCurrentPlan,
+    resetOrchestrationState,
     subscribeToTeam,
   };
 }

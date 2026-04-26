@@ -4,7 +4,7 @@
  * Uses extracted hooks:
  *   useOrchestration — plan/task state, socket events
  *   useChat          — per-agent message histories
- *   useAgentTree     — agent hierarchy, team loading
+ *   useAgentStore    — agent hierarchy, team loading (Zustand store)
  *
  * Routes (React Router):
  *   /*  → InnerApp (handles all navigation internally)
@@ -33,7 +33,7 @@ import { DevCollabButton } from './components/DevCollabButton';
 
 import { useOrchestration } from './hooks/useOrchestration';
 import { useChat } from './hooks/useChat';
-import { useAgentTree } from './hooks/useAgentTree';
+import { useAgentStore } from './stores/agentStore';
 import { agentServiceV2, type Task as BackendTask } from './services/AgentServiceV2';
 import type { Agent, Message } from './types';
 import { useSession, signOut } from './lib/auth-client';
@@ -74,18 +74,25 @@ function InnerApp() {
   }, [theme]);
   // ─────────────────────────────────────────────────────────────────────────
 
-  const { agents, isLoadingTeams, agentsRef, findAgentById, handleToggleCollapse, loadTeams, createTeam, addLocalSubAgent } = useAgentTree();
+  const agents = useAgentStore(s => s.agents);
+  const isLoadingTeams = useAgentStore(s => s.isLoadingTeams);
+  const findAgentById = useAgentStore(s => s.findAgentById);
+  const handleToggleCollapse = useAgentStore(s => s.handleToggleCollapse);
+  // agentsRef: kept in sync with store for Socket.IO callbacks that need fresh agent data
+  const agentsRef = useRef<Agent[]>(agents);
+  useEffect(() => { agentsRef.current = agents; }, [agents]);
+
   const { chatHistories, addMessage, updateMessages, processStreamPart, loadAgentChat, clearAllHistories, restoreFromServer } = useChat();
   const {
     sessionState, currentPlan, tasks, autoExecuteEnabled, orchestrationLogs, plans,
     handleApprovePlan, handleStartTask, handleCompleteTask, handleCancelTask,
-    handleToggleAutoExecute, addOrchestrationLog, setSessionState, setCurrentPlan, subscribeToTeam,
+    handleToggleAutoExecute, addOrchestrationLog, setSessionState, setCurrentPlan, resetOrchestrationState, subscribeToTeam,
   } = useOrchestration();
 
   // Default to stored team (planner view) so restored messages display immediately
   const [activeAgentId, setActiveAgentId] = useState<string>(() => {
     const storedTeam = localStorage.getItem('ping:activeTeamId');
-    return storedTeam || (agents[0]?.id ?? '');
+    return storedTeam || (useAgentStore.getState().agents[0]?.id ?? '');
   });
   const activeAgentIdRef = useRef(activeAgentId);
   const [selectedTeamId, setSelectedTeamId] = useState<string | null>(null);
@@ -215,7 +222,7 @@ function InnerApp() {
     }
   }, [selectedTeamId]);
 
-  useEffect(() => { loadTeams(); }, [loadTeams]);
+  useEffect(() => { useAgentStore.getState().loadTeams(); }, []);
 
   useEffect(() => {
     const onResize = () => {
@@ -295,6 +302,10 @@ function InnerApp() {
       return;
     }
     if (connectedTeamRef.current === selectedTeamId) return;
+
+    // Clear stale plan/task state from previous team before connecting to new one
+    resetOrchestrationState();
+
     connectedTeamRef.current = selectedTeamId;
 
     agentServiceV2.connect(selectedTeamId)
@@ -313,7 +324,7 @@ function InnerApp() {
       activePlanGoalIdRef,
     );
     return unsub;
-  }, [selectedTeamId, subscribeToTeam, agentsRef, addMessage, processStreamPart, showToast]);
+  }, [selectedTeamId, subscribeToTeam, agentsRef, addMessage, processStreamPart, showToast, resetOrchestrationState]);
 
   // Error toasts from orchestration logs
   const prevLogsLen = useRef(0);
@@ -450,7 +461,7 @@ function InnerApp() {
   const handleAddAgent = useCallback(async (agentData: Partial<Agent>) => {
     if (!agentData.parentId) {
       try {
-        const team = await createTeam(agentData.name ?? 'New Team', agentData.description ?? 'General task', agentData.description ?? '');
+        const team = await useAgentStore.getState().createTeam(agentData.name ?? 'New Team', agentData.description ?? 'General task', agentData.description ?? '');
         if (team) {
           setActiveAgentId(team.id);
           setSelectedTeamId(team.id);
@@ -461,9 +472,9 @@ function InnerApp() {
         showToast(`Failed to create team: ${err.message}`, 'error');
       }
     } else {
-      addLocalSubAgent(agentData.parentId, agentData);
+      useAgentStore.getState().addLocalSubAgent(agentData.parentId, agentData);
     }
-  }, [createTeam, addLocalSubAgent, showToast, addOrchestrationLog]);
+  }, [showToast, addOrchestrationLog]);
 
   const allTasks = Object.values(tasks).flat();
   // v1.1: Filter tasks by active plan's goalId when multiple plans exist

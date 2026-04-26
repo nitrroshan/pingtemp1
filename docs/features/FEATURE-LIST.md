@@ -1,7 +1,7 @@
 # Ping — Master Feature List
 
-**Last Updated:** April 25, 2026  
-**Total Features:** 37 (18 existing + 19 new)  
+**Last Updated:** April 26, 2026  
+**Total Features:** 39 (18 existing + 21 new)  
 **Master Architecture:** [MASTER-ARCHITECTURE.md](MASTER-ARCHITECTURE.md) — unified reference with diagrams for how all features connect
 
 ---
@@ -84,6 +84,8 @@
 | F2 | **MCP Server Integration** | 🆕 New | [mcp-integration](mcp-integration/) | Integrate at least one real MCP server (Docker MCP, filesystem MCP, or Brave Search). Prove the pipeline works end-to-end. |
 | F3 | **OpenClaw Integration** | 🔬 Research | [openclaw-integration](openclaw-integration/) | External agent via OpenClaw Gateway (WhatsApp, Telegram, Discord channels). |
 | F4 | **Plan Viewer** | 📋 Planned | [plan-viewer](plan-viewer/) | Full-screen plan management UI. Two-panel master-detail: plan list + task detail with List/Board views, agents bar, task slide-over. Route: `/plans`. |
+| F5 | **Frontend State Refactor (Zustand)** | 📋 Planned | [frontend-state-refactor](frontend-state-refactor/) | Migrate 4 custom hooks → 5 Zustand stores. Eliminate prop drilling (Sidebar 23→5 props). Fix concurrent stream corruption, task state duplication, stale-plan-on-team-switch. App.tsx 1099→350 lines. ~1474 lines deleted. |
+| F6 | **API Improvements** | 📋 Planned | [api-improvements](api-improvements/) | Fix 5 backend API gaps: batch team+agents endpoint, split monolithic restore into goal-scoped endpoints, persist streamParts on messages, implement cancelTask/modifyTask, include agentId in stream events. |
 
 ### G. Research & Vision
 
