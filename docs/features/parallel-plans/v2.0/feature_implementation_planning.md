@@ -322,7 +322,7 @@ if (useIsolation && initOptions.planId) {
 }
 ```
 
-**Fallback:** If worktree fails (e.g., git version too old), fall back to full clone per task.
+**Requires:** git ≥ 2.15 for worktree support. If worktree fails, the error propagates — no silent fallback to full clone (that would hide bugs and waste disk).
 
 **Entry:** Every isolated task would clone the full repo.  
 **Exit:** 1 clone + (N-1) worktrees per plan. `planRepos` map tracks primary clones.
@@ -790,7 +790,7 @@ User message → PlannerAgent → submit_plan({ repoUrl, tasks })
 | Disk usage from per-task clones | Worktree optimization (Step 5) — 1 clone + N worktrees. `--single-branch` + sparse checkout for large repos |
 | Clone failure (network, auth) | Fallback to shared mode when clone fails. Log warning, don't block task execution |
 | Push failure (permissions, network) | Non-fatal. Local work preserved. Warn in logs, let task complete |
-| `git worktree` version requirements | Require git ≥ 2.15. Fallback to full clone if worktree fails |
+| `git worktree` version requirements | Require git ≥ 2.15. Fail fast if not available — documented in setup prerequisites |
 | Plan cleanup race with late-finishing tasks | `cleanupPlan()` checks all task workspaces are merged/discarded before deleting |
 
 ## Estimated Total: 11 days

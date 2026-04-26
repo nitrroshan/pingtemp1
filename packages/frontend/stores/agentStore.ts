@@ -12,6 +12,7 @@
  */
 
 import { create } from 'zustand';
+import { devtools } from 'zustand/middleware';
 import { v4 as uuidv4 } from 'uuid';
 import { agentServiceV2 } from '../services/AgentServiceV2';
 import { logger } from '../utils/logger';
@@ -87,7 +88,7 @@ function buildRoleMap(agents: Agent[]): Record<string, string> {
 // Store
 // ─────────────────────────────────────────────────────────────────────────────
 
-export const useAgentStore = create<AgentState>()((set, get) => ({
+export const useAgentStore = create<AgentState>()(devtools((set, get) => ({
   agents: INITIAL_AGENTS,
   isLoadingTeams: false,
   roleMap: buildRoleMap(INITIAL_AGENTS),
@@ -246,4 +247,4 @@ export const useAgentStore = create<AgentState>()((set, get) => ({
     if (agentId) return findById(agentId, agents);
     return undefined;
   },
-}));
+}), { name: 'AgentStore' }));

@@ -105,30 +105,63 @@ export class GitBranchManager {
     const exists = await this.directoryExists(gitDir);
 
     if (exists) {
-      // Validate existing repo
+      // Validate existing repo — ensure it's OUR repo, not a parent's
       try {
+        const topLevel = await this.git.revparse(["--show-toplevel"]);
+        const resolvedRepo = path.resolve(this.repoPath);
+        const resolvedTop = path.resolve(topLevel.trim());
+        if (resolvedTop !== resolvedRepo) {
+          // simple-git found a parent .git — we need our own
+          logger.warn(
+            `Git repo at ${resolvedTop} is a parent of ${resolvedRepo} — initializing local repo`,
+          );
+          await this.git.init(["-b", this.mainBranch]);
+          await this.seedInitialCommit();
+          return;
+        }
         await this.git.status();
         logger.info(`Connected to existing repo at: ${this.repoPath}`);
       } catch (err) {
         throw new Error(`Invalid git repository at ${this.repoPath}: ${err}`);
       }
     } else {
+      // No .git here — but check if simple-git would walk up to a parent repo
+      try {
+        const topLevel = await this.git.revparse(["--show-toplevel"]);
+        const resolvedRepo = path.resolve(this.repoPath);
+        const resolvedTop = path.resolve(topLevel.trim());
+        if (resolvedTop !== resolvedRepo) {
+          logger.warn(
+            `No local .git but parent repo found at ${resolvedTop} — initializing isolated repo at ${resolvedRepo}`,
+          );
+        }
+      } catch {
+        // No parent repo either — clean init
+      }
+
       // Create new repo
       await this.git.init(["-b", this.mainBranch]);
       logger.info(
         `Created new repo at: ${this.repoPath} (branch: ${this.mainBranch})`,
       );
 
-      // Create initial commit so branches can be created
-      const readmePath = path.join(this.repoPath, "README.md");
+      await this.seedInitialCommit();
+    }
+  }
+
+  /** Create initial commit with README + .gitignore so branches can be created */
+  private async seedInitialCommit(): Promise<void> {
+    const readmePath = path.join(this.repoPath, "README.md");
+    if (!fs.existsSync(readmePath)) {
       await fs.promises.writeFile(
         readmePath,
-        "# Agent Workspace\n\nInitialized by MemoryCoordinator\n",
+        "# Agent Workspace\n\nInitialized by WorkspaceManager\n",
         "utf-8",
       );
+    }
 
-      // Seed .gitignore on main so task branches don't conflict over it
-      const gitignorePath = path.join(this.repoPath, ".gitignore");
+    const gitignorePath = path.join(this.repoPath, ".gitignore");
+    if (!fs.existsSync(gitignorePath)) {
       await fs.promises.writeFile(
         gitignorePath,
         [
@@ -142,13 +175,13 @@ export class GitBranchManager {
         ].join("\n"),
         "utf-8",
       );
-
-      await this.git.add(["README.md", ".gitignore"]);
-      await this.git.commit("Initial commit", {
-        "--author": "WorkspaceManager <workspace@system.local>",
-      });
-      logger.info("Initial commit created");
     }
+
+    await this.git.add(["README.md", ".gitignore"]);
+    await this.git.commit("Initial commit", {
+      "--author": "WorkspaceManager <workspace@system.local>",
+    });
+    logger.info("Initial commit created");
   }
 
   // ═══════════════════════════════════════════════════════════════════════════

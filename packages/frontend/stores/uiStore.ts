@@ -9,7 +9,7 @@
  */
 
 import { create } from 'zustand';
-import { persist } from 'zustand/middleware';
+import { persist, devtools } from 'zustand/middleware';
 
 interface UiState {
   // Navigation
@@ -30,32 +30,34 @@ interface UiState {
 }
 
 export const useUiStore = create<UiState>()(
-  persist(
-    (set) => ({
-      selectedTeamId: null,
-      activeAgentId: localStorage.getItem('ping:activeTeamId') || '',
-      selectedTaskId: null,
-      viewMode: 'chat',
-      theme: (localStorage.getItem('ping:theme') as 'dark' | 'light') || 'dark',
+  devtools(
+    persist(
+      (set) => ({
+        selectedTeamId: null,
+        activeAgentId: localStorage.getItem('ping:activeTeamId') || '',
+        selectedTaskId: null,
+        viewMode: 'chat',
+        theme: (localStorage.getItem('ping:theme') as 'dark' | 'light') || 'dark',
 
-      setSelectedTeamId: (id) => {
-        set({ selectedTeamId: id });
-        if (id) localStorage.setItem('ping:activeTeamId', id);
+        setSelectedTeamId: (id) => {
+          set({ selectedTeamId: id });
+          if (id) localStorage.setItem('ping:activeTeamId', id);
+        },
+        setActiveAgentId: (id) => set({ activeAgentId: id }),
+        setSelectedTaskId: (id) => set({ selectedTaskId: id }),
+        setViewMode: (mode) => set({ viewMode: mode }),
+        toggleTheme: () =>
+          set((s) => {
+            const next = s.theme === 'dark' ? 'light' : 'dark';
+            localStorage.setItem('ping:theme', next);
+            return { theme: next };
+          }),
+      }),
+      {
+        name: 'ping:ui',
+        partialize: (s) => ({ theme: s.theme, viewMode: s.viewMode }),
       },
-      setActiveAgentId: (id) => set({ activeAgentId: id }),
-      setSelectedTaskId: (id) => set({ selectedTaskId: id }),
-      setViewMode: (mode) => set({ viewMode: mode }),
-      toggleTheme: () =>
-        set((s) => {
-          const next = s.theme === 'dark' ? 'light' : 'dark';
-          localStorage.setItem('ping:theme', next);
-          return { theme: next };
-        }),
-    }),
-    {
-      name: 'ping:ui',
-      // Only persist theme and viewMode — selectedTeamId is already in localStorage separately
-      partialize: (s) => ({ theme: s.theme, viewMode: s.viewMode }),
-    },
+    ),
+    { name: 'UiStore' },
   ),
 );

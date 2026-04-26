@@ -2,8 +2,8 @@
  * App — main application entry point (Phase 1 refactor)
  *
  * Uses extracted hooks:
- *   useOrchestration — plan/task state, socket events
- *   useChat          — per-agent message histories
+ *   useOrchestrationStore — plan/task state (Zustand store)
+ *   useChatStore     — per-agent message histories (Zustand store)
  *   useAgentStore    — agent hierarchy, team loading (Zustand store)
  *
  * Routes (React Router):
@@ -31,8 +31,8 @@ import { CommandPalette } from './components/CommandPalette';
 import { StatusBar } from './components/layout/StatusBar';
 import { DevCollabButton } from './components/DevCollabButton';
 
-import { useOrchestration } from './hooks/useOrchestration';
-import { useChat } from './hooks/useChat';
+import { useOrchestrationStore } from './stores/orchestrationStore';
+import { useChatStore } from './stores/chatStore';
 import { useAgentStore } from './stores/agentStore';
 import { agentServiceV2, type Task as BackendTask } from './services/AgentServiceV2';
 import type { Agent, Message } from './types';
@@ -82,12 +82,20 @@ function InnerApp() {
   const agentsRef = useRef<Agent[]>(agents);
   useEffect(() => { agentsRef.current = agents; }, [agents]);
 
-  const { chatHistories, addMessage, updateMessages, processStreamPart, loadAgentChat, clearAllHistories, restoreFromServer } = useChat();
-  const {
-    sessionState, currentPlan, tasks, autoExecuteEnabled, orchestrationLogs, plans,
-    handleApprovePlan, handleStartTask, handleCompleteTask, handleCancelTask,
-    handleToggleAutoExecute, addOrchestrationLog, setSessionState, setCurrentPlan, resetOrchestrationState, subscribeToTeam,
-  } = useOrchestration();
+  const chatHistories = useChatStore(s => s.chatHistories);
+  const addMessage = useChatStore(s => s.addMessage);
+  const processStreamPart = useChatStore(s => s.processStreamPart);
+  const loadAgentChat = useChatStore(s => s.loadAgentChat);
+  const restoreFromServer = useChatStore(s => s.restoreFromServer);
+
+  // Orchestration state (Zustand store — Step 2)
+  const sessionState = useOrchestrationStore(s => s.sessionState);
+  const tasks = useOrchestrationStore(s => s.tasks);
+  const autoExecuteEnabled = useOrchestrationStore(s => s.autoExecuteEnabled);
+  const orchestrationLogs = useOrchestrationStore(s => s.orchestrationLogs);
+  const plans = useOrchestrationStore(s => s.plans);
+  const handleStartTask = useOrchestrationStore(s => s.startTask);
+  const handleToggleAutoExecute = useOrchestrationStore(s => s.toggleAutoExecute);
 
   // Default to stored team (planner view) so restored messages display immediately
   const [activeAgentId, setActiveAgentId] = useState<string>(() => {
@@ -304,27 +312,106 @@ function InnerApp() {
     if (connectedTeamRef.current === selectedTeamId) return;
 
     // Clear stale plan/task state from previous team before connecting to new one
-    resetOrchestrationState();
+    useOrchestrationStore.getState().resetForTeam();
 
     connectedTeamRef.current = selectedTeamId;
 
     agentServiceV2.connect(selectedTeamId)
       .catch(err => { connectedTeamRef.current = null; showToast(`Connection failed: ${err.message}`, 'error'); });
 
-    const unsub = subscribeToTeam(
-      selectedTeamId, agentsRef, selectedTeamIdRef,
-      (agentId, content, taskId, timestamp) => {
-        addMessage(agentId, { id: uuidv4(), role: 'model', content, timestamp: timestamp ?? Date.now() });
-        if (taskId && activeAgentIdRef.current !== agentId) setActiveAgentId(agentId);
-      },
-      // Rich stream part processor — builds streamParts on Message objects
-      (agentId, part) => {
-        processStreamPart(agentId, part);
-      },
-      activePlanGoalIdRef,
-    );
-    return unsub;
-  }, [selectedTeamId, subscribeToTeam, agentsRef, addMessage, processStreamPart, showToast, resetOrchestrationState]);
+    // Wire Socket.IO events → stores
+    const findAgentByRole = (roleName: string): Agent | undefined => {
+      return useAgentStore.getState().findAgentByRole(roleName, selectedTeamIdRef.current);
+    };
+
+    const unsubMessage = agentServiceV2.onMessage((data) => {
+      let content = data.content;
+      try {
+        const parsed = JSON.parse(data.content);
+        if (typeof parsed.response === 'string') content = parsed.response;
+      } catch { /* not JSON */ }
+      if (!content) return;
+
+      useOrchestrationStore.getState().addLog(data.agentId, content.length > 100 ? content.substring(0, 100) + '...' : content, 'info');
+
+      const targetAgentId = data.agentId === 'manager'
+        ? selectedTeamId
+        : (findAgentByRole(data.agentId)?.id ?? data.agentId);
+
+      addMessage(targetAgentId, { id: uuidv4(), role: 'model', content, timestamp: data.timestamp ?? Date.now() });
+      if (data.taskId && activeAgentIdRef.current !== targetAgentId) setActiveAgentId(targetAgentId);
+    });
+
+    const unsubState = agentServiceV2.onState((data) => {
+      useOrchestrationStore.getState().addLog('SYSTEM', `State: ${data.sessionState}`, 'info');
+      useOrchestrationStore.getState().handleStateEvent(data);
+    });
+
+    const unsubOutput = agentServiceV2.onOutput((data) => {
+      const outputPreview = data.output.content.length > 100 ? data.output.content.substring(0, 100) + '...' : data.output.content;
+      useOrchestrationStore.getState().addLog(data.agentId, `Output: ${outputPreview}`, 'success');
+    });
+
+    const unsubError = agentServiceV2.onError((data) => {
+      useOrchestrationStore.getState().addLog('ERROR', data.error, 'error');
+    });
+
+    const unsubStream = agentServiceV2.onStream((payload: any) => {
+      if (!payload?.part) return;
+      const { part, agentId: streamAgentId, goalId: streamGoalId } = payload;
+
+      // Goal isolation: skip streams from other goals
+      if (streamGoalId && activePlanGoalIdRef.current
+          && streamGoalId !== activePlanGoalIdRef.current) {
+        return;
+      }
+
+      // ChatAgent responses → route to "chat:{resolvedAgentId}"
+      if (streamAgentId?.startsWith('chat-')) {
+        const role = streamAgentId.replace('chat-', '');
+        const resolved = findAgentByRole(role);
+        if (resolved) processStreamPart(`chat:${resolved.id}`, part);
+        return;
+      }
+
+      // Map role-based agentId to MongoDB agent ID
+      const isOrchestrator = streamAgentId === 'manager' || streamAgentId === 'orchestrator' || streamAgentId === 'planner';
+      const resolved = isOrchestrator ? null : findAgentByRole(streamAgentId);
+      if (!isOrchestrator && !resolved) return;
+
+      const targetAgentId = isOrchestrator ? selectedTeamId : resolved!.id;
+      processStreamPart(targetAgentId, part);
+    });
+
+    const TASK_UPDATE_LOG: Record<string, { fmt: (u: any) => string; type: string }> = {
+      started:        { fmt: (u) => `${u.taskId}: Started`,                                    type: 'info' },
+      progress:       { fmt: (u) => `${u.taskId}: ${u.note || `Step ${u.stepIdx}`}`,            type: 'info' },
+      tool_milestone: { fmt: (u) => `${u.taskId}: ${u.tool} — ${u.summary?.slice(0, 100) || 'done'}`, type: 'info' },
+      completed:      { fmt: (u) => `${u.taskId}: Completed — ${u.summary?.slice(0, 100) || ''}`, type: 'success' },
+      failed:         { fmt: (u) => `${u.taskId}: Failed — ${u.error?.slice(0, 100) || ''}`,     type: 'error' },
+      blocked:        { fmt: (u) => `${u.taskId}: Blocked — ${u.reason?.slice(0, 100) || ''}`,   type: 'warning' },
+    };
+
+    const unsubTaskUpdate = agentServiceV2.onTaskUpdate((update: any) => {
+      if (!update?.taskId) return;
+      const config = TASK_UPDATE_LOG[update.type] || { fmt: () => update.type, type: 'info' };
+      useOrchestrationStore.getState().addLog(`${update.taskId} [${update.role || 'worker'}]`, config.fmt(update), config.type as any);
+    });
+
+    const unsubGoalState = agentServiceV2.onGoalStateChange((data: any) => {
+      useOrchestrationStore.getState().handleGoalStateChange(data);
+    });
+
+    return () => {
+      unsubMessage();
+      unsubState();
+      unsubOutput();
+      unsubError();
+      unsubStream();
+      unsubTaskUpdate();
+      unsubGoalState();
+    };
+  }, [selectedTeamId, agentsRef, addMessage, processStreamPart, showToast]);
 
   // Error toasts from orchestration logs
   const prevLogsLen = useRef(0);
@@ -360,9 +447,9 @@ function InnerApp() {
 
         // Feed plan/tasks from restore into orchestration state
         if (result.plan?.length) {
-          setCurrentPlan(result.plan);
+          useOrchestrationStore.getState().setTasksFromPlan(result.plan);
           if (result.orchestratorState) {
-            setSessionState(result.orchestratorState);
+            useOrchestrationStore.getState().setSessionState(result.orchestratorState);
           }
         }
         // Session restore succeeded — all conversations loaded, no per-agent fallback needed
@@ -374,7 +461,7 @@ function InnerApp() {
         }
       }
     });
-  }, [selectedTeamId, agents, loadAgentChat, restoreFromServer, setCurrentPlan, setSessionState]);
+  }, [selectedTeamId, agents, loadAgentChat, restoreFromServer]);
 
   useEffect(() => {
     const newLogs = orchestrationLogs.slice(prevLogsLen.current);
@@ -455,8 +542,8 @@ function InnerApp() {
   }, [selectedTeamId, addMessage, showToast, pushRoute]);
 
   const handleApprove = useCallback((_tasks?: BackendTask[]) => {
-    handleApprovePlan();
-  }, [handleApprovePlan]);
+    useOrchestrationStore.getState().approvePlan();
+  }, []);
 
   const handleAddAgent = useCallback(async (agentData: Partial<Agent>) => {
     if (!agentData.parentId) {
@@ -466,7 +553,7 @@ function InnerApp() {
           setActiveAgentId(team.id);
           setSelectedTeamId(team.id);
           showToast(`Team "${team.name}" created`, 'success');
-          addOrchestrationLog('SYSTEM', `Team created: ${team.name}`, 'success');
+          useOrchestrationStore.getState().addLog('SYSTEM', `Team created: ${team.name}`, 'success');
         }
       } catch (err: any) {
         showToast(`Failed to create team: ${err.message}`, 'error');
@@ -474,15 +561,19 @@ function InnerApp() {
     } else {
       useAgentStore.getState().addLocalSubAgent(agentData.parentId, agentData);
     }
-  }, [showToast, addOrchestrationLog]);
+  }, [showToast]);
 
-  const allTasks = Object.values(tasks).flat();
+  const allTasks = tasks; // tasks is already a flat array from orchestrationStore
   // v1.1: Filter tasks by active plan's goalId when multiple plans exist
   const planTasks = plans.length > 1 && activePlanGoalId
     ? allTasks.filter(t => t.goalId === activePlanGoalId)
     : allTasks;
   const activeAgent = findAgentById(activeAgentId);
-  const activeAgentTasks = tasks[activeAgentId] ?? [];
+  // Get tasks assigned to the active agent's role
+  const activeAgentRole = activeAgent?.role?.toLowerCase();
+  const activeAgentTasks = activeAgentRole
+    ? allTasks.filter(t => t.assignedRole?.toLowerCase() === activeAgentRole)
+    : [];
   const showTaskSkeleton = (sessionState === 'planning' || sessionState === 'executing') && allTasks.length === 0;
   const selectedTeam = selectedTeamId ? agents.find(a => a.id === selectedTeamId) : undefined;
   const selectedTeamAgentCount = selectedTeam ? 1 + (selectedTeam.subAgents?.length ?? 0) : 0;
@@ -536,7 +627,7 @@ function InnerApp() {
       onSelectTeam={handleSelectAgent}
       onNavigateToTeams={() => { pushRoute('/manage-teams'); if (isMobileViewport) setIsMobileSidebarOpen(false); }}
       planTasks={planTasks}
-      planName={currentPlan?.[0]?.title ?? undefined}
+      planName={allTasks[0]?.title ?? undefined}
       selectedTaskId={selectedTaskId}
       onSelectTask={handleTaskClick}
       activePlanId={activePlanId}
@@ -567,8 +658,8 @@ function InnerApp() {
               goalId,
             ).then((result) => {
               if (result?.plan?.length) {
-                setCurrentPlan(result.plan);
-                if (result.orchestratorState) setSessionState(result.orchestratorState);
+                useOrchestrationStore.getState().setTasksFromPlan(result.plan);
+                if (result.orchestratorState) useOrchestrationStore.getState().setSessionState(result.orchestratorState);
               }
             });
           }
@@ -946,7 +1037,7 @@ function InnerApp() {
                 onUpdateMessages={(agentId, msg) => {
                   // Route user messages to the right history key
                   const key = isChatAgent && !selectedTaskId ? `chat:${agentId}` : agentId;
-                  updateMessages(key, msg);
+                  useChatStore.getState().updateMessages(key, msg);
                 }}
                 onAddTask={() => { /* tasks come from backend plan only */ }}
                 onToggleTask={() => { /* status managed by backend */ }}
@@ -956,10 +1047,10 @@ function InnerApp() {
                 isPanelOpen={isPanelOpen}
                 autoExecuteEnabled={autoExecuteEnabled}
                 onToggleAutoExecute={handleToggleAutoExecute}
-                currentPlan={currentPlan}
+                currentPlan={allTasks}
                 onStartTask={handleStartTask}
-                onCompleteTask={handleCompleteTask}
-                onCancelTask={handleCancelTask}
+                onCompleteTask={(taskId: string) => useOrchestrationStore.getState().completeTask(taskId)}
+                onCancelTask={(taskId: string) => useOrchestrationStore.getState().cancelTask(taskId)}
                 isLoading={isLoadingTeams && activeAgentMessages.length === 0}
                 compactHeader={!!activePlanId}
                 taskScope={!activeAgent.parentId ? 'plan' : 'agent'}
@@ -985,7 +1076,7 @@ function InnerApp() {
               logs={orchestrationLogs}
               activeAgents={[]}
               allTasks={allTasks}
-              currentPlanName={currentPlan?.[0]?.title ?? undefined}
+              currentPlanName={allTasks[0]?.title ?? undefined}
               activePlanId={activePlanId}
               discussionThreads={discussionThreads}
               onOpenDiscussion={handleOpenDiscussion}
@@ -1003,8 +1094,8 @@ function InnerApp() {
         </AnimatePresence>
       </div>
 
-      {sessionState === 'awaiting_approval' && currentPlan && currentPlan.length > 0 && (
-        <PlanApproval plan={currentPlan as BackendTask[]} onApprove={handleApprove} onDismiss={() => setSessionState(null)} />
+      {sessionState === 'awaiting_approval' && allTasks.length > 0 && (
+        <PlanApproval plan={allTasks as unknown as BackendTask[]} onApprove={handleApprove} onDismiss={() => useOrchestrationStore.getState().setSessionState(null)} />
       )}
 
       <ToastContainer toasts={toasts} onDismiss={dismissToast} />
