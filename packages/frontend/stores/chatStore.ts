@@ -515,7 +515,7 @@ export const useChatStore = create<ChatState>()(devtools((set, get) => {
               const agent = agents.find(a => a.role?.toLowerCase() === role);
               key = agent ? `chat:${agent.id}` : agentId;
             } else if (agentId === 'manager' || agentId === 'orchestrator' || agentId === 'planner') {
-              key = teamId;
+              key = goalId ? `${teamId}:goal:${goalId}` : teamId;
             }
             const mapped: Message[] = (msgs as any[]).map((m: any) => ({
               id: m.id, role: m.role === 'assistant' ? 'model' : m.role,
