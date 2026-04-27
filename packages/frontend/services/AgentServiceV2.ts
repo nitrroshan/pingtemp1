@@ -339,7 +339,7 @@ export class AgentServiceV2 {
     return !!(this.socket && this.clientId && this.teamId);
   }
 
-  sendToManager(content: string, goalId?: string): void {
+  sendToManager(content: string, goalId?: string, repoUrl?: string, repoBranch?: string): void {
     if (!this.isReady()) {
       logger.error("[AgentServiceV2] Cannot send: socket =", !!this.socket, "clientId =", this.clientId, "teamId =", this.teamId);
       throw new Error("Not connected or no team selected");
@@ -352,6 +352,8 @@ export class AgentServiceV2 {
       sessionId: this.sessionId,
       content,
       goalId,
+      repoUrl,
+      repoBranch,
     });
   }
 

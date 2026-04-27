@@ -54,6 +54,8 @@ const MessagePayloadSchema = z.object({
   sessionId: z.string().max(200).optional(),
   goalId: z.string().max(200).optional(),
   content: z.string().min(1).max(100000), // 100KB max message
+  repoUrl: z.string().url().max(500).optional(),
+  repoBranch: z.string().max(200).optional(),
 });
 
 const ActionPayloadSchema = z.object({
@@ -928,7 +930,7 @@ export class SocketServerV2 {
       this.emitError(socket, { error: `Invalid message: ${parsed.error.issues[0]?.message || "validation failed"}` });
       return;
     }
-    const { teamId, agentId, taskId, sessionId, content, goalId: clientGoalId } = parsed.data;
+    const { teamId, agentId, taskId, sessionId, content, goalId: clientGoalId, repoUrl, repoBranch } = parsed.data;
 
     // Rate limit — prevent LLM API cost abuse
     if (!this.rateLimiter.allow(connection.userId)) {
@@ -980,6 +982,8 @@ export class SocketServerV2 {
           sessionId,
           content,
           clientGoalId,
+          repoUrl,
+          repoBranch,
         );
       } else if (agentId.startsWith("chat-") && manager.isChatAgentEnabled()) {
         // Chat Agent message — route to the role's persistent L2 agent
@@ -1010,7 +1014,24 @@ export class SocketServerV2 {
     sessionId: string | undefined,
     content: string,
     goalId?: string,
+    repoUrl?: string,
+    repoBranch?: string,
   ) {
+    // Configure workspace remote if repoUrl provided (enables auto-push after tasks)
+    if (repoUrl) {
+      try {
+        const registry = manager.getPluginRegistry();
+        const wsStorage = registry?.getPluginStorage?.("workspace");
+        const gitManager = (wsStorage as any)?.manager?.getGitManager?.();
+        if (gitManager) {
+          await gitManager.addRemote("origin", repoUrl);
+          logger.info(`[SocketServerV2] Workspace remote set to ${repoUrl}`);
+        }
+      } catch (err: any) {
+        logger.warn(`[SocketServerV2] Failed to set workspace remote: ${err.message}`);
+      }
+    }
+
     // Server generates goalId if client doesn't provide one (ChatGPT pattern)
     const result = await manager.orchestratorMessage(content, goalId);
     const resolvedGoalId = result.goalId;

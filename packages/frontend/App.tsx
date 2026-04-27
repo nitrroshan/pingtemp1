@@ -528,7 +528,7 @@ function InnerApp() {
   }, [selectedTeamId, addMessage, showToast, pushRoute]);
 
   /** Goal submitted from GoalScreen (teamId provided explicitly) */
-  const handleGoalScreenSubmit = useCallback(async (teamId: string, goal: string) => {
+  const handleGoalScreenSubmit = useCallback(async (teamId: string, goal: string, repoUrl?: string, repoBranch?: string) => {
     // Ensure connected to the right team
     if (selectedTeamId !== teamId) setSelectedTeamId(teamId);
 
@@ -553,7 +553,7 @@ function InnerApp() {
     });
     addMessage(teamId, { id: uuidv4(), role: 'user', content: goal, timestamp: Date.now() });
     try {
-      agentServiceV2.sendToManager(goal, goalId);
+      agentServiceV2.sendToManager(goal, goalId, repoUrl, repoBranch);
     } catch (err: any) {
       showToast(`Failed to send goal: ${err.message}`, 'error');
     }
