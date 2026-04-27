@@ -334,8 +334,10 @@ function InnerApp() {
 
       useOrchestrationStore.getState().addLog(data.agentId, content.length > 100 ? content.substring(0, 100) + '...' : content, 'info');
 
-      const targetAgentId = data.agentId === 'manager'
-        ? selectedTeamId
+      const isManager = data.agentId === 'manager' || data.agentId === 'orchestrator' || data.agentId === 'planner';
+      // Goal-scoped key for planner messages
+      const targetAgentId = isManager
+        ? (data.goalId ? `${selectedTeamId}:goal:${data.goalId}` : selectedTeamId)
         : (findAgentByRole(data.agentId)?.id ?? data.agentId);
 
       addMessage(targetAgentId, { id: uuidv4(), role: 'model', content, timestamp: data.timestamp ?? Date.now() });
@@ -358,7 +360,7 @@ function InnerApp() {
 
     const unsubStream = agentServiceV2.onStream((payload: any) => {
       if (!payload?.part) return;
-      const { part, agentId: streamAgentId, taskId: streamTaskId } = payload;
+      const { part, agentId: streamAgentId, taskId: streamTaskId, goalId: streamGoalId } = payload;
 
       // Goal isolation handled by Socket.IO rooms (server-side) — no client-side filter needed.
 
@@ -377,11 +379,18 @@ function InnerApp() {
 
       const targetAgentId = isOrchestrator ? selectedTeamId : resolved!.id;
 
-      // Worker streams: store at task-scoped key so each task has its own chat
-      // Orchestrator/planner streams: store at teamId (no task scope)
-      const chatKey = (!isOrchestrator && streamTaskId)
-        ? `${targetAgentId}:task:${streamTaskId}`
-        : targetAgentId;
+      // Chat key routing:
+      // - Planner/orchestrator: goal-scoped "teamId:goal:goalId" (each goal has its own planner chat)
+      // - Workers: task-scoped "agentId:task:taskId" (each task has its own worker chat)
+      // - Fallback: plain agentId
+      let chatKey: string;
+      if (isOrchestrator && streamGoalId) {
+        chatKey = `${selectedTeamId}:goal:${streamGoalId}`;
+      } else if (!isOrchestrator && streamTaskId) {
+        chatKey = `${targetAgentId}:task:${streamTaskId}`;
+      } else {
+        chatKey = targetAgentId;
+      }
       processStreamPart(chatKey, part);
     });
 
@@ -517,7 +526,8 @@ function InnerApp() {
       createdAt: Date.now(),
       status: 'active',
     });
-    addMessage(selectedTeamId, { id: uuidv4(), role: 'user', content: goal, timestamp: Date.now() });
+    // User message goes to goal-scoped chat key
+    addMessage(`${selectedTeamId}:goal:${goalId}`, { id: uuidv4(), role: 'user', content: goal, timestamp: Date.now() });
     try {
       agentServiceV2.sendToManager(goal, goalId);
     } catch (err: any) {
@@ -551,7 +561,7 @@ function InnerApp() {
       createdAt: Date.now(),
       status: 'active',
     });
-    addMessage(teamId, { id: uuidv4(), role: 'user', content: goal, timestamp: Date.now() });
+    addMessage(`${teamId}:goal:${goalId}`, { id: uuidv4(), role: 'user', content: goal, timestamp: Date.now() });
     try {
       agentServiceV2.sendToManager(goal, goalId, repoUrl, repoBranch);
     } catch (err: any) {
@@ -604,13 +614,16 @@ function InnerApp() {
   // Chat key logic:
   // - Click agent (sidebar AGENTS) → ChatAgent R1 chat: "chat:{agentId}"
   // - Click task (sidebar PLAN)   → Worker stream:     "{agentId}:task:{taskId}"
-  // - Click team/orchestrator     → Planner chat:       teamId
+  // - Click team/orchestrator     → Planner chat:       "teamId:goal:{goalId}" (goal-scoped)
   const isChatAgent = !!(activeAgent?.parentId && FEATURES.chatAgentChat);
+  const isTeamView = activeAgentId === selectedTeamId;
   const chatKey = selectedTaskId
     ? `${activeAgentId}:task:${selectedTaskId}`  // task selected → worker stream
     : isChatAgent
       ? `chat:${activeAgentId}`                  // agent clicked → ChatAgent R1
-      : activeAgentId;                            // orchestrator → planner
+      : isTeamView && activePlanGoalId
+        ? `${selectedTeamId}:goal:${activePlanGoalId}`  // planner → goal-scoped
+        : activeAgentId;                            // fallback
   const activeAgentMessages = chatHistories[chatKey] ?? [];
 
   // Click task → switch main area to that role's agent + select the task
