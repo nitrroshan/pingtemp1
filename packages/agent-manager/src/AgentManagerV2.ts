@@ -530,16 +530,16 @@ export class AgentManager {
    * Send message to orchestrator (conversational planning mode)
    * Returns orchestrator's response
    */
-  async orchestratorMessage(content: string, goalId: string): Promise<string> {
+  async orchestratorMessage(content: string, goalId?: string): Promise<{ response: string; goalId: string }> {
     if (!this.orchestrator) {
       throw new Error(
         "Orchestrator not initialized. Call initializeOrchestrator() first.",
       );
     }
-    if (!goalId) {
-      throw new Error("goalId is required — frontend must send it with the message");
-    }
-    return this.orchestrator.handleMessage(content, goalId);
+    // Server generates goalId if client doesn't provide one (industry standard)
+    const resolvedGoalId = goalId || crypto.randomUUID();
+    const response = await this.orchestrator.handleMessage(content, resolvedGoalId);
+    return { response, goalId: resolvedGoalId };
   }
 
   /**

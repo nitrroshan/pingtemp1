@@ -25,6 +25,12 @@ export interface ToolContext {
   goalId?: string;
   /** Plan ID — used for plan-scoped context */
   planId?: string;
+  /** Git repo URL for workspace isolation (v2.0) */
+  repoUrl?: string;
+  /** Git branch to clone from (v2.0) */
+  repoBranch?: string;
+  /** Auth token for private repo clone/push (GitHub Connect) */
+  authToken?: string;
 }
 
 /** Context provided to skills for conditional instruction generation */

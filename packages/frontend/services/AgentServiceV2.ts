@@ -146,6 +146,7 @@ export class AgentServiceV2 {
   private discussionMentionCallbacks: Set<(data: any) => void> = new Set();
   private taskUpdateCallbacks: Set<(data: any) => void> = new Set();
   private goalStateCallbacks: Set<(data: any) => void> = new Set();
+  private goalCreatedCallbacks: Set<(data: { goalId: string }) => void> = new Set();
 
   constructor(baseUrl: string = API_BASE_URL) {
     this.baseUrl = baseUrl;
@@ -305,6 +306,11 @@ export class AgentServiceV2 {
     // Phase 4: goal:stateChange events (plan list updates)
     this.socket.on("goal:stateChange", (data: any) => {
       this.goalStateCallbacks.forEach((cb) => cb(data));
+    });
+
+    // Server-generated goalId — returned after first message to a new goal
+    this.socket.on("goal:created", (data: any) => {
+      this.goalCreatedCallbacks.forEach((cb) => cb(data));
     });
   }
 
@@ -578,6 +584,11 @@ export class AgentServiceV2 {
   onGoalStateChange(callback: (data: any) => void): () => void {
     this.goalStateCallbacks.add(callback);
     return () => { this.goalStateCallbacks.delete(callback); };
+  }
+
+  onGoalCreated(callback: (data: { goalId: string }) => void): () => void {
+    this.goalCreatedCallbacks.add(callback);
+    return () => { this.goalCreatedCallbacks.delete(callback); };
   }
 
   // ============================================================================

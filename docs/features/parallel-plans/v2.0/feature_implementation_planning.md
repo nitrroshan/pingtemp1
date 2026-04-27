@@ -1,8 +1,8 @@
 # Parallel Plans v2.0 — Workspace Isolation (Per-Task Clone)
 
 > **Parent:** [feature_architecture.md](../feature_architecture.md) — Workspace-Per-Plan section  
-> **Status:** Planning — audited April 26, 2026 (post v1.0 backend completion)  
-> **Branch:** `feature/parallel-plans-v2.0`  
+> **Status:** Implemented — April 27, 2026 (Step 5 worktree deferred)  
+> **Branch:** `user/nitrroshan/fixplans`  
 > **Phase:** 5 in the [cross-feature roadmap](../feature_architecture.md#cross-feature-dependency-map)  
 > **Depends on:** v1.0 ✅, [GitHub Connect](../../github-connect/feature_architecture.md) (repo browser + auth token)  
 > **Blocks:** v3.0 (full parallel execution — this removes the workspace conflict blocker)  

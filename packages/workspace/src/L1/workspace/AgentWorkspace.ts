@@ -269,7 +269,12 @@ export class AgentWorkspace {
 
     if (options.repoUrl) {
       // Clone the repo into basePath
-      await this.gitManager.clone(options.repoUrl, this.basePath, {
+      // If authToken is provided, inject into HTTPS URL for private repo access
+      let cloneUrl = options.repoUrl;
+      if (options.authToken && cloneUrl.startsWith("https://")) {
+        cloneUrl = cloneUrl.replace("https://", `https://oauth2:${options.authToken}@`);
+      }
+      await this.gitManager.clone(cloneUrl, this.basePath, {
         branch: options.repoBranch,
         sparse: options.sparse,
       });
@@ -741,6 +746,22 @@ export class AgentWorkspace {
   // ═══════════════════════════════════════════════════════════════════════════
   // COMPLETION
   // ═══════════════════════════════════════════════════════════════════════════
+
+  /**
+   * Push the current branch to a remote.
+   * Used by workspace isolation (v2.0) to push task results back to the repo.
+   */
+  async pushToRemote(remote: string = "origin"): Promise<void> {
+    if (this._status !== "active" && this._status !== "published") {
+      throw new Error(`Cannot push: workspace is ${this._status}`);
+    }
+    // Commit any uncommitted changes
+    const status = await this.gitManager.getStatus();
+    if (status.staged.length > 0 || status.modified.length > 0 || status.untracked.length > 0) {
+      await this.commit("Task complete: final state");
+    }
+    await this.gitManager.push(remote, this.branchName);
+  }
 
   /**
    * Publish workspace — collect outputs and write OutputManifest

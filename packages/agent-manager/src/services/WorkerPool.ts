@@ -213,6 +213,8 @@ export class WorkerPool {
     let roleKey: string;
     let finalMessage: string;
     let taskGoalId: string | undefined;
+    let taskRepoUrl: string | undefined;
+    let taskRepoBranch: string | undefined;
 
     if (typeof taskIdOrTask === "string") {
       // Chat mode: simple params
@@ -220,7 +222,10 @@ export class WorkerPool {
       roleKey = role!.toLowerCase();
       finalMessage = message!;
       // Try to get goalId from TaskStore
-      taskGoalId = this.taskStore?.get(taskId)?.goalId;
+      const storedTask = this.taskStore?.get(taskId);
+      taskGoalId = storedTask?.goalId;
+      taskRepoUrl = storedTask?.context?.repoUrl;
+      taskRepoBranch = storedTask?.context?.repoBranch;
     } else {
       // Queue mode: TaskWithContext
       const task = taskIdOrTask;
@@ -228,6 +233,8 @@ export class WorkerPool {
       roleKey = task.assigned_role.toLowerCase();
       finalMessage = this.buildMessageWithContext(task);
       taskGoalId = (task as any).goalId;
+      taskRepoUrl = (task as any).context?.repoUrl;
+      taskRepoBranch = (task as any).context?.repoBranch;
       logger.debug(
         `Queue mode: ${taskId} with ${task.context.previousOutputs.length} previous outputs`,
       );
@@ -287,6 +294,8 @@ export class WorkerPool {
           taskId,
           goalId: this.currentGoalId || undefined,
           planId: this.currentPlanId || undefined,
+          repoUrl: taskRepoUrl,
+          repoBranch: taskRepoBranch,
         };
 
         // Prepare plugins (e.g. create workspace branch) before resolving tools

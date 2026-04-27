@@ -84,8 +84,8 @@ export const useOrchestrationStore = create<OrchestrationState>()(devtools((set,
 
   handleStateEvent: (data) => {
     if (data.plan && Array.isArray(data.plan)) {
-      // Full plan update — replace all tasks
-      const tasks: Task[] = data.plan.map((bt: any) => ({
+      // Plan update — merge by task ID (incoming tasks take priority, others kept)
+      const incomingTasks: Task[] = data.plan.map((bt: any) => ({
         id: bt.id,
         title: bt.title,
         description: bt.description,
@@ -97,7 +97,13 @@ export const useOrchestrationStore = create<OrchestrationState>()(devtools((set,
         createdAt: Date.now(),
         goalId: bt.goalId || undefined,
       }));
-      set({ tasks });
+
+      set(prev => {
+        // Keep existing tasks not in incoming set, add all incoming
+        const incomingIds = new Set(incomingTasks.map(t => t.id));
+        const kept = prev.tasks.filter(t => !incomingIds.has(t.id));
+        return { tasks: [...kept, ...incomingTasks] };
+      });
     }
 
     if (data.tasks && Array.isArray(data.tasks)) {

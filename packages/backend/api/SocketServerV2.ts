@@ -131,6 +131,7 @@ interface PlanTask {
   status: string;
   priority: number;
   dependencies: string[];
+  goalId?: string;
 }
 
 /** Server → Client: output payload */
@@ -430,6 +431,16 @@ export class SocketServerV2 {
     const room = `team:${teamId}`;
     const streamedTasks = new Set<string>();
 
+    /** Resolve goal room for goal-scoped events, fall back to team room */
+    const goalRoom = (goalId?: string | null): string =>
+      goalId ? `team:${teamId}:goal:${goalId}` : room;
+
+    /** Get goalId from a taskId via TaskStore */
+    const taskGoalId = (taskId?: string): string | undefined => {
+      if (!taskId) return undefined;
+      return manager.getTaskStore()?.get(taskId)?.goalId;
+    };
+
     /**
      * Accumulate complete stream parts per message for persistence.
      * On finish, save the full message (text + tool calls + reasoning) to chat service.
@@ -511,8 +522,8 @@ export class SocketServerV2 {
           goalId: streamGoalId,
           timestamp: Date.now(),
         };
-        // Emit to team room. goalId is included in payload for client-side filtering.
-        this.io.to(room).emit("stream", payload);
+        // Emit to goal room (goal-scoped) or team room (fallback)
+        this.io.to(goalRoom(streamGoalId)).emit("stream", payload);
       },
 
       onEvent: ({ taskId, event }) => {
@@ -523,7 +534,7 @@ export class SocketServerV2 {
         const agentId = event.role || "worker";
 
         if (routes.includes("progress")) {
-          this.io.to(room).emit("progress", {
+          this.io.to(goalRoom(taskGoalId(taskId))).emit("progress", {
             sessionId: "default",
             taskId,
             agentId,
@@ -544,7 +555,7 @@ export class SocketServerV2 {
               part: streamPart,
               timestamp: Date.now(),
             };
-            this.io.to(room).emit("stream", payload);
+            this.io.to(goalRoom(taskGoalId(taskId))).emit("stream", payload);
           }
         }
       },
@@ -554,7 +565,7 @@ export class SocketServerV2 {
           streamedTasks.delete(taskId);
           return; // stream finish part already sent
         }
-        this.io.to(room).emit("stream", {
+        this.io.to(goalRoom(taskGoalId(taskId))).emit("stream", {
           sessionId: "default",
           agentId: role,
           taskId,
@@ -564,7 +575,7 @@ export class SocketServerV2 {
       },
 
       onError: ({ taskId, error }) => {
-        this.io.to(room).emit("error", {
+        this.io.to(goalRoom(taskGoalId(taskId))).emit("error", {
           taskId,
           error,
           timestamp: Date.now(),
@@ -572,10 +583,12 @@ export class SocketServerV2 {
       },
 
       onTaskUpdate: ({ taskId, status, role }) => {
+        const gid = taskGoalId(taskId);
+        const target = goalRoom(gid);
         const stateResponse = this.buildStateResponse(manager);
-        this.io.to(room).emit("state", stateResponse);
+        this.io.to(target).emit("state", stateResponse);
         logger.debug(
-          `[SocketServerV2] Task ${taskId} → ${status}, broadcast to ${room}`,
+          `[SocketServerV2] Task ${taskId} → ${status}, broadcast to ${target}`,
         );
 
         if (status === "in_progress") {
@@ -586,7 +599,7 @@ export class SocketServerV2 {
             part: { type: "task-started", taskId, role: role || "worker" },
             timestamp: Date.now(),
           };
-          this.io.to(room).emit("stream", payload);
+          this.io.to(target).emit("stream", payload);
         } else if (status === "completed") {
           const payload: StreamPayload = {
             sessionId: "default",
@@ -595,7 +608,7 @@ export class SocketServerV2 {
             part: { type: "task-completed", taskId, role: role || "worker" },
             timestamp: Date.now(),
           };
-          this.io.to(room).emit("stream", payload);
+          this.io.to(target).emit("stream", payload);
         } else if (status === "failed") {
           const payload: StreamPayload = {
             sessionId: "default",
@@ -604,7 +617,7 @@ export class SocketServerV2 {
             part: { type: "task-failed", taskId, role: role || "worker", error: "Task failed" },
             timestamp: Date.now(),
           };
-          this.io.to(room).emit("stream", payload);
+          this.io.to(target).emit("stream", payload);
         }
       },
 
@@ -656,9 +669,9 @@ export class SocketServerV2 {
         // Plan proposed: handled via state update when pending plan is queried
       },
 
-      // Channel B: broadcast task updates to frontend sidebar + thread cards
+      // Channel B: broadcast task updates to goal room
       onWorkerTaskUpdate: (update) => {
-        this.io.to(room).emit("task_update", {
+        this.io.to(goalRoom(taskGoalId(update.taskId))).emit("task_update", {
           ...update,
           teamId,
         });
@@ -797,16 +810,27 @@ export class SocketServerV2 {
       status: task.status || "pending",
       priority: task.priority || 0,
       dependencies,
+      goalId: task.goalId || undefined,
     };
   }
 
   /**
-   * Build plan array from TaskStore tasks
+   * Build plan array from TaskStore tasks.
+   * Returns ALL tasks — frontend filters by goalId.
    */
   private buildPlanFromTasks(manager: AgentManager): PlanTask[] {
     const taskStore = manager.getTaskStore();
     const allTasks = taskStore?.getAllTasks() || [];
     return allTasks.map((t) => this.toPlanTask(t));
+  }
+
+  /**
+   * Build plan array scoped to a specific goal.
+   */
+  private buildPlanForGoal(manager: AgentManager, goalId: string): PlanTask[] {
+    const taskStore = manager.getTaskStore();
+    const goalTasks = taskStore?.getByGoal(goalId) || [];
+    return goalTasks.map((t) => this.toPlanTask(t));
   }
 
   /**
@@ -986,15 +1010,16 @@ export class SocketServerV2 {
     content: string,
     goalId?: string,
   ) {
-    if (!goalId) {
-      this.emitError(socket, { error: "goalId is required — frontend must send it with the message" });
-      return;
-    }
-    // Send message to orchestrator with client-provided goalId
-    await manager.orchestratorMessage(content, goalId);
-    const pendingPlan = manager.getOrchestratorPendingPlan();
+    // Server generates goalId if client doesn't provide one (ChatGPT pattern)
+    const result = await manager.orchestratorMessage(content, goalId);
+    const resolvedGoalId = result.goalId;
 
-    logger.info(`[SocketServerV2] Orchestrator message processed`);
+    logger.info(`[SocketServerV2] Orchestrator message processed (goalId=${resolvedGoalId})`);
+
+    // Return the server-resolved goalId to the client so it can track this conversation
+    socket.emit("goal:created", { goalId: resolvedGoalId });
+
+    const pendingPlan = manager.getOrchestratorPendingPlan();
 
     // If plan was proposed, emit state with pending plan
     if (pendingPlan) {
@@ -1006,14 +1031,15 @@ export class SocketServerV2 {
       };
       socket.emit("state", stateResponse);
     } else {
-      // Check if tasks exist (plan was approved)
-      const taskStore = manager.getTaskStore();
-      const allTasks = taskStore?.getAllTasks() || [];
+      // Check if tasks exist for this goal (plan was approved)
+      const goalTasks = this.buildPlanForGoal(manager, resolvedGoalId);
 
-      if (allTasks.length > 0) {
-        socket.emit("state", this.buildStateResponse(manager, sessionId));
+      if (goalTasks.length > 0) {
+        const stateResponse = this.buildStateResponse(manager, sessionId);
+        stateResponse.plan = goalTasks;
+        socket.emit("state", stateResponse);
         logger.info(
-          `[SocketServerV2] Orchestrator message processed, sent ${allTasks.length} tasks`,
+          `[SocketServerV2] Sent ${goalTasks.length} tasks for goal ${resolvedGoalId}`,
         );
       }
     }

@@ -15,6 +15,7 @@ import { getAuth, getAuthHandler } from "../auth/index.js";
 import { fromNodeHeaders } from "better-auth/node";
 import { FRONTEND_FLAG_KEYS } from "../config/featureFlags.js";
 import { getConfig } from "../config/index.js";
+import { GitHubService } from "../services/GitHubService.js";
 import type { ServiceRegistry } from "../services/ServiceRegistry.js";
 
 const logger = rootLogger.child({ module: "HttpServer" });
@@ -325,6 +326,74 @@ export class HttpServer {
       }
     });
     logger.info("[HttpServer] Goals API mounted at /api/v2/teams/:teamId/goals");
+
+    // ── GitHub API (repo browser, profile, branches) ──────────────────────
+
+    const githubService = new GitHubService(async (userId: string) => {
+      // Retrieve GitHub access token from better-auth account table
+      const auth = await getAuth();
+      // Query the account table for the GitHub provider
+      // better-auth stores OAuth tokens in the `account` collection/table
+      try {
+        if (options.services?.db) {
+          // MongoDB mode
+          const account = await options.services.db.collection("account").findOne({
+            userId,
+            providerId: "github",
+          });
+          return account?.accessToken || null;
+        }
+        // SQLite mode — use better-auth's internal API
+        // In SQLite mode, we need to query directly
+        return null;
+      } catch (err) {
+        logger.warn("[GitHubService] Failed to retrieve token:", err);
+        return null;
+      }
+    });
+
+    this.app.get("/api/v2/github/repos", async (req: any, res) => {
+      try {
+        const page = parseInt(req.query.page as string) || 1;
+        const perPage = Math.min(parseInt(req.query.per_page as string) || 30, 100);
+        const type = (req.query.type as string) || "owner";
+        const sort = (req.query.sort as string) || "updated";
+
+        const result = await githubService.listRepos(req.userId, { page, perPage, type, sort });
+        res.json(result);
+      } catch (err: any) {
+        if (err.message?.includes("No GitHub account")) {
+          res.status(404).json({ error: err.message });
+        } else {
+          res.status(500).json({ error: safeError(err) });
+        }
+      }
+    });
+
+    this.app.get("/api/v2/github/repos/:owner/:repo/branches", async (req: any, res) => {
+      try {
+        const { owner, repo } = req.params;
+        const branches = await githubService.listBranches(req.userId, owner, repo);
+        res.json({ branches });
+      } catch (err: any) {
+        res.status(500).json({ error: safeError(err) });
+      }
+    });
+
+    this.app.get("/api/v2/github/user", async (req: any, res) => {
+      try {
+        const user = await githubService.getUser(req.userId);
+        res.json(user);
+      } catch (err: any) {
+        if (err.message?.includes("No GitHub account")) {
+          res.json({ linked: false });
+        } else {
+          res.status(500).json({ error: safeError(err) });
+        }
+      }
+    });
+
+    logger.info("[HttpServer] GitHub API mounted at /api/v2/github/*");
 
     // Chat Agent — role tasks (Phase 1, Step 1)
     this.app.get("/api/v2/teams/:teamId/roles/:role/tasks", async (req, res) => {

@@ -358,13 +358,9 @@ function InnerApp() {
 
     const unsubStream = agentServiceV2.onStream((payload: any) => {
       if (!payload?.part) return;
-      const { part, agentId: streamAgentId, goalId: streamGoalId } = payload;
+      const { part, agentId: streamAgentId, taskId: streamTaskId } = payload;
 
-      // Goal isolation: skip streams from other goals
-      if (streamGoalId && activePlanGoalIdRef.current
-          && streamGoalId !== activePlanGoalIdRef.current) {
-        return;
-      }
+      // Goal isolation handled by Socket.IO rooms (server-side) — no client-side filter needed.
 
       // ChatAgent responses → route to "chat:{resolvedAgentId}"
       if (streamAgentId?.startsWith('chat-')) {
@@ -380,7 +376,13 @@ function InnerApp() {
       if (!isOrchestrator && !resolved) return;
 
       const targetAgentId = isOrchestrator ? selectedTeamId : resolved!.id;
-      processStreamPart(targetAgentId, part);
+
+      // Worker streams: store at task-scoped key so each task has its own chat
+      // Orchestrator/planner streams: store at teamId (no task scope)
+      const chatKey = (!isOrchestrator && streamTaskId)
+        ? `${targetAgentId}:task:${streamTaskId}`
+        : targetAgentId;
+      processStreamPart(chatKey, part);
     });
 
     const TASK_UPDATE_LOG: Record<string, { fmt: (u: any) => string; type: string }> = {
@@ -402,6 +404,13 @@ function InnerApp() {
       useOrchestrationStore.getState().handleGoalStateChange(data);
     });
 
+    // Server-generated goalId — auto-subscribe to the goal's Socket.IO room
+    const unsubGoalCreated = agentServiceV2.onGoalCreated(({ goalId }) => {
+      if (selectedTeamId) {
+        agentServiceV2.subscribeToGoal(selectedTeamId, goalId);
+      }
+    });
+
     return () => {
       unsubMessage();
       unsubState();
@@ -410,6 +419,7 @@ function InnerApp() {
       unsubStream();
       unsubTaskUpdate();
       unsubGoalState();
+      unsubGoalCreated();
     };
   }, [selectedTeamId, agentsRef, addMessage, processStreamPart, showToast]);
 
@@ -461,7 +471,8 @@ function InnerApp() {
         }
       }
     });
-  }, [selectedTeamId, agents, loadAgentChat, restoreFromServer]);
+  // PP-006: activePlanGoalId must be in dependency array so restore re-runs on goal switch
+  }, [selectedTeamId, agents, activePlanGoalId, loadAgentChat, restoreFromServer]);
 
   useEffect(() => {
     const newLogs = orchestrationLogs.slice(prevLogsLen.current);
@@ -517,28 +528,37 @@ function InnerApp() {
   }, [selectedTeamId, addMessage, showToast, pushRoute]);
 
   /** Goal submitted from GoalScreen (teamId provided explicitly) */
-  const handleGoalScreenSubmit = useCallback((teamId: string, goal: string) => {
+  const handleGoalScreenSubmit = useCallback(async (teamId: string, goal: string) => {
+    // Ensure connected to the right team
     if (selectedTeamId !== teamId) setSelectedTeamId(teamId);
-    // Defer slightly to let team connection establish
-    setTimeout(() => {
-      const planId = makePlanId(teamId, goal, Date.now());
-      const goalId = toGoalId(goal);
-      savePlan(teamId, {
-        planId,
-        goal,
-        goalId,
-        createdAt: Date.now(),
-        status: 'active',
-      });
-      addMessage(teamId, { id: uuidv4(), role: 'user', content: goal, timestamp: Date.now() });
+
+    // Wait for socket to be ready (connection may need to establish)
+    if (!agentServiceV2.isConnected()) {
       try {
-        agentServiceV2.sendToManager(goal, goalId);
+        await agentServiceV2.connect(teamId);
       } catch (err: any) {
-        showToast(`Failed to send goal: ${err.message}`, 'error');
+        showToast(`Connection failed: ${err.message}`, 'error');
+        return;
       }
-      setActivePlanId(planId);
-      pushRoute(`/teams/${encodeURIComponent(teamId)}/p/${encodeURIComponent(planId)}`);
-    }, 100);
+    }
+
+    const planId = makePlanId(teamId, goal, Date.now());
+    const goalId = toGoalId(goal);
+    savePlan(teamId, {
+      planId,
+      goal,
+      goalId,
+      createdAt: Date.now(),
+      status: 'active',
+    });
+    addMessage(teamId, { id: uuidv4(), role: 'user', content: goal, timestamp: Date.now() });
+    try {
+      agentServiceV2.sendToManager(goal, goalId);
+    } catch (err: any) {
+      showToast(`Failed to send goal: ${err.message}`, 'error');
+    }
+    setActivePlanId(planId);
+    pushRoute(`/teams/${encodeURIComponent(teamId)}/p/${encodeURIComponent(planId)}`);
   }, [selectedTeamId, addMessage, showToast, pushRoute]);
 
   const handleApprove = useCallback((_tasks?: BackendTask[]) => {
@@ -564,8 +584,8 @@ function InnerApp() {
   }, [showToast]);
 
   const allTasks = tasks; // tasks is already a flat array from orchestrationStore
-  // v1.1: Filter tasks by active plan's goalId when multiple plans exist
-  const planTasks = plans.length > 1 && activePlanGoalId
+  // Filter tasks by active plan's goalId — each plan shows only its own tasks
+  const planTasks = activePlanGoalId
     ? allTasks.filter(t => t.goalId === activePlanGoalId)
     : allTasks;
   const activeAgent = findAgentById(activeAgentId);
@@ -581,11 +601,16 @@ function InnerApp() {
   // Task selection state for DetailPanel
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
 
-  // For sub-agents (ChatAgents): show R1 chat messages (keyed as "chat:{id}")
-  // For orchestrator: show planner messages (keyed by team id)
-  // When a task is selected: show worker stream (keyed by agent id)
+  // Chat key logic:
+  // - Click agent (sidebar AGENTS) → ChatAgent R1 chat: "chat:{agentId}"
+  // - Click task (sidebar PLAN)   → Worker stream:     "{agentId}:task:{taskId}"
+  // - Click team/orchestrator     → Planner chat:       teamId
   const isChatAgent = !!(activeAgent?.parentId && FEATURES.chatAgentChat);
-  const chatKey = isChatAgent && !selectedTaskId ? `chat:${activeAgentId}` : activeAgentId;
+  const chatKey = selectedTaskId
+    ? `${activeAgentId}:task:${selectedTaskId}`  // task selected → worker stream
+    : isChatAgent
+      ? `chat:${activeAgentId}`                  // agent clicked → ChatAgent R1
+      : activeAgentId;                            // orchestrator → planner
   const activeAgentMessages = chatHistories[chatKey] ?? [];
 
   // Click task → switch main area to that role's agent + select the task
@@ -733,11 +758,10 @@ function InnerApp() {
     );
   }
 
-  // GoalScreen — shown at `/` or `/teams/{teamId}` when no plan is active anywhere
-  // Only use URL-based signals — currentPlan updates async and causes race conditions
+  // GoalScreen — default landing page. Shown at `/` or `/teams/{teamId}`.
+  // Only skip when URL explicitly has a plan route (`/teams/{id}/p/{planId}`).
   const urlHasPlan = currentPath.includes('/p/');
-  const hasAnyPlan = !!activePlanId || urlHasPlan;
-  const showGoalScreen = !hasAnyPlan && (currentPath === '/' || currentPath.startsWith('/teams/'));
+  const showGoalScreen = !urlHasPlan && (currentPath === '/' || currentPath.match(/^\/teams\/[^/]+\/?$/));
 
   if (showGoalScreen) {
     return (
@@ -759,7 +783,6 @@ function InnerApp() {
           }}
           onNavigateToTeams={() => pushRoute('/manage-teams')}
           onSignOut={() => signOut().then(() => window.location.reload())}
-          sessionState={sessionState}
         />
         <ToastContainer toasts={toasts} onDismiss={dismissToast} />
       </div>

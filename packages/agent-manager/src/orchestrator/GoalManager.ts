@@ -369,6 +369,8 @@ export class GoalManager implements IGoalManager {
             relatedTasks: taskContext.relatedTasks || [],
             references: (task as any).references || [],
             type: taskType,
+            repoUrl: (planToApprove as any).repoUrl,
+            repoBranch: (planToApprove as any).repoBranch,
           },
         });
         tasksQueued++;

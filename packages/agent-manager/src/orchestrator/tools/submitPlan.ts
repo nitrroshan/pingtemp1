@@ -26,6 +26,8 @@ const TaskContextSchema = z.object({
 export const SubmitPlanSchema = z.object({
   planId: z.string().describe("Unique identifier for this plan"),
   goal: z.string().describe("The user's goal this plan addresses"),
+  repoUrl: z.string().describe("Git repo URL (HTTPS). The workspace for all tasks in this plan. Use the repo URL provided in the goal context."),
+  repoBranch: z.string().default("main").describe("Base branch to clone from (default: main)"),
   tasks: z.array(z.object({
     id: z.string().describe("Unique task ID (e.g., task-1, task-2)"),
     title: z.string().describe("Short task title"),

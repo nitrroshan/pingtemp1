@@ -13,6 +13,7 @@
 
 import { EventEmitter } from "events";
 import path from "path";
+import fs from "fs";
 import { rootLogger } from "../../logging.js";
 import { GitBranchManager } from "./GitBranchManager.js";
 import { AgentWorkspace } from "./AgentWorkspace.js";
@@ -45,6 +46,9 @@ export class WorkspaceManager implements IWorkspaceManager {
 
   /** Active workspace registry — keyed by taskId */
   private workspaces: Map<string, AgentWorkspace> = new Map();
+
+  /** Tracks primary clone per plan for worktree reuse: planId → repo dir path */
+  private planRepos: Map<string, string> = new Map();
 
   /** Event emitter for workspace lifecycle events */
   public readonly events = new EventEmitter();
@@ -87,7 +91,7 @@ export class WorkspaceManager implements IWorkspaceManager {
   async createWorkspace(
     agentId: string,
     taskId: string,
-    initOptions?: WorkspaceInitOptions & { goalId?: string },
+    initOptions?: WorkspaceInitOptions & { goalId?: string; planId?: string },
   ): Promise<AgentWorkspace> {
     // Return existing workspace for this task
     if (this.workspaces.has(taskId)) {
@@ -95,26 +99,107 @@ export class WorkspaceManager implements IWorkspaceManager {
       return this.workspaces.get(taskId)!;
     }
 
+    const useIsolation = initOptions?.repoUrl && initOptions?.planId
+      && process.env.FF_WORKSPACE_ISOLATION !== "false";
     const workspaceId = generateWorkspaceId(taskId);
-    const branchName = initOptions?.goalId
-      ? `goal-${initOptions.goalId}/task-${taskId}`
-      : `task-${taskId}`;
 
-    // Workspace files live in the repo root (single repo, branch isolation)
-    const workspace = new AgentWorkspace({
-      id: workspaceId,
-      agentId,
-      taskId,
-      branchName,
-      basePath: this.workspacesRoot,
-      gitManager: this.gitManager,
-    });
+    let workspace: AgentWorkspace;
 
-    // Initialize workspace (creates branch, directory structure, workspace.json)
-    if (initOptions?.repoUrl || initOptions?.localPath) {
-      await workspace.initializeFromRepo(initOptions);
-    } else {
+    if (useIsolation) {
+      // ── ISOLATED MODE: worktree optimization ──
+      // First task for a plan → full clone into plan-{planId}/repo/
+      // Subsequent tasks → git worktree add from the primary clone
+      const planDir = path.join(this.workspacesRoot, `plan-${initOptions.planId}`);
+      const taskDir = path.join(planDir, `task-${taskId}`);
+      const branchName = initOptions.goalId
+        ? `goal-${initOptions.goalId}/task-${taskId}`
+        : `task-${taskId}`;
+
+      const primaryClone = this.planRepos.get(initOptions.planId!);
+
+      if (!primaryClone) {
+        // First task → full clone
+        const repoDir = path.join(planDir, "repo");
+        await fs.promises.mkdir(repoDir, { recursive: true });
+
+        const cloneGitManager = new GitBranchManager(
+          repoDir,
+          initOptions.repoBranch || "main",
+        );
+        await cloneGitManager.clone(
+          initOptions.authToken && initOptions.repoUrl!.startsWith("https://")
+            ? initOptions.repoUrl!.replace("https://", `https://oauth2:${initOptions.authToken}@`)
+            : initOptions.repoUrl!,
+          repoDir,
+          { branch: initOptions.repoBranch, sparse: initOptions.sparse },
+        );
+        this.planRepos.set(initOptions.planId!, repoDir);
+
+        // Create worktree for this task from the clone
+        const repoGit = cloneGitManager.getGit();
+        await repoGit.raw(["worktree", "add", taskDir, "-b", branchName]);
+
+        logger.info(
+          `Created primary clone at ${repoDir} + worktree at ${taskDir} for task '${taskId}'`,
+        );
+      } else {
+        // Subsequent task → worktree from existing clone
+        await fs.promises.mkdir(path.dirname(taskDir), { recursive: true });
+        const repoGitManager = new GitBranchManager(
+          primaryClone,
+          initOptions.repoBranch || "main",
+        );
+        const repoGit = repoGitManager.getGit();
+        await repoGit.raw(["worktree", "add", taskDir, "-b", branchName]);
+
+        logger.info(
+          `Created worktree at ${taskDir} from clone at ${primaryClone} for task '${taskId}'`,
+        );
+      }
+
+      // Create workspace pointing at the worktree directory
+      const taskGitManager = new GitBranchManager(taskDir, initOptions.repoBranch || "main");
+
+      workspace = new AgentWorkspace({
+        id: workspaceId,
+        agentId,
+        taskId,
+        branchName,
+        basePath: taskDir,
+        gitManager: taskGitManager,
+      });
+
+      // Skip initializeFromRepo — worktree already has the repo content
+      // Just initialize workspace metadata (.ping/, .scratch/, workspace.json)
       await workspace.initialize();
+
+      logger.info(
+        `Created ISOLATED workspace: ${workspaceId} at ${taskDir} for task '${taskId}'`,
+      );
+    } else {
+      // ── SHARED MODE: existing behavior (branch isolation in shared repo) ──
+      const branchName = initOptions?.goalId
+        ? `goal-${initOptions.goalId}/task-${taskId}`
+        : `task-${taskId}`;
+
+      workspace = new AgentWorkspace({
+        id: workspaceId,
+        agentId,
+        taskId,
+        branchName,
+        basePath: this.workspacesRoot,
+        gitManager: this.gitManager,
+      });
+
+      if (initOptions?.repoUrl || initOptions?.localPath) {
+        await workspace.initializeFromRepo(initOptions);
+      } else {
+        await workspace.initialize();
+      }
+
+      logger.info(
+        `Created workspace: ${workspaceId} for agent '${agentId}' task '${taskId}' on branch '${branchName}'`,
+      );
     }
 
     // Register in map
@@ -122,10 +207,6 @@ export class WorkspaceManager implements IWorkspaceManager {
 
     // Forward workspace events
     this.forwardEvents(workspace);
-
-    logger.info(
-      `Created workspace: ${workspaceId} for agent '${agentId}' task '${taskId}' on branch '${branchName}'`,
-    );
 
     return workspace;
   }
@@ -269,6 +350,47 @@ export class WorkspaceManager implements IWorkspaceManager {
    */
   get activeCount(): number {
     return this.workspaces.size;
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // PLAN CLEANUP (v2.0 workspace isolation)
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  /**
+   * Clean up all workspace directories for a completed plan.
+   * Removes the `plan-{planId}/` directory and all task workspaces inside it.
+   */
+  async cleanupPlan(planId: string): Promise<void> {
+    const planDir = path.join(this.workspacesRoot, `plan-${planId}`);
+
+    // Remove worktrees from the primary clone before deleting directories
+    const primaryClone = this.planRepos.get(planId);
+    if (primaryClone) {
+      try {
+        const repoGitManager = new GitBranchManager(primaryClone, "main");
+        const repoGit = repoGitManager.getGit();
+        // Prune stale worktrees (handles already-deleted dirs gracefully)
+        await repoGit.raw(["worktree", "prune"]);
+      } catch {
+        // Non-fatal — directory cleanup will still work
+      }
+      this.planRepos.delete(planId);
+    }
+
+    // Remove all workspace entries for this plan from registry
+    for (const [taskId, ws] of this.workspaces) {
+      if (ws.basePath.startsWith(planDir)) {
+        this.workspaces.delete(taskId);
+      }
+    }
+
+    // Remove plan directory from disk
+    try {
+      await fs.promises.rm(planDir, { recursive: true, force: true });
+      logger.info(`Cleaned up plan directory: ${planDir}`);
+    } catch (err) {
+      logger.warn(`Failed to cleanup plan directory ${planDir}:`, err);
+    }
   }
 
   // ═══════════════════════════════════════════════════════════════════════════

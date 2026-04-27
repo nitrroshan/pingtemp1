@@ -1,7 +1,7 @@
 # Ping — Master Feature List
 
 **Last Updated:** April 26, 2026  
-**Total Features:** 39 (18 existing + 21 new)  
+**Total Features:** 40 (18 existing + 22 new)  
 **Master Architecture:** [MASTER-ARCHITECTURE.md](MASTER-ARCHITECTURE.md) — unified reference with diagrams for how all features connect
 
 ---
@@ -86,6 +86,7 @@
 | F4 | **Plan Viewer** | 📋 Planned | [plan-viewer](plan-viewer/) | Full-screen plan management UI. Two-panel master-detail: plan list + task detail with List/Board views, agents bar, task slide-over. Route: `/plans`. |
 | F5 | **Frontend State Refactor (Zustand)** | 📋 Planned | [frontend-state-refactor](frontend-state-refactor/) | Migrate 4 custom hooks → 5 Zustand stores. Eliminate prop drilling (Sidebar 23→5 props). Fix concurrent stream corruption, task state duplication, stale-plan-on-team-switch. App.tsx 1099→350 lines. ~1474 lines deleted. |
 | F6 | **API Improvements** | 📋 Planned | [api-improvements](api-improvements/) | Fix 5 backend API gaps: batch team+agents endpoint, split monolithic restore into goal-scoped endpoints, persist streamParts on messages, implement cancelTask/modifyTask, include agentId in stream events. |
+| F7 | **Goal-Scoped Sessions** | 📋 Planned | [goal-scoped-sessions](goal-scoped-sessions/) | Route Socket.IO events to goal rooms instead of team rooms. Per-goal sessionState. Enables parallel goals without stream bleed or state collision. ~95 lines. Prerequisite for A11 Parallel Plans v2.0+. |
 
 ### G. Research & Vision
 

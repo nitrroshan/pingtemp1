@@ -139,6 +139,10 @@ export class WorkspacePlugin implements IPlugin {
     if (!existing) {
       await this.l1.createWorkspace(context.role, context.taskId, {
         goalId: context.goalId,
+        planId: context.planId,
+        repoUrl: context.repoUrl,
+        repoBranch: context.repoBranch,
+        authToken: context.authToken,
       });
     }
   }
@@ -168,6 +172,17 @@ export class WorkspacePlugin implements IPlugin {
         await workspace.publish(goalId);
       } catch (err: any) {
         return { success: false, error: `publish failed: ${err.message}` };
+      }
+    }
+
+    // If isolated workspace (v2.0 per-task clone), push branch to remote
+    const isIsolated = workspace.basePath !== this.l1.workspacesRoot;
+    if (isIsolated) {
+      try {
+        await workspace.pushToRemote();
+      } catch (err: any) {
+        // Non-fatal — local work is preserved
+        console.warn(`[WorkspacePlugin] Push to remote failed for task ${taskId}: ${err.message}`);
       }
     }
 

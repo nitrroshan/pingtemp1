@@ -44,8 +44,8 @@ export class L1WorkspacePlugin implements IL1WorkspacePlugin {
     logger.info("L1 disposed");
   }
 
-  async createWorkspace(agentId: string, taskId: string): Promise<any> {
-    return this._manager.createWorkspace(agentId, taskId);
+  async createWorkspace(agentId: string, taskId: string, initOptions?: any): Promise<any> {
+    return this._manager.createWorkspace(agentId, taskId, initOptions);
   }
 
   getWorkspace(taskId: string): any | undefined {

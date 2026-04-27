@@ -69,8 +69,24 @@ export class GitBranchManager {
     this.repoPath = repoPath;
     this.mainBranch = mainBranch;
     // Ensure directory exists before creating simpleGit instance
-    // (simpleGit throws if baseDir doesn't exist)
     fs.mkdirSync(repoPath, { recursive: true });
+
+    // CRITICAL: Ensure this directory has its own .git BEFORE any operations.
+    // Without this, simple-git walks up to the PROJECT's .git and
+    // any checkout/branch operation switches the developer's working branch.
+    const gitDir = path.join(repoPath, ".git");
+    if (!fs.existsSync(gitDir)) {
+      try {
+        require("child_process").execSync(`git init -b ${mainBranch}`, {
+          cwd: repoPath,
+          stdio: "pipe",
+        });
+        logger.info(`Auto-initialized isolated git repo at: ${repoPath}`);
+      } catch (err) {
+        logger.error(`Failed to auto-init git at ${repoPath}: ${err}`);
+      }
+    }
+
     this.git = simpleGit(repoPath);
     logger.debug(`GitBranchManager initialized at: ${repoPath}`);
   }
