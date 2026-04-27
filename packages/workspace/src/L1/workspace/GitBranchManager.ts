@@ -793,6 +793,11 @@ export class GitBranchManager {
     }
   }
 
+  /** List configured remotes. */
+  async getRemotes(): Promise<Array<{ name: string; refs: { fetch: string; push: string } }>> {
+    return this.git.getRemotes(true);
+  }
+
   /**
    * Push a branch to a remote.
    * @param remote - Remote name (default: "origin")

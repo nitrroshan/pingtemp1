@@ -622,20 +622,21 @@ export class SocketServerV2 {
       },
 
       onPlanUpdate: ({ action }) => {
-        const stateResponse = this.buildStateResponse(manager);
+        // Plan list update → team room (sidebar needs this for all goals)
+        // Don't include tasks here — task updates come via goal-scoped events
+        const stateResponse: StateResponse = {
+          sessionId: "default",
+          sessionState: "executing",
+          timestamp: Date.now(),
+        };
         this.io.to(room).emit("state", stateResponse);
         logger.debug(`[SocketServerV2] Plan ${action}, broadcast to ${room}`);
 
-        // Phase 4.5: When plan is approved, auto-join all team sockets to the goal room.
-        // Uses Socket.IO's built-in server-side room management (no client request needed).
-        if (action === "approved") {
-          const goalId = manager.getCurrentGoalId();
-          if (goalId) {
-            const goalRoom = `team:${teamId}:goal:${goalId}`;
-            this.io.in(room).socketsJoin(goalRoom);
-            logger.info(`[SocketServerV2] Auto-joined team sockets to goal room ${goalRoom}`);
-          }
-        }
+        // Phase 4.5: When plan is approved, auto-join the submitting socket to the goal room.
+        // Other clients join explicitly via subscribeToGoal when they switch to this plan.
+        // NOTE: We can't identify the submitting socket here (onPlanUpdate is a broadcast callback).
+        // Instead, the client auto-subscribes via the goal:created event handler.
+        // No socketsJoin needed — goal:created already triggers subscribeToGoal on the client.
 
         // Save goal to database when plan is approved (for cross-browser restore)
         if (action === "approved" && this.services) {

@@ -187,7 +187,24 @@ export class WorkspacePlugin implements IPlugin {
     }
 
     // Merge task branch to main and cleanup
-    return this.l1.manager.mergeAndCleanup(taskId);
+    const mergeResult = this.l1.manager.mergeAndCleanup(taskId);
+
+    // Push main to remote after successful merge (if remote configured)
+    mergeResult.then(async (result) => {
+      if (!result.success) return;
+      try {
+        const remotes = await this.l1.manager.getGitManager().getRemotes();
+        if (remotes.length > 0) {
+          await this.l1.manager.getGitManager().push();
+          console.log(`[WorkspacePlugin] Pushed main to remote after task ${taskId}`);
+        }
+      } catch (err: any) {
+        // Non-fatal — local merge succeeded, push is best-effort
+        console.warn(`[WorkspacePlugin] Push to remote failed after task ${taskId}: ${err.message}`);
+      }
+    });
+
+    return mergeResult;
   }
 
   /** Cleanup failed workspace */
