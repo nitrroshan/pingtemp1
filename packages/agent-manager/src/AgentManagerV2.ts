@@ -530,7 +530,7 @@ export class AgentManager {
    * Send message to orchestrator (conversational planning mode)
    * Returns orchestrator's response
    */
-  async orchestratorMessage(content: string, goalId?: string): Promise<{ response: string; goalId: string }> {
+  async orchestratorMessage(content: string, goalId?: string, repoUrl?: string, repoBranch?: string): Promise<{ response: string; goalId: string }> {
     if (!this.orchestrator) {
       throw new Error(
         "Orchestrator not initialized. Call initializeOrchestrator() first.",
@@ -538,7 +538,14 @@ export class AgentManager {
     }
     // Server generates goalId if client doesn't provide one (industry standard)
     const resolvedGoalId = goalId || crypto.randomUUID();
-    const response = await this.orchestrator.handleMessage(content, resolvedGoalId);
+
+    // Enrich content with repo context so the planner includes it in submit_plan
+    let enrichedContent = content;
+    if (repoUrl) {
+      enrichedContent += `\n\n[Workspace: repo=${repoUrl}${repoBranch ? `, branch=${repoBranch}` : ''}]`;
+    }
+
+    const response = await this.orchestrator.handleMessage(enrichedContent, resolvedGoalId);
     return { response, goalId: resolvedGoalId };
   }
 

@@ -1017,23 +1017,11 @@ export class SocketServerV2 {
     repoUrl?: string,
     repoBranch?: string,
   ) {
-    // Configure workspace remote if repoUrl provided (enables auto-push after tasks)
-    if (repoUrl) {
-      try {
-        const registry = manager.getPluginRegistry();
-        const wsStorage = registry?.getPluginStorage?.("workspace");
-        const gitManager = (wsStorage as any)?.manager?.getGitManager?.();
-        if (gitManager) {
-          await gitManager.addRemote("origin", repoUrl);
-          logger.info(`[SocketServerV2] Workspace remote set to ${repoUrl}`);
-        }
-      } catch (err: any) {
-        logger.warn(`[SocketServerV2] Failed to set workspace remote: ${err.message}`);
-      }
-    }
+    // repoUrl is passed to orchestratorMessage → enriches planner content → planner includes it in submit_plan
+    // The workspace remote is configured automatically when git clone happens during task execution
 
     // Server generates goalId if client doesn't provide one (ChatGPT pattern)
-    const result = await manager.orchestratorMessage(content, goalId);
+    const result = await manager.orchestratorMessage(content, goalId, repoUrl, repoBranch);
     const resolvedGoalId = result.goalId;
 
     logger.info(`[SocketServerV2] Orchestrator message processed (goalId=${resolvedGoalId})`);
