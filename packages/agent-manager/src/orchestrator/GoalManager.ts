@@ -160,6 +160,23 @@ export class GoalManager implements IGoalManager {
     return goal;
   }
 
+  /** Store repo URL on GoalContext — injected into tasks during approvePlan (no LLM dependency). */
+  setGoalRepo(goalId: string, repoUrl: string, repoBranch?: string): void {
+    const goal = this.getOrCreateGoal(goalId);
+    goal.repoUrl = repoUrl;
+    goal.repoBranch = repoBranch;
+
+    // Set goal-level config on TaskStore so ALL task creation paths
+    // (approvePlan, replan, add_tasks) inherit repoUrl automatically.
+    this.taskStore.setGoalConfig({
+      goalId,
+      repoUrl,
+      repoBranch,
+    });
+
+    log.info(`[GoalManager] Repo set for goal ${goalId}: ${repoUrl} (branch: ${repoBranch || 'main'})`);
+  }
+
   // ═══════════════════════════════════════════════════════════════════
   // PER-GOAL AGENT LIFECYCLE (Phase 4.5 — moved from AgentManagerV2)
   // ═══════════════════════════════════════════════════════════════════
@@ -317,6 +334,7 @@ export class GoalManager implements IGoalManager {
       const planId = planToApprove.planId;
       // goalId must already be set on GoalContext (by _handleMessage via client correlation ID)
       const goalId = goal.goalId;
+      log.info(`[approvePlan] goal.repoUrl=${goal.repoUrl || 'NONE'}, goal.repoBranch=${goal.repoBranch || 'NONE'}, goalId=${goalId}`);
       if (!goalId) {
         return { success: false, error: "GoalContext has no goalId — client must provide it" };
       }
@@ -369,8 +387,9 @@ export class GoalManager implements IGoalManager {
             relatedTasks: taskContext.relatedTasks || [],
             references: (task as any).references || [],
             type: taskType,
-            repoUrl: (planToApprove as any).repoUrl,
-            repoBranch: (planToApprove as any).repoBranch,
+            // repoUrl from GoalContext (set directly by frontend — no LLM dependency)
+            repoUrl: goal.repoUrl,
+            repoBranch: goal.repoBranch,
           },
         });
         tasksQueued++;
@@ -661,6 +680,20 @@ export class GoalManager implements IGoalManager {
 
   /** Task failed → notify plugins, sync CRDT, cascade, notify planner */
   onTaskFailed({ taskId, error }: { taskId: string; error: string }): void {
+    const lowerError = error.toLowerCase();
+    const isRateLimit = lowerError.includes("rate limit") || lowerError.includes("429") || lowerError.includes("too many requests");
+
+    // Rate limit = infrastructure error, not task failure.
+    // Don't cascade, don't notify planner (avoids replan spiral).
+    // DispatchManager already retries with exponential backoff.
+    if (isRateLimit) {
+      log.warn(`[GoalManager] Rate limited: ${taskId} — not notifying planner (DispatchManager handles retries)`);
+      this.callbacks.onTaskUpdate?.({
+        taskId, status: "failed", role: this.taskStore.get(taskId)?.assigned_role, timestamp: Date.now(),
+      });
+      return;
+    }
+
     log.error(`onTaskFailed: ${taskId}: ${error}`);
     const task = this.taskStore.get(taskId);
 
@@ -728,7 +761,7 @@ export class GoalManager implements IGoalManager {
   // WORKER DONE (complete_task tool called by agent)
   // ═══════════════════════════════════════════════════════════════════
 
-  /** Worker completed via complete_task tool → notify plugins, mark complete */
+  /** Worker completed via complete_task tool → merge workspace, then mark complete */
   async onWorkerDone(data: {
     taskId: string; role: string; summary: string;
     deliverables?: string[]; nextSteps?: string[]; timestamp: number;
@@ -753,54 +786,7 @@ export class GoalManager implements IGoalManager {
       currentTask.completionSource = "tool";
     }
 
-    // Notify plugins (workspace publish + merge)
-    if (this.pluginRegistry) {
-      try {
-        const result = await this.pluginRegistry.onTaskComplete(data.taskId, this.activeGoalId || undefined);
-        if (!result.success) {
-          const mergeError = `Workspace merge failed: ${result.error}`;
-          log.error(`[GoalManager] ${mergeError}`);
-          try { this.taskStore.updateStatus(data.taskId, "failed"); } catch { /* already failed */ }
-          this.taskStore.queue.failTask(data.taskId, mergeError);
-          this.callbacks.onTaskUpdate?.({ taskId: data.taskId, status: "failed", timestamp: data.timestamp });
-
-          // Merge conflicts → create resolution task
-          if (result.error?.includes("Merge conflicts")) {
-            const failedTask = this.taskStore.get(data.taskId);
-            if (failedTask) {
-              const resolveId = `resolve-${data.taskId}`;
-              try {
-                this.taskStore.create({
-                  id: resolveId,
-                  title: `Resolve merge conflicts from: ${failedTask.title || data.taskId}`,
-                  description: `Merge conflicts detected after task completion. ${result.error}. ` +
-                    `Resolve the conflicts on branch and commit the resolution.`,
-                  assigned_role: failedTask.assigned_role,
-                  goalId: failedTask.goalId,
-                  planId: failedTask.planId,
-                  status: "pending",
-                  prerequisites: new Map(),
-                  dependants: failedTask.dependants || [],
-                });
-                log.info(`Created merge resolution task: ${resolveId} for role ${failedTask.assigned_role}`);
-              } catch (err) {
-                log.warn(`Failed to create resolution task: ${err}`);
-              }
-            }
-          }
-          return;
-        }
-      } catch (err) {
-        const mergeError = `Plugin cleanup crashed for task ${data.taskId}: ${err}`;
-        log.error(`[GoalManager] ${mergeError}`);
-        try { this.taskStore.updateStatus(data.taskId, "failed"); } catch { /* already failed */ }
-        this.taskStore.queue.failTask(data.taskId, mergeError);
-        this.callbacks.onTaskUpdate?.({ taskId: data.taskId, status: "failed", timestamp: data.timestamp });
-        return;
-      }
-    }
-
-    // Auto-close discussion CRDT
+    // Auto-close discussion CRDT (before marking complete)
     const completingTask = this.taskStore.get(data.taskId);
     if (completingTask && (completingTask.type === "discussion" || completingTask.type === "collaboration")) {
       try {
@@ -818,12 +804,34 @@ export class GoalManager implements IGoalManager {
       }
     }
 
-    // Mark complete in TaskStore → triggers onTaskComplete via RoleTaskQueue
+    // 1. Publish + Merge SYNCHRONOUSLY (before completing task)
+    //    Downstream tasks create worktrees from main — main must have this task's work.
+    //    Merge failures are non-fatal: task still completes, dependents may lack files.
+    if (this.pluginRegistry) {
+      const goalId = this.activeGoalId ?? undefined;
+      try {
+        const result = await this.pluginRegistry.onTaskComplete(data.taskId, goalId);
+        if (!result.success) {
+          log.warn(`[GoalManager] Workspace merge failed for ${data.taskId}: ${result.error} (task will still complete)`);
+        } else {
+          log.info(`[GoalManager] Infrastructure complete for ${data.taskId}`);
+        }
+      } catch (err: any) {
+        log.warn(`[GoalManager] Infrastructure error for ${data.taskId}: ${err.message} (task will still complete)`);
+      }
+    }
+
+    // 2. Mark complete — agent work succeeded regardless of merge outcome
+    //    completeTask() resolves dependents internally → unblocks downstream tasks
+    //    Dependents create worktrees AFTER merge, so they see upstream files.
     this.taskStore.completeTask(data.taskId, {
       summary: data.summary,
       deliverables: data.deliverables,
       nextSteps: data.nextSteps, completedBy: "agent", timestamp: data.timestamp,
     });
+
+    // Notify frontend: task completed
+    this.callbacks.onTaskUpdate?.({ taskId: data.taskId, status: "completed", timestamp: data.timestamp });
 
     // CRDT persistence
     const crdtSyncDone = this.crdtTaskSyncProxy?.get?.();

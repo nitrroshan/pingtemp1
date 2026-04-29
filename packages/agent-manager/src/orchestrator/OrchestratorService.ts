@@ -276,13 +276,13 @@ export class OrchestratorService {
    * @param content - Message content
    * @param goalId - goalId from frontend (required correlation ID)
    */
-  async handleMessage(content: string, goalId: string): Promise<string> {
-    const result = this.messageChain.then(() => this._handleMessage(content, goalId));
+  async handleMessage(content: string, goalId: string, repoUrl?: string, repoBranch?: string): Promise<string> {
+    const result = this.messageChain.then(() => this._handleMessage(content, goalId, repoUrl, repoBranch));
     this.messageChain = result.catch(() => "");
     return result;
   }
 
-  private async _handleMessage(content: string, goalId: string): Promise<string> {
+  private async _handleMessage(content: string, goalId: string, repoUrl?: string, repoBranch?: string): Promise<string> {
     this.messages.push({ role: "user", content, timestamp: new Date().toISOString() });
 
     if (this.goalManager.getState() === "idle") {
@@ -293,6 +293,12 @@ export class OrchestratorService {
     if (!this.goalManager.getGoalId()) {
       this.goalManager.getOrCreateGoalPublic(goalId, content);
     }
+
+    // Store repoUrl on GoalContext (direct — no LLM dependency)
+    if (repoUrl) {
+      this.goalManager.setGoalRepo(goalId, repoUrl, repoBranch);
+    }
+
     this.goalManager.executePlannerTurn(goalId, content).catch((err) => {
       console.error("[OrchestratorService] Planner error:", err);
     });

@@ -17,6 +17,9 @@ import fs from "fs";
 import { rootLogger } from "../../logging.js";
 import { GitBranchManager } from "./GitBranchManager.js";
 import { AgentWorkspace } from "./AgentWorkspace.js";
+import { WorktreeGitOps } from "./IWorkspaceGitOps.js";
+import type { IWorkspaceMerger } from "./IWorkspaceMerger.js";
+import { SharedMerger, WorktreeMerger } from "./IWorkspaceMerger.js";
 import type {
   IWorkspaceManager,
   WorkspaceConfig,
@@ -47,6 +50,9 @@ export class WorkspaceManager implements IWorkspaceManager {
   /** Active workspace registry — keyed by taskId */
   private workspaces: Map<string, AgentWorkspace> = new Map();
 
+  /** Merge strategy per workspace — keyed by taskId */
+  private mergers: Map<string, IWorkspaceMerger> = new Map();
+
   /** Tracks primary clone per plan for worktree reuse: planId → repo dir path */
   private planRepos: Map<string, string> = new Map();
 
@@ -55,12 +61,13 @@ export class WorkspaceManager implements IWorkspaceManager {
 
   constructor(config: WorkspaceConfig) {
     this.config = config;
-    this.workspacesRoot = config.repoPath;
+    // Resolve to absolute — git worktree add resolves relative paths from repo root, not cwd
+    this.workspacesRoot = path.resolve(config.repoPath);
     this.gitManager = new GitBranchManager(
-      config.repoPath,
+      this.workspacesRoot,
       config.defaultBranch || "main",
     );
-    logger.info(`WorkspaceManager created at: ${config.repoPath}`);
+    logger.info(`WorkspaceManager created at: ${this.workspacesRoot}`);
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -125,6 +132,7 @@ export class WorkspaceManager implements IWorkspaceManager {
         const cloneGitManager = new GitBranchManager(
           repoDir,
           initOptions.repoBranch || "main",
+          { skipAutoInit: true }, // Don't auto-init — we're about to clone into this dir
         );
         await cloneGitManager.clone(
           initOptions.authToken && initOptions.repoUrl!.startsWith("https://")
@@ -133,6 +141,14 @@ export class WorkspaceManager implements IWorkspaceManager {
           repoDir,
           { branch: initOptions.repoBranch, sparse: initOptions.sparse },
         );
+
+        // Seed empty repo so worktrees can be created (requires at least one commit)
+        const log = await cloneGitManager.getGit().log().catch(() => null);
+        if (!log || log.total === 0) {
+          await cloneGitManager.seedInitialCommit();
+          logger.info(`Seeded empty cloned repo with initial commit at ${repoDir}`);
+        }
+
         this.planRepos.set(initOptions.planId!, repoDir);
 
         // Create worktree for this task from the clone
@@ -158,7 +174,8 @@ export class WorkspaceManager implements IWorkspaceManager {
       }
 
       // Create workspace pointing at the worktree directory
-      const taskGitManager = new GitBranchManager(taskDir, initOptions.repoBranch || "main");
+      // skipAutoInit: worktree has a .git file (not dir) linking back to the clone
+      const taskGitManager = new GitBranchManager(taskDir, initOptions.repoBranch || "main", { skipAutoInit: true });
 
       workspace = new AgentWorkspace({
         id: workspaceId,
@@ -167,6 +184,7 @@ export class WorkspaceManager implements IWorkspaceManager {
         branchName,
         basePath: taskDir,
         gitManager: taskGitManager,
+        gitOps: new WorktreeGitOps(), // worktree IS the branch — no checkout/createBranch
       });
 
       // Skip initializeFromRepo — worktree already has the repo content
@@ -176,6 +194,10 @@ export class WorkspaceManager implements IWorkspaceManager {
       logger.info(
         `Created ISOLATED workspace: ${workspaceId} at ${taskDir} for task '${taskId}'`,
       );
+
+      // Store worktree merger — merges from primary clone (where main is checked out)
+      const clonePath = this.planRepos.get(initOptions.planId!) || path.join(planDir, "repo");
+      this.mergers.set(taskId, new WorktreeMerger(clonePath));
     } else {
       // ── SHARED MODE: existing behavior (branch isolation in shared repo) ──
       const branchName = initOptions?.goalId
@@ -300,13 +322,23 @@ export class WorkspaceManager implements IWorkspaceManager {
         await workspace.publish();
       }
 
-      // Merge
-      const result = await workspace.merge();
+      // Delegate merge to the appropriate strategy
+      const merger = this.mergers.get(taskId) || new SharedMerger();
+      const result = await merger.merge(workspace);
 
       if (result.success) {
-        // Remove from registry
+        await merger.cleanup(workspace);
+
+        // Remove from registries
         this.workspaces.delete(taskId);
+        this.mergers.delete(taskId);
         logger.info(`Merged and cleaned up workspace for task: ${taskId}`);
+
+        // Push to remote AFTER merge+cleanup (non-blocking — fire and forget)
+        merger.pushMain().catch(err => {
+          logger.warn(`Push main failed for task ${taskId}: ${err.message}`);
+        });
+
         return { success: true };
       } else {
         return {

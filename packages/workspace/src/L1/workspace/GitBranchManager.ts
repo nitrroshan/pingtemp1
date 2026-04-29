@@ -65,7 +65,7 @@ export class GitBranchManager {
   /** Mutex to serialize git operations (prevents index.lock conflicts) */
   private mutex = new GitMutex();
 
-  constructor(repoPath: string, mainBranch: string = "main") {
+  constructor(repoPath: string, mainBranch: string = "main", options?: { skipAutoInit?: boolean }) {
     this.repoPath = repoPath;
     this.mainBranch = mainBranch;
     // Ensure directory exists before creating simpleGit instance
@@ -74,8 +74,9 @@ export class GitBranchManager {
     // CRITICAL: Ensure this directory has its own .git BEFORE any operations.
     // Without this, simple-git walks up to the PROJECT's .git and
     // any checkout/branch operation switches the developer's working branch.
+    // Skip when cloning — clone creates its own .git.
     const gitDir = path.join(repoPath, ".git");
-    if (!fs.existsSync(gitDir)) {
+    if (!options?.skipAutoInit && !fs.existsSync(gitDir)) {
       try {
         require("child_process").execSync(`git init -b ${mainBranch}`, {
           cwd: repoPath,
@@ -165,8 +166,8 @@ export class GitBranchManager {
     }
   }
 
-  /** Create initial commit with README + .gitignore so branches can be created */
-  private async seedInitialCommit(): Promise<void> {
+  /** Create initial commit with README + .gitignore so branches/worktrees can be created */
+  async seedInitialCommit(): Promise<void> {
     const readmePath = path.join(this.repoPath, "README.md");
     if (!fs.existsSync(readmePath)) {
       await fs.promises.writeFile(
@@ -730,7 +731,25 @@ export class GitBranchManager {
 
     // Clone using a temporary git instance (not tied to any repo)
     const tmpGit = simpleGit();
-    await tmpGit.clone(repoUrl, targetDir, args);
+    try {
+      await tmpGit.clone(repoUrl, targetDir, args);
+    } catch (err: any) {
+      // Empty repos have no branches — retry without --branch and --single-branch
+      if (err.message?.includes("not found in upstream") || err.message?.includes("empty repository")) {
+        logger.info(`Branch not found — cloning without branch filter (empty repo?)`);
+        const fallbackArgs = args.filter(a => a !== "--single-branch" && a !== "--branch" && a !== (options?.branch || ""));
+        // Remove --branch and its value
+        const cleanArgs: string[] = [];
+        for (let i = 0; i < args.length; i++) {
+          if (args[i] === "--branch") { i++; continue; } // skip --branch and next arg
+          if (args[i] === "--single-branch") continue;
+          cleanArgs.push(args[i]);
+        }
+        await tmpGit.clone(repoUrl, targetDir, cleanArgs);
+      } else {
+        throw err;
+      }
+    }
 
     // Point this manager at the cloned repo
     this.git = simpleGit(targetDir);

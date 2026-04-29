@@ -14,6 +14,7 @@
 import { rootLogger } from "../logging.js";
 import type { Task, TaskStatus } from "../memory/types/Task.types.js";
 import type { ITaskProvider } from "./ITaskProvider.js";
+import type { GoalConfig } from "./types.js";
 import { RoleTaskQueue } from "../util/RoleTaskQueue.js";
 import type { TaskCallbacks, TaskWithContext } from "../util/RoleTaskQueue.types.js";
 
@@ -43,12 +44,24 @@ export class TaskStore implements ITaskProvider {
   public readonly queue: RoleTaskQueue;
   private storeCallbacks: TaskStoreCallbacks = {};
 
+  /** Goal-level config — looked up by goalId, injected into task.context on create */
+  private goalConfigs = new Map<string, GoalConfig>();
+
   /** Role-filtered event listeners: Map<"role:event", callback[]> */
   private roleListeners = new Map<string, Array<(task: Task) => void>>();
 
   constructor() {
     this.queue = new RoleTaskQueue();
     log.info("TaskStore initialized");
+  }
+
+  /**
+   * Register goal-level config. All tasks with this goalId inherit repoUrl/repoBranch.
+   * Looked up by goalId — multi-goal safe.
+   */
+  setGoalConfig(config: GoalConfig): void {
+    this.goalConfigs.set(config.goalId, { ...config });
+    log.info(`Goal config set for ${config.goalId}: repoUrl=${config.repoUrl || 'none'}`);
   }
 
   // ═══════════════════════════════════════════════════════════════════
@@ -85,6 +98,19 @@ export class TaskStore implements ITaskProvider {
   create(task: Task): void {
     if (this.tasks.has(task.id)) {
       throw new Error(`Task '${task.id}' already exists`);
+    }
+
+    // Inject goal config into task context (repoUrl, repoBranch)
+    // Lookup by goalId — multi-goal safe. Task-specific context wins.
+    if (task.goalId) {
+      const goalConfig = this.goalConfigs.get(task.goalId);
+      if (goalConfig) {
+        task.context = {
+          repoUrl: goalConfig.repoUrl,
+          repoBranch: goalConfig.repoBranch,
+          ...task.context,
+        };
+      }
     }
 
     this.tasks.set(task.id, task);

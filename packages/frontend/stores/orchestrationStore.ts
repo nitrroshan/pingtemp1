@@ -25,6 +25,11 @@ import type { Task as BackendTask } from '../services/AgentServiceV2';
 // ─────────────────────────────────────────────────────────────────────────────
 
 interface OrchestrationState {
+  /** Per-goal session state — keyed by goalId */
+  goalSessionStates: Record<string, string | null>;
+  /** Active goal — selectors read from this goal's state */
+  activeGoalId: string | null;
+  /** Computed: session state for the active goal (backward compatible) */
   sessionState: string | null;
   /** Flat task list — single source of truth (replaces currentPlan + tasks) */
   tasks: Task[];
@@ -34,7 +39,8 @@ interface OrchestrationState {
   plans: PlanSummary[];
 
   // ── Actions ──
-  setSessionState: (state: string | null) => void;
+  setSessionState: (state: string | null, goalId?: string) => void;
+  setActiveGoalId: (goalId: string | null) => void;
   setAutoExecuteEnabled: (enabled: boolean) => void;
 
   /** Handle `state` Socket.IO event — updates tasks + session state */
@@ -73,13 +79,32 @@ interface OrchestrationState {
 // ─────────────────────────────────────────────────────────────────────────────
 
 export const useOrchestrationStore = create<OrchestrationState>()(devtools((set, get) => ({
-  sessionState: null,
+  goalSessionStates: {},
+  activeGoalId: null,
+  sessionState: null, // Derived — kept in sync by setSessionState and setActiveGoalId
   tasks: [],
   autoExecuteEnabled: false,
   orchestrationLogs: [],
   plans: [],
 
-  setSessionState: (state) => set({ sessionState: state }),
+  setSessionState: (state, goalId) => {
+    const gid = goalId ?? get().activeGoalId;
+    if (gid) {
+      const updated = { ...get().goalSessionStates, [gid]: state };
+      set({
+        goalSessionStates: updated,
+        // Re-derive sessionState if this is the active goal
+        ...(gid === get().activeGoalId ? { sessionState: state } : {}),
+      });
+    }
+  },
+  setActiveGoalId: (goalId) => {
+    set({
+      activeGoalId: goalId,
+      // Re-derive sessionState from new goal
+      sessionState: goalId ? (get().goalSessionStates[goalId] ?? null) : null,
+    });
+  },
   setAutoExecuteEnabled: (enabled) => set({ autoExecuteEnabled: enabled }),
 
   handleStateEvent: (data) => {
@@ -125,7 +150,12 @@ export const useOrchestrationStore = create<OrchestrationState>()(devtools((set,
       set({ autoExecuteEnabled: data.autoExecute });
     }
     if (data.sessionState) {
-      set({ sessionState: data.sessionState });
+      const goalId = data.goalId ?? get().activeGoalId;
+      if (goalId) {
+        set(prev => ({
+          goalSessionStates: { ...prev.goalSessionStates, [goalId]: data.sessionState },
+        }));
+      }
     }
   },
 
@@ -138,7 +168,7 @@ export const useOrchestrationStore = create<OrchestrationState>()(devtools((set,
   approvePlan: () => {
     agentServiceV2.approvePlan();
     get().addLog('SYSTEM', 'Plan approved, starting execution...', 'success');
-    set({ sessionState: 'executing' });
+    get().setSessionState('executing');
   },
 
   startTask: (taskId) => {
@@ -177,7 +207,8 @@ export const useOrchestrationStore = create<OrchestrationState>()(devtools((set,
 
   resetForTeam: () => {
     set({
-      sessionState: null,
+      goalSessionStates: {},
+      activeGoalId: null,
       tasks: [],
       autoExecuteEnabled: false,
       orchestrationLogs: [],

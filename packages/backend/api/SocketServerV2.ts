@@ -499,19 +499,29 @@ export class SocketServerV2 {
               ? manager.getWorkerContext(taskId)
               : null; // Planner context saved separately
 
-            this.services.chat.addMessage({
+            const msgPayload = {
               teamId,
               userId: await this.services.teamRegistry?.getOwner(teamId) ?? "system",
-              role: "assistant",
-              agentId: acc.agentId,
+              role: "assistant" as const,
+              agentId: acc.agentId || "unknown",
               taskId: taskId || undefined,
               goalId: streamGoalId || manager.getCurrentGoalId() || undefined,
-              content: acc.text,
+              content: acc.text || " ",
               streamParts: acc.parts.length > 0 ? JSON.stringify(acc.parts) : undefined,
-              agentLayer: (acc.agentId === "planner" || acc.agentId === "manager" || acc.agentId === "orchestrator") ? "planner" : "worker",
+              agentLayer: (acc.agentId === "planner" || acc.agentId === "manager" || acc.agentId === "orchestrator") ? "planner" as const : "worker" as const,
               contextMessages: contextMessages || undefined,
               timestamp: new Date().toISOString(),
-            }).catch((err) => logger.warn("[SocketServerV2] Failed to save assistant message:", err));
+            };
+
+            try {
+              await this.services.chat.addMessage(msgPayload);
+            } catch (err) {
+              logger.warn({ err, taskId, agentId: acc.agentId }, "[SocketServerV2] Failed to save message — retrying once");
+              // Single retry after 500ms
+              setTimeout(() => {
+                this.services?.chat.addMessage(msgPayload).catch(() => {});
+              }, 500);
+            }
           }
           messageAccumulator.delete(accKey);
         }
@@ -1017,8 +1027,24 @@ export class SocketServerV2 {
     repoUrl?: string,
     repoBranch?: string,
   ) {
-    // repoUrl is passed to orchestratorMessage → enriches planner content → planner includes it in submit_plan
-    // The workspace remote is configured automatically when git clone happens during task execution
+    // repoUrl is stored on GoalContext → injected into tasks → used by WorkspacePlugin
+    logger.info(`[SocketServerV2] handleOrchestratorMessage: repoUrl=${repoUrl || 'NONE'}, repoBranch=${repoBranch || 'NONE'}, goalId=${goalId || 'NONE'}`);
+
+    // Wire auth token resolver so workspace push uses the user's GitHub OAuth token
+    if (repoUrl) {
+      const userId = socket.data.userId;
+      manager.getWorkerPool()?.setAuthTokenResolver(async () => {
+        try {
+          const mongoose = await import("mongoose");
+          if (mongoose.connection.readyState !== 1) return null;
+          const account = await mongoose.connection.db?.collection("account").findOne({
+            userId,
+            providerId: "github",
+          });
+          return (account as any)?.accessToken || null;
+        } catch { return null; }
+      });
+    }
 
     // Server generates goalId if client doesn't provide one (ChatGPT pattern)
     const result = await manager.orchestratorMessage(content, goalId, repoUrl, repoBranch);

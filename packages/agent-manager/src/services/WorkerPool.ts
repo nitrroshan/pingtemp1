@@ -85,6 +85,14 @@ export class WorkerPool {
   private currentPlanId: string | null = null;
   private currentGoalId: string | null = null;
 
+  /** Resolver for auth token (e.g., GitHub OAuth) — set by AgentManager from user session */
+  private authTokenResolver: (() => Promise<string | null>) | null = null;
+
+  /** Set the auth token resolver (called by AgentManager with user session info) */
+  setAuthTokenResolver(resolver: () => Promise<string | null>): void {
+    this.authTokenResolver = resolver;
+  }
+
   // ===========================================================================
   // Definition Management
   // ===========================================================================
@@ -232,9 +240,11 @@ export class WorkerPool {
       taskId = task.id;
       roleKey = task.assigned_role.toLowerCase();
       finalMessage = this.buildMessageWithContext(task);
-      taskGoalId = (task as any).goalId;
-      taskRepoUrl = (task as any).context?.repoUrl;
-      taskRepoBranch = (task as any).context?.repoBranch;
+      // Read from TaskStore (authoritative source — has full context including repoUrl)
+      const storedTask = this.taskStore?.get(task.id);
+      taskGoalId = storedTask?.goalId || (task as any).goalId;
+      taskRepoUrl = storedTask?.context?.repoUrl;
+      taskRepoBranch = storedTask?.context?.repoBranch;
       logger.debug(
         `Queue mode: ${taskId} with ${task.context.previousOutputs.length} previous outputs`,
       );
@@ -288,6 +298,12 @@ export class WorkerPool {
 
       // ── Plugin-based tool assembly ──────────────────────────────────────
       if (this.pluginRegistry) {
+        // Resolve auth token for workspace push (e.g., GitHub OAuth)
+        let authToken: string | undefined;
+        if (taskRepoUrl && this.authTokenResolver) {
+          try { authToken = (await this.authTokenResolver()) ?? undefined; } catch { /* best effort */ }
+        }
+
         const toolContext: ToolContext = {
           consumer: "worker",
           role: roleKey,
@@ -296,6 +312,7 @@ export class WorkerPool {
           planId: this.currentPlanId || undefined,
           repoUrl: taskRepoUrl,
           repoBranch: taskRepoBranch,
+          authToken,
         };
 
         // Prepare plugins (e.g. create workspace branch) before resolving tools

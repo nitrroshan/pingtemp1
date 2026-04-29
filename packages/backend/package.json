@@ -61,7 +61,10 @@
     "copy:agents": "echo 'Agent YAMLs now in @ping/agent-manager'",
     "seed": "bun run scripts/seeds/index.ts",
     "seed:admin": "bun run scripts/seeds/admin.seed.ts",
-    "db:reset": "bun run scripts/seeds/reset.ts"
+    "db:reset": "bun run scripts/seeds/reset.ts",
+    "clean:collab": "bun run scripts/clean-collab.ts",
+    "clean:workspaces": "bun run scripts/clean-workspaces.ts",
+    "clean:all": "bun run scripts/clean-collab.ts && bun run scripts/clean-workspaces.ts"
   },
   "author": "",
   "license": "ISC",

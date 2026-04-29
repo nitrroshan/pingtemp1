@@ -20,6 +20,8 @@ import { rootLogger } from "../../logging.js";
 import fg from "fast-glob";
 import { rgPath } from "@vscode/ripgrep";
 import { GitBranchManager } from "./GitBranchManager.js";
+import type { IWorkspaceGitOps } from "./IWorkspaceGitOps.js";
+import { SharedGitOps } from "./IWorkspaceGitOps.js";
 import { Scratchpad } from "./Scratchpad.js";
 import { WorkspaceSearchIndex } from "./search/WorkspaceSearchIndex.js";
 import crypto from "crypto";
@@ -108,6 +110,9 @@ export class AgentWorkspace {
   // CONSTRUCTOR
   // ═══════════════════════════════════════════════════════════════════════════
 
+  /** Strategy for branch operations — SharedGitOps (standard) or WorktreeGitOps (worktree) */
+  private gitOps: IWorkspaceGitOps;
+
   constructor(opts: {
     id: string;
     agentId: string;
@@ -117,6 +122,7 @@ export class AgentWorkspace {
     gitManager: GitBranchManager;
     retryCount?: number;
     previousVersion?: string;
+    gitOps?: IWorkspaceGitOps;
   }) {
     this.id = opts.id;
     this.agentId = opts.agentId;
@@ -125,6 +131,7 @@ export class AgentWorkspace {
     this.basePath = opts.basePath;
     this.gitManager = opts.gitManager;
     this.retryCount = opts.retryCount || 0;
+    this.gitOps = opts.gitOps || new SharedGitOps(opts.gitManager);
     if (opts.previousVersion !== undefined) {
       this.previousVersion = opts.previousVersion;
     }
@@ -158,13 +165,10 @@ export class AgentWorkspace {
     this._status = "initializing";
 
     await this.gitManager.withLock(async () => {
-      // Create the branch (if not already present)
-      const branchExists = await this.gitManager.branchExists(this.branchName);
-      if (!branchExists) {
-        await this.gitManager.createBranch(this.branchName);
-      } else {
-        await this.gitManager.checkout(this.branchName);
-      }
+      // Delegate branch preparation to gitOps strategy
+      // SharedGitOps: creates or checks out the branch
+      // WorktreeGitOps: no-op (worktree is already on correct branch)
+      await this.gitOps.prepareBranch(this.branchName);
 
       // Create workspace directory structure
       const dirs = [
@@ -401,7 +405,7 @@ export class AgentWorkspace {
    * Path is relative to workspace basePath (sandboxed)
    */
   async createFile(relativePath: string, content: string): Promise<FileInfo> {
-    this.assertActive();
+    this.assertWritable();
     const safePath = this.sanitizePath(relativePath);
     const fullPath = path.join(this.basePath, safePath);
 
@@ -452,7 +456,7 @@ export class AgentWorkspace {
    * Update an existing file
    */
   async updateFile(relativePath: string, content: string): Promise<FileInfo> {
-    this.assertActive();
+    this.assertWritable();
     const safePath = this.sanitizePath(relativePath);
     const fullPath = path.join(this.basePath, safePath);
 
@@ -491,7 +495,7 @@ export class AgentWorkspace {
    * Delete a file from the workspace
    */
   async deleteFile(relativePath: string): Promise<void> {
-    this.assertActive();
+    this.assertWritable();
     const safePath = this.sanitizePath(relativePath);
     const fullPath = path.join(this.basePath, safePath);
 
@@ -680,7 +684,7 @@ export class AgentWorkspace {
    * Commit all current changes
    */
   async commit(message: string): Promise<CommitInfo> {
-    this.assertActive();
+    this.assertWritable();
 
     const commitInfo = await this.gitManager.withLock(async () => {
       return this._commitGitOps(message);
@@ -703,11 +707,10 @@ export class AgentWorkspace {
    * Used by commit() and publish() to avoid nested lock acquisition.
    */
   private async _commitGitOps(message: string): Promise<CommitInfo> {
-    // Ensure we're on the right branch
-    const currentBranch = await this.gitManager.getCurrentBranch();
-    if (currentBranch !== this.branchName) {
-      await this.gitManager.checkout(this.branchName);
-    }
+    // Delegate branch check to gitOps strategy
+    // SharedGitOps: checks out branch if not current
+    // WorktreeGitOps: no-op (worktree IS the branch)
+    await this.gitOps.ensureBranch(this.branchName);
 
     // Update workspace.json BEFORE staging so it's included in the commit
     await this.writeWorkspaceMetadata();
@@ -733,7 +736,7 @@ export class AgentWorkspace {
    * Revert the workspace to a specific commit
    */
   async revertToCommit(commitHash: string): Promise<void> {
-    this.assertActive();
+    this.assertWritable();
 
     await this.gitManager.withLock(async () => {
       await this.gitManager.checkout(this.branchName);
@@ -770,7 +773,7 @@ export class AgentWorkspace {
    * Replaces old Artifact[]-based publish as of v1.1.
    */
   async publish(goalId: string = "unknown"): Promise<OutputManifest> {
-    this.assertActive();
+    this.assertWritable();
 
     const startTime = Date.now();
 
@@ -896,7 +899,7 @@ export class AgentWorkspace {
     content: Buffer,
     _mimeType: string,
   ): Promise<string> {
-    this.assertActive();
+    this.assertWritable();
 
     const safeName = filename.replace(/[^a-zA-Z0-9._-]/g, "_");
     const binaryDir = path.join(this.basePath, "artifacts", "data");
@@ -1231,14 +1234,10 @@ export class AgentWorkspace {
   /**
    * Ensure workspace is in 'active' status before mutations
    */
-  private assertActive(): void {
-    if (this._status !== "active") {
-      const hint =
-        this._status === "published"
-          ? `. Use reactivate() or the workspace_reactivate tool to unlock it for further work.`
-          : ``;
+  private assertWritable(): void {
+    if (this._status !== "active" && this._status !== "published") {
       throw new Error(
-        `Workspace ${this.id} is not active (status: ${this._status})${hint}`,
+        `Workspace ${this.id} is not writable (status: ${this._status})`,
       );
     }
   }

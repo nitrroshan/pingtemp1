@@ -98,6 +98,8 @@ export interface PlanMutationContext {
   tasks: ITaskProvider;
   dagResolver: DependencyResolver;
   availableRoles: string[];
+  /** Goal ID — all tasks created by mutation tools inherit this */
+  currentGoalId: string;
   /** Callback to emit Socket.IO mutation events */
   onMutation?: (event: { type: string; data: any }) => void;
 }
@@ -181,6 +183,7 @@ function normalizeAndAddTasks(
       title: task.title,
       description: `${task.title}: ${task.description}`,
       assigned_role: task.assignedRole.toLowerCase(),
+      goalId: ctx.currentGoalId,
       status: "pending",
       priority: task.priority,
       type: (task.type as any) || "work",

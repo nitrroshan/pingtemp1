@@ -105,7 +105,6 @@ function InnerApp() {
   const activeAgentIdRef = useRef(activeAgentId);
   const [selectedTeamId, setSelectedTeamId] = useState<string | null>(null);
   const selectedTeamIdRef = useRef<string | null>(null);
-  const activePlanGoalIdRef = useRef<string | null>(null);
   const connectedTeamRef = useRef<string | null>(null);
 
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -214,7 +213,11 @@ function InnerApp() {
 
   useEffect(() => { activeAgentIdRef.current = activeAgentId; }, [activeAgentId]);
   useEffect(() => { selectedTeamIdRef.current = selectedTeamId; }, [selectedTeamId]);
-  useEffect(() => { activePlanGoalIdRef.current = activePlanGoalId ?? null; }, [activePlanGoalId]);
+
+  // Sync activeGoalId to orchestration store for per-goal sessionState
+  useEffect(() => {
+    useOrchestrationStore.getState().setActiveGoalId(activePlanGoalId ?? null);
+  }, [activePlanGoalId]);
 
   // Phase 4.5: Subscribe to goal-scoped Socket.IO room when active plan changes
   useEffect(() => {

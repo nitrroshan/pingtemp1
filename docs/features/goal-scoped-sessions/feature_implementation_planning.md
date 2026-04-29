@@ -3,87 +3,39 @@
 > Architecture: [feature_architecture.md](./feature_architecture.md) — **Option A (Goal-Room Routing)** chosen.
 
 ## Branch
-`feature/goal-scoped-sessions`
+`user/nitrroshan/fixplans` (merged into existing branch)
 
-## Scope
-Route Socket.IO events to goal rooms instead of team rooms. Per-goal session state. ~95 lines of changes.
+## Status
+Backend complete (Steps 1-7). Frontend pending (Steps 8-9).
+See also: [workspace-push-issues.md](../github-connect/workspace-push-issues.md) — Phase D references these steps.
 
 ---
 
 ## Implementation Steps
 
-### Step 1: Backend — Add goal-room routing helper
+### Step 1: Backend — Add goal-room routing helper ✅ DONE
 
 **File:** `packages/backend/api/SocketServerV2.ts`
 
-- [ ] Add helper method to resolve the emit target:
-```ts
-private goalRoomOrTeam(room: string, teamId: string, goalId?: string | null): string {
-  return goalId ? `team:${teamId}:goal:${goalId}` : room;
-}
-```
-- [ ] This is called from every callback that should be goal-scoped.
-
-**Entry criteria:** Architecture doc approved
-**Exit criteria:** Helper method exists, compiles
+- [x] `goalRoom()` helper exists (line 437-438)
 
 ---
 
-### Step 2: Backend — Route `onStream` to goal room
+### Step 2: Backend — Route `onStream` to goal room ✅ DONE
 
-**File:** `packages/backend/api/SocketServerV2.ts`, line 516
+- [x] 7+ broadcasts routed to goal rooms using `goalRoom()` helper
 
-- [ ] Change `this.io.to(room).emit("stream", payload)` to use `streamGoalId`:
-```ts
-const target = this.goalRoomOrTeam(room, teamId, streamGoalId);
-this.io.to(target).emit("stream", payload);
-```
-- [ ] Also route the `onEvent` stream emission (line 548) — resolve goalId from `manager.getTaskStore().get(taskId)?.goalId`
+### Step 3: Backend — Route `onDone`, `onError` to goal room ✅ DONE
 
-**Exit criteria:** Stream events only go to goal room subscribers. Other goals' clients don't receive them.
+- [x] Done — events emit to `team:{id}:goal:{goalId}` room
 
----
+### Step 4: Backend — Route `onTaskUpdate` to goal room ✅ DONE
 
-### Step 3: Backend — Route `onDone`, `onError` to goal room
+- [x] Task state/stream events emit to goal room
 
-**File:** `packages/backend/api/SocketServerV2.ts`, lines 558, 568
+### Step 5: Backend — Route `onWorkerTaskUpdate`, `progress` to goal room ✅ DONE
 
-- [ ] `onDone`: resolve goalId from `manager.getTaskStore().get(taskId)?.goalId`
-```ts
-const task = manager.getTaskStore()?.get(taskId);
-const target = this.goalRoomOrTeam(room, teamId, task?.goalId);
-this.io.to(target).emit("stream", { ... });
-```
-- [ ] `onError`: same pattern
-
-**Exit criteria:** Finish/error events scoped to goal room
-
----
-
-### Step 4: Backend — Route `onTaskUpdate` to goal room
-
-**File:** `packages/backend/api/SocketServerV2.ts`, line 577
-
-- [ ] Resolve goalId from task:
-```ts
-const task = manager.getTaskStore()?.get(taskId);
-const target = this.goalRoomOrTeam(room, teamId, task?.goalId);
-```
-- [ ] Route `state` broadcast to goal room (line 577)
-- [ ] Route `stream` task-started/completed/failed to goal room (lines 590, 599, 608)
-
-**Exit criteria:** Task status updates only go to the goal's subscribers
-
----
-
-### Step 5: Backend — Route `onWorkerTaskUpdate`, `progress` to goal room
-
-**File:** `packages/backend/api/SocketServerV2.ts`, lines 527, 662
-
-- [ ] `progress` (line 527): resolve goalId from taskId
-- [ ] `onWorkerTaskUpdate` (line 662): use `update.goalId` or resolve from taskId
-
-**Exit criteria:** Worker progress and task updates goal-scoped
+- [x] Worker progress and task updates goal-scoped
 
 ---
 
@@ -101,33 +53,19 @@ These stay on the team room (no change needed):
 
 ### Step 7: Frontend — Subscribe to goal room on plan switch
 
-**File:** `packages/frontend/App.tsx`
+### Step 6: Backend — Keep team-room for team-wide data ✅ DONE
 
-- [ ] The `subscribeToGoal` call already exists (line ~222):
-```ts
-useEffect(() => {
-  if (selectedTeamId && activePlanGoalId) {
-    agentServiceV2.subscribeToGoal(selectedTeamId, activePlanGoalId);
-  }
-}, [selectedTeamId, activePlanGoalId]);
-```
-- [ ] Verify the backend `subscribeToGoal` handler leaves the previous room (line 392-400):
-```ts
-socket.on("subscribeToGoal", ({ teamId, goalId }) => {
-  const prevGoalRoom = socket.data.currentGoalRoom;
-  if (prevGoalRoom) socket.leave(prevGoalRoom);  // ← already exists
-  const goalRoom = `team:${teamId}:goal:${goalId}`;
-  socket.join(goalRoom);
-  socket.data.currentGoalRoom = goalRoom;
-});
-```
-- [ ] This already works. No change needed.
-
-**Exit criteria:** Switching plans subscribes to the new goal's room, leaves the old one
+- [x] `onPlanUpdate`, `goal:stateChange`, `discussion:*` stay on team room
 
 ---
 
-### Step 8: Frontend — Remove `activePlanGoalIdRef` stream filter
+### Step 7: Frontend — Subscribe to goal room on plan switch ✅ DONE
+
+- [x] `subscribeToGoal` handler exists with room cleanup (leave previous, join new)
+
+---
+
+### Step 8: Frontend — Remove `activePlanGoalIdRef` stream filter ❌ PENDING
 
 **File:** `packages/frontend/App.tsx`, lines ~364-369
 
@@ -146,7 +84,7 @@ if (!isPlanner && streamGoalId && activePlanGoalIdRef.current
 
 ---
 
-### Step 9: Frontend — Per-goal session state
+### Step 9: Frontend — Per-goal session state ❌ PENDING
 
 **File:** `packages/frontend/stores/orchestrationStore.ts`
 

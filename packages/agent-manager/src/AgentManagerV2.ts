@@ -96,6 +96,11 @@ export class AgentManager {
     return this.pluginRegistry;
   }
 
+  /** Get the worker pool (for wiring auth token resolver, etc.) */
+  getWorkerPool(): WorkerPool {
+    return this.workerPool;
+  }
+
   /**
    * Register stream callbacks for real-time event delivery (used by SocketServerV2)
    */
@@ -545,7 +550,7 @@ export class AgentManager {
       enrichedContent += `\n\n[Workspace: repo=${repoUrl}${repoBranch ? `, branch=${repoBranch}` : ''}]`;
     }
 
-    const response = await this.orchestrator.handleMessage(enrichedContent, resolvedGoalId);
+    const response = await this.orchestrator.handleMessage(enrichedContent, resolvedGoalId, repoUrl, repoBranch);
     return { response, goalId: resolvedGoalId };
   }
 

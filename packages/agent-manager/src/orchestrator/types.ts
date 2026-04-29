@@ -23,6 +23,16 @@ export type OrchestratorState =
   | "done"; // All tasks completed (Phase 4)
 
 /**
+ * Immutable configuration inherited by all tasks in a goal.
+ * Looked up by goalId in TaskStore — all task creation paths inherit this.
+ */
+export interface GoalConfig {
+  goalId: string;
+  repoUrl?: string;
+  repoBranch?: string;
+}
+
+/**
  * Per-goal state container (Phase 4 — Parallel Plans v1.0)
  * GoalManager holds Map<goalId, GoalContext>.
  */
@@ -33,6 +43,10 @@ export interface GoalContext {
   currentPlanId: string | null;
   title: string;
   createdAt: number;
+  /** Git repo URL for workspace (set directly — no LLM dependency) */
+  repoUrl?: string;
+  /** Git branch to clone from */
+  repoBranch?: string;
   // Per-goal agents (Phase 4.5 — moved from AgentManagerV2)
   planner: PlannerAgent | null;
   chatAgents: Map<string, ChatAgent>;

@@ -137,6 +137,17 @@ export const useChatStore = create<ChatState>()(devtools((set, get) => {
     }, 500);
   };
 
+  // Flush on page unload — ensures stream parts survive reload
+  if (typeof window !== 'undefined') {
+    window.addEventListener('beforeunload', () => {
+      try {
+        const capped = capHistories(get().chatHistories, 50);
+        localStorage.setItem('ping:chatHistories', JSON.stringify(capped));
+        localStorage.setItem('ping:chatHistories:ts', String(Date.now()));
+      } catch { /* best effort */ }
+    });
+  }
+
   return {
     chatHistories: initialHistories,
     _streamingIds: {},
