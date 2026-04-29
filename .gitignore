@@ -44,3 +44,6 @@ data/artifacts/
 # Local files
 *.local
 package-lock.json
+
+# MongoDB data (registry embedded DB)
+packages/registry/registiry/
