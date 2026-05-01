@@ -19,6 +19,7 @@ import { AnimatePresence, motion } from 'framer-motion';
 import { cn } from '../../lib/utils';
 import type { Agent, Task, TaskStatus } from '../../types';
 import type { PlanSummary } from '../GoalScreen/PlanList';
+import { useGoalSessionStore } from '../../stores/goalSessionStore';
 import { DetailPanel } from '../DetailPanel/DetailPanel';
 import type { OrchestrationEvent } from '../../types';
 
@@ -54,13 +55,6 @@ const STATUS_CONFIG: Record<TaskStatus | string, { icon: React.ReactNode; color:
 const PLAN_STATUS_ICON: Record<string, string> = {
   active: '🟢', completed: '✅', paused: '⏸️', unknown: '⏳',
 };
-
-function getStoredPlans(teamId: string): PlanSummary[] {
-  try {
-    const raw = localStorage.getItem(`ping:plans:${teamId}`);
-    return raw ? JSON.parse(raw) : [];
-  } catch { return []; }
-}
 
 // ─── Plan Card (left panel) ─────────────────────────────────────────────────
 
@@ -306,11 +300,20 @@ export function PlanViewerPage({
   });
   const [roleFilter, setRoleFilter] = useState<string | null>(null);
 
-  // Load plans from localStorage
+  // Load plans from goalSessionStore (server-backed)
+  const storePlans = useGoalSessionStore(s => s.plans);
   const plans = useMemo(() => {
     if (!selectedTeamId) return [];
-    return getStoredPlans(selectedTeamId);
-  }, [selectedTeamId]);
+    return storePlans.map(p => ({
+      planId: p.planId ?? p.goalId,
+      goal: p.title,
+      goalId: p.goalId,
+      createdAt: p.createdAt,
+      status: (p.state === 'done' ? 'completed' : p.state === 'executing' ? 'active' : 'unknown') as PlanSummary['status'],
+      taskCount: p.taskCount,
+      completedCount: p.completedCount,
+    }));
+  }, [selectedTeamId, storePlans]);
 
   // Auto-select first plan if none selected
   const effectivePlanId = selectedPlanId ?? plans[0]?.planId ?? null;

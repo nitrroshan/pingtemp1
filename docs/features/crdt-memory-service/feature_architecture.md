@@ -104,21 +104,78 @@ class RemoteCrdtProvider implements ICrdtMemoryProvider { }   // production
 
 ### Implementation Location
 
+**Package Split: `collab-service` (server) + `collaboration` (client)**
+
+The Hocuspocus server moves to its own package (`packages/collab-service/`). The collaboration package becomes a client-only library. This is a clean separation — server concerns (persistence, auth, search indexing) stay on the service, client concerns (tools, CollaborationSpace, RemoteCollabClient) stay on the library.
+
 ```
-packages/collaboration/src/
-  L2/
-    rooms/                         ← NEW
-      RoomManager.ts               — Room CRUD + permissions (~100 lines)
-      IdentityService.ts           — JWT/agentToken issuance (~80 lines)
-      AccessControl.ts             — resolveAccess(room, identity) (~60 lines)
-    collaboration/
-      HocuspocusServer.ts          — EXTEND: add onAuthenticate + onLoadDocument hooks
-  standalone.ts                    — EXTEND: add auth hooks (already exists)
+packages/collab-service/                    ← NEW PACKAGE (the Hocuspocus service)
+  src/
+    server/
+      HocuspocusServer.ts                   — MOVED from collaboration package
+      HocuspocusBlobStorageAdapter.ts       — MOVED from collaboration package
+    rooms/
+      RoomManager.ts                        — NEW: Room CRUD + permissions (~100 lines)
+      IdentityService.ts                    — NEW: JWT/agentToken issuance (~80 lines)
+      AccessControl.ts                      — NEW: resolveAccess(room, identity) (~60 lines)
+    search/
+      CrdtSearchExtension.ts               — NEW: Orama index on onChange (from crdt-search feature)
+      extractSearchableText.ts              — NEW: Y.Doc → string extraction
+    index.ts                                — Service entry point (replaces standalone.ts)
+  Dockerfile
+  package.json
+  tsconfig.json
+
+packages/collaboration/                     ← STAYS (becomes client-only library)
+  src/
+    L2/
+      collaboration/
+        CollabDocument.ts                   — STAYS: Y.Doc wrapper
+        CollaborationSpace.ts               — STAYS: goal-scoped namespace
+        CrdtGoalStore.ts                    — STAYS: goal lifecycle
+        CrdtTaskSync.ts                     — STAYS: task persistence
+        GroupChatManager.ts                  — STAYS: discussions
+        PlanStore.ts                        — STAYS: plan JSON files
+        RemoteCollabClient.ts               — STAYS: WebSocket client to collab-service
+        types/                              — STAYS: ICollabProvider, BlobStorageProvider interfaces
+      L2CollaborationPlugin.ts              — STAYS: embedded/remote switch
+      tools/                                — STAYS: collab tool, l2-search tool (future)
+    index.ts                                — STAYS: exports
 ```
+
+**What moves:**
+| File | From | To | Why |
+|------|------|-----|-----|
+| `HocuspocusServer.ts` (502 lines) | `collaboration/` | `collab-service/server/` | Server code belongs on the service |
+| `HocuspocusBlobStorageAdapter.ts` (71 lines) | `collaboration/` | `collab-service/server/` | Persistence is a server concern |
+| `standalone.ts` (35 lines) | `collaboration/` | `collab-service/index.ts` | Entry point for the service |
+
+**What stays:**
+Everything else — `CollabDocument`, `CollaborationSpace`, `RemoteCollabClient`, `CrdtTaskSync`, `CrdtGoalStore`, `PlanStore`, `GroupChatManager`, tools, `L2CollaborationPlugin`.
+
+**What changes in `L2CollaborationPlugin`:**
+```typescript
+// BEFORE: embedded mode creates CollabServer in-process
+import { CollabServer } from "./collaboration/HocuspocusServer.js";
+
+// AFTER: embedded mode imports from collab-service package
+import { CollabServer } from "@ping/collab-service";
+// OR: for dev, import directly. For production, use RemoteCollabClient.
+```
+
+**The `ICollabProvider` interface stays in `collaboration/`** — both `CollabServer` (in collab-service) and `RemoteCollabClient` (in collaboration) implement it. The interface is the contract between client and server.
 
 ### Effort
 
-~300 lines new code + hooks on existing Hocuspocus server. Most infrastructure already exists — `ICollabProvider`, `RemoteCollabClient`, `standalone.ts`, `BlobStorageProvider`.
+~300 lines new code (rooms, auth, ACL) + file moves. The split itself is ~0 new code — just moving `HocuspocusServer.ts` and `HocuspocusBlobStorageAdapter.ts` to the new package.
+
+### Migration Steps
+
+1. **Create `packages/collab-service/package.json`** — deps: `@hocuspocus/server`, `@hocuspocus/extension-database`, `yjs`
+2. **Move 3 files** — HocuspocusServer.ts, HocuspocusBlobStorageAdapter.ts, standalone.ts → collab-service
+3. **Update imports** in L2CollaborationPlugin for embedded mode
+4. **Add to docker-compose.yml** — new `collab-service` container
+5. **Wire `COLLAB_MODE` env var** — `embedded` (import CollabServer from collab-service) vs `external` (use RemoteCollabClient pointing to service URL)
 
 ---
 

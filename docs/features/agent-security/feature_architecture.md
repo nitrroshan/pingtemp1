@@ -1,7 +1,8 @@
 # Agent Security Hardening — Feature Architecture
 
-**Status:** Planning — for review  
+**Status:** Planning — updated April 30, 2026 (post v2.0 + GitHub Connect audit)  
 **Date:** April 26, 2026  
+**Updated:** April 30, 2026  
 **ID:** S1  
 **Priority:** CRITICAL — must ship before enterprise/multi-tenant deployment  
 **Related:** [auth-security](../auth-security/feature_architecture.md) (API/HTTP layer), [worker-sandboxing](../worker-sandboxing/feature_architecture.md) (process isolation)
@@ -292,12 +293,76 @@ Ship Option A immediately (2-3 days). Then build Option B as a follow-up (2-3 we
 | V2 | Path traversal in `FsWorkspaceStorage` | 🔴 CRITICAL | `path.resolve()` + escape check | Sandbox filesystem isolation |
 | V3 | Network exfiltration via scripts | 🔴 CRITICAL | — | Microsandbox network policy |
 | V4 | Symlink escape in workspace | 🟠 HIGH | `fs.lstat()` symlink check | Sandbox filesystem isolation |
-| V5 | Unbounded task creation | 🟠 HIGH | `MAX_TASKS_PER_PLAN` | Per-goal resource budget |
+| V5 | Unbounded task creation | ✅ FIXED | Max 5 tasks per agent per plan | — |
 | V6 | Skill registry integrity | 🟠 HIGH | Read-only mount | Hash verification + signing |
 | V7 | LLM cost exhaustion | 🟡 MEDIUM | — | Per-team token budget |
 | V8 | System prompt leakage | 🟡 MEDIUM | Prompt refusal instruction | — |
 | V9 | Skill arg injection | 🟡 MEDIUM | Arg allowlist validation | Sandbox execution |
 | V10 | Logging secrets | 🟡 MEDIUM | Secret scrubbing filter | — |
+| V11 | GitHub token in `.git/config` | 🔴 CRITICAL | Use `GIT_ASKPASS` instead of URL embedding | Microsandbox secret isolation |
+| V12 | `cleanupPlan` path traversal | 🟠 HIGH | Validate planId format | — |
+| V13 | `repoUrl` SSRF | 🟡 MEDIUM | Validate HTTPS + allowlist hosts | — |
+
+### New Vulnerabilities (April 30, 2026 — Post v2.0 + GitHub Connect)
+
+#### V11: GitHub Token Embedded in Clone URL (CRITICAL)
+
+**File:** [AgentWorkspace.ts](../../../packages/workspace/src/L1/workspace/AgentWorkspace.ts) line ~270
+
+```typescript
+cloneUrl = cloneUrl.replace("https://", `https://oauth2:${options.authToken}@`);
+```
+
+**Impact:** Token persists in `.git/config` as `url = https://oauth2:TOKEN@github.com/...`. Exposed in:
+- `.git/config` plaintext (any file read in workspace)
+- Git error messages on clone/push failure
+- `GIT_TRACE` output
+- Agent could read `.git/config` and exfiltrate the token
+
+**Fix:** Use `GIT_ASKPASS` environment variable instead of URL embedding:
+```typescript
+// Create a temporary script that echoes the token
+const askPassScript = path.join(os.tmpdir(), `git-askpass-${taskId}.sh`);
+await fs.writeFile(askPassScript, `#!/bin/sh\necho "${token}"`, { mode: 0o700 });
+// Clone with GIT_ASKPASS — token never in URL or .git/config
+await git.env({ GIT_ASKPASS: askPassScript }).clone(repoUrl, targetDir);
+// Delete the script after clone
+await fs.unlink(askPassScript);
+```
+
+#### V12: cleanupPlan Path Traversal (HIGH)
+
+**File:** [WorkspaceManager.ts](../../../packages/workspace/src/L1/workspace/WorkspaceManager.ts) `cleanupPlan()`
+
+```typescript
+const planDir = path.join(this.workspacesRoot, `plan-${planId}`);
+await fs.promises.rm(planDir, { recursive: true, force: true });
+```
+
+**Impact:** `planId = "../../../sensitive"` → deletes `{workspacesRoot}/../../../sensitive`.
+
+**Fix:** Validate planId and verify resolved path stays within workspacesRoot:
+```typescript
+if (!/^[a-zA-Z0-9_-]+$/.test(planId)) throw new Error("Invalid planId");
+const resolved = path.resolve(this.workspacesRoot, `plan-${planId}`);
+if (!resolved.startsWith(path.resolve(this.workspacesRoot))) throw new Error("Path escape");
+```
+
+#### V13: repoUrl SSRF via SubmitPlanSchema (MEDIUM)
+
+**File:** [submitPlan.ts](../../../packages/agent-manager/src/orchestrator/tools/submitPlan.ts) line ~28
+
+`repoUrl` is `z.string()` with no validation. A prompt-injected agent could set:
+- `repoUrl: "http://169.254.169.254/latest/meta-data/"` (AWS metadata)
+- `repoUrl: "http://localhost:27017"` (MongoDB)
+- `repoUrl: "https://host/repo --upload-pack=evil"` (git option injection)
+
+**Fix:** Validate URL scheme and host:
+```typescript
+repoUrl: z.string()
+  .refine(url => url.startsWith("https://github.com/") || url.startsWith("https://gitlab.com/"),
+    "Only GitHub and GitLab HTTPS URLs are allowed")
+```
 
 ---
 
@@ -309,10 +374,13 @@ Ship Option A immediately (2-3 days). Then build Option B as a follow-up (2-3 we
 | **SafeAgentWorkspace** | ✅ Solid | `requireReadBeforeWrite`, `readOnlyPaths`, `maxFileSizeBytes` (1MB) |
 | **HTTP auth** | ✅ Implemented | better-auth session validation, 7-day expiry |
 | **Socket.IO auth** | ✅ Implemented | Per-connection session validation |
-| **Rate limiting (HTTP)** | ✅ Implemented | 200 req/60s per IP |
+| **Rate limiting (HTTP)** | ✅ Implemented | 200 req/60s per IP, covers GitHub endpoints |
 | **Rate limiting (Socket)** | ✅ Implemented | Token bucket: 5 burst, 1/sec per user |
 | **MongoDB queries** | ✅ Safe | Mongoose ODM, parameterized queries |
 | **CORS** | ✅ Allowlist | Specific origins (not `*`) |
 | **Message validation** | ✅ Partial | Zod schemas on Socket.IO, 100KB limit |
 | **Git operations** | ✅ Safe | Array args (no shell string eval) |
 | **Tool injection** | ✅ Controlled | Only PluginRegistry-registered tools reach agents |
+| **Task creation limits** | ✅ Fixed | Max 5 tasks per agent per plan via `request_task` tool |
+| **GitHub API endpoints** | ✅ Authenticated | Behind `/api/v2` auth middleware |
+| **GitHub token in service** | ✅ Safe | Not logged, retrieved safely from account table |

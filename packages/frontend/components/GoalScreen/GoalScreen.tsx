@@ -89,7 +89,7 @@ export const GoalScreen: React.FC<GoalScreenProps> = ({
   };
 
   return (
-    <div className="flex flex-col h-full bg-background">
+    <div className="flex flex-col h-full flex-1 min-w-0 bg-background">
       {/* Top bar — minimal */}
       <div className="flex items-center justify-between px-6 py-3 border-b border-border/50">
         <div className="flex items-center gap-2">
@@ -140,7 +140,7 @@ export const GoalScreen: React.FC<GoalScreenProps> = ({
           {/* Chat box — textarea + team selector + submit inside */}
           <form onSubmit={handleSubmit}>
             <div className={cn(
-              'rounded-xl border bg-card overflow-hidden',
+              'rounded-xl border bg-card',
               'focus-within:ring-2 focus-within:ring-primary/40 transition-all',
               isSubmitting && 'opacity-60',
             )}>
@@ -175,7 +175,7 @@ export const GoalScreen: React.FC<GoalScreenProps> = ({
                   </button>
 
                   {isTeamDropdownOpen && teams.length > 0 && (
-                    <div className="absolute left-0 top-full mt-1 w-48 bg-popover border border-border rounded-lg shadow-xl z-50 py-1 max-h-48 overflow-auto">
+                    <div className="absolute left-0 bottom-full mb-1 w-48 bg-popover border border-border rounded-lg shadow-xl z-[9999] py-1 max-h-48 overflow-auto">
                       {teams.map(team => (
                         <button
                           key={team.id}

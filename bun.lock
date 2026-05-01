@@ -52,6 +52,7 @@
         "@ping/collaboration": "workspace:*",
         "@ping/knowledge": "workspace:*",
         "@ping/registry": "workspace:*",
+        "@ping/shared": "workspace:*",
         "@ping/workspace": "workspace:*",
         "@vscode/ripgrep": "^1.17.1",
         "ai": "^6.0.143",
@@ -88,6 +89,20 @@
         "typescript": "^5.9.3",
       },
     },
+    "packages/collab-service": {
+      "name": "@ping/collab-service",
+      "version": "0.1.0",
+      "dependencies": {
+        "@hocuspocus/extension-database": "^3.4.4",
+        "@hocuspocus/server": "^3.4.4",
+        "pino": "^10.3.1",
+        "yjs": "^13.6.29",
+      },
+      "devDependencies": {
+        "pino-pretty": "^13.0.0",
+        "typescript": "^5.8.3",
+      },
+    },
     "packages/collaboration": {
       "name": "@ping/collaboration",
       "version": "0.1.0",
@@ -96,6 +111,7 @@
         "@hocuspocus/provider": "^3.4.4",
         "@hocuspocus/server": "^3.4.4",
         "@langchain/core": "^1.1.0",
+        "@ping/collab-service": "workspace:*",
         "ai": "^6.0.143",
         "fast-glob": "^3.3.3",
         "minisearch": "^7.2.0",
@@ -128,6 +144,7 @@
         "@hocuspocus/provider": "^3.4.4",
         "@mantine/core": "^8.3.15",
         "@mantine/hooks": "^8.3.16",
+        "@ping/shared": "workspace:*",
         "@radix-ui/react-dialog": "^1.1.15",
         "@radix-ui/react-scroll-area": "^1.2.10",
         "@radix-ui/react-separator": "^1.1.8",
@@ -194,6 +211,10 @@
         "@types/node": "^25.5.0",
         "typescript": "^5.9.3",
       },
+    },
+    "packages/shared": {
+      "name": "@ping/shared",
+      "version": "1.0.0",
     },
     "packages/workspace": {
       "name": "@ping/workspace",
@@ -503,6 +524,8 @@
 
     "@ping/backend": ["@ping/backend@workspace:packages/backend"],
 
+    "@ping/collab-service": ["@ping/collab-service@workspace:packages/collab-service"],
+
     "@ping/collaboration": ["@ping/collaboration@workspace:packages/collaboration"],
 
     "@ping/desktop": ["@ping/desktop@workspace:packages/desktop"],
@@ -512,6 +535,8 @@
     "@ping/knowledge": ["@ping/knowledge@workspace:packages/knowledge"],
 
     "@ping/registry": ["@ping/registry@workspace:packages/registry"],
+
+    "@ping/shared": ["@ping/shared@workspace:packages/shared"],
 
     "@ping/workspace": ["@ping/workspace@workspace:packages/workspace"],
 

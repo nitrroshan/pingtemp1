@@ -107,11 +107,16 @@ export class DispatchManager {
   async manualDispatch(taskId: string): Promise<void> {
     const task = this.config.getTask(taskId);
     if (!task) throw new Error(`Task ${taskId} not found`);
+    if (task.status === "in_progress") {
+      log.info(`Task ${taskId} already in progress — skipping`);
+      return;
+    }
     if (task.status !== "ready" && task.status !== "pending") {
       throw new Error(`Task ${taskId} is not ready (status: ${task.status})`);
     }
     if (this.activeDispatches.has(taskId)) {
-      throw new Error(`Task ${taskId} is already being dispatched`);
+      log.info(`Task ${taskId} already being dispatched — skipping`);
+      return;
     }
 
     const role = task.assigned_role;

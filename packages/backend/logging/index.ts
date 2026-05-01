@@ -20,6 +20,16 @@ const LOG_DIR = process.env.LOG_DIR || "./data/logs";
 
 export const rootLogger = pino({
   level: process.env.LOG_LEVEL || "info",
+  // Redact known secret patterns from log output
+  redact: {
+    paths: [
+      "accessToken", "refreshToken", "authToken", "token",
+      "password", "secret", "apiKey", "api_key",
+      "*.accessToken", "*.refreshToken", "*.authToken", "*.token",
+      "*.password", "*.secret", "*.apiKey", "*.api_key",
+    ],
+    censor: "[REDACTED]",
+  },
   transport: {
     targets: [
       // Console — pretty in dev, JSON in prod

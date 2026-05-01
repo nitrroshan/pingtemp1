@@ -2346,6 +2346,434 @@ try {
 
 ---
 
+## Issue 21: Stale Team ID in localStorage → "Team not found" on Load
+
+### Evidence
+
+```
+[Error] [AgentServiceV2] Error: "Team meta-agent not found — no plugin maps to this ID"
+```
+
+After clearing `localStorage.removeItem('ping:ui')`, the error persists because there's a SEPARATE `ping:activeTeamId` key that wasn't cleared.
+
+### Root Cause
+
+Team selection is persisted in TWO places:
+1. `ping:ui` — uiStore Zustand persist (only stores `theme` and `viewMode`, NOT `selectedTeamId`)
+2. `ping:activeTeamId` — raw `localStorage.setItem` in App.tsx L232
+
+On startup, App.tsx L102 reads `ping:activeTeamId` → gets stale team ID → connects to non-existent team → error.
+
+### Long-term Solution
+
+**Move team persistence to uiStore's Zustand persist middleware** — single source of truth:
+
+```typescript
+// uiStore.ts — add selectedTeamId to partialize
+partialize: (state) => ({
+  theme: state.theme,
+  viewMode: state.viewMode,
+  selectedTeamId: state.selectedTeamId,  // ← ADD
+}),
+```
+
+Remove raw `localStorage.getItem/setItem('ping:activeTeamId')` calls from App.tsx (L102, L232, L266).
+
+**Also needed:** Auto-select first team when no team is selected:
+```typescript
+// App.tsx — after loadTeams
+if (!selectedTeamId && teams.length > 0) {
+  setSelectedTeamId(teams[0].id);
+}
+```
+
+**Files:** uiStore.ts (add selectedTeamId to persist), App.tsx (remove raw localStorage, add auto-select)
+
+---
+
+## Issue 22: Frontend Storage Architecture — localStorage vs sessionStorage
+
+### Evidence
+
+1. Clearing `localStorage.removeItem('ping:ui')` doesn't fix stale team ID (stored in separate `ping:activeTeamId`)
+2. Clearing ALL localStorage requires re-login and loses all session state
+3. 24h TTL on `ping:chatHistories` is arbitrary — no expiry for `ping:activeTeamId`, `ping:plans`
+4. Tool cards disappear on reload even though localStorage has them
+
+### Root Cause: Destructive Merge Destroys Tool Cards
+
+```typescript
+// chatStore.ts L563 — ARRAY REPLACEMENT (not deep merge)
+set(prev => ({ chatHistories: { ...prev.chatHistories, ...restored } }));
+```
+
+1. Page loads → localStorage has messages WITH `streamParts: [{tool-card...}]` ✅
+2. `restoreFromServer` fetches from MongoDB → returns messages (may have `streamParts` if save succeeded)
+3. Spread replaces **entire array per chat key** → localStorage version destroyed
+4. If MongoDB save failed (Issue 20a), server messages have `streamParts: undefined` → tool cards lost
+
+### Current State: 11 localStorage Keys, No sessionStorage
+
+| Key | Type | Should Be |
+|-----|------|-----------|
+| `ping:ui` | User pref (theme, viewMode) | ✅ localStorage |
+| `ping:theme` | Duplicate of ping:ui | ❌ Remove |
+| `ping:planviewer:view` | User pref | ✅ localStorage |
+| `ping:activeTeamId` | Session state | ❌ sessionStorage |
+| `ping:chatHistories` | Session cache | ❌ sessionStorage |
+| `ping:chatHistories:ts` | Cache TTL | ❌ Remove (sessionStorage handles expiry) |
+| `ping:lastUserId` | Session state | ❌ sessionStorage |
+| `ping:plans:{teamId}` | Session cache | ❌ sessionStorage |
+
+### Long-term Solution
+
+**1. Fix the destructive merge — deep merge by message ID:**
+
+```typescript
+// chatStore.ts restoreFromServer — preserve local streamParts
+set(prev => {
+  const merged = { ...prev.chatHistories };
+  for (const [key, msgs] of Object.entries(restored)) {
+    if (!merged[key]) {
+      merged[key] = msgs;
+    } else {
+      const msgMap = new Map(merged[key].map(m => [m.id, m]));
+      for (const serverMsg of msgs) {
+        const local = msgMap.get(serverMsg.id);
+        msgMap.set(serverMsg.id, {
+          ...local,
+          ...serverMsg,
+          streamParts: serverMsg.streamParts ?? local?.streamParts,
+        });
+      }
+      merged[key] = Array.from(msgMap.values()).sort((a, b) => a.timestamp - b.timestamp);
+    }
+  }
+  return { chatHistories: merged };
+});
+```
+
+**2. Move session data to sessionStorage:**
+
+```
+localStorage (user preferences — survives browser close):
+  ping:ui → { theme, viewMode, selectedTeamId }
+
+sessionStorage (session data — clears on tab close):
+  ping:session:chatHistories → fast cache
+  ping:session:plans:{teamId} → plan summaries
+
+MongoDB (authoritative — survives everything):
+  ChatMessage → messages WITH streamParts
+```
+
+**Industry pattern:** ChatGPT/Slack use server-side storage for conversations, localStorage only for UI preferences.
+
+**Files:** chatStore.ts (deep merge), App.tsx (sessionStorage), uiStore.ts (persist selectedTeamId)
+
+---
+
+## Issue 23: `meta-agent` Connects to Backend — INITIAL_AGENTS Contaminates Team Selection
+
+### Evidence
+
+```
+[AgentServiceV2] Error: "Team meta-agent not found — no plugin maps to this ID"
+```
+
+Happens on every load. Persists across localStorage clears, version bumps, and teamsValidated gates.
+
+### Root Cause (researched — complete audit)
+
+**Three compounding problems:**
+
+**1. `INITIAL_AGENTS` includes `meta-agent` at index 0:**
+```typescript
+// dummyData/constants.ts
+export const INITIAL_AGENTS: Agent[] = [
+  { id: "meta-agent", name: "Ping Assistant", ... },  // ← index 0
+];
+```
+
+**2. `agentStore.loadTeams()` APPENDS to INITIAL_AGENTS, doesn't replace:**
+```typescript
+// agentStore.ts L135
+set(prev => {
+  const existingIds = new Set(prev.agents.map(a => a.id));
+  const newAgents = teamAgents.filter(ta => !existingIds.has(ta.id));
+  const nextAgents = [...prev.agents, ...newAgents];  // [meta-agent, ...backendTeams]
+  return { agents: nextAgents };
+});
+```
+
+After loadTeams: `agents = [meta-agent, Engineering Team, Marketing Team, ...]`
+
+**3. Auto-select picks `agents[0]` which is `meta-agent`:**
+```typescript
+// App.tsx loadTeams validation
+const teams = useAgentStore.getState().agents;  // [meta-agent, ...]
+if (!isValid && teams.length > 0) {
+  setSelectedTeamId(teams[0].id);  // "meta-agent" ← BUG
+}
+```
+
+**Result:** `agentServiceV2.connect("meta-agent")` → backend error.
+
+### Why Previous Fixes Failed
+
+| Fix Attempted | Why It Failed |
+|--------------|---------------|
+| Remove `selectedTeamId` from persist | `meta-agent` comes from INITIAL_AGENTS, not persist |
+| `version: 1` on persist | Same — not a persist issue |
+| `teamsValidated` gate | Gate opens after loadTeams → but agents[0] is still meta-agent |
+| Remove `getState()` from route effect | Doesn't matter — loadTeams auto-select still picks meta-agent |
+
+### Long-term Solution
+
+**The real fix has two parts:**
+
+**Part 1: Filter INITIAL_AGENTS out of team selection — they're UI placeholders, not backend teams.**
+
+`loadTeams()` returns `teamAgents` (only backend teams). Use that for auto-select, not `agents` (which includes meta-agent):
+
+```typescript
+// App.tsx — auto-select from backend teams only, not INITIAL_AGENTS
+useEffect(() => {
+  useAgentStore.getState().loadTeams().then((backendTeams) => {
+    // backendTeams = only teams from API (no meta-agent)
+    if (!selectedTeamId && backendTeams.length > 0) {
+      setSelectedTeamId(backendTeams[0].id);
+    }
+    setTeamsValidated(true);
+  });
+}, []);
+```
+
+Key: `loadTeams()` already returns `teamAgents` (backend-only). Use the return value, not `getState().agents`.
+
+**Part 2: Socket connect effect validates against backend teams, not all agents:**
+
+```typescript
+// App.tsx — validate selectedTeamId is a real backend team
+useEffect(() => {
+  if (!teamsValidated) return;
+  if (!selectedTeamId) return;
+
+  // Don't connect to INITIAL_AGENTS (meta-agent, etc.)
+  const backendTeams = agents.filter(a => a.role === 'Manager' && a.id !== 'meta-agent');
+  if (!backendTeams.some(t => t.id === selectedTeamId)) return;  // Not a real team
+
+  agentServiceV2.connect(selectedTeamId);
+}, [selectedTeamId, teamsValidated]);
+```
+
+**Or simpler — mark meta-agent as non-connectable:**
+
+```typescript
+// dummyData/constants.ts — add a flag
+export const INITIAL_AGENTS: Agent[] = [
+  { id: "meta-agent", name: "Ping Assistant", isBuiltIn: true, ... },
+];
+
+// App.tsx — skip built-in agents
+if (!selectedTeamId && backendTeams.length > 0) {
+  const connectableTeams = backendTeams.filter(t => !t.isBuiltIn);
+  if (connectableTeams.length > 0) setSelectedTeamId(connectableTeams[0].id);
+}
+```
+
+**Cleanest approach — separate team agents from assistant agents:**
+
+```typescript
+// agentStore.ts — separate state
+interface AgentState {
+  assistants: Agent[];  // meta-agent, help bot (never connect to backend)
+  teams: Agent[];       // backend teams (connectable)
+  agents: Agent[];      // all (for sidebar rendering)
+}
+```
+
+**Files:** agentStore.ts (separate teams from assistants), App.tsx (auto-select from backend teams only), dummyData/constants.ts (mark as built-in)
+
+**Complete solution — `teamsValidated` gate:**
+
+```typescript
+// App.tsx — gate socket connection until teams are loaded and validated
+const [teamsValidated, setTeamsValidated] = useState(false);
+
+// loadTeams validates persisted team ID
+useEffect(() => {
+  useAgentStore.getState().loadTeams().then(() => {
+    const teams = useAgentStore.getState().agents;
+    const currentTeam = selectedTeamId;
+    const isValid = currentTeam && teams.some(t => t.id === currentTeam);
+    if (!isValid && teams.length > 0) {
+      setSelectedTeamId(teams[0].id);  // Replace stale ID with first valid team
+    }
+    setTeamsValidated(true);  // Open the gate
+  });
+}, []);
+
+// Socket connect — gated, won't fire until teams validated
+useEffect(() => {
+  if (!teamsValidated) return;  // Wait for loadTeams validation
+  if (!selectedTeamId) { disconnect; return; }
+  // ... connect to validated team
+}, [selectedTeamId, teamsValidated, ...]);
+```
+
+**Why `teamsValidated` gate is the correct pattern:**
+1. Persist hydrates stale ID → connect effect fires → `teamsValidated` is false → **returns early**
+2. `loadTeams()` fetches real teams → validates → replaces stale ID → sets gate
+3. Connect effect re-fires → `teamsValidated` is true → connects with valid ID
+4. On subsequent loads with valid persisted ID → `loadTeams` validates → no change → gate opens → connects
+
+**This solves Issue 24 simultaneously** — fresh users get auto-selected to first team.
+
+**Files:** App.tsx (teamsValidated state + gate + loadTeams validation)
+
+---
+
+## Issue 24: No Auto-Select First Team for Fresh Users
+
+### Evidence
+
+Fresh install (no `ping:ui` in localStorage) or cleared storage:
+1. `loadTeams()` fetches teams from API → returns `[Engineering Team, ...]`
+2. `selectedTeamId` stays `null` (persist has nothing to hydrate)
+3. Sidebar shows "Select team..." dropdown but nothing is selected
+4. No socket connection → no chat data → empty UI
+
+### Root Cause
+
+No fallback to auto-select when `selectedTeamId` is null after both persist hydration and team loading complete. The app waits for manual user click on the dropdown.
+
+### Long-term Solution
+
+**Auto-select first team after loadTeams if no team is persisted:**
+
+```typescript
+// App.tsx — after loadTeams
+useEffect(() => {
+  useAgentStore.getState().loadTeams().then(() => {
+    // After teams loaded: if no team selected (fresh install), auto-select first
+    const currentTeam = useUiStore.getState().selectedTeamId;
+    if (!currentTeam) {
+      const teams = useAgentStore.getState().agents;
+      if (teams.length > 0) {
+        setSelectedTeamId(teams[0].id);
+      }
+    }
+  });
+}, []);
+```
+
+**Why `useUiStore.getState()` is safe here (unlike Issue 23):**
+- `loadTeams()` is async (HTTP fetch) — by the time `.then()` fires, Zustand persist has already hydrated (it's synchronous localStorage read, completes in <1ms)
+- So `getState().selectedTeamId` correctly reflects the persisted value at this point
+- If it's still null after hydration, the user genuinely has no team → auto-select
+
+**Recommended:** Issue 23's `teamsValidated` gate solves Issue 24 simultaneously — the `loadTeams().then()` validates AND auto-selects in one step. No separate fix needed.
+
+**Files:** App.tsx (same gate as Issue 23)
+
+---
+
+## Issue 25: Team Dropdown Clipped by Sidebar — Cannot Select Team
+
+### Evidence
+
+Team dropdown opens but is hidden/clipped — the dropdown menu extends below the team switcher section but gets cut off by the sidebar's constrained layout. User cannot click on any team.
+
+### Root Cause
+
+Sidebar.tsx L381 has a `relative` container for the dropdown. The dropdown at L398 uses `absolute top-full z-50`:
+
+```html
+<!-- Sidebar structure -->
+<aside class="h-full flex flex-col">           ← constrained height
+  <div class="relative border-b shrink-0">     ← dropdown anchor
+    <button>Select team...</button>
+    <div class="absolute top-full z-50">        ← dropdown tries to render below
+      <!-- team list -->                         ← CLIPPED by parent
+    </div>
+  </div>
+  <div class="flex-1 overflow-y-auto">          ← this section clips the dropdown
+    <!-- plan list, agents -->
+  </div>
+</aside>
+```
+
+The dropdown renders inside the sidebar's `relative` container. The `z-50` works for z-index stacking, but the sidebar's flex layout with `overflow-y-auto` on the next section clips the absolutely positioned dropdown.
+
+### Long-term Solution
+
+**React `createPortal` to `document.body` — industry standard for dropdown menus.**
+
+No Radix UI or Headless UI installed in the project — use React's built-in `createPortal`.
+
+```typescript
+// Sidebar.tsx
+import { createPortal } from 'react-dom';
+
+// Two refs: one for the button (positioning), one for the portal (click-outside)
+const dropdownRef = useRef<HTMLDivElement>(null);
+const dropdownMenuRef = useRef<HTMLDivElement>(null);
+
+// Click-outside handles both refs (button in sidebar + menu in portal)
+useEffect(() => {
+  const handleClickOutside = (e: MouseEvent) => {
+    const target = e.target as Node;
+    if (dropdownRef.current?.contains(target)) return;     // Click on button
+    if (dropdownMenuRef.current?.contains(target)) return;  // Click inside menu
+    setIsTeamDropdownOpen(false);
+  };
+  if (isTeamDropdownOpen) document.addEventListener('mousedown', handleClickOutside);
+  return () => document.removeEventListener('mousedown', handleClickOutside);
+}, [isTeamDropdownOpen]);
+
+// Render dropdown via portal at document.body level
+{isTeamDropdownOpen && createPortal(
+  <div
+    ref={dropdownMenuRef}
+    className="fixed z-[9999] bg-popover border border-border rounded-lg shadow-lg overflow-hidden"
+    style={{
+      top: (dropdownRef.current?.getBoundingClientRect().bottom ?? 0) + 4,
+      left: dropdownRef.current?.getBoundingClientRect().left ?? 0,
+      width: dropdownRef.current?.getBoundingClientRect().width ?? 200,
+    }}
+  >
+    <div className="max-h-48 overflow-y-auto p-1">
+      {teams.map(team => (
+        <button key={team.id} onClick={() => { onSelectTeam?.(team); setIsTeamDropdownOpen(false); }}>
+          {team.name}
+        </button>
+      ))}
+    </div>
+  </div>,
+  document.body,
+)}
+```
+
+**Why this is the correct fix (not a patch):**
+- `createPortal` is React's official API for rendering outside the component tree
+- Radix UI, shadcn/ui, Headless UI all use portals internally for dropdowns
+- `fixed` positioning with `getBoundingClientRect()` keeps the menu visually anchored to the button
+- `z-[9999]` ensures it renders above everything (modals, overlays)
+- Two refs (button + menu) for click-outside prevents the portal from closing on its own click
+- No CSS hacks on parent containers needed
+
+**Edge cases handled:**
+- Window resize: re-render re-calculates `getBoundingClientRect()`
+- Scroll: `fixed` positioning isn't affected by parent scroll
+- Theme: portal inherits CSS variables from `<html>` (dark/light mode works)
+
+**Files:** Sidebar.tsx (createPortal import + dual ref + portal rendering)
+
+**Files:** Sidebar.tsx (portal for dropdown)
+
+---
+
 ## Master Status & Implementation Plan
 
 ### Issue Status (as of 2026-04-29)
@@ -2365,17 +2793,29 @@ try {
 | 11 | assertWritable | ✅ | ❌ Blocked by 18 | 18 |
 | 12 | IWorkspaceMerger | ✅ | ❌ Blocked by 18 | 18 |
 | 13 | Merge before complete | ✅ | ✅ | — |
-| **14** | **429 rate limit cascade** | **❌** | — | — |
-| **15** | **goalId missing on mutations** | **❌** | — | **Blocks 9, 19, 20** |
+| **14** | **429 rate limit cascade** | **✅** | — | — |
+| **15** | **goalId missing on mutations** | **✅** | — | — |
 | 16 | Auth token not resolved | Documented | — | Future |
-| 17 | Logging (startup + session) | Documented | — | Independent |
-| **18** | **Worktree wrong path (ROOT)** | **❌** | — | **Blocks 8, 11, 12** |
-| 19 | Autonomous dispatch | ❌ | — | 15 |
-| 20 | Stream persist on reload | ❌ | — | 15 |
+| 17 | Logging (startup + session) | ✅ | — | Independent |
+| **18** | **Worktree wrong path (ROOT)** | **✅** | — | — |
+| 19 | Autonomous dispatch | Unblocked by 15 | — | — |
+| 20 | Stream persist on reload | Partial (beforeunload + retry) | — | 22 |
+| 21 | Stale team ID in localStorage | ✅ (uiStore persist) | — | — |
+| **22** | **Destructive merge + storage arch** | **✅ (deep merge + sessionStorage)** | — | — |
+| **23** | **Zustand persist hydration race** | **Documented** | — | — |
+| **24** | **No auto-select first team** | **Documented** | — | Solved by 23 |
+| **25** | **Team dropdown clipped by sidebar** | **✅ Implemented** | — | — |
+| **26** | **Duplicate goals collide (deterministic goalId)** | **✅ Implemented** | — | — |
+| **27** | **Refresh mid-task loses streams + chats** | **Partial (Phase 1)** | — | **Critical** |
+| **28** | **Every follow-up creates new goal** | **Documented** | — | **Critical — ROOT** |
+| **29** | **Tasks show "No tasks yet" in plans** | **Documented** | — | Medium |
+| **30** | **Empty chat after reload (goalId mismatch)** | **✅ Implemented** | — | Critical (caused by 28) |
+| **31** | **Start button fails: "task not ready (in_progress)"** | **Documented** | — | Medium (pre-existing) |
+| **32** | **Worker chats not loading to frontend** | **Documented** | — | **Critical (multi-factor)** |
 
 **Also pending (from goal-scoped sessions):**
-- GS-8: Remove `activePlanGoalIdRef` — see [goal-scoped-sessions impl plan](../goal-scoped-sessions/feature_implementation_planning.md) Step 8
-- GS-9: Per-goal `sessionState` — see [goal-scoped-sessions impl plan](../goal-scoped-sessions/feature_implementation_planning.md) Step 9
+- GS-8: Remove `activePlanGoalIdRef` — ✅ Done
+- GS-9: Per-goal `sessionState` — ✅ Done
 
 ### Implementation Phases
 
@@ -2451,3 +2891,563 @@ Phase E (Issues 17, 20: observability)
 Phase F (Issue 16: auth)
   ← fully independent
 ```
+
+---
+
+## Issue 26: Duplicate Goals Collide — Deterministic `toGoalId()` Causes Chat/Task Merge
+
+**Severity**: Critical — data corruption (messages merge, tasks overwrite, streams cross-wire)
+
+### Symptom
+
+User submits two goals with the same prompt text (e.g., "Build a REST API") to the same team. Both goals appear as separate plans in the PlanList (different `planId`), but:
+- Clicking either plan shows the **same merged chat** (messages from both goals interleaved)
+- Tasks from both goals appear together
+- Stream events from one goal appear in the other goal's view
+- Backend reuses the first goal's GoalManager instead of creating a new one
+
+### Root Cause
+
+`toGoalId()` in `packages/frontend/lib/planId.ts` is **purely deterministic** — same input text always produces the same goalId:
+
+```ts
+export function toGoalId(goal: string): string {
+  const slug = goal.toLowerCase().trim().replace(...).substring(0, 50);
+  let hash = 0;
+  for (let i = 0; i < goal.length; i++) {
+    hash = ((hash << 5) - hash + goal.charCodeAt(i)) | 0;
+  }
+  return `${slug}-${Math.abs(hash).toString(36).substring(0, 8)}`;
+}
+```
+
+Meanwhile, `makePlanId()` uses a timestamp — always unique. So two identical prompts get **different `planId`** but **same `goalId`**. The `planId` is used for the URL; the `goalId` is used for everything else.
+
+### Impact Map — Every Place `goalId` is Used as a Key
+
+| Layer | File | Usage | Collision Effect |
+|-------|------|-------|-----------------|
+| **Frontend chat key** | `App.tsx` L540, L574 | `addMessage(\`${teamId}:goal:${goalId}\`, ...)` | Messages from both goals merge into one chat |
+| **Frontend stream routing** | `App.tsx` L398 | `chatKey = \`${teamId}:goal:${streamGoalId}\`` | Stream parts from Goal A appear in Goal B's view |
+| **Frontend goal subscription** | `App.tsx` L229 | `subscribeToGoal(teamId, activePlanGoalId)` | Both plans join the same Socket.IO room |
+| **Frontend task filter** | `App.tsx` L612 | `allTasks.filter(t => t.goalId === activePlanGoalId)` | Tasks from both goals shown together |
+| **Frontend active chat derivation** | `App.tsx` L636 | `chatKey = \`${selectedTeamId}:goal:${activePlanGoalId}\`` | Both plans resolve to same chatKey |
+| **Frontend plan storage** | `PlanList.tsx` L46 | Dedup by `planId` (not goalId) | Two plans exist but both have same goalId field |
+| **Backend GoalManager** | `GoalManager.ts` L104 | `goals.get(goalId)` Map lookup | Second goal reuses first's GoalContext (planner, agents, state) |
+| **Backend OrchestratorService** | `OrchestratorService.ts` L293 | `getGoalId()` guard | Second goal's content fed to first goal's planner session |
+| **Backend TaskStore** | `TaskStore.ts` L179 | `getByGoal(goalId)` filter | Tasks from both goals merge |
+| **Backend Socket.IO room** | `SocketServerV2.ts` L399 | `team:${teamId}:goal:${goalId}` room | Both goals broadcast to same room |
+| **Backend stream broadcast** | `SocketServerV2.ts` L536 | `io.to(goalRoom(streamGoalId)).emit(...)` | Cross-wired stream events |
+| **Backend MongoDB chat** | `MongoChatService.ts` L62 | `find({teamId, goalId})` | Both goals' messages returned from DB |
+| **Backend session log** | `logging/index.ts` L73 | `${goalId}.log` file | Logs merge into one file |
+| **Backend workspace dir** | `WorkspacePlugin.ts` L141 | Workspace scoped by goalId | Same workspace directory |
+
+### Long-Term Solution
+
+**Option A (Recommended): Make `toGoalId()` non-deterministic**
+
+Include a timestamp or short UUID suffix:
+
+```ts
+export function toGoalId(goal: string): string {
+  const slug = goal.toLowerCase().trim()
+    .replace(/[^a-z0-9\s-]/g, "").replace(/\s+/g, "-")
+    .substring(0, 50);
+  const ts = Date.now().toString(36); // unique per-millisecond
+  return `${slug}-${ts}`;
+}
+```
+
+**Pros**: Minimal change (1 file, 1 function). Every goal submission gets a unique goalId.
+**Cons**: Can't recover goalId from text alone (but nothing relies on this — the goalId is always passed explicitly from frontend to backend).
+
+**Option B: Unify on `planId` as the correlation key**
+
+Replace `goalId` with `planId` everywhere — chat keys, Socket.IO rooms, GoalManager map, TaskStore filter, etc. The `planId` is already unique (timestamp-based).
+
+**Pros**: Single unique identifier across the stack. No "planId vs goalId" confusion.
+**Cons**: Much larger change — every file in the Impact Map above needs updating. Backend GoalManager, OrchestratorService, TaskStore, SocketServerV2 all need to switch from goalId to planId. Frontend chat keys, stream routing, subscriptions all change.
+
+**Option C: Detect duplicate and generate suffix**
+
+Keep `toGoalId()` deterministic but detect collision at submission time and append `-2`, `-3`, etc.
+
+**Pros**: Preserves slug readability.
+**Cons**: Requires checking existing goals on both frontend (sessionStorage) and backend (GoalManager map) — complex synchronization.
+
+### Recommendation
+
+**Option A** — simplest, most reliable. One function change, no coordination needed. The comment in `planId.ts` says "backend receives goalId from the frontend and never derives its own" — so making it non-deterministic is safe.
+
+**UPDATE**: Issue 26 implemented via server-generated UUID (Option A from `docs/features/server-goalid/`). `toGoalId()` removed from goal submission paths. Backend generates `crypto.randomUUID()`, emits `goal:created`, frontend awaits it.
+
+---
+
+## Issue 27: Page Refresh Mid-Task Loses Streams and Chats
+
+**Severity**: Critical — user loses visibility into running tasks after refresh
+
+### Symptom
+
+When tasks are actively running and the user refreshes the page:
+1. Stream events stop — no more tool calls, reasoning, or text visible
+2. Chat history appears empty — previously visible messages gone
+3. Task status shows but task output is blank
+
+If the user is connected BEFORE tasks start (or tasks have completed), refresh works fine — chats restore correctly.
+
+### Root Cause: `activeGoalId` Not Recovered on Refresh
+
+The reconnection flow has a fatal gap — `activeGoalId` is never restored after page refresh, which breaks the entire goal-scoped event pipeline.
+
+**Refresh timeline:**
+
+```
+1. Page refreshes → all Zustand stores reinitialize
+2. uiStore.partialize only persists {theme, viewMode, isSidebarExpanded}
+   → selectedTeamId = null
+   → activePlanId = null
+   → activeGoalId = null (NOT PERSISTED)
+   
+3. URL parsed: /teams/{teamId}/p/{planId}
+   → selectedTeamId recovered ✅
+   → activePlanId recovered ✅
+   
+4. activePlanGoalId derived (useMemo):
+   → looks up plans[] (backend plans — empty on fresh load)
+   → looks up sessionStorage ping:plans:{teamId}
+   → finds plan with matching planId → goalId recovered ✅
+   
+5. Socket connects to team ✅
+
+6. subscribeToGoal effect fires:
+   if (selectedTeamId && activePlanGoalId) {
+     agentServiceV2.subscribeToGoal(...)
+   }
+   → IF activePlanGoalId is derived in time, this works
+   → IF the useMemo hasn't computed yet, this is null → SKIPPED ❌
+
+7. restoreFromServer called:
+   → uses activePlanGoalId which may still be null
+   → messages keyed to wrong chatKey ❌
+```
+
+### Sub-Issues
+
+#### 27a: Goal room subscription timing race
+
+**File:** `App.tsx` L212-215
+
+The `subscribeToGoal` effect depends on `activePlanGoalId` which is derived via `useMemo` from `plans` + `sessionStorage`. On refresh, the `useMemo` may not have computed yet when the socket connects → the effect runs with `activePlanGoalId = undefined` → no goal room subscription → all stream events lost.
+
+**Impact:** Backend continues emitting to `team:{teamId}:goal:{goalId}` room. Nobody is listening. Events are permanently lost.
+
+#### 27b: Socket.IO auto-reconnect doesn't re-subscribe to goal room
+
+**File:** `AgentServiceV2.ts` L207-209
+
+Socket.IO has `reconnection: true`. On auto-reconnect (network blip), the `connect` handler only does `register`, never `subscribeToGoal`. The React effect at App.tsx L212 only fires when deps change — not on socket reconnect.
+
+**File:** `SocketServerV2.ts` L1505 — "Socket.IO automatically removes socket from all rooms on disconnect"
+
+**Impact:** After any socket reconnect (not just refresh), goal room is lost.
+
+#### 27c: `restoreFromServer` called without goalId → wrong chat key
+
+**File:** `chatStore.ts` L537-540
+
+```ts
+key = goalId ? `${teamId}:goal:${goalId}` : teamId;
+```
+
+Without goalId, planner messages are stored under plain `teamId` key. But the chat view looks for `{teamId}:goal:{goalId}` → empty chat.
+
+#### 27d: No catch-up for missed stream events
+
+**File:** `SocketServerV2.ts` L438-470
+
+Backend streams broadcast immediately with no buffering or replay. Events emitted during the ~1-3 second refresh window are permanently lost. No replay mechanism exists.
+
+`restoreFromServer` gets persisted messages from MongoDB, but stream parts (tool calls, reasoning blocks) are only saved to MongoDB on stream `finish` event — in-flight stream parts at disconnect time are never received.
+
+#### 27e: `get-state` returns all tasks, not goal-filtered
+
+**File:** `SocketServerV2.ts` L1434-1475
+
+`handleGetState` → `buildStateResponse` → `getAllTasks()` returns tasks from ALL goals. The frontend `planTasks` filter requires `activePlanGoalId` which is null → shows mixed-goal tasks or all tasks unfiltered.
+
+### Impact Map
+
+| What breaks | Why | File |
+|------------|-----|------|
+| Stream events lost | Not subscribed to goal room | App.tsx L212, SocketServerV2.ts L467 |
+| Chat empty | restoreFromServer keyed without goalId | chatStore.ts L537 |
+| Socket reconnect loses room | No re-subscribe on reconnect | AgentServiceV2.ts L207 |
+| Missed events unrecoverable | No buffering or replay | SocketServerV2.ts L438 |
+| Tasks mixed across goals | get-state not goal-filtered | SocketServerV2.ts L1434 |
+
+### Long-Term Solution
+
+**Phase 1 — Fix recovery (frontend, 3 changes):**
+
+1. **Recover goalId from sessionStorage immediately.** The `activePlanGoalId` useMemo already does this — ensure it runs before the `subscribeToGoal` effect. If there's a race, add an explicit `useEffect` that reads sessionStorage on mount and calls `subscribeToGoal` directly.
+
+2. **Re-subscribe on socket reconnect.** In `AgentServiceV2.connect()` handler (or via a React effect on socket state), call `subscribeToGoal` whenever the socket reconnects. Store the current `{teamId, goalId}` and re-subscribe automatically.
+
+3. **Pass goalId to restoreFromServer.** Ensure `activePlanGoalId` is available when restore fires. If it's derived from sessionStorage (sync), it should be available on first render — verify the timing.
+
+**Phase 2 — Catch-up mechanism (backend, medium effort):**
+
+4. **Goal-scoped `get-state`.** Pass `goalId` in `get-state` request. Backend filters tasks by goalId. Frontend receives only relevant tasks.
+
+5. **Event replay buffer.** On reconnect, backend replays recent events for the goal room (last N seconds or since last ack). This requires:
+   - Server-side event buffer per goal (circular buffer, ~60s)
+   - Client sends `lastEventTimestamp` on reconnect
+   - Server replays missed events
+
+Phase 2 is significant effort. Phase 1 alone fixes the 90% case — the only gap would be events during the ~1-3s refresh window, which is acceptable for now.
+
+#### 27f: Follow-up messages fail with "Expected string, received null"
+
+After reload, typing in the chat (e.g., "yes") triggers `sendToManager(content, goalId)` where `goalId` is `null` (from `activeGoalId` uiStore state). The backend Zod schema `z.string().max(200).optional()` rejects `null` — it only accepts `string | undefined`.
+
+**Files:**
+- `SocketServerV2.ts` L55 — `goalId: z.string().max(200).optional()` → change to `.nullish()` to accept `null`
+- `AgentServiceV2.ts` `sendToManager()` — convert `null` → `undefined` via `goalId ?? undefined`
+- `ChatArea.tsx` L186 — passes `goalId` prop which is `string | null` from `activeGoalId`
+
+**Fix:** Schema accepts `nullish`, frontend converts `null` → `undefined`. Both applied.
+
+---
+
+## Issue 28: Every Follow-Up Message Creates a New Goal (Server-GoalId Regression)
+
+**Severity**: Critical — destroys active goals, creates phantom plans
+
+### Symptom
+
+Follow-up messages like "ok", "yes", "are the tasks complete?" appear as separate goals in RECENT PLANS. Each message creates a brand-new backend GoalContext. In single-goal mode (`FF_PARALLEL_PLANS` off), this **clears the existing goal** — destroying in-progress tasks.
+
+### Root Cause
+
+Three failures combine:
+
+**1. `activeGoalId` is null when follow-up is sent**
+
+`handleGoalScreenSubmit` sets `activeGoalId` only AFTER `sendToManagerAsync` resolves (~1-5s). But `setActivePlanId` + `pushRoute` happen immediately, showing the ChatArea. If the user types before the server responds, `activeGoalId` is still `null`.
+
+```
+handleGoalScreenSubmit:
+  1. setSelectedTeamId(teamId)     ← immediate
+  2. await sendToManagerAsync(goal) ← 1-5 seconds
+     ... user can type "yes" here, activeGoalId is still null ...
+  3. setActiveGoalId(serverGoalId)  ← too late
+```
+
+Also after page reload, the mount effect recovery (Fix 27a) may fail if sessionStorage doesn't have the goalId.
+
+**2. Backend creates new UUID for every message without goalId**
+
+`AgentManagerV2.orchestratorMessage()`:
+```ts
+const resolvedGoalId = goalId || crypto.randomUUID(); // NEW UUID every time
+```
+
+Every `sendToManager(content, null)` → backend generates a fresh UUID → `GoalManager.getOrCreateGoal(newUUID)` → creates new GoalContext.
+
+**3. Single-goal mode destroys existing goal**
+
+`GoalManager.getOrCreateGoal()`:
+```ts
+if (!process.env.FF_PARALLEL_PLANS && this.goals.size >= 1) {
+  this.goals.clear(); // DESTROYS running tasks
+}
+```
+
+The new random goalId doesn't match the existing goal, so GoalManager clears everything and starts fresh. Active workers, planners, and tasks are lost.
+
+**4. `goal:created` fires for EVERY message**
+
+`SocketServerV2.handleOrchestratorMessage` always emits `goal:created` after `orchestratorMessage()`. But the frontend `onGoalCreated` handler only subscribes to the room — it never updates `activeGoalId` or saves the plan. So the cycle repeats.
+
+### Impact
+
+| What happens | Why |
+|-------------|-----|
+| "ok" appears as a plan in RECENT PLANS | New goalId → new savePlan via restore |
+| Active tasks destroyed | Single-goal mode clears goals map |
+| Planner loses context | New GoalContext has empty planner session |
+| Chat becomes empty | Chat keyed by old goalId, new goal has no messages |
+
+### Long-Term Solution
+
+**Principle**: goalId is REQUIRED for all follow-up messages. Only the initial GoalScreen submission omits goalId (server generates UUID). Every subsequent message must include it.
+
+**Fix A (Frontend — ROOT FIX): Don't navigate until goalId is set**
+
+Move `setActivePlanId` + `pushRoute` to AFTER `sendToManagerAsync` resolves. The user sees the GoalScreen (with a loading/submitting state) until the server responds with the goalId:
+
+```ts
+// handleGoalScreenSubmit — AFTER
+const result = await sendToManagerAsync(goal, repoUrl, repoBranch);
+const serverGoalId = result.goalId;
+setActiveGoalId(serverGoalId);         // ← set FIRST
+savePlan(teamId, { planId, goal, goalId: serverGoalId, ... });
+setActivePlanId(planId);               // ← THEN navigate
+pushRoute(`/teams/.../p/${planId}`);
+```
+
+This eliminates the race window. ChatArea is never visible without `activeGoalId`. Follow-up messages always have goalId.
+
+**Fix B (Backend): Only emit `goal:created` for new goals**
+
+`handleOrchestratorMessage` should only emit `goal:created` when a NEW goal was actually created, not on every message:
+
+```ts
+const goalExisted = !!manager.getOrchestratorCurrentGoalId();
+const result = await manager.orchestratorMessage(content, goalId);
+if (!goalExisted) {
+  socket.emit("goal:created", { goalId: result.goalId, nonce });
+}
+```
+
+**Fix C (Backend): Reject follow-ups without goalId**
+
+`AgentManagerV2.orchestratorMessage()` should NOT silently create a new goal. If there's already an active goal and no goalId is provided, the message is malformed:
+
+```ts
+const resolvedGoalId = goalId || crypto.randomUUID();
+// If there's already a goal, a missing goalId means a frontend bug
+if (!goalId && this.orchestrator?.getCurrentGoalId()) {
+  logger.warn('Follow-up message missing goalId — frontend bug');
+}
+```
+
+This surfaces the bug instead of silently creating orphan goals. Fix A prevents it from happening.
+
+---
+
+## Issue 29: Tasks Show "No tasks yet" in RECENT PLANS
+
+**Severity**: Medium — cosmetic but confusing
+**Verified**: YES — confirmed in code at 3 `savePlan()` call sites
+
+### Symptom
+
+Plan cards in GoalScreen show "No tasks yet" even for goals that have running tasks with 3/8 progress.
+
+### Root Cause (verified)
+
+**Two separate data sources, never synced:**
+
+1. **GoalScreen PlanList** reads from `sessionStorage` via `getStoredPlans()` ([PlanList.tsx L37-42](packages/frontend/components/GoalScreen/PlanList.tsx#L37-L42))
+2. **Sidebar SidebarPlanList** reads from `orchestrationStore.plans` (live from `goal:stateChange`)
+
+The `savePlan()` calls at submit time ([App.tsx L547](packages/frontend/App.tsx#L547), [App.tsx L584](packages/frontend/App.tsx#L584)) omit `taskCount`:
+
+```ts
+savePlan(teamId, { planId, goal, goalId, createdAt, status: 'active' });
+// ← no taskCount → PlanList shows "No tasks yet"
+```
+
+When `goal:stateChange` fires, `orchestrationStore.handleGoalStateChange` updates the Zustand `plans` array, but **never calls `savePlan()`** to update sessionStorage. The GoalScreen PlanList never gets task counts.
+
+The only path that includes `taskCount` is `restoreFromServer` ([App.tsx L463-L471](packages/frontend/App.tsx#L463-L471)) — but that only runs on team reconnect/reload.
+
+### Long-Term Solution
+
+**Unify plan data source.** GoalScreen's PlanList should read from `orchestrationStore.plans` (which gets live updates from `goal:stateChange`) instead of sessionStorage. SessionStorage is for persistence across hard reloads — not for live UI state.
+
+```tsx
+// GoalScreen PlanList — read from orchestrationStore instead of sessionStorage
+const plans = useOrchestrationStore(s => s.plans);
+```
+
+This eliminates the two-source problem entirely. SessionStorage plans remain as a persistence layer for restore, but the live UI always reads from the Zustand store.
+
+---
+
+## Issue 30: Frontend Doesn't Load Messages After Reload (goalId Mismatch)
+
+**Severity**: Critical — empty chat on reload
+**Verified**: YES — cascade from Issue 28. Also has independent timing issue.
+
+### Symptom
+
+After page refresh, the chat area is empty even though messages were sent before the refresh.
+
+### Root Cause (verified)
+
+**Primary (cascade from Issue 28):**
+
+1. User submits goal → `savePlan()` stores `goalId: "uuid-A"` in sessionStorage
+2. User types follow-up during the race window → `activeGoalId` is null → backend creates `goalId: "uuid-B"`
+3. Single-goal mode destroys `uuid-A`'s GoalContext
+4. Backend messages are now under `uuid-B`
+5. User refreshes → mount effect recovers `goalId: "uuid-A"` from sessionStorage
+6. `restoreFromServer(teamId, agents, "uuid-A")` → backend has no messages for `uuid-A` → empty chat
+
+**Independent issue: server `activeGoalId` is ignored**
+
+The restore endpoint (`GET /api/v2/teams/:teamId/session`) returns `activeGoalId` in the response ([HttpServer.ts L479-L481](packages/backend/api/HttpServer.ts#L479-L481)):
+```ts
+activeGoalId = manager.getCurrentGoalId();
+```
+
+But the frontend's restore handler ([App.tsx L459-L486](packages/frontend/App.tsx#L459-L486)) never reads `result.activeGoalId` to update the store. It relies entirely on sessionStorage for goalId recovery.
+
+### Long-Term Solution
+
+**Fixing Issue 28 (Fix A) eliminates the primary cause.** If `activeGoalId` is always set before ChatArea is visible, follow-ups always include goalId, and the goalId in sessionStorage always matches the backend.
+
+**Additionally:**
+
+1. **Use server's `activeGoalId` from restore response.** When `restoreFromServer` returns, check if the server knows the active goalId and use it:
+
+```ts
+restoreFromServer(...).then((result) => {
+  if (result?.activeGoalId && !useUiStore.getState().activeGoalId) {
+    setActiveGoalId(result.activeGoalId);
+  }
+  // ... rest of restore logic
+});
+```
+
+2. **Persist `activeGoalId` in uiStore.** Add `activeGoalId` to `partialize` so it survives hard reloads without depending on sessionStorage lookup:
+
+```ts
+partialize: (s) => ({
+  theme: s.theme,
+  viewMode: s.viewMode,
+  isSidebarExpanded: s.isSidebarExpanded,
+  activeGoalId: s.activeGoalId,  // ← add
+}),
+```
+
+---
+
+## Issue 31: Start Button Fails — "Task not ready (status: in_progress)"
+
+**Severity**: Medium — workaround exists (auto-execute)
+**Pre-existing**: YES — not caused by server-goalId changes
+
+### Symptom
+
+Clicking the "Start" button on a task in the DetailPanel throws:
+```
+Task task-1 is not ready (status: in_progress)
+```
+Auto-execute works fine.
+
+### Root Cause (verified)
+
+**`onPlanMutation` auto-dispatches ALL ready tasks regardless of `autoExecute` setting.**
+
+The flow:
+
+1. Plan is approved → `plan:tasks_added` event fires
+2. `OrchestratorService.onPlanMutation()` ([OrchestratorService.ts L434-443](packages/agent-manager/src/orchestrator/OrchestratorService.ts#L434-L443)) iterates ready tasks and calls `this.manualDispatch(tid)` for each one — **without checking `autoExecute`**
+3. Tasks transition to `in_progress` immediately
+4. User clicks "Start" → `DispatchManager.manualDispatch()` ([DispatchManager.ts L107-113](packages/agent-manager/src/orchestrator/DispatchManager.ts#L107-L113)) checks `task.status !== "ready" && task.status !== "pending"` → rejects with error
+
+The normal `dispatch()` path correctly checks `if (!autoExecute) return;` ([DispatchManager.ts L68-69](packages/agent-manager/src/orchestrator/DispatchManager.ts#L68-L69)), but `onPlanMutation` bypasses it by calling `manualDispatch()` directly.
+
+### Long-Term Solution
+
+**`onPlanMutation` should respect `autoExecute`.** Only auto-dispatch ready tasks if `autoExecute` is enabled:
+
+```ts
+// OrchestratorService.onPlanMutation()
+const readyTasks = tasks.filter(t => t.status === 'ready');
+if (this.autoExecute) {
+  for (const tid of readyTasks.map(t => t.id)) {
+    this.manualDispatch(tid);
+  }
+}
+// If autoExecute is off, tasks stay 'ready' for manual Start button
+```
+
+Also, `DispatchManager.manualDispatch()` should handle `in_progress` gracefully — instead of throwing, return a "task already running" message:
+
+```ts
+if (task.status === 'in_progress') {
+  logger.info(`Task ${taskId} already in progress`);
+  return; // not an error
+}
+```
+
+---
+
+## Issue 32: Worker Chats Not Loading to Frontend
+
+**Severity**: Critical — worker output is invisible
+**Mixed**: Pre-existing issues + worsened by server-goalId changes
+
+### Symptom
+
+Workers execute tasks (visible in backend logs), but no tool calls, reasoning, or text appears in the frontend chat area.
+
+### Root Causes (verified — 4 factors)
+
+#### 32a: `findAgentByRole()` silently drops unknown roles
+
+**File:** [App.tsx L383-385](packages/frontend/App.tsx#L383-L385)
+
+```ts
+const resolved = findAgentByRole(streamAgentId);
+if (!isOrchestrator && !resolved) return; // ← SILENTLY DROPS
+```
+
+Worker stream events have `agentId` set to the role key (e.g., `"researcher"`). `findAgentByRole` looks up `agentStore.roleMap`. If:
+- The agent tree hasn't loaded yet (timing)
+- The role key has a case mismatch (e.g., `"Backend"` vs `"backend"`)
+- The sub-agent wasn't discovered by the backend
+
+...`resolved` is null and the **entire stream event is silently dropped**.
+
+**Long-term fix:** Log dropped events as warnings instead of silent return. Add case-insensitive matching in `findAgentByRole`. Queue events that arrive before agents are loaded and replay when the agent tree is populated.
+
+#### 32b: Goal room subscription mismatch
+
+**File:** [SocketServerV2.ts L539](packages/backend/api/SocketServerV2.ts#L539)
+
+Workers broadcast to `team:{teamId}:goal:{goalId}`. The frontend subscribes via `subscribeToGoal(teamId, activeGoalId)`. If `activeGoalId` on the frontend doesn't match the task's `goalId` on the backend (e.g., due to Issue 28 creating orphan goals), worker streams go to a room nobody is listening to.
+
+**Long-term fix:** Fixing Issue 28 eliminates the goalId mismatch. Workers use the task's `goalId` which comes from the plan — once the plan's goalId is correct, workers stream to the right room.
+
+#### 32c: Chat key mismatch between write and read
+
+**File:** [App.tsx L396](packages/frontend/App.tsx#L396) (write), [App.tsx L643-645](packages/frontend/App.tsx#L643-L645) (read)
+
+Stream writes to: `${targetAgentId}:task:${streamTaskId}`
+Display reads from: `${activeAgentId}:task:${selectedTaskId}`
+
+If the user hasn't clicked a specific task in the sidebar, `selectedTaskId` is null. The display key falls back to `chat:{agentId}` or plain `agentId` — neither matches the task-scoped key where worker messages were stored.
+
+**Long-term fix:** When a task starts executing, auto-select it (`setSelectedTaskId(taskId)`). Or: show worker messages at the agent level (aggregate all task outputs for that agent) when no specific task is selected.
+
+#### 32d: Restore uses wrong chat keys for worker messages
+
+**File:** [chatStore.ts restoreFromServer](packages/frontend/stores/chatStore.ts)
+
+Worker messages from the backend are keyed by raw `agentId` (e.g., `"researcher"`) instead of `agentId:task:taskId`. On restore, worker messages go to a key that the task-scoped ChatArea doesn't read from.
+
+**Long-term fix:** `restoreFromServer` should construct task-scoped keys for worker messages: `${resolvedAgentId}:task:${msg.taskId}`. The backend already includes `taskId` on worker messages.
+
+### Impact Flow
+
+```
+Worker executes task
+  → emits stream_part to goal room          (32b: room mismatch?)
+  → frontend receives stream event           (if subscribed)
+  → findAgentByRole(roleKey)                 (32a: drops if no match)
+  → writes to agentId:task:taskId key        (32c: user hasn't selected task)
+  → user sees empty chat                     (32d: restore also wrong key)
+```
+
+### Priority
+
+Fix **32b** by fixing Issue 28 (goalId alignment) — this is already done.
+Fix **32a** (silent drops) — highest impact, easiest fix (add logging + case-insensitive match).
+Fix **32c** (auto-select task) — UX improvement.
+Fix **32d** (restore keys) — correctness for reload scenarios.

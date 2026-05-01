@@ -16,6 +16,7 @@ import { EventEmitter } from "events";
 import { execFile } from "child_process";
 import fs from "fs";
 import path from "path";
+import os from "os";
 import { rootLogger } from "../../logging.js";
 import fg from "fast-glob";
 import { rgPath } from "@vscode/ripgrep";
@@ -273,15 +274,25 @@ export class AgentWorkspace {
 
     if (options.repoUrl) {
       // Clone the repo into basePath
-      // If authToken is provided, inject into HTTPS URL for private repo access
-      let cloneUrl = options.repoUrl;
-      if (options.authToken && cloneUrl.startsWith("https://")) {
-        cloneUrl = cloneUrl.replace("https://", `https://oauth2:${options.authToken}@`);
+      // Use GIT_ASKPASS for auth — token never embedded in URL or .git/config
+      let cloneEnv: Record<string, string> | undefined;
+      if (options.authToken && options.repoUrl.startsWith("https://")) {
+        const askPassScript = path.join(os.tmpdir(), `git-askpass-${this.taskId}-${Date.now()}.sh`);
+        await fs.promises.writeFile(askPassScript, `#!/bin/sh\necho "${options.authToken}"`, { mode: 0o700 });
+        cloneEnv = { GIT_ASKPASS: askPassScript, GIT_TERMINAL_PROMPT: "0" };
       }
-      await this.gitManager.clone(cloneUrl, this.basePath, {
-        branch: options.repoBranch,
-        sparse: options.sparse,
-      });
+      try {
+        await this.gitManager.clone(options.repoUrl, this.basePath, {
+          branch: options.repoBranch,
+          sparse: options.sparse,
+          env: cloneEnv,
+        });
+      } finally {
+        // Clean up the askpass script
+        if (cloneEnv?.GIT_ASKPASS) {
+          await fs.promises.unlink(cloneEnv.GIT_ASKPASS).catch(() => {});
+        }
+      }
     } else if (options.localPath) {
       // Copy from local folder
       await this.copyDir(options.localPath, this.basePath);
@@ -1243,9 +1254,14 @@ export class AgentWorkspace {
   }
 
   /**
-   * Sanitize a relative path to prevent directory traversal
+   * Sanitize a relative path to prevent directory traversal and symlink escape
    */
   private sanitizePath(relativePath: string): string {
+    // Reject null bytes
+    if (relativePath.includes('\0')) {
+      throw new Error(`Invalid path: contains null byte`);
+    }
+
     // Normalize and resolve
     const normalized = path.normalize(relativePath).replace(/\\/g, "/");
 
@@ -1257,7 +1273,22 @@ export class AgentWorkspace {
     }
 
     // Remove leading ./
-    return normalized.replace(/^\.\//, "");
+    const clean = normalized.replace(/^\.\//, "");
+
+    // Symlink check: if the file exists, resolve its real path and verify containment
+    const fullPath = path.join(this.basePath, clean);
+    try {
+      const realPath = fs.realpathSync(fullPath);
+      const realBase = fs.realpathSync(this.basePath);
+      if (!realPath.startsWith(realBase + path.sep) && realPath !== realBase) {
+        throw new Error(`Symlink escape blocked: '${relativePath}' resolves outside workspace`);
+      }
+    } catch (err: any) {
+      // ENOENT = file doesn't exist yet — that's fine (creating new files)
+      if (err.code !== "ENOENT") throw err;
+    }
+
+    return clean;
   }
 
   /**

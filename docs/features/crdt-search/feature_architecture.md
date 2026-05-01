@@ -92,14 +92,20 @@ tool({
 
 ### Implementation Location
 
+The search extension runs on the collab-service (server-side, where Hocuspocus lives). The search tool stays in the collaboration package (client-side, where agent tools live).
+
 ```
-packages/collaboration/src/L2/
-  search/                          ← NEW
-    CrdtSearchExtension.ts         — Hocuspocus extension: onChange → Orama
-    extractSearchableText.ts       — Y.Doc → string extraction
+packages/collab-service/src/                ← SERVER-SIDE (Hocuspocus service)
+  search/
+    CrdtSearchExtension.ts                  — NEW: Hocuspocus extension: onChange → Orama
+    extractSearchableText.ts                — NEW: Y.Doc → string extraction
+
+packages/collaboration/src/L2/             ← CLIENT-SIDE (agent tools)
   tools/
-    l2-search.ts                   ← NEW: agent search tool
+    l2-search.ts                            — NEW: agent search tool (calls service via HTTP/WS)
 ```
+
+The search extension hooks into Hocuspocus `onChange` — it must live where Hocuspocus runs (collab-service). The agent tool is a client that queries the search index via the service API.
 
 ### Effort
 

@@ -43,6 +43,7 @@ import { getAuth } from "../auth/index.js";
 import type { ServiceRegistry } from "../services/ServiceRegistry.js";
 import type { AgentManager } from "../agentManager/AgentManagerV2.js";
 import type { StreamPayload } from "./types/streamTypes.js";
+import type { ClientToServerEvents, ServerToClientEvents } from "@ping/shared";
 
 const logger = rootLogger.child({ module: "SocketServerV2" });
 
@@ -52,7 +53,8 @@ const MessagePayloadSchema = z.object({
   agentId: z.string().min(1).max(200),
   taskId: z.string().max(200).optional(),
   sessionId: z.string().max(200).optional(),
-  goalId: z.string().max(200).optional(),
+  goalId: z.string().max(200).nullish(),
+  nonce: z.string().max(200).optional(),
   content: z.string().min(1).max(100000), // 100KB max message
   repoUrl: z.string().url().max(500).optional(),
   repoBranch: z.string().max(200).optional(),
@@ -121,6 +123,7 @@ interface StateResponse {
   plan?: PlanTask[];
   tasks?: any[];
   autoExecute?: boolean;
+  goalId?: string;
   timestamp: number;
 }
 
@@ -219,6 +222,65 @@ interface ErrorResponse {
 // ============================================================================
 
 /**
+ * Convert raw accumulator parts into RenderedPart[] format for persistence.
+ *
+ * The frontend renders messages using RenderedPart[] (text, tool-card, reasoning).
+ * This converter transforms the backend's raw accumulator format into the exact
+ * shape StreamMessage/ToolCard/ReasoningSection expect, so messages look identical
+ * after reload as they did during live streaming.
+ */
+function toRenderedParts(
+  accText: string,
+  accParts: Array<{ type: string; [key: string]: any }>,
+): any[] {
+  const rendered: any[] = [];
+
+  // 1. Text part — from accumulated text
+  if (accText.trim()) {
+    rendered.push({ type: "text", id: "text-0", text: accText, done: true });
+  }
+
+  // 2. Tool cards — merge tool-call/tool-input with matching tool-result/tool-output by toolCallId
+  const toolCards = new Map<string, {
+    toolCallId: string; toolName: string; status: string;
+    argsText: string; args?: unknown; result?: unknown;
+  }>();
+  // Track insertion order for stable rendering
+  const toolOrder: string[] = [];
+
+  for (const p of accParts) {
+    if (p.type === "tool-call" || p.type === "tool-input") {
+      const id = p.toolCallId;
+      if (!toolCards.has(id)) toolOrder.push(id);
+      const card = toolCards.get(id) || { toolCallId: id, toolName: p.toolName || "unknown", status: "complete", argsText: "" };
+      card.toolName = p.toolName || card.toolName;
+      card.args = p.args ?? p.input;
+      try { card.argsText = JSON.stringify(p.args ?? p.input, null, 2); } catch { card.argsText = ""; }
+      toolCards.set(id, card);
+    } else if (p.type === "tool-result" || p.type === "tool-output") {
+      const id = p.toolCallId;
+      if (!toolCards.has(id)) toolOrder.push(id);
+      const card = toolCards.get(id) || { toolCallId: id, toolName: "unknown", status: "complete", argsText: "" };
+      card.result = p.result ?? p.output;
+      card.status = "complete";
+      toolCards.set(id, card);
+    }
+  }
+  for (const id of toolOrder) {
+    rendered.push({ type: "tool-card", card: toolCards.get(id) });
+  }
+
+  // 3. Reasoning parts — add done: true
+  for (const p of accParts) {
+    if (p.type === "reasoning") {
+      rendered.push({ type: "reasoning", id: p.id || "reasoning-0", text: p.text || "", done: true });
+    }
+  }
+
+  return rendered;
+}
+
+/**
  * Token bucket rate limiter — per userId.
  *
  * Each user gets a bucket with `capacity` tokens. Each request consumes 1 token.
@@ -277,7 +339,7 @@ class TokenBucketLimiter {
 // ============================================================================
 
 export class SocketServerV2 {
-  private io: SocketIOServer;
+  private io: SocketIOServer<ClientToServerEvents, ServerToClientEvents>;
   private services: ServiceRegistry | null;
   private rateLimiter = new TokenBucketLimiter(5, 1); // 5 burst, 1 token/sec refill
 
@@ -402,6 +464,16 @@ export class SocketServerV2 {
       logger.debug(`[SocketServerV2] Socket ${connectionId} joined goal room ${goalRoom}`);
     });
 
+    // Phase 4.5: Goal-scoped room unsubscription
+    socket.on("unsubscribeFromGoal", ({ teamId, goalId }: { teamId: string; goalId: string }) => {
+      const goalRoom = `team:${teamId}:goal:${goalId}`;
+      socket.leave(goalRoom);
+      if (socket.data.currentGoalRoom === goalRoom) {
+        socket.data.currentGoalRoom = undefined;
+      }
+      logger.debug(`[SocketServerV2] Socket ${connectionId} left goal room ${goalRoom}`);
+    });
+
     logger.info(`[SocketServerV2] User ${userId} registered (${connectionId})`);
   }
 
@@ -507,7 +579,7 @@ export class SocketServerV2 {
               taskId: taskId || undefined,
               goalId: streamGoalId || manager.getCurrentGoalId() || undefined,
               content: acc.text || " ",
-              streamParts: acc.parts.length > 0 ? JSON.stringify(acc.parts) : undefined,
+              streamParts: (acc.text.trim() || acc.parts.length > 0) ? JSON.stringify(toRenderedParts(acc.text, acc.parts)) : undefined,
               agentLayer: (acc.agentId === "planner" || acc.agentId === "manager" || acc.agentId === "orchestrator") ? "planner" as const : "worker" as const,
               contextMessages: contextMessages || undefined,
               timestamp: new Date().toISOString(),
@@ -597,7 +669,7 @@ export class SocketServerV2 {
       onTaskUpdate: ({ taskId, status, role }) => {
         const gid = taskGoalId(taskId);
         const target = goalRoom(gid);
-        const stateResponse = this.buildStateResponse(manager);
+        const stateResponse = this.buildStateResponse(manager, undefined, gid);
         this.io.to(target).emit("state", stateResponse);
         logger.debug(
           `[SocketServerV2] Task ${taskId} → ${status}, broadcast to ${target}`,
@@ -635,10 +707,11 @@ export class SocketServerV2 {
 
       onPlanUpdate: ({ action }) => {
         // Plan list update → team room (sidebar needs this for all goals)
-        // Don't include tasks here — task updates come via goal-scoped events
+        const currentGid = manager.getCurrentGoalId() || undefined;
         const stateResponse: StateResponse = {
           sessionId: "default",
           sessionState: "executing",
+          goalId: currentGid,
           timestamp: Date.now(),
         };
         this.io.to(room).emit("state", stateResponse);
@@ -867,14 +940,19 @@ export class SocketServerV2 {
   private buildStateResponse(
     manager: AgentManager,
     sessionId?: string,
+    goalId?: string,
   ): StateResponse {
-    const plan = this.buildPlanFromTasks(manager);
+    // Goal-scoped: only include tasks for the specific goal if provided
+    const plan = goalId
+      ? this.buildPlanForGoal(manager, goalId)
+      : this.buildPlanFromTasks(manager);
     const sessionState = this.deriveSessionState(plan);
 
     const response: StateResponse = {
       sessionId: sessionId || "default",
       sessionState,
       timestamp: Date.now(),
+      ...(goalId ? { goalId } : {}),
     };
 
     if (plan.length > 0) {
@@ -940,7 +1018,7 @@ export class SocketServerV2 {
       this.emitError(socket, { error: `Invalid message: ${parsed.error.issues[0]?.message || "validation failed"}` });
       return;
     }
-    const { teamId, agentId, taskId, sessionId, content, goalId: clientGoalId, repoUrl, repoBranch } = parsed.data;
+    const { teamId, agentId, taskId, sessionId, content, goalId: clientGoalId, nonce, repoUrl, repoBranch } = parsed.data;
 
     // Rate limit — prevent LLM API cost abuse
     if (!this.rateLimiter.allow(connection.userId)) {
@@ -961,10 +1039,10 @@ export class SocketServerV2 {
       const manager = await agentManagerRegistry.getForTeam(teamId);
 
       // Save user message with goalId — use client-provided goalId (required)
-      if (this.services) {
-        const layer = agentId === "manager" || agentId === "orchestrator" ? "planner" as const
-          : agentId.startsWith("chat-") ? "chat-agent" as const
-          : "worker" as const;
+      // For orchestrator messages, defer save until after goalId is resolved (Step 1: server-goalid)
+      const isOrchestratorMsg = agentId === "manager" || agentId === "orchestrator";
+      if (this.services && !isOrchestratorMsg) {
+        const layer = agentId.startsWith("chat-") ? "chat-agent" as const : "worker" as const;
 
         this.services.chat.addMessage({
           teamId,
@@ -989,9 +1067,11 @@ export class SocketServerV2 {
         await this.handleOrchestratorMessage(
           socket,
           manager,
+          teamId,
           sessionId,
           content,
           clientGoalId,
+          nonce,
           repoUrl,
           repoBranch,
         );
@@ -1021,9 +1101,11 @@ export class SocketServerV2 {
   private async handleOrchestratorMessage(
     socket: Socket,
     manager: AgentManager,
+    teamId: string,
     sessionId: string | undefined,
     content: string,
     goalId?: string,
+    nonce?: string,
     repoUrl?: string,
     repoBranch?: string,
   ) {
@@ -1046,23 +1128,41 @@ export class SocketServerV2 {
       });
     }
 
-    // Server generates goalId if client doesn't provide one (ChatGPT pattern)
+    // Server generates goalId if client doesn't provide one (new goal from GoalScreen)
     const result = await manager.orchestratorMessage(content, goalId, repoUrl, repoBranch);
     const resolvedGoalId = result.goalId;
 
+    // Save user message with the server-resolved goalId (deferred from handleMessage)
+    if (this.services) {
+      this.services.chat.addMessage({
+        teamId,
+        userId: socket.data.userId,
+        role: "user",
+        agentId: "manager",
+        goalId: resolvedGoalId,
+        content,
+        agentLayer: "planner",
+        timestamp: new Date().toISOString(),
+      }).catch((err) => logger.warn("[SocketServerV2] Failed to save user message:", err));
+    }
+
     logger.info(`[SocketServerV2] Orchestrator message processed (goalId=${resolvedGoalId})`);
 
-    // Return the server-resolved goalId to the client so it can track this conversation
-    socket.emit("goal:created", { goalId: resolvedGoalId });
+    // Only emit goal:created when client didn't send a goalId (= new goal from GoalScreen).
+    // Follow-up messages from ChatArea always include goalId, so no event needed.
+    if (!goalId) {
+      socket.emit("goal:created", { goalId: resolvedGoalId, ...(nonce ? { nonce } : {}) });
+    }
 
     const pendingPlan = manager.getOrchestratorPendingPlan();
 
-    // If plan was proposed, emit state with pending plan
+    // If plan was proposed, emit state with pending plan (goal-scoped)
     if (pendingPlan) {
       const stateResponse: StateResponse = {
         sessionId: sessionId || "default",
         sessionState: "awaiting_approval",
         plan: pendingPlan.tasks,
+        goalId: resolvedGoalId || undefined,
         timestamp: Date.now(),
       };
       socket.emit("state", stateResponse);
@@ -1071,7 +1171,7 @@ export class SocketServerV2 {
       const goalTasks = this.buildPlanForGoal(manager, resolvedGoalId);
 
       if (goalTasks.length > 0) {
-        const stateResponse = this.buildStateResponse(manager, sessionId);
+        const stateResponse = this.buildStateResponse(manager, sessionId, resolvedGoalId);
         stateResponse.plan = goalTasks;
         socket.emit("state", stateResponse);
         logger.info(
@@ -1155,7 +1255,7 @@ export class SocketServerV2 {
                 agentId,
                 goalId: manager.getCurrentGoalId() || undefined,
                 content: acc.text,
-                streamParts: acc.parts.length > 0 ? JSON.stringify(acc.parts) : undefined,
+                streamParts: (acc.text.trim() || acc.parts.length > 0) ? JSON.stringify(toRenderedParts(acc.text, acc.parts)) : undefined,
                 agentLayer: "chat-agent",
                 contextMessages: contextMessages || undefined,
                 timestamp: new Date().toISOString(),
@@ -1282,7 +1382,8 @@ export class SocketServerV2 {
     const result = await manager.approveOrchestratorPlan();
 
     if (result.success) {
-      const stateResponse = this.buildStateResponse(manager, sessionId);
+      const gid = manager.getCurrentGoalId() || undefined;
+      const stateResponse = this.buildStateResponse(manager, sessionId, gid);
       stateResponse.sessionState = "executing"; // Override: just approved, starting execution
       socket.emit("state", stateResponse);
       logger.info(
@@ -1356,7 +1457,7 @@ export class SocketServerV2 {
     }
 
     // Broadcast updated state
-    socket.emit("state", this.buildStateResponse(manager));
+    socket.emit("state", this.buildStateResponse(manager, undefined, manager.getCurrentGoalId() || undefined));
 
     // Emit output if provided
     if (output) {
@@ -1402,7 +1503,7 @@ export class SocketServerV2 {
 
     // Return full state with autoExecute flag
     const current = manager.getAutoExecute();
-    const stateResponse = this.buildStateResponse(manager);
+    const stateResponse = this.buildStateResponse(manager, undefined, manager.getCurrentGoalId() || undefined);
     (stateResponse as any).autoExecute = current;
     socket.emit("state", stateResponse);
   }
@@ -1425,14 +1526,16 @@ export class SocketServerV2 {
     const pendingPlan = manager.getOrchestratorPendingPlan();
     const autoExecute = manager.getAutoExecute();
 
-    // If there's a pending plan awaiting approval, send that
+    // If there's a pending plan awaiting approval, send that (goal-scoped)
     if (pendingPlan) {
       const plan = this.buildPlanFromPending(pendingPlan);
+      const gidPending = manager.getCurrentGoalId() || undefined;
       const stateResponse: StateResponse = {
         sessionId: sessionId || "default",
         sessionState: "awaiting_approval",
         plan,
         autoExecute,
+        goalId: gidPending,
         timestamp: Date.now(),
       };
       socket.emit("state", stateResponse);
@@ -1443,7 +1546,8 @@ export class SocketServerV2 {
     }
 
     // Otherwise, build from current tasks
-    const stateResponse = this.buildStateResponse(manager, sessionId);
+    const gid = manager.getCurrentGoalId() || undefined;
+    const stateResponse = this.buildStateResponse(manager, sessionId, gid);
     (stateResponse as any).autoExecute = autoExecute;
     socket.emit("state", stateResponse);
     logger.info(
@@ -1469,6 +1573,7 @@ export class SocketServerV2 {
     const stateResponse: StateResponse = {
       sessionId: "default",
       tasks: [{ id: taskId, status: "cancelled" }],
+      goalId: manager.getCurrentGoalId() || undefined,
       timestamp: Date.now(),
     };
     socket.emit("state", stateResponse);

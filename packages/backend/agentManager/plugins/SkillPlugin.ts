@@ -164,7 +164,12 @@ function runSkillScript(
         cwd: workDir,
         timeout: SCRIPT_TIMEOUT_MS,
         maxBuffer: 1024 * 1024, // 1MB
-        env: { ...process.env, SKILL_NAME: entry.id },
+        env: {
+          SKILL_NAME: entry.id,
+          PATH: "/usr/local/bin:/usr/bin:/bin",
+          HOME: "/tmp",
+          LANG: process.env.LANG || "en_US.UTF-8",
+        },
       },
       (error, stdout, stderr) => {
         const output = (stdout || "").slice(0, MAX_OUTPUT_CHARS);

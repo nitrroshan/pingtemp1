@@ -1,12 +1,13 @@
 /**
  * PlanList — shows recent plans for the active team.
  *
- * v1.0: reads from localStorage (no backend goals endpoint yet).
+ * v1.0: reads from sessionStorage (no backend goals endpoint yet).
  * v2.0: will use GET /api/v2/teams/{id}/goals when that endpoint ships.
  */
 
 import React, { useMemo } from 'react';
 import { FileText, ChevronRight } from 'lucide-react';
+import { useGoalSessionStore } from '../../stores/goalSessionStore';
 
 export type PlanSummary = {
   planId: string;
@@ -31,32 +32,22 @@ const STATUS_ICON: Record<string, string> = {
   unknown: '⏳',
 };
 
-function getStoredPlans(teamId: string): PlanSummary[] {
-  try {
-    const raw = localStorage.getItem(`ping:plans:${teamId}`);
-    return raw ? JSON.parse(raw) : [];
-  } catch {
-    return [];
-  }
-}
-
-export function savePlan(teamId: string, plan: PlanSummary) {
-  const plans = getStoredPlans(teamId);
-  const existing = plans.findIndex(p => p.planId === plan.planId);
-  if (existing >= 0) {
-    plans[existing] = plan;
-  } else {
-    plans.unshift(plan);
-  }
-  // Keep max 20 plans
-  localStorage.setItem(`ping:plans:${teamId}`, JSON.stringify(plans.slice(0, 20)));
-}
-
 export const PlanList: React.FC<PlanListProps> = ({ teamId, activePlanId, onSelectPlan }) => {
+  const storePlans = useGoalSessionStore(s => s.plans);
+
   const plans = useMemo(() => {
     if (!teamId) return [];
-    return getStoredPlans(teamId);
-  }, [teamId]);
+    // Map from types.ts PlanSummary (title, state) to PlanList PlanSummary (goal, status)
+    return storePlans.map(p => ({
+      planId: p.planId ?? p.goalId,
+      goal: p.title,
+      goalId: p.goalId,
+      createdAt: p.createdAt,
+      status: (p.state === 'done' ? 'completed' : p.state === 'executing' ? 'active' : 'unknown') as PlanSummary['status'],
+      taskCount: p.taskCount,
+      completedCount: p.completedCount,
+    }));
+  }, [teamId, storePlans]);
 
   if (!teamId || plans.length === 0) {
     return null;

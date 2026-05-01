@@ -393,7 +393,14 @@ export class WorkspaceManager implements IWorkspaceManager {
    * Removes the `plan-{planId}/` directory and all task workspaces inside it.
    */
   async cleanupPlan(planId: string): Promise<void> {
-    const planDir = path.join(this.workspacesRoot, `plan-${planId}`);
+    // Validate planId to prevent path traversal
+    if (!/^[a-zA-Z0-9_\-]+$/.test(planId)) {
+      throw new Error(`Invalid planId format: ${planId}`);
+    }
+    const planDir = path.resolve(this.workspacesRoot, `plan-${planId}`);
+    if (!planDir.startsWith(path.resolve(this.workspacesRoot))) {
+      throw new Error("Path escape detected in cleanupPlan");
+    }
 
     // Remove worktrees from the primary clone before deleting directories
     const primaryClone = this.planRepos.get(planId);

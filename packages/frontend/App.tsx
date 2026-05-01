@@ -2,8 +2,8 @@
  * App — main application entry point (Phase 1 refactor)
  *
  * Uses extracted hooks:
- *   useOrchestrationStore — plan/task state (Zustand store)
- *   useChatStore     — per-agent message histories (Zustand store)
+ *   useGoalSessionStore — unified goal-scoped state (messages, tasks, plans)
+ *   useAgentStore    — agent hierarchy, team loading (Zustand store)
  *   useAgentStore    — agent hierarchy, team loading (Zustand store)
  *
  * Routes (React Router):
@@ -22,20 +22,19 @@ import AgentModal from './components/AgentModal/AgentModal';
 import { DetailPanel } from './components/DetailPanel/DetailPanel';
 import { PlanApproval } from './components/PlanApproval';
 import { GoalScreen } from './components/GoalScreen';
-import { savePlan } from './components/GoalScreen/PlanList';
-import { makePlanId, toGoalId } from './lib/planId';
+import { makePlanId } from './lib/planId';
 import { PlanSwitcher } from './components/PlanSwitcher';
-import type { PlanSummary } from './components/GoalScreen/PlanList';
 import { ToastContainer, useToast } from './components/Toast/Toast';
 import { CommandPalette } from './components/CommandPalette';
 import { StatusBar } from './components/layout/StatusBar';
 import { DevCollabButton } from './components/DevCollabButton';
 
-import { useOrchestrationStore } from './stores/orchestrationStore';
-import { useChatStore } from './stores/chatStore';
+import { useGoalSessionStore } from './stores/goalSessionStore';
 import { useAgentStore } from './stores/agentStore';
+import { useUiStore } from './stores/uiStore';
 import { agentServiceV2, type Task as BackendTask } from './services/AgentServiceV2';
 import type { Agent, Message } from './types';
+import type { PlanSummary as PlanListSummary } from './components/GoalScreen/PlanList';
 import { useSession, signOut } from './lib/auth-client';
 import { LoginPage } from './components/Auth/LoginPage';
 import { FEATURES } from './lib/features';
@@ -52,23 +51,17 @@ import type { DiscussionThread as DiscussionThreadType } from './hooks/useDiscus
 function InnerApp() {
   const { toasts, showToast, dismissToast } = useToast();
 
-  // ── Theme ────────────────────────────────────────────────────────────────
-  const [theme, setTheme] = useState<'dark' | 'light'>(() => {
-    const stored = localStorage.getItem('ping:theme') as 'dark' | 'light' | null;
-    if (stored === 'dark' || stored === 'light') return stored;
-    return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
-  });
+  // ── Theme (from uiStore Zustand) ────────────────────────────────────────
+  const theme = useUiStore(s => s.theme);
+  const toggleTheme = useUiStore(s => s.toggleTheme);
 
   useEffect(() => {
-    // Enable smooth transition for theme switch
     document.documentElement.classList.add('theme-transition');
     if (theme === 'light') {
       document.documentElement.classList.add('light');
     } else {
       document.documentElement.classList.remove('light');
     }
-    localStorage.setItem('ping:theme', theme);
-    // Remove transition class after animation completes to avoid interfering with normal transitions
     const timeout = setTimeout(() => document.documentElement.classList.remove('theme-transition'), 350);
     return () => clearTimeout(timeout);
   }, [theme]);
@@ -82,66 +75,49 @@ function InnerApp() {
   const agentsRef = useRef<Agent[]>(agents);
   useEffect(() => { agentsRef.current = agents; }, [agents]);
 
-  const chatHistories = useChatStore(s => s.chatHistories);
-  const addMessage = useChatStore(s => s.addMessage);
-  const processStreamPart = useChatStore(s => s.processStreamPart);
-  const loadAgentChat = useChatStore(s => s.loadAgentChat);
-  const restoreFromServer = useChatStore(s => s.restoreFromServer);
+  const chatHistories = useGoalSessionStore(s => s.chatHistories);
+  const addMessage = useGoalSessionStore(s => s.addMessage);
+  const processStreamPart = useGoalSessionStore(s => s.processStreamPart);
 
-  // Orchestration state (Zustand store — Step 2)
-  const sessionState = useOrchestrationStore(s => s.sessionState);
-  const tasks = useOrchestrationStore(s => s.tasks);
-  const autoExecuteEnabled = useOrchestrationStore(s => s.autoExecuteEnabled);
-  const orchestrationLogs = useOrchestrationStore(s => s.orchestrationLogs);
-  const plans = useOrchestrationStore(s => s.plans);
-  const handleStartTask = useOrchestrationStore(s => s.startTask);
-  const handleToggleAutoExecute = useOrchestrationStore(s => s.toggleAutoExecute);
+  // Orchestration state (from goalSessionStore — unified)
+  const sessionState = useGoalSessionStore(s => s.sessionState);
+  const tasks = useGoalSessionStore(s => s.tasks);
+  const autoExecuteEnabled = useGoalSessionStore(s => s.autoExecuteEnabled);
+  const orchestrationLogs = useGoalSessionStore(s => s.orchestrationLogs);
+  const plans = useGoalSessionStore(s => s.plans);
+  const handleStartTask = useGoalSessionStore(s => s.startTask);
+  const handleToggleAutoExecute = useGoalSessionStore(s => s.toggleAutoExecute);
 
-  // Default to stored team (planner view) so restored messages display immediately
-  const [activeAgentId, setActiveAgentId] = useState<string>(() => {
-    const storedTeam = localStorage.getItem('ping:activeTeamId');
-    return storedTeam || (useAgentStore.getState().agents[0]?.id ?? '');
-  });
+  // Goal-scoped state (from goalSessionStore — replaces uiStore for goal identity)
+  const activeGoalId = useGoalSessionStore(s => s.activeGoalId);
+  const activePlanId = useGoalSessionStore(s => s.activePlanId);
+  const selectedTaskId = useGoalSessionStore(s => s.selectedTaskId);
+
+  // ── Navigation state (from uiStore Zustand) ────────────────────────────
+  const activeAgentId = useUiStore(s => s.activeAgentId);
+  const setActiveAgentId = useUiStore(s => s.setActiveAgentId);
   const activeAgentIdRef = useRef(activeAgentId);
-  const [selectedTeamId, setSelectedTeamId] = useState<string | null>(null);
-  const selectedTeamIdRef = useRef<string | null>(null);
+  const selectedTeamId = useUiStore(s => s.selectedTeamId);
+  const setSelectedTeamId = useUiStore(s => s.setSelectedTeamId);
+  const selectedTeamIdRef = useRef<string | null>(selectedTeamId);
   const connectedTeamRef = useRef<string | null>(null);
 
-  const [isModalOpen, setIsModalOpen] = useState(false);
-  const [modalParentId, setModalParentId] = useState<string | undefined>(undefined);
-  const [isPanelOpen, setIsPanelOpen] = useState(false);
-  const [isSidebarExpanded, setIsSidebarExpanded] = useState(true);
-  const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState(false);
+  // ── Layout state (from uiStore Zustand) ───────────────────────────────
+  const isModalOpen = useUiStore(s => s.isModalOpen);
+  const modalParentId = useUiStore(s => s.modalParentId);
+  const openModal = useUiStore(s => s.openModal);
+  const closeModal = useUiStore(s => s.closeModal);
+  const isPanelOpen = useUiStore(s => s.isPanelOpen);
+  const setIsPanelOpen = useUiStore(s => s.setIsPanelOpen);
+  const isSidebarExpanded = useUiStore(s => s.isSidebarExpanded);
+  const toggleSidebar = useUiStore(s => s.toggleSidebar);
+  const isMobileSidebarOpen = useUiStore(s => s.isMobileSidebarOpen);
+  const setIsMobileSidebarOpen = useUiStore(s => s.setIsMobileSidebarOpen);
   const [isMobileViewport, setIsMobileViewport] = useState(() => window.innerWidth < 1024);
-  const [isCommandPaletteOpen, setIsCommandPaletteOpen] = useState(false);
-  const [activeMenu, setActiveMenu] = useState<string | null>(null);
-  const [activePlanId, setActivePlanId] = useState<string | null>(() => {
-    // URL is the single source of truth — parse planId on first render
-    const segments = window.location.pathname.split('/').filter(Boolean);
-    if (segments[0] === 'teams' && segments[2] === 'p' && segments[3]) {
-      return decodeURIComponent(segments[3]);
-    }
-    return null;
-  });
-
-  // Derived: which goalId is currently active (used for stream filtering)
-  // Check backend plans first (from goal:stateChange), then localStorage plans
-  const activePlanGoalId = useMemo(() => {
-    if (!activePlanId) return undefined;
-    // Backend plans (from useOrchestration — have goalId from server)
-    const backendMatch = plans.find(p => p.planId === activePlanId || p.goalId === activePlanId);
-    if (backendMatch?.goalId) return backendMatch.goalId;
-    // localStorage plans (from savePlan — have goalId from toGoalId)
-    if (selectedTeamId) {
-      try {
-        const raw = localStorage.getItem(`ping:plans:${selectedTeamId}`);
-        const stored = raw ? JSON.parse(raw) : [];
-        const localMatch = stored.find((p: any) => p.planId === activePlanId);
-        if (localMatch?.goalId) return localMatch.goalId;
-      } catch { /* ignore */ }
-    }
-    return undefined;
-  }, [activePlanId, plans, selectedTeamId]);
+  const isCommandPaletteOpen = useUiStore(s => s.isCommandPaletteOpen);
+  const setIsCommandPaletteOpen = useUiStore(s => s.setIsCommandPaletteOpen);
+  const activeMenu = useUiStore(s => s.activeMenu);
+  const setActiveMenu = useUiStore(s => s.setActiveMenu);
 
   // Discussion state — selected thread for full-view rendering
   const [discussionThreads, setDiscussionThreads] = useState<DiscussionThreadType[]>([]);
@@ -214,26 +190,18 @@ function InnerApp() {
   useEffect(() => { activeAgentIdRef.current = activeAgentId; }, [activeAgentId]);
   useEffect(() => { selectedTeamIdRef.current = selectedTeamId; }, [selectedTeamId]);
 
-  // Sync activeGoalId to orchestration store for per-goal sessionState
-  useEffect(() => {
-    useOrchestrationStore.getState().setActiveGoalId(activePlanGoalId ?? null);
-  }, [activePlanGoalId]);
+  // selectedTeamId now persisted via uiStore Zustand persist (ping:ui key)
 
-  // Phase 4.5: Subscribe to goal-scoped Socket.IO room when active plan changes
   useEffect(() => {
-    if (selectedTeamId && activePlanGoalId) {
-      agentServiceV2.subscribeToGoal(selectedTeamId, activePlanGoalId);
-    }
-  }, [selectedTeamId, activePlanGoalId]);
-
-  // Persist active team ID to localStorage whenever it changes
-  useEffect(() => {
-    if (selectedTeamId) {
-      localStorage.setItem('ping:activeTeamId', selectedTeamId);
-    }
-  }, [selectedTeamId]);
-
-  useEffect(() => { useAgentStore.getState().loadTeams(); }, []);
+    useAgentStore.getState().loadTeams().then((backendTeams) => {
+      // Auto-select first backend team if none selected (Issue 23: use return value, not getState().agents)
+      if (backendTeams.length > 0 && !useUiStore.getState().selectedTeamId) {
+        setSelectedTeamId(backendTeams[0].id);
+        setActiveAgentId(backendTeams[0].id);
+        pushRoute(`/teams/${encodeURIComponent(backendTeams[0].id)}`);
+      }
+    });
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     const onResize = () => {
@@ -259,20 +227,13 @@ function InnerApp() {
     setCurrentPath(path);
   }, []);
 
-  // Route is the source of truth for shell view, selected team, and active plan.
+  // Route drives selectedTeamId only. Goal/plan state is set by store actions.
   useEffect(() => {
     if (currentPath === '/manage-teams') return;
-    if (currentPath === '/') {
-      const storedTeamId = localStorage.getItem('ping:activeTeamId');
-      if (storedTeamId && selectedTeamId !== storedTeamId) setSelectedTeamId(storedTeamId);
-      setActivePlanId(null);
-      return;
-    }
-    const { nextTeamId, nextPlanId } = parseRouteState(currentPath);
+    if (currentPath === '/') return;
+    const { nextTeamId } = parseRouteState(currentPath);
     if (nextTeamId !== null) setSelectedTeamId(nextTeamId);
-    setActivePlanId(nextPlanId);
   }, [currentPath]); // eslint-disable-line react-hooks/exhaustive-deps
-  // Only re-run when URL changes — not when derived state changes
 
   // Keep active agent in scope for deep-linked team routes.
   useEffect(() => {
@@ -314,13 +275,24 @@ function InnerApp() {
     }
     if (connectedTeamRef.current === selectedTeamId) return;
 
-    // Clear stale plan/task state from previous team before connecting to new one
-    useOrchestrationStore.getState().resetForTeam();
+    // Clear stale state from previous team
+    useGoalSessionStore.getState().resetForTeam();
 
     connectedTeamRef.current = selectedTeamId;
 
     agentServiceV2.connect(selectedTeamId)
       .catch(err => { connectedTeamRef.current = null; showToast(`Connection failed: ${err.message}`, 'error'); });
+
+    // Wire global HTTP error handler → toast notifications
+    const unsubHttpError = agentServiceV2.onHttpError((message, status) => {
+      if (status === 401) {
+        showToast(message, 'error');
+        // Optionally redirect to login — uncomment when login page is ready:
+        // window.location.href = '/login';
+      } else {
+        showToast(message, 'error');
+      }
+    });
 
     // Wire Socket.IO events → stores
     const findAgentByRole = (roleName: string): Agent | undefined => {
@@ -328,14 +300,10 @@ function InnerApp() {
     };
 
     const unsubMessage = agentServiceV2.onMessage((data) => {
-      let content = data.content;
-      try {
-        const parsed = JSON.parse(data.content);
-        if (typeof parsed.response === 'string') content = parsed.response;
-      } catch { /* not JSON */ }
+      const content = data.content;
       if (!content) return;
 
-      useOrchestrationStore.getState().addLog(data.agentId, content.length > 100 ? content.substring(0, 100) + '...' : content, 'info');
+      useGoalSessionStore.getState().addLog(data.agentId, content.length > 100 ? content.substring(0, 100) + '...' : content, 'info');
 
       const isManager = data.agentId === 'manager' || data.agentId === 'orchestrator' || data.agentId === 'planner';
       // Goal-scoped key for planner messages
@@ -348,17 +316,17 @@ function InnerApp() {
     });
 
     const unsubState = agentServiceV2.onState((data) => {
-      useOrchestrationStore.getState().addLog('SYSTEM', `State: ${data.sessionState}`, 'info');
-      useOrchestrationStore.getState().handleStateEvent(data);
+      useGoalSessionStore.getState().addLog('SYSTEM', `State: ${data.sessionState}`, 'info');
+      useGoalSessionStore.getState().handleStateEvent(data);
     });
 
     const unsubOutput = agentServiceV2.onOutput((data) => {
       const outputPreview = data.output.content.length > 100 ? data.output.content.substring(0, 100) + '...' : data.output.content;
-      useOrchestrationStore.getState().addLog(data.agentId, `Output: ${outputPreview}`, 'success');
+      useGoalSessionStore.getState().addLog(data.agentId, `Output: ${outputPreview}`, 'success');
     });
 
     const unsubError = agentServiceV2.onError((data) => {
-      useOrchestrationStore.getState().addLog('ERROR', data.error, 'error');
+      useGoalSessionStore.getState().addLog('ERROR', data.error, 'error');
     });
 
     const unsubStream = agentServiceV2.onStream((payload: any) => {
@@ -378,7 +346,12 @@ function InnerApp() {
       // Map role-based agentId to MongoDB agent ID
       const isOrchestrator = streamAgentId === 'manager' || streamAgentId === 'orchestrator' || streamAgentId === 'planner';
       const resolved = isOrchestrator ? null : findAgentByRole(streamAgentId);
-      if (!isOrchestrator && !resolved) return;
+      if (!isOrchestrator && !resolved) {
+        // Don't silently drop — use role key directly so messages aren't lost
+        const fallbackKey = streamTaskId ? `${streamAgentId}:task:${streamTaskId}` : streamAgentId;
+        processStreamPart(fallbackKey, part);
+        return;
+      }
 
       const targetAgentId = isOrchestrator ? selectedTeamId : resolved!.id;
 
@@ -409,11 +382,16 @@ function InnerApp() {
     const unsubTaskUpdate = agentServiceV2.onTaskUpdate((update: any) => {
       if (!update?.taskId) return;
       const config = TASK_UPDATE_LOG[update.type] || { fmt: () => update.type, type: 'info' };
-      useOrchestrationStore.getState().addLog(`${update.taskId} [${update.role || 'worker'}]`, config.fmt(update), config.type as any);
+      useGoalSessionStore.getState().addLog(`${update.taskId} [${update.role || 'worker'}]`, config.fmt(update), config.type as any);
+
+      // Auto-select first executing task so worker output is visible
+      if (update.type === 'started' && !useGoalSessionStore.getState().selectedTaskId) {
+        useGoalSessionStore.setState({ selectedTaskId: update.taskId });
+      }
     });
 
     const unsubGoalState = agentServiceV2.onGoalStateChange((data: any) => {
-      useOrchestrationStore.getState().handleGoalStateChange(data);
+      useGoalSessionStore.getState().handleGoalStateChange(data);
     });
 
     // Server-generated goalId — auto-subscribe to the goal's Socket.IO room
@@ -432,6 +410,7 @@ function InnerApp() {
       unsubTaskUpdate();
       unsubGoalState();
       unsubGoalCreated();
+      unsubHttpError();
     };
   }, [selectedTeamId, agentsRef, addMessage, processStreamPart, showToast]);
 
@@ -449,42 +428,16 @@ function InnerApp() {
       setActiveAgentId(selectedTeamId);
     }
 
-    // Try session restore first (single API call for all conversations)
-    restoreFromServer(selectedTeamId, subAgents.map(s => ({ id: s.id, role: s.role })), activePlanGoalId).then((result) => {
-      if (result) {
-        // Populate PlanList from server goals (replaces stale localStorage)
-        if (result.goals?.length) {
-          for (const goal of result.goals) {
-            savePlan(selectedTeamId, {
-              planId: goal.planId || goal.id || goal._id,
-              goal: goal.goal || goal.title || '',
-              goalId: goal.goalId || undefined,
-              createdAt: goal.createdAt ? new Date(goal.createdAt).getTime() : Date.now(),
-              status: goal.status || 'unknown',
-              taskCount: goal.taskCount,
-              completedCount: goal.completedCount,
-            });
-          }
-        }
-
-        // Feed plan/tasks from restore into orchestration state
-        if (result.plan?.length) {
-          useOrchestrationStore.getState().setTasksFromPlan(result.plan);
-          if (result.orchestratorState) {
-            useOrchestrationStore.getState().setSessionState(result.orchestratorState);
-          }
-        }
-        // Session restore succeeded — all conversations loaded, no per-agent fallback needed
-      } else {
-        // Session restore failed — fall back to per-agent message loading
-        loadAgentChat(selectedTeamId, 'manager');
-        for (const sub of subAgents) {
-          loadAgentChat(selectedTeamId, sub.id);
-        }
-      }
-    });
-  // PP-006: activePlanGoalId must be in dependency array so restore re-runs on goal switch
-  }, [selectedTeamId, agents, activePlanGoalId, loadAgentChat, restoreFromServer]);
+    // Restore team via goalSessionStore — URL planId passed as parameter for resolution
+    const { nextPlanId: urlPlanId } = parseRouteState(window.location.pathname);
+    const store = useGoalSessionStore.getState();
+    store.restoreTeam(
+      selectedTeamId,
+      subAgents.map(s => ({ id: s.id, role: s.role })),
+      urlPlanId ?? undefined,
+    );
+  // Restore fires on team change only. Goal-switch restore is handled by switchGoal().
+  }, [selectedTeamId, agents]);
 
   useEffect(() => {
     const newLogs = orchestrationLogs.slice(prevLogsLen.current);
@@ -494,7 +447,7 @@ function InnerApp() {
 
   const handleSelectAgent = useCallback((agent: Agent) => {
     setActiveAgentId(agent.id);
-    setSelectedTaskId(null); // Clear task selection — show ChatAgent R1 chat, not worker stream
+    useGoalSessionStore.setState({ selectedTaskId: null }); // Clear task selection
     if (isMobileViewport) {
       setIsMobileSidebarOpen(false);
     }
@@ -518,64 +471,64 @@ function InnerApp() {
     );
   }, []);
 
+  // remapChatKey removed — goalSessionStore uses atomic switchGoal
+
   const handleGoalSubmit = useCallback(async (goal: string) => {
     if (!selectedTeamId) { showToast('Please select a team first', 'warning'); return; }
-    const planId = makePlanId(selectedTeamId, goal, Date.now());
-    const goalId = toGoalId(goal);
-    savePlan(selectedTeamId, {
-      planId,
-      goal,
-      goalId,
-      createdAt: Date.now(),
-      status: 'active',
-    });
-    // User message goes to goal-scoped chat key
-    addMessage(`${selectedTeamId}:goal:${goalId}`, { id: uuidv4(), role: 'user', content: goal, timestamp: Date.now() });
+
+    // Server generates goalId — wait for it before navigating
+    let serverGoalId: string;
     try {
-      agentServiceV2.sendToManager(goal, goalId);
+      const result = await agentServiceV2.sendToManagerAsync(goal);
+      serverGoalId = result.goalId;
     } catch (err: any) {
       showToast(`Failed to send goal: ${err.message}`, 'error');
+      return;
     }
-    setActivePlanId(planId);
+
+    const planId = makePlanId(selectedTeamId, goal, Date.now());
+    useGoalSessionStore.getState().newGoal(selectedTeamId, serverGoalId, planId, goal);
+    useGoalSessionStore.getState().sendUserMessage({
+      teamId: selectedTeamId, agentId: selectedTeamId, goalId: serverGoalId,
+      taskId: null, isChatAgent: false, isTeamView: true, content: goal,
+    });
     pushRoute(`/teams/${encodeURIComponent(selectedTeamId)}/p/${encodeURIComponent(planId)}`);
-  }, [selectedTeamId, addMessage, showToast, pushRoute]);
+  }, [selectedTeamId, showToast, pushRoute]);
 
   /** Goal submitted from GoalScreen (teamId provided explicitly) */
   const handleGoalScreenSubmit = useCallback(async (teamId: string, goal: string, repoUrl?: string, repoBranch?: string) => {
     // Ensure connected to the right team
     if (selectedTeamId !== teamId) setSelectedTeamId(teamId);
 
-    // Wait for socket to be ready (connection may need to establish)
-    if (!agentServiceV2.isConnected()) {
-      try {
-        await agentServiceV2.connect(teamId);
-      } catch (err: any) {
-        showToast(`Connection failed: ${err.message}`, 'error');
-        return;
-      }
+    // Always ensure socket is connected to the target team (handles team switch)
+    try {
+      await agentServiceV2.connect(teamId);
+    } catch (err: any) {
+      showToast(`Connection failed: ${err.message}`, 'error');
+      return;
+    }
+
+    // Server generates goalId — wait for it before navigating
+    let serverGoalId: string;
+    try {
+      const result = await agentServiceV2.sendToManagerAsync(goal, repoUrl, repoBranch);
+      serverGoalId = result.goalId;
+    } catch (err: any) {
+      showToast(`Failed to send goal: ${err.message}`, 'error');
+      return;
     }
 
     const planId = makePlanId(teamId, goal, Date.now());
-    const goalId = toGoalId(goal);
-    savePlan(teamId, {
-      planId,
-      goal,
-      goalId,
-      createdAt: Date.now(),
-      status: 'active',
+    useGoalSessionStore.getState().newGoal(teamId, serverGoalId, planId, goal);
+    useGoalSessionStore.getState().sendUserMessage({
+      teamId, agentId: teamId, goalId: serverGoalId,
+      taskId: null, isChatAgent: false, isTeamView: true, content: goal,
     });
-    addMessage(`${teamId}:goal:${goalId}`, { id: uuidv4(), role: 'user', content: goal, timestamp: Date.now() });
-    try {
-      agentServiceV2.sendToManager(goal, goalId, repoUrl, repoBranch);
-    } catch (err: any) {
-      showToast(`Failed to send goal: ${err.message}`, 'error');
-    }
-    setActivePlanId(planId);
     pushRoute(`/teams/${encodeURIComponent(teamId)}/p/${encodeURIComponent(planId)}`);
-  }, [selectedTeamId, addMessage, showToast, pushRoute]);
+  }, [selectedTeamId, showToast, pushRoute]);
 
   const handleApprove = useCallback((_tasks?: BackendTask[]) => {
-    useOrchestrationStore.getState().approvePlan();
+    useGoalSessionStore.getState().approvePlan();
   }, []);
 
   const handleAddAgent = useCallback(async (agentData: Partial<Agent>) => {
@@ -586,7 +539,7 @@ function InnerApp() {
           setActiveAgentId(team.id);
           setSelectedTeamId(team.id);
           showToast(`Team "${team.name}" created`, 'success');
-          useOrchestrationStore.getState().addLog('SYSTEM', `Team created: ${team.name}`, 'success');
+          useGoalSessionStore.getState().addLog('SYSTEM', `Team created: ${team.name}`, 'success');
         }
       } catch (err: any) {
         showToast(`Failed to create team: ${err.message}`, 'error');
@@ -596,10 +549,10 @@ function InnerApp() {
     }
   }, [showToast]);
 
-  const allTasks = tasks; // tasks is already a flat array from orchestrationStore
+  const allTasks = tasks; // tasks is a flat array from goalSessionStore
   // Filter tasks by active plan's goalId — each plan shows only its own tasks
-  const planTasks = activePlanGoalId
-    ? allTasks.filter(t => t.goalId === activePlanGoalId)
+  const planTasks = activeGoalId
+    ? allTasks.filter(t => t.goalId === activeGoalId)
     : allTasks;
   const activeAgent = findAgentById(activeAgentId);
   // Get tasks assigned to the active agent's role
@@ -611,9 +564,6 @@ function InnerApp() {
   const selectedTeam = selectedTeamId ? agents.find(a => a.id === selectedTeamId) : undefined;
   const selectedTeamAgentCount = selectedTeam ? 1 + (selectedTeam.subAgents?.length ?? 0) : 0;
 
-  // Task selection state for DetailPanel
-  const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
-
   // Chat key logic:
   // - Click agent (sidebar AGENTS) → ChatAgent R1 chat: "chat:{agentId}"
   // - Click task (sidebar PLAN)   → Worker stream:     "{agentId}:task:{taskId}"
@@ -624,14 +574,14 @@ function InnerApp() {
     ? `${activeAgentId}:task:${selectedTaskId}`  // task selected → worker stream
     : isChatAgent
       ? `chat:${activeAgentId}`                  // agent clicked → ChatAgent R1
-      : isTeamView && activePlanGoalId
-        ? `${selectedTeamId}:goal:${activePlanGoalId}`  // planner → goal-scoped
+      : isTeamView && activeGoalId
+        ? `${selectedTeamId}:goal:${activeGoalId}`  // planner → goal-scoped
         : activeAgentId;                            // fallback
   const activeAgentMessages = chatHistories[chatKey] ?? [];
 
   // Click task → switch main area to that role's agent + select the task
   const handleTaskClick = useCallback((taskId: string) => {
-    setSelectedTaskId(taskId);
+    useGoalSessionStore.setState({ selectedTaskId: taskId });
     // Find the task to get its role
     const task = allTasks.find(t => t.id === taskId);
     if (task?.assignedRole && selectedTeam?.subAgents) {
@@ -645,14 +595,25 @@ function InnerApp() {
     setIsPanelOpen(true);
   }, [allTasks, selectedTeam, setActiveAgentId]);
 
-  // Plans list for switcher (from localStorage)
-  const storedPlans = React.useMemo<PlanSummary[]>(() => {
-    if (!selectedTeamId) return [];
-    try {
-      const raw = localStorage.getItem(`ping:plans:${selectedTeamId}`);
-      return raw ? JSON.parse(raw) : [];
-    } catch { return []; }
-  }, [selectedTeamId, activePlanId /* re-read after new plan saved */]);
+  // Plans list for switcher (from goalSessionStore — map to PlanList format)
+  const storedPlans: PlanListSummary[] = React.useMemo(() =>
+    plans.map(p => ({
+      planId: p.planId ?? p.goalId,
+      goal: p.title,
+      goalId: p.goalId,
+      createdAt: p.createdAt,
+      status: (p.state === 'done' ? 'completed' : p.state === 'executing' ? 'active' : 'unknown') as PlanListSummary['status'],
+      taskCount: p.taskCount,
+      completedCount: p.completedCount,
+    })),
+    [plans],
+  );
+
+  // Filter out built-in agents (meta-agent) from team list — only show backend teams
+  const backendTeams = React.useMemo(
+    () => agents.filter(a => a.id !== 'meta-agent'),
+    [agents]
+  );
 
   const sidebarNode = (
     <Sidebar
@@ -660,10 +621,10 @@ function InnerApp() {
       activeAgentId={activeAgentId}
       onSelectAgent={handleSelectAgent}
       onToggleCollapse={handleToggleCollapse}
-      onAddAgent={(parentId) => { setModalParentId(parentId); setIsModalOpen(true); }}
+      onAddAgent={(parentId) => openModal(parentId)}
       isExpanded={isMobileViewport ? true : isSidebarExpanded}
-      onToggleExpanded={() => setIsSidebarExpanded(v => !v)}
-      teams={agents}
+      onToggleExpanded={() => toggleSidebar()}
+      teams={backendTeams}
       activeTeamId={selectedTeamId}
       onSelectTeam={handleSelectAgent}
       onNavigateToTeams={() => { pushRoute('/manage-teams'); if (isMobileViewport) setIsMobileSidebarOpen(false); }}
@@ -674,40 +635,24 @@ function InnerApp() {
       activePlanId={activePlanId}
       sessionState={sessionState}
       onBackToGoals={() => {
-        setActivePlanId(null);
+        useGoalSessionStore.getState().clearGoal();
         if (selectedTeamId) pushRoute(`/teams/${encodeURIComponent(selectedTeamId)}`);
         else pushRoute('/');
       }}
       plans={plans}
       onSelectPlan={(goalId) => {
-        // Switch to a different plan — update URL, tasks, chat, and active agent
+        // Switch to a different plan via goalSessionStore.switchGoal()
         const plan = plans.find(p => p.goalId === goalId);
-        if (plan?.planId) {
-          setActivePlanId(plan.planId);
-          setSelectedTaskId(null);
-          // Switch to planner view (team orchestrator)
-          if (selectedTeamId) {
-            setActiveAgentId(selectedTeamId);
-            pushRoute(`/teams/${encodeURIComponent(selectedTeamId)}/p/${encodeURIComponent(plan.planId)}`);
-
-            // Load this goal's chat history + tasks from server
-            const selectedTeam = agents.find(a => a.id === selectedTeamId);
-            const subAgents = selectedTeam?.subAgents ?? [];
-            restoreFromServer(
-              selectedTeamId,
-              subAgents.map(s => ({ id: s.id, role: s.role })),
-              goalId,
-            ).then((result) => {
-              if (result?.plan?.length) {
-                useOrchestrationStore.getState().setTasksFromPlan(result.plan);
-                if (result.orchestratorState) useOrchestrationStore.getState().setSessionState(result.orchestratorState);
-              }
-            });
-          }
+        if (plan?.planId && selectedTeamId) {
+          setActiveAgentId(selectedTeamId);
+          pushRoute(`/teams/${encodeURIComponent(selectedTeamId)}/p/${encodeURIComponent(plan.planId)}`);
+          const selectedTeam = agents.find(a => a.id === selectedTeamId);
+          const subAgents = selectedTeam?.subAgents ?? [];
+          useGoalSessionStore.getState().switchGoal(selectedTeamId, goalId, plan.planId, subAgents.map(s => ({ id: s.id, role: s.role })));
         }
       }}
       onNewPlan={() => {
-        setActivePlanId(null);
+        useGoalSessionStore.getState().clearGoal();
         if (selectedTeamId) pushRoute(`/teams/${encodeURIComponent(selectedTeamId)}`);
         else pushRoute('/');
       }}
@@ -743,7 +688,7 @@ function InnerApp() {
     return (
       <div className="h-screen w-full bg-background font-sans text-foreground">
         <PlanViewerPage
-          teams={agents}
+          teams={backendTeams}
           selectedTeamId={selectedTeamId}
           allTasks={allTasks}
           activePlanId={activePlanId}
@@ -764,7 +709,14 @@ function InnerApp() {
           }}
           onOpenPlanChat={(teamId, planId) => {
             setSelectedTeamId(teamId);
-            setActivePlanId(planId);
+            const match = useGoalSessionStore.getState().plans.find(p => p.planId === planId);
+            if (match?.goalId) {
+              const team = agents.find(a => a.id === teamId);
+              const subAgents = team?.subAgents ?? [];
+              useGoalSessionStore.getState().switchGoal(teamId, match.goalId, planId, subAgents.map(s => ({ id: s.id, role: s.role })));
+            } else {
+              // Navigate only — restoreTeam resolves planId from server
+            }
             pushRoute(`/teams/${encodeURIComponent(teamId)}/p/${encodeURIComponent(planId)}`);
           }}
           onStartTask={handleStartTask}
@@ -774,16 +726,44 @@ function InnerApp() {
     );
   }
 
-  // GoalScreen — default landing page. Shown at `/` or `/teams/{teamId}`.
-  // Only skip when URL explicitly has a plan route (`/teams/{id}/p/{planId}`).
-  const urlHasPlan = currentPath.includes('/p/');
-  const showGoalScreen = !urlHasPlan && (currentPath === '/' || currentPath.match(/^\/teams\/[^/]+\/?$/));
+  // GoalScreen — default landing page. Shown when no plan is actively loaded.
+  // Uses store state (activePlanId), not URL — stale URLs don't bypass GoalScreen.
+  const showGoalScreen = !activePlanId && (currentPath === '/' || currentPath.match(/^\/teams\/[^/]+/));
 
   if (showGoalScreen) {
     return (
-      <div className="h-screen w-full bg-background font-sans text-foreground">
+      <div className="flex h-screen w-full bg-background font-sans text-foreground">
+        <Sidebar
+          agents={agents}
+          activeAgentId={activeAgentId}
+          onSelectAgent={handleSelectAgent}
+          onToggleCollapse={handleToggleCollapse}
+          onAddAgent={(parentId) => openModal(parentId)}
+          isExpanded={isSidebarExpanded}
+          onToggleExpanded={() => toggleSidebar()}
+          teams={backendTeams}
+          activeTeamId={selectedTeamId}
+          onSelectTeam={handleSelectAgent}
+          onNavigateToTeams={() => pushRoute('/manage-teams')}
+          goals={storedPlans}
+          onSelectGoal={(planId) => {
+            if (selectedTeamId) {
+              // Resolve goalId from store plans (no sessionStorage dependency)
+              const match = plans.find(p => p.planId === planId);
+              if (match?.goalId) {
+                const selectedTeam = agents.find(a => a.id === selectedTeamId);
+                const subAgents = selectedTeam?.subAgents ?? [];
+                pushRoute(`/teams/${encodeURIComponent(selectedTeamId)}/p/${encodeURIComponent(planId)}`);
+                useGoalSessionStore.getState().switchGoal(selectedTeamId, match.goalId, planId, subAgents.map(s => ({ id: s.id, role: s.role })));
+              } else {
+                // Navigate only — restoreTeam resolves planId from server
+                pushRoute(`/teams/${encodeURIComponent(selectedTeamId)}/p/${encodeURIComponent(planId)}`);
+              }
+            }
+          }}
+        />
         <GoalScreen
-          teams={agents}
+          teams={backendTeams}
           activeTeamId={selectedTeamId}
           activePlanId={activePlanId}
           onSelectTeam={(teamId) => {
@@ -793,8 +773,17 @@ function InnerApp() {
           onSubmitGoal={handleGoalScreenSubmit}
           onSelectPlan={(planId) => {
             if (selectedTeamId) {
-              setActivePlanId(planId);
-              pushRoute(`/teams/${encodeURIComponent(selectedTeamId)}/p/${encodeURIComponent(planId)}`);
+              // Resolve goalId from store plans (no sessionStorage dependency)
+              const match = plans.find(p => p.planId === planId);
+              if (match?.goalId) {
+                const selectedTeam = agents.find(a => a.id === selectedTeamId);
+                const subAgents = selectedTeam?.subAgents ?? [];
+                pushRoute(`/teams/${encodeURIComponent(selectedTeamId)}/p/${encodeURIComponent(planId)}`);
+                useGoalSessionStore.getState().switchGoal(selectedTeamId, match.goalId, planId, subAgents.map(s => ({ id: s.id, role: s.role })));
+              } else {
+                // Navigate only — restoreTeam resolves planId from server
+                pushRoute(`/teams/${encodeURIComponent(selectedTeamId)}/p/${encodeURIComponent(planId)}`);
+              }
             }
           }}
           onNavigateToTeams={() => pushRoute('/manage-teams')}
@@ -848,7 +837,7 @@ function InnerApp() {
             { label: 'File', items: [
               { label: 'New Team', action: () => { setActiveMenu(null); document.querySelector<HTMLButtonElement>('[aria-label="New Team"]')?.click(); } },
               { label: 'separator' },
-              { label: theme === 'dark' ? 'Light Mode' : 'Dark Mode', action: () => { setActiveMenu(null); setTheme(t => t === 'dark' ? 'light' : 'dark'); }, shortcut: '⌘,' },
+              { label: theme === 'dark' ? 'Light Mode' : 'Dark Mode', action: () => { setActiveMenu(null); toggleTheme(); }, shortcut: '⌘,' },
               { label: 'separator' },
               { label: 'Sign Out', action: () => { setActiveMenu(null); signOut().then(() => window.location.reload()); } },
             ]},
@@ -920,7 +909,7 @@ function InnerApp() {
         {/* Right: app controls + window controls */}
         <div className="flex items-center shrink-0">
           <button
-            onClick={() => setTheme(t => t === 'dark' ? 'light' : 'dark')}
+            onClick={() => toggleTheme()}
             className="p-1.5 rounded-md text-muted-foreground hover:text-foreground hover:bg-accent transition-colors cursor-pointer"
             aria-label="Toggle theme"
             title={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
@@ -995,11 +984,19 @@ function InnerApp() {
                   planName={storedPlans.find(p => p.planId === activePlanId)?.goal ?? 'Plan'}
                   sessionState={sessionState}
                   onSelectPlan={(planId) => {
-                    setActivePlanId(planId);
-                    if (selectedTeamId) pushRoute(`/teams/${encodeURIComponent(selectedTeamId)}/p/${encodeURIComponent(planId)}`);
+                    const match = storedPlans.find(p => p.planId === planId);
+                    if (match?.goalId && selectedTeamId) {
+                      const selectedTeam = agents.find(a => a.id === selectedTeamId);
+                      const subAgents = selectedTeam?.subAgents ?? [];
+                      pushRoute(`/teams/${encodeURIComponent(selectedTeamId)}/p/${encodeURIComponent(planId)}`);
+                      useGoalSessionStore.getState().switchGoal(selectedTeamId, match.goalId, planId, subAgents.map(s => ({ id: s.id, role: s.role })));
+                    } else {
+                      // Navigate only — restoreTeam resolves planId from server
+                      if (selectedTeamId) pushRoute(`/teams/${encodeURIComponent(selectedTeamId)}/p/${encodeURIComponent(planId)}`);
+                    }
                   }}
                   onNewGoal={() => {
-                    setActivePlanId(null);
+                    useGoalSessionStore.getState().clearGoal();
                     if (selectedTeamId) pushRoute(`/teams/${encodeURIComponent(selectedTeamId)}`);
                     else pushRoute('/');
                   }}
@@ -1074,9 +1071,18 @@ function InnerApp() {
                 tasks={activeAgentTasks}
                 teamId={selectedTeamId}
                 onUpdateMessages={(agentId, msg) => {
-                  // Route user messages to the right history key
-                  const key = isChatAgent && !selectedTaskId ? `chat:${agentId}` : agentId;
-                  useChatStore.getState().updateMessages(key, msg);
+                  const content = Array.isArray(msg) ? msg[msg.length - 1]?.content : msg.content;
+                  if (content) {
+                    useGoalSessionStore.getState().sendUserMessage({
+                      teamId: selectedTeamId ?? '',
+                      agentId,
+                      goalId: activeGoalId,
+                      taskId: selectedTaskId,
+                      isChatAgent,
+                      isTeamView,
+                      content,
+                    });
+                  }
                 }}
                 onAddTask={() => { /* tasks come from backend plan only */ }}
                 onToggleTask={() => { /* status managed by backend */ }}
@@ -1088,15 +1094,15 @@ function InnerApp() {
                 onToggleAutoExecute={handleToggleAutoExecute}
                 currentPlan={allTasks}
                 onStartTask={handleStartTask}
-                onCompleteTask={(taskId: string) => useOrchestrationStore.getState().completeTask(taskId)}
-                onCancelTask={(taskId: string) => useOrchestrationStore.getState().cancelTask(taskId)}
+                onCompleteTask={(taskId: string) => useGoalSessionStore.getState().completeTask(taskId)}
+                onCancelTask={(taskId: string) => useGoalSessionStore.getState().cancelTask(taskId)}
                 isLoading={isLoadingTeams && activeAgentMessages.length === 0}
                 compactHeader={!!activePlanId}
                 taskScope={!activeAgent.parentId ? 'plan' : 'agent'}
                 allTasks={allTasks}
                 onSelectTask={handleTaskClick}
                 selectedTaskId={selectedTaskId}
-                goalId={activePlanGoalId}
+                goalId={activeGoalId}
               />
             </div>
           </div>
@@ -1116,16 +1122,16 @@ function InnerApp() {
               activeAgents={[]}
               allTasks={allTasks}
               currentPlanName={allTasks[0]?.title ?? undefined}
-              activePlanId={activePlanId}
+              activePlanId={activeGoalId}
               discussionThreads={discussionThreads}
               onOpenDiscussion={handleOpenDiscussion}
               agentName={activeAgent?.name}
               agentId={activeAgent?.id}
               teamId={selectedTeamId ?? undefined}
               isManager={!!activeAgent && !activeAgent.parentId}
-              onClose={() => { setIsPanelOpen(false); setSelectedTaskId(null); }}
+              onClose={() => { setIsPanelOpen(false); useGoalSessionStore.setState({ selectedTaskId: null }); }}
               selectedTask={selectedTaskId ? allTasks.find(t => t.id === selectedTaskId) ?? null : null}
-              onSelectTask={(taskId) => setSelectedTaskId(taskId)}
+              onSelectTask={(taskId) => useGoalSessionStore.setState({ selectedTaskId: taskId })}
               onStartTask={handleStartTask}
               autoExecuteEnabled={autoExecuteEnabled}
             />
@@ -1134,7 +1140,7 @@ function InnerApp() {
       </div>
 
       {sessionState === 'awaiting_approval' && allTasks.length > 0 && (
-        <PlanApproval plan={allTasks as unknown as BackendTask[]} onApprove={handleApprove} onDismiss={() => useOrchestrationStore.getState().setSessionState(null)} />
+        <PlanApproval plan={allTasks as unknown as BackendTask[]} onApprove={handleApprove} onDismiss={() => useGoalSessionStore.getState().setSessionState(null)} />
       )}
 
       <ToastContainer toasts={toasts} onDismiss={dismissToast} />
@@ -1145,8 +1151,7 @@ function InnerApp() {
         agents={agents}
         onSelectAgent={handleSelectAgent}
         onNewTeam={() => {
-          setModalParentId(undefined);
-          setIsModalOpen(true);
+          openModal();
         }}
         onViewPlans={() => {
           pushRoute('/plans');
@@ -1161,9 +1166,9 @@ function InnerApp() {
       />
 
       {/* Dev-only: collab inspector — stripped from production bundle at compile time */}
-      <DevCollabButton teamId={selectedTeamId} goalId={activePlanId} />
+      <DevCollabButton teamId={selectedTeamId} goalId={activeGoalId} />
 
-      <AgentModal isOpen={isModalOpen} onClose={() => setIsModalOpen(false)} onSave={handleAddAgent}
+      <AgentModal isOpen={isModalOpen} onClose={() => closeModal()} onSave={handleAddAgent}
         parentAgents={agents} initialParentId={modalParentId} />
     </div>
   );
@@ -1211,18 +1216,12 @@ const App: React.FC = () => {
   // Wire authenticated user identity to AgentServiceV2
   agentServiceV2.setUserId(session.user.id);
 
-  // Clear stale localStorage if user changed (new login or different account)
-  const lastUserId = localStorage.getItem('ping:lastUserId');
+  // Clear stale session data if user changed (new login or different account)
+  const lastUserId = sessionStorage.getItem('ping:lastUserId');
   if (lastUserId && lastUserId !== session.user.id) {
-    // Different user — clear all cached data
-    localStorage.removeItem('ping:chatHistories');
-    localStorage.removeItem('ping:chatHistories:ts');
-    // Clear plan caches for all teams
-    for (const key of Object.keys(localStorage)) {
-      if (key.startsWith('ping:plans:')) localStorage.removeItem(key);
-    }
+    // Different user — goalSessionStore.resetForTeam() handles state cleanup on next team load
   }
-  localStorage.setItem('ping:lastUserId', session.user.id);
+  sessionStorage.setItem('ping:lastUserId', session.user.id);
 
   return (
     <BrowserRouter>

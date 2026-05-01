@@ -503,12 +503,11 @@ export class HttpServer {
           // Manager not initialized — return empty plan/tasks
         }
 
-        // Filter messages by goalId ONLY when explicitly requested by the client.
-        // Don't filter on manager's current goalId — on reload the manager may have
-        // a different active goal, which would hide the user's conversation.
+        // Filter messages by goalId when requested — only return messages for THAT goal.
+        // Messages without goalId (legacy) are excluded when a specific goal is requested.
         if (requestedGoalId) {
-          sessionMessages = sessionMessages.filter(m => !m.goalId || m.goalId === requestedGoalId);
-          workerMessages = workerMessages.filter(m => !m.goalId || m.goalId === requestedGoalId);
+          sessionMessages = sessionMessages.filter(m => m.goalId === requestedGoalId);
+          workerMessages = workerMessages.filter(m => m.goalId === requestedGoalId);
         }
 
         // Group session messages by agentId for per-agent conversations

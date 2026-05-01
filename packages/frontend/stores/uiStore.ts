@@ -15,18 +15,34 @@ interface UiState {
   // Navigation
   selectedTeamId: string | null;
   activeAgentId: string;
-  selectedTaskId: string | null;
   viewMode: 'chat' | 'tasks' | 'collaborate';
 
   // Theme
   theme: 'dark' | 'light';
 
+  // Layout toggles
+  isPanelOpen: boolean;
+  isSidebarExpanded: boolean;
+  isMobileSidebarOpen: boolean;
+  isCommandPaletteOpen: boolean;
+  activeMenu: string | null;
+
+  // Modal
+  isModalOpen: boolean;
+  modalParentId: string | undefined;
+
   // Actions
   setSelectedTeamId: (id: string | null) => void;
   setActiveAgentId: (id: string) => void;
-  setSelectedTaskId: (id: string | null) => void;
   setViewMode: (mode: 'chat' | 'tasks' | 'collaborate') => void;
   toggleTheme: () => void;
+  setIsPanelOpen: (open: boolean | ((prev: boolean) => boolean)) => void;
+  toggleSidebar: () => void;
+  setIsMobileSidebarOpen: (open: boolean | ((prev: boolean) => boolean)) => void;
+  setIsCommandPaletteOpen: (open: boolean | ((prev: boolean) => boolean)) => void;
+  setActiveMenu: (menu: string | null) => void;
+  openModal: (parentId?: string) => void;
+  closeModal: () => void;
 }
 
 export const useUiStore = create<UiState>()(
@@ -34,28 +50,43 @@ export const useUiStore = create<UiState>()(
     persist(
       (set) => ({
         selectedTeamId: null,
-        activeAgentId: localStorage.getItem('ping:activeTeamId') || '',
-        selectedTaskId: null,
+        activeAgentId: '',
         viewMode: 'chat',
-        theme: (localStorage.getItem('ping:theme') as 'dark' | 'light') || 'dark',
+        theme: 'dark',
 
-        setSelectedTeamId: (id) => {
-          set({ selectedTeamId: id });
-          if (id) localStorage.setItem('ping:activeTeamId', id);
-        },
+        isPanelOpen: false,
+        isSidebarExpanded: true,
+        isMobileSidebarOpen: false,
+        isCommandPaletteOpen: false,
+        activeMenu: null,
+
+        isModalOpen: false,
+        modalParentId: undefined,
+
+        setSelectedTeamId: (id) => set({ selectedTeamId: id }),
         setActiveAgentId: (id) => set({ activeAgentId: id }),
-        setSelectedTaskId: (id) => set({ selectedTaskId: id }),
         setViewMode: (mode) => set({ viewMode: mode }),
         toggleTheme: () =>
-          set((s) => {
-            const next = s.theme === 'dark' ? 'light' : 'dark';
-            localStorage.setItem('ping:theme', next);
-            return { theme: next };
-          }),
+          set((s) => ({ theme: s.theme === 'dark' ? 'light' : 'dark' })),
+        setIsPanelOpen: (open) =>
+          set((s) => ({ isPanelOpen: typeof open === 'function' ? open(s.isPanelOpen) : open })),
+        toggleSidebar: () => set((s) => ({ isSidebarExpanded: !s.isSidebarExpanded })),
+        setIsMobileSidebarOpen: (open) =>
+          set((s) => ({ isMobileSidebarOpen: typeof open === 'function' ? open(s.isMobileSidebarOpen) : open })),
+        setIsCommandPaletteOpen: (open) =>
+          set((s) => ({ isCommandPaletteOpen: typeof open === 'function' ? open(s.isCommandPaletteOpen) : open })),
+        setActiveMenu: (menu) => set({ activeMenu: menu }),
+        openModal: (parentId) => set({ isModalOpen: true, modalParentId: parentId }),
+        closeModal: () => set({ isModalOpen: false, modalParentId: undefined }),
       }),
       {
         name: 'ping:ui',
-        partialize: (s) => ({ theme: s.theme, viewMode: s.viewMode }),
+        version: 3, // v3: removed goal-scoped fields (now in goalSessionStore)
+        partialize: (s) => ({
+          theme: s.theme,
+          viewMode: s.viewMode,
+          isSidebarExpanded: s.isSidebarExpanded,
+        }),
       },
     ),
     { name: 'UiStore' },

@@ -7,6 +7,7 @@ BACKEND_PORT=3002
 FRONTEND_PORT=3000
 MONGO_PORT=27017
 OLLAMA_PORT=11434
+COLLAB_PORT=1234
 
 # ─── Colors ───────────────────────────────────────────────────────────
 cyan='\033[0;36m'  green='\033[0;32m'  yellow='\033[0;33m'
@@ -249,6 +250,20 @@ start_frontend() {
   info "Frontend starting on :$FRONTEND_PORT"
 }
 
+start_collab() {
+  if is_running $COLLAB_PORT; then
+    warn "Collab service already running on :$COLLAB_PORT"
+    return
+  fi
+  warn "Starting collab service in new terminal..."
+  new_terminal "Ping - Collab" "$ROOT/packages/collab-service" "bun run start"
+  info "Collab service starting on :$COLLAB_PORT"
+}
+
+stop_collab() {
+  kill_port "Collab" $COLLAB_PORT
+}
+
 show_status() {
   echo ""
   if is_running $BACKEND_PORT; then
@@ -273,12 +288,18 @@ show_status() {
   else
     err  "Ollama    localhost:$OLLAMA_PORT         STOPPED"
   fi
+  if is_running $COLLAB_PORT; then
+    info "Collab    localhost:$COLLAB_PORT          RUNNING"
+  else
+    err  "Collab    localhost:$COLLAB_PORT          STOPPED"
+  fi
   echo ""
 }
 
 stop_all() {
   kill_port "Backend"  $BACKEND_PORT
   kill_port "Frontend" $FRONTEND_PORT
+  stop_collab
   stop_mongo
   stop_ollama
 }
@@ -297,6 +318,7 @@ show_menu() {
   printf "  ${green}4${reset}  Backend      ${dim}build + start :$BACKEND_PORT${reset}\n"
   printf "  ${green}5${reset}  MongoDB      ${dim}Docker container${reset}\n"
   printf "  ${green}6${reset}  Ollama       ${dim}Local LLM :$OLLAMA_PORT${reset}\n"
+  printf "  ${green}10${reset} Collab       ${dim}CRDT server :$COLLAB_PORT${reset}\n"
   printf "  ${red}7${reset}  Stop All\n"
   echo ""
   printf "  ${cyan}Tools${reset}\n"
@@ -351,6 +373,7 @@ main() {
       7) stop_all ;;
       8) do_build ;;
       9) do_seed ;;
+      10) start_collab ;;
       c|C) do_clean ;;
       s|S) show_status ;;
       0) dim "Bye!"; exit 0 ;;

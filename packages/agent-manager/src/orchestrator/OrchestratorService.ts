@@ -424,21 +424,20 @@ export class OrchestratorService {
   onPlanMutation(event: { type: string; data: any }): void {
     // Dispatch reassigned tasks whose status was reset to ready
     if (event.type === "plan:task_reassigned" && event.data?.statusReset && event.data?.taskId) {
-      this.manualDispatch(event.data.taskId).catch((err) => {
-        log.warn(`Failed to dispatch reassigned task ${event.data.taskId}: ${err}`);
-      });
+      const task = this.taskStore.get(event.data.taskId);
+      if (task && task.status === "ready") {
+        this.handleReadyTask(event.data.taskId, task.assigned_role);
+      }
       return;
     }
 
-    // Dispatch newly ready tasks after add_tasks or replan
+    // Dispatch newly ready tasks after add_tasks or replan (respects autoExecute)
     if (event.type === "plan:tasks_added" || event.type === "plan:replanned") {
       const taskIds: string[] = event.data?.tasks || event.data?.newTasks || [];
       for (const tid of taskIds) {
         const task = this.taskStore.get(tid);
         if (task && task.status === "ready") {
-          this.manualDispatch(tid).catch((err) => {
-            log.warn(`Failed to dispatch new task ${tid}: ${err}`);
-          });
+          this.handleReadyTask(tid, task.assigned_role);
         }
       }
       return;
@@ -448,9 +447,7 @@ export class OrchestratorService {
     if (event.type === "plan:task_updated" && event.data?.patch?.dependencies && event.data?.taskId) {
       const task = this.taskStore.get(event.data.taskId);
       if (task && task.status === "ready") {
-        this.manualDispatch(event.data.taskId).catch((err) => {
-          log.warn(`Failed to dispatch updated task ${event.data.taskId}: ${err}`);
-        });
+        this.handleReadyTask(event.data.taskId, task.assigned_role);
       }
     }
   }

@@ -714,6 +714,7 @@ export class GitBranchManager {
     options?: {
       branch?: string;
       sparse?: string[];
+      env?: Record<string, string>;
     },
   ): Promise<void> {
     const args: string[] = [];
@@ -730,7 +731,10 @@ export class GitBranchManager {
     args.push("--single-branch");
 
     // Clone using a temporary git instance (not tied to any repo)
-    const tmpGit = simpleGit();
+    let tmpGit = simpleGit();
+    if (options?.env) {
+      tmpGit = tmpGit.env(options.env);
+    }
     try {
       await tmpGit.clone(repoUrl, targetDir, args);
     } catch (err: any) {

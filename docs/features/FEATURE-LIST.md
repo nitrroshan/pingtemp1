@@ -1,7 +1,7 @@
 # Ping — Master Feature List
 
 **Last Updated:** April 26, 2026  
-**Total Features:** 40 (18 existing + 22 new)  
+**Total Features:** 41 (18 existing + 23 new)  
 **Master Architecture:** [MASTER-ARCHITECTURE.md](MASTER-ARCHITECTURE.md) — unified reference with diagrams for how all features connect
 
 ---
@@ -96,6 +96,12 @@
 | G2 | **Agent Collaboration Docs** | 🔬 Research | [agent-collab-docs](agent-collab-docs/) | Dual-agent design (Task + Communication per worker). Validated by DPT-Agent paper. |
 | G3 | **Open-Source Research** | 🆕 New | [opensource-research](opensource-research/) | Evaluate OSS projects that simplify our stack: Mastra, AI SDK, E2B, Daytona, OpenHands, SWE-agent, Plandex, etc. |
 
+### H. Plugin Ecosystem
+
+| # | Feature | Status | Directory | Summary |
+|---|---------|--------|-----------|---------|
+| H1 | **Plugin Ecosystem** | 🆕 New | [plugin-ecosystem](plugin-ecosystem/) | `.ping-plugin/` format spec (agents, skills, planner, MCP, hooks, modes). Lazy team loading via AgentManagerRegistry. Per-task worker instantiation. Plugin planner (Option C). Offboard lifecycle. Runtime load API. |
+
 ---
 
 ## Dependency Graph
@@ -112,7 +118,14 @@ A1 Mastra/AI SDK Migration ─────────────────�
 
 A3 Tools as MCP Servers ───────────────────────────────────────
  ├── F2 MCP Server Integration (prove pipeline)
- └── A7 External Agent Invocation (MCP interop)
+ ├── A7 External Agent Invocation (MCP interop)
+ └── H1 Plugin Ecosystem (plugin create/load/offload + ecosystem adapters)
+
+H1 Plugin Ecosystem ───────────────────────────────────────────
+ ├── depends on: A3 (IPlugin, PluginRegistry), team-registry (format, loader)
+ ├── correlates: A7 (McpBridgePlugin = ExternalAgent impl)
+ ├── correlates: A11 (templates = dehydrated plugins)
+ └── feeds: team-registry v2.0 (marketplace)
 
 A4 Worker Sandboxing ──────────────────────────────────────────
  ├── A8 Git-Based Task Context (sandboxed git ops)

@@ -14,6 +14,7 @@
 import { io, Socket } from "socket.io-client";
 import { logger } from "../utils/logger";
 import { API_BASE_URL } from "../constants";
+import type { ServerToClientEvents, ClientToServerEvents } from "@ping/shared";
 
 // ============================================================================
 // Types
@@ -23,6 +24,7 @@ export interface AgentMessage {
   sessionId: string;
   agentId: string;
   taskId?: string;
+  goalId?: string;
   content: string;
   isStreaming?: boolean;
   timestamp: number;
@@ -127,7 +129,7 @@ export interface TaskInfo {
 // ============================================================================
 
 export class AgentServiceV2 {
-  private socket: Socket | null = null;
+  private socket: Socket<ServerToClientEvents, ClientToServerEvents> | null = null;
   private teamId: string | null = null;
   private sessionId: string = "default";
   private userId: string;
@@ -147,6 +149,8 @@ export class AgentServiceV2 {
   private taskUpdateCallbacks: Set<(data: any) => void> = new Set();
   private goalStateCallbacks: Set<(data: any) => void> = new Set();
   private goalCreatedCallbacks: Set<(data: { goalId: string }) => void> = new Set();
+  /** Track current goal subscription for auto-resubscribe on reconnect */
+  private subscribedGoal: { teamId: string; goalId: string } | null = null;
 
   constructor(baseUrl: string = API_BASE_URL) {
     this.baseUrl = baseUrl;
@@ -165,9 +169,62 @@ export class AgentServiceV2 {
     return this.baseUrl;
   }
 
-  /** Fetch with auth credentials — all API calls must include the session cookie */
+  /** Global HTTP error callback — set by App.tsx to surface errors as toasts */
+  private httpErrorCallback: ((message: string, status: number) => void) | null = null;
+
+  /** Register a callback for HTTP errors (401, 5xx, network failures) */
+  onHttpError(callback: (message: string, status: number) => void): () => void {
+    this.httpErrorCallback = callback;
+    return () => { this.httpErrorCallback = null; };
+  }
+
+  /**
+   * Fetch with auth credentials + global error handling.
+   * - 401 → emits error callback, returns response (caller decides redirect)
+   * - 5xx → single retry with 500ms delay
+   * - Network errors → logged and re-thrown
+   */
   private async authFetch(url: string, init?: RequestInit): Promise<Response> {
-    return fetch(url, { ...init, credentials: "include" });
+    const attempt = async (): Promise<Response> => {
+      return fetch(url, { ...init, credentials: "include" });
+    };
+
+    let response: Response;
+    try {
+      response = await attempt();
+    } catch (err) {
+      // Network error — no response at all
+      const message = err instanceof Error ? err.message : 'Network error';
+      logger.error(`[AgentServiceV2] authFetch network error: ${message}`);
+      this.httpErrorCallback?.(`Network error: ${message}`, 0);
+      throw err;
+    }
+
+    // 401 Unauthorized — session expired
+    if (response.status === 401) {
+      logger.warn('[AgentServiceV2] 401 Unauthorized — session may have expired');
+      this.httpErrorCallback?.('Session expired. Please sign in again.', 401);
+      return response;
+    }
+
+    // 5xx Server error — single retry with delay
+    if (response.status >= 500) {
+      logger.warn(`[AgentServiceV2] ${response.status} from ${url} — retrying in 500ms`);
+      await new Promise(r => setTimeout(r, 500));
+      try {
+        response = await attempt();
+      } catch (retryErr) {
+        const message = retryErr instanceof Error ? retryErr.message : 'Network error on retry';
+        logger.error(`[AgentServiceV2] Retry failed: ${message}`);
+        this.httpErrorCallback?.(`Server error (retry failed): ${message}`, 0);
+        throw retryErr;
+      }
+      if (response.status >= 500) {
+        this.httpErrorCallback?.(`Server error: ${response.status} ${response.statusText}`, response.status);
+      }
+    }
+
+    return response;
   }
 
   // ============================================================================
@@ -217,6 +274,12 @@ export class AgentServiceV2 {
       this.socket.on("registered", (data: { clientId: string }) => {
         this.clientId = data.clientId;
         logger.info(`[AgentServiceV2] Registered: ${data.clientId}`);
+
+        // Re-subscribe to goal room on reconnect (rooms are lost on disconnect)
+        if (this.subscribedGoal) {
+          this.socket!.emit("subscribeToGoal", this.subscribedGoal);
+          logger.info(`[AgentServiceV2] Re-subscribed to goal room: ${this.subscribedGoal.teamId}:${this.subscribedGoal.goalId}`);
+        }
 
         // Request current state after registration to restore UI on refresh
         setTimeout(() => {
@@ -339,7 +402,7 @@ export class AgentServiceV2 {
     return !!(this.socket && this.clientId && this.teamId);
   }
 
-  sendToManager(content: string, goalId?: string, repoUrl?: string, repoBranch?: string): void {
+  sendToManager(content: string, goalId?: string | null, repoUrl?: string, repoBranch?: string): void {
     if (!this.isReady()) {
       logger.error("[AgentServiceV2] Cannot send: socket =", !!this.socket, "clientId =", this.clientId, "teamId =", this.teamId);
       throw new Error("Not connected or no team selected");
@@ -351,17 +414,73 @@ export class AgentServiceV2 {
       agentId: "manager",
       sessionId: this.sessionId,
       content,
-      goalId,
+      goalId: goalId ?? undefined,
       repoUrl,
       repoBranch,
+    });
+  }
+
+  /**
+   * Send goal to orchestrator and wait for server-generated goalId.
+   * Uses nonce correlation (Discord Pattern 2) to match the response
+   * to this specific request — safe for concurrent submissions.
+   */
+  sendToManagerAsync(
+    content: string,
+    repoUrl?: string,
+    repoBranch?: string,
+    timeout = 10000,
+  ): Promise<{ goalId: string }> {
+    return new Promise((resolve, reject) => {
+      if (!this.isReady()) {
+        return reject(new Error("Not connected or no team selected"));
+      }
+
+      const nonce = crypto.randomUUID();
+
+      const timer = setTimeout(() => {
+        unsub();
+        reject(new Error("Timeout waiting for server goalId"));
+      }, timeout);
+
+      const unsub = this.onGoalCreated((data: any) => {
+        // Only resolve for our nonce (ignore other clients' goal:created events)
+        if (data.nonce && data.nonce !== nonce) return;
+        clearTimeout(timer);
+        unsub();
+        resolve({ goalId: data.goalId });
+      });
+
+      logger.info("[AgentServiceV2] sendToManagerAsync:", content.substring(0, 50));
+      this.socket!.emit("message", {
+        teamId: this.teamId,
+        agentId: "manager",
+        sessionId: this.sessionId,
+        content,
+        nonce,
+        // No goalId — server generates it
+        repoUrl,
+        repoBranch,
+      });
     });
   }
 
   /** Phase 4.5: Subscribe to a goal-scoped Socket.IO room for stream isolation. */
   subscribeToGoal(teamId: string, goalId: string): void {
     if (!this.socket) return;
+    this.subscribedGoal = { teamId, goalId };
     this.socket.emit("subscribeToGoal", { teamId, goalId });
     logger.info(`[AgentServiceV2] Subscribed to goal room: team:${teamId}:goal:${goalId}`);
+  }
+
+  /** Unsubscribe from a goal-scoped Socket.IO room (leaves the room server-side). */
+  unsubscribeFromGoal(teamId: string, goalId: string): void {
+    if (!this.socket) return;
+    if (this.subscribedGoal?.teamId === teamId && this.subscribedGoal?.goalId === goalId) {
+      this.subscribedGoal = null;
+    }
+    this.socket.emit("unsubscribeFromGoal", { teamId, goalId });
+    logger.info(`[AgentServiceV2] Unsubscribed from goal room: team:${teamId}:goal:${goalId}`);
   }
 
   /**
@@ -568,8 +687,8 @@ export class AgentServiceV2 {
    */
   on(event: string, callback: (data: any) => void): () => void {
     if (!this.socket) return () => {};
-    this.socket.on(event, callback);
-    return () => { this.socket?.off(event, callback); };
+    (this.socket as any).on(event, callback);
+    return () => { (this.socket as any)?.off(event, callback); };
   }
 
   /**
@@ -632,6 +751,7 @@ export class AgentServiceV2 {
     plan: any;
     tasks: any[];
     orchestratorState: string | null;
+    activeGoalId?: string | null;
     allGoalSummaries?: any[];
   } | null> {
     try {
@@ -639,9 +759,13 @@ export class AgentServiceV2 {
         ? `${this.baseUrl}/api/v2/sessions/${teamId}/restore?goalId=${encodeURIComponent(goalId)}`
         : `${this.baseUrl}/api/v2/sessions/${teamId}/restore`;
       const response = await this.authFetch(url);
-      if (!response.ok) return null;
+      if (!response.ok) {
+        logger.warn(`[AgentServiceV2] restoreSession failed: ${response.status} ${response.statusText}`);
+        return null;
+      }
       return response.json();
-    } catch {
+    } catch (err) {
+      logger.error('[AgentServiceV2] restoreSession error:', err);
       return null;
     }
   }

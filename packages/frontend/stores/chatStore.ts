@@ -4,7 +4,7 @@
  * Replaces useChat hook. Manages:
  * - Per-agent message histories
  * - Stream part processing (text, reasoning, tool cards, notifications)
- * - Message persistence (localStorage cache + backend API)
+ * - Message persistence (sessionStorage cache + backend API)
  * - Session restore from backend
  *
  * Stream processing and chat history are kept together because streaming
@@ -39,6 +39,8 @@ interface ChatState {
   addMessage: (agentId: string, message: Message) => void;
   updateMessages: (agentId: string, messages: Message[] | Message) => void;
   processStreamPart: (agentId: string, part: StreamPart) => void;
+  /** Remap a provisional chat key to the final key (optimistic rendering reconciliation) */
+  remapChatKey: (oldKey: string, newKey: string) => void;
   loadAgentChat: (teamId: string, agentId: string) => Promise<void>;
   clearAllHistories: () => void;
   clearForTeam: () => void;
@@ -51,6 +53,7 @@ interface ChatState {
     plan: any;
     tasks: any[];
     orchestratorState: string | null;
+    activeGoalId: string | null;
   } | null>;
 }
 
@@ -89,7 +92,7 @@ function updateStreamParts(
   };
 }
 
-/** Cap histories for localStorage persistence */
+/** Cap histories for sessionStorage persistence */
 function capHistories(histories: Record<string, Message[]>, max: number): Record<string, Message[]> {
   return Object.fromEntries(
     Object.entries(histories).map(([key, msgs]) => [key, msgs.slice(-max)]),
@@ -101,29 +104,22 @@ function capHistories(histories: Record<string, Message[]>, max: number): Record
 // ─────────────────────────────────────────────────────────────────────────────
 
 export const useChatStore = create<ChatState>()(devtools((set, get) => {
-  // Load initial state from localStorage cache
+  // Load from sessionStorage (session-scoped cache for fast reload)
   let initialHistories: Record<string, Message[]> = {};
   try {
-    const stored = localStorage.getItem('ping:chatHistories');
+    const stored = sessionStorage.getItem('ping:chatHistories');
     if (stored) {
-      const cacheTs = localStorage.getItem('ping:chatHistories:ts');
-      if (!cacheTs || Date.now() - Number(cacheTs) < 24 * 60 * 60 * 1000) {
-        const parsed = JSON.parse(stored) as Record<string, Message[]>;
-        // Fix interrupted streams
-        initialHistories = Object.fromEntries(
-          Object.entries(parsed).map(([agentId, messages]) => [
-            agentId,
-            messages.map(m => m.isStreaming ? { ...m, isStreaming: false } : m),
-          ]),
-        );
-      } else {
-        localStorage.removeItem('ping:chatHistories');
-        localStorage.removeItem('ping:chatHistories:ts');
-      }
+      const parsed = JSON.parse(stored) as Record<string, Message[]>;
+      initialHistories = Object.fromEntries(
+        Object.entries(parsed).map(([agentId, messages]) => [
+          agentId,
+          messages.map(m => m.isStreaming ? { ...m, isStreaming: false } : m),
+        ]),
+      );
     }
-  } catch { /* ignore */ }
+  } catch (err) { console.warn('[chatStore] Failed to load from sessionStorage:', err); }
 
-  // Persist to localStorage on changes (debounced via subscribe)
+  // Persist to sessionStorage on changes (debounced)
   let persistTimeout: ReturnType<typeof setTimeout> | null = null;
   const schedulePersist = () => {
     if (persistTimeout) return;
@@ -131,9 +127,8 @@ export const useChatStore = create<ChatState>()(devtools((set, get) => {
       persistTimeout = null;
       try {
         const capped = capHistories(get().chatHistories, 50);
-        localStorage.setItem('ping:chatHistories', JSON.stringify(capped));
-        localStorage.setItem('ping:chatHistories:ts', String(Date.now()));
-      } catch { /* storage quota exceeded */ }
+        sessionStorage.setItem('ping:chatHistories', JSON.stringify(capped));
+      } catch (err) { console.warn('[chatStore] sessionStorage persist failed (quota?):', err); }
     }, 500);
   };
 
@@ -142,9 +137,8 @@ export const useChatStore = create<ChatState>()(devtools((set, get) => {
     window.addEventListener('beforeunload', () => {
       try {
         const capped = capHistories(get().chatHistories, 50);
-        localStorage.setItem('ping:chatHistories', JSON.stringify(capped));
-        localStorage.setItem('ping:chatHistories:ts', String(Date.now()));
-      } catch { /* best effort */ }
+        sessionStorage.setItem('ping:chatHistories', JSON.stringify(capped));
+      } catch (err) { console.warn('[chatStore] beforeunload persist failed:', err); }
     });
   }
 
@@ -211,6 +205,18 @@ export const useChatStore = create<ChatState>()(devtools((set, get) => {
         const current = prev.chatHistories[agentId] ?? [];
         const newMessages = Array.isArray(messagesOrSingle) ? messagesOrSingle : [...current, messagesOrSingle];
         return { chatHistories: { ...prev.chatHistories, [agentId]: newMessages } };
+      });
+      schedulePersist();
+    },
+
+    remapChatKey: (oldKey, newKey) => {
+      set(prev => {
+        const messages = prev.chatHistories[oldKey];
+        if (!messages || oldKey === newKey) return prev;
+        const { [oldKey]: _, ...rest } = prev.chatHistories;
+        // Merge with any existing messages under the new key
+        const existing = rest[newKey] ?? [];
+        return { chatHistories: { ...rest, [newKey]: [...existing, ...messages] } };
       });
       schedulePersist();
     },
@@ -492,12 +498,12 @@ export const useChatStore = create<ChatState>()(devtools((set, get) => {
         set(prev => ({
           chatHistories: { ...prev.chatHistories, [agentId]: backendMessages },
         }));
-      } catch { /* API unavailable — use localStorage cache */ }
+      } catch (err) { console.warn('[chatStore] loadAgentChat failed:', err); }
     },
 
     clearAllHistories: () => {
       set({ chatHistories: {}, _loadedAgents: new Set() });
-      localStorage.removeItem('ping:chatHistories');
+      sessionStorage.removeItem('ping:chatHistories');
     },
 
     clearForTeam: () => {
@@ -543,16 +549,17 @@ export const useChatStore = create<ChatState>()(devtools((set, get) => {
           restored[key].sort((a, b) => a.timestamp - b.timestamp);
         }
 
-        // Worker messages
+        // Worker messages — key by task-scoped key to match live stream routing
         if (data.workerMessages?.length) {
-          const workerByAgent: Record<string, any[]> = {};
+          const workerByKey: Record<string, any[]> = {};
           for (const m of data.workerMessages) {
-            const key = m.agentId;
-            if (!workerByAgent[key]) workerByAgent[key] = [];
-            workerByAgent[key].push(m);
+            // Match live stream key format: "agentId:task:taskId" or fallback to "agentId"
+            const key = m.taskId ? `${m.agentId}:task:${m.taskId}` : m.agentId;
+            if (!workerByKey[key]) workerByKey[key] = [];
+            workerByKey[key].push(m);
           }
-          for (const [agentId, msgs] of Object.entries(workerByAgent)) {
-            restored[agentId] = msgs.map((m: any) => ({
+          for (const [key, msgs] of Object.entries(workerByKey)) {
+            restored[key] = msgs.map((m: any) => ({
               id: m.id, role: m.role === 'assistant' ? 'model' : m.role,
               content: m.content, timestamp: new Date(m.timestamp).getTime(),
               isStreaming: false,
@@ -562,7 +569,30 @@ export const useChatStore = create<ChatState>()(devtools((set, get) => {
         }
 
         if (Object.keys(restored).length > 0) {
-          set(prev => ({ chatHistories: { ...prev.chatHistories, ...restored } }));
+          // Deep merge by message ID — preserves local streamParts when server doesn't have them
+          set(prev => {
+            const merged = { ...prev.chatHistories };
+            for (const [key, serverMsgs] of Object.entries(restored)) {
+              const localMsgs = merged[key];
+              if (!localMsgs || localMsgs.length === 0) {
+                merged[key] = serverMsgs;
+              } else {
+                const msgMap = new Map(localMsgs.map(m => [m.id, m]));
+                for (const serverMsg of serverMsgs) {
+                  const local = msgMap.get(serverMsg.id);
+                  msgMap.set(serverMsg.id, {
+                    ...local,
+                    ...serverMsg,
+                    // Keep local streamParts if server doesn't have them (Issue 22)
+                    streamParts: serverMsg.streamParts ?? local?.streamParts,
+                  });
+                }
+                merged[key] = Array.from(msgMap.values())
+                  .sort((a, b) => a.timestamp - b.timestamp);
+              }
+            }
+            return { chatHistories: merged };
+          });
           // Mark all restored agents as loaded
           set(prev => ({
             _loadedAgents: new Set([...prev._loadedAgents, ...Object.keys(restored)]),
@@ -574,6 +604,7 @@ export const useChatStore = create<ChatState>()(devtools((set, get) => {
           plan: data.plan ?? null,
           tasks: data.tasks ?? [],
           orchestratorState: data.orchestratorState ?? null,
+          activeGoalId: data.activeGoalId ?? null,
         };
       } catch (err) {
         console.error('[chatStore] restoreFromServer failed:', err);

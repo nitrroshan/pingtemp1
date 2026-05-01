@@ -33,6 +33,7 @@ function Show-Menu {
     Write-Host "  [22] Seed Admin User" -ForegroundColor Green
     Write-Host "  [23] Reset MongoDB (drop data)" -ForegroundColor Red
     Write-Host "  [24] Clean Local Data (workspaces + collab)" -ForegroundColor Red
+    Write-Host "  [25] Start Collab Service" -ForegroundColor Green
     Write-Host ""
     Write-Host "  [0] Exit" -ForegroundColor DarkGray
     Write-Host ""
@@ -306,6 +307,11 @@ while ($true) {
             } else {
                 Write-Host "  Cancelled" -ForegroundColor DarkGray
             }
+        }
+        "25" {
+            Write-Host ""
+            Write-Host "  === Start Collab Service ===" -ForegroundColor Green
+            Start-Service "Collab Service" "$root\packages\collab-service" "bun run start" "Ping - Collab"
         }
         "0"  { Write-Host "  Bye!" -ForegroundColor DarkGray; break }
         default { Write-Host "  Invalid option" -ForegroundColor Red }

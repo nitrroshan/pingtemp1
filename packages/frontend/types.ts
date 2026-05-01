@@ -170,6 +170,8 @@ export type SessionState =
   | 'executing'
   | 'completed'
   | 'awaiting_approval'
+  | 'loading'
+  | 'ready'
   | null;
 
 // Global declarations for Electron desktop
