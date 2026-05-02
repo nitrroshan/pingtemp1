@@ -9,9 +9,31 @@
   "knowledgeRefs": [],
   "dependencyTasks": [],
   "createdAt": "2026-05-02T15:19:43.745Z",
-  "lastCommitAt": "2026-05-02T15:19:54.557Z",
-  "status": "active",
+  "lastCommitAt": "2026-05-02T15:19:55.905Z",
+  "status": "published",
   "retryCount": 0,
+  "publishedArtifacts": [
+    {
+      "id": "639047af-task-1-activity-activity.jsonl",
+      "path": "activity/activity.jsonl",
+      "type": "file"
+    },
+    {
+      "id": "639047af-task-1-README.md",
+      "path": "README.md",
+      "type": "file"
+    },
+    {
+      "id": "639047af-task-1-initialize-react.sh",
+      "path": "initialize-react.sh",
+      "type": "file"
+    },
+    {
+      "id": "639047af-task-1-.gitignore",
+      "path": ".gitignore",
+      "type": "file"
+    }
+  ],
   "activityStats": {
     "totalEntries": 0,
     "toolCalls": 0,
