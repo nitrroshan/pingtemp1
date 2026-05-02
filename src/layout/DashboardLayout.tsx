@@ -1,7 +1,12 @@
 import React from 'react';
 import { Box, Grid, Paper } from '@mui/material';
+import ChartComponent from '../components/ChartComponent';
+import useRealTimeData from '../hooks/useRealTimeData';
 
 const DashboardLayout: React.FC = () => {
+    const { data: chart1Data, error: chart1Error } = useRealTimeData('wss://example.com/chart1');
+    const { data: chart2Data, error: chart2Error } = useRealTimeData('wss://example.com/chart2');
+
     return (
         <Box sx={{ flexGrow: 1 }}>
             {/* Navigation Bar */}
@@ -21,10 +26,22 @@ const DashboardLayout: React.FC = () => {
             {/* Charts Section */}
             <Grid container spacing={2}>
                 <Grid item xs={12} md={6}>
-                    <Paper elevation={3} sx={{ padding: 2 }}>Chart 1 Placeholder</Paper>
+                    <Paper elevation={3} sx={{ padding: 2 }}>
+                        {chart1Error ? (
+                            <div>Error: {chart1Error}</div>
+                        ) : (
+                            <ChartComponent data={chart1Data} />
+                        )}
+                    </Paper>
                 </Grid>
                 <Grid item xs={12} md={6}>
-                    <Paper elevation={3} sx={{ padding: 2 }}>Chart 2 Placeholder</Paper>
+                    <Paper elevation={3} sx={{ padding: 2 }}>
+                        {chart2Error ? (
+                            <div>Error: {chart2Error}</div>
+                        ) : (
+                            <ChartComponent data={chart2Data} />
+                        )}
+                    </Paper>
                 </Grid>
             </Grid>
         </Box>
