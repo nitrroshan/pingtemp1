@@ -1,39 +1,17 @@
 {
   "version": "1.0",
-  "workspaceId": "ws-639047af-task-1-moohmlij",
-  "taskId": "639047af-task-1",
+  "workspaceId": "ws-639047af-task-2-moohnds3",
+  "taskId": "639047af-task-2",
   "agentId": "frontend",
-  "branchName": "goal-639047af-5377-47ca-a664-784c47842d82/task-639047af-task-1",
+  "branchName": "goal-639047af-5377-47ca-a664-784c47842d82/task-639047af-task-2",
   "baseBranch": "main",
   "baseCommit": "",
   "knowledgeRefs": [],
   "dependencyTasks": [],
-  "createdAt": "2026-05-02T15:19:43.745Z",
-  "lastCommitAt": "2026-05-02T15:19:55.905Z",
-  "status": "published",
+  "createdAt": "2026-05-02T15:20:18.878Z",
+  "lastCommitAt": "2026-05-02T15:20:18.878Z",
+  "status": "active",
   "retryCount": 0,
-  "publishedArtifacts": [
-    {
-      "id": "639047af-task-1-activity-activity.jsonl",
-      "path": "activity/activity.jsonl",
-      "type": "file"
-    },
-    {
-      "id": "639047af-task-1-README.md",
-      "path": "README.md",
-      "type": "file"
-    },
-    {
-      "id": "639047af-task-1-initialize-react.sh",
-      "path": "initialize-react.sh",
-      "type": "file"
-    },
-    {
-      "id": "639047af-task-1-.gitignore",
-      "path": ".gitignore",
-      "type": "file"
-    }
-  ],
   "activityStats": {
     "totalEntries": 0,
     "toolCalls": 0,
