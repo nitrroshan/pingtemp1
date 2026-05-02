@@ -656,7 +656,19 @@ export const useGoalSessionStore = create<GoalSessionState>()(devtools((set, get
   handleStateEvent: (data) => {
     const incomingGoalId = data.goalId as string | undefined;
     const activeGoal = get().activeGoalId;
-    const isForActiveGoal = incomingGoalId ? incomingGoalId === activeGoal : false;
+    // If goalId is present, must match active goal. If absent, assume active goal (single-goal compat).
+    const isForActiveGoal = incomingGoalId
+      ? incomingGoalId === activeGoal
+      : !!activeGoal;
+
+    console.log('[goalSessionStore] handleStateEvent:', {
+      incomingGoalId,
+      activeGoal,
+      isForActiveGoal,
+      hasPlan: !!data.plan,
+      planLength: data.plan?.length,
+      sessionState: data.sessionState,
+    });
 
     if (data.plan && Array.isArray(data.plan) && isForActiveGoal) {
       const incomingTasks: Task[] = data.plan.map(mapBackendTask);
@@ -723,7 +735,7 @@ export const useGoalSessionStore = create<GoalSessionState>()(devtools((set, get
 
   toggleAutoExecute: () => {
     const newVal = !get().autoExecuteEnabled;
-    agentServiceV2.autoExecute(newVal);
+    agentServiceV2.autoExecute(newVal, get().activeGoalId ?? undefined);
     get().addLog('SYSTEM', `Auto-execute ${newVal ? 'enabled' : 'disabled'}`, 'info');
     set({ autoExecuteEnabled: newVal });
   },

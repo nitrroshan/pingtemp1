@@ -814,7 +814,7 @@ export class SocketServerV2 {
       if (allGoals.length > 0) {
         socket.emit("goal:stateChange", {
           teamId,
-          goalId: undefined, // no implicit current goal — client picks from allGoals
+          goalId: undefined,
           state: "connected",
           allGoals,
         });

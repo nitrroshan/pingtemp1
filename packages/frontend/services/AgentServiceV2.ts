@@ -284,7 +284,7 @@ export class AgentServiceV2 {
         // Request current state after registration to restore UI on refresh
         setTimeout(() => {
           logger.info("[AgentServiceV2] Requesting initial state...");
-          this.getState();
+          this.getState(this.subscribedGoal?.goalId);
         }, 100);
 
         resolve();
@@ -407,10 +407,12 @@ export class AgentServiceV2 {
       logger.error("[AgentServiceV2] Cannot send: socket =", !!this.socket, "clientId =", this.clientId, "teamId =", this.teamId);
       throw new Error("Not connected or no team selected");
     }
+    const socket = this.socket!;
+    const teamId = this.teamId!;
 
     logger.info("[AgentServiceV2] sendToManager:", content.substring(0, 50));
-    this.socket!.emit("message", {
-      teamId: this.teamId,
+    socket.emit("message", {
+      teamId,
       agentId: "manager",
       sessionId: this.sessionId,
       content,
@@ -435,6 +437,8 @@ export class AgentServiceV2 {
       if (!this.isReady()) {
         return reject(new Error("Not connected or no team selected"));
       }
+      const socket = this.socket!;
+      const teamId = this.teamId!;
 
       const nonce = crypto.randomUUID();
 
@@ -452,8 +456,8 @@ export class AgentServiceV2 {
       });
 
       logger.info("[AgentServiceV2] sendToManagerAsync:", content.substring(0, 50));
-      this.socket!.emit("message", {
-        teamId: this.teamId,
+      socket.emit("message", {
+        teamId,
         agentId: "manager",
         sessionId: this.sessionId,
         content,
@@ -491,16 +495,18 @@ export class AgentServiceV2 {
       logger.error("[AgentServiceV2] Cannot send: socket =", !!this.socket, "clientId =", this.clientId, "teamId =", this.teamId);
       throw new Error("Not connected or no team selected");
     }
+    const socket = this.socket!;
+    const teamId = this.teamId!;
 
     logger.info("[AgentServiceV2] sendToWorker:", {
-      teamId: this.teamId,
+      teamId,
       agentId,
       taskId,
       contentPreview: content?.substring(0, 50),
     });
 
-    this.socket.emit("message", {
-      teamId: this.teamId,
+    socket.emit("message", {
+      teamId,
       agentId,
       taskId,
       content,
@@ -516,16 +522,18 @@ export class AgentServiceV2 {
       logger.error("[AgentServiceV2] Cannot send: socket =", !!this.socket, "clientId =", this.clientId, "teamId =", this.teamId);
       throw new Error("Not connected or no team selected");
     }
+    const socket = this.socket!;
+    const teamId = this.teamId!;
 
     const agentId = `chat-${role}`;
     logger.info("[AgentServiceV2] sendToChatAgent:", {
-      teamId: this.teamId,
+      teamId,
       agentId,
       contentPreview: content?.substring(0, 50),
     });
 
-    this.socket!.emit("message", {
-      teamId: this.teamId,
+    socket.emit("message", {
+      teamId,
       agentId,
       sessionId: this.sessionId,
       content,
@@ -539,29 +547,29 @@ export class AgentServiceV2 {
   /**
    * Approve the current plan
    */
-  approvePlan(): void {
-    this.emitAction("approve-plan");
+  approvePlan(goalId?: string): void {
+    this.emitAction("approve-plan", goalId ? { goalId } : undefined);
   }
 
   /**
    * Start a task (enables user chat with worker)
    */
-  startTask(taskId: string): void {
-    this.emitAction("start-task", { taskId });
+  startTask(taskId: string, goalId?: string): void {
+    this.emitAction("start-task", { taskId, goalId });
   }
 
   /**
    * Complete a task with optional output
    */
-  completeTask(taskId: string, output?: any): void {
-    this.emitAction("complete-task", { taskId, output });
+  completeTask(taskId: string, output?: any, goalId?: string): void {
+    this.emitAction("complete-task", { taskId, output, goalId });
   }
 
   /**
    * Cancel a task
    */
-  cancelTask(taskId: string): void {
-    this.emitAction("cancel-task", { taskId });
+  cancelTask(taskId: string, goalId?: string): void {
+    this.emitAction("cancel-task", { taskId, goalId });
   }
 
   /**
@@ -569,10 +577,10 @@ export class AgentServiceV2 {
    * @param enabled - true/false to set, omit to just query current state
    * Response comes via state event with autoExecute field
    */
-  autoExecute(enabled?: boolean): void {
+  autoExecute(enabled?: boolean, goalId?: string): void {
     this.emitAction(
       "auto-execute",
-      enabled !== undefined ? { enabled } : undefined,
+      enabled !== undefined ? { enabled, ...(goalId ? { goalId } : {}) } : (goalId ? { goalId } : undefined),
     );
   }
 
@@ -580,8 +588,8 @@ export class AgentServiceV2 {
    * Request current state from server (tasks, plan, session state)
    * Called automatically on connect, can also be called to refresh
    */
-  getState(): void {
-    this.emitAction("get-state");
+  getState(goalId?: string): void {
+    this.emitAction("get-state", goalId ? { goalId } : undefined);
   }
 
   private emitAction(
@@ -592,15 +600,17 @@ export class AgentServiceV2 {
       | "cancel-task"
       | "auto-execute"
       | "get-state",
-    data?: { taskId?: string; output?: any; enabled?: boolean },
+    data?: { taskId?: string; output?: any; enabled?: boolean; goalId?: string },
   ): void {
     if (!this.isReady()) {
       logger.warn("[AgentServiceV2] emitAction skipped (not ready):", type);
       return;
     }
+    const socket = this.socket!;
+    const teamId = this.teamId!;
 
-    this.socket!.emit("action", {
-      teamId: this.teamId,
+    socket.emit("action", {
+      teamId,
       type,
       sessionId: this.sessionId,
       ...data,

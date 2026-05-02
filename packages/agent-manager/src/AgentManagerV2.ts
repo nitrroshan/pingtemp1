@@ -570,9 +570,13 @@ export class AgentManager {
 
     // Emit plan:update callback for socket broadcast
     if (result.success) {
+      const emitGoalId = goalId || this.orchestrator?.getGoalManager().getGoalId() || undefined;
+      if (!goalId) {
+        console.warn(`[AgentManager] approveOrchestratorPlan called without goalId — falling back to activeGoalId=${emitGoalId}`);
+      }
       this.streamCallbacks?.onPlanUpdate?.({
         action: "approved",
-        goalId: goalId || this.orchestrator?.getGoalManager().getGoalId() || undefined,
+        goalId: emitGoalId,
         tasksQueued: result.tasksQueued,
         timestamp: Date.now(),
       });

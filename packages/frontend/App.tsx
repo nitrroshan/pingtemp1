@@ -22,7 +22,6 @@ import AgentModal from './components/AgentModal/AgentModal';
 import { DetailPanel } from './components/DetailPanel/DetailPanel';
 import { PlanApproval } from './components/PlanApproval';
 import { GoalScreen } from './components/GoalScreen';
-import { makePlanId } from './lib/planId';
 import { PlanSwitcher } from './components/PlanSwitcher';
 import { ToastContainer, useToast } from './components/Toast/Toast';
 import { CommandPalette } from './components/CommandPalette';
@@ -90,7 +89,6 @@ function InnerApp() {
 
   // Goal-scoped state (from goalSessionStore — replaces uiStore for goal identity)
   const activeGoalId = useGoalSessionStore(s => s.activeGoalId);
-  const activePlanId = useGoalSessionStore(s => s.activePlanId);
   const selectedTaskId = useGoalSessionStore(s => s.selectedTaskId);
 
   // ── Navigation state (from uiStore Zustand) ────────────────────────────
@@ -178,8 +176,8 @@ function InnerApp() {
 
     if (segments[0] === 'teams') {
       if (segments[1]) nextTeamId = decodeURIComponent(segments[1]);
-      // /teams/{id}/p/{planId}
-      if (segments[2] === 'p' && segments[3]) {
+      // /teams/{id}/g/{goalId} (current) or /teams/{id}/p/{planId} (legacy redirect)
+      if ((segments[2] === 'g' || segments[2] === 'p') && segments[3]) {
         nextPlanId = decodeURIComponent(segments[3]);
       }
     }
@@ -455,14 +453,14 @@ function InnerApp() {
     const teamId = isTeam ? agent.id : agents.find(a => a.subAgents?.some(s => s.id === agent.id))?.id;
     if (teamId) {
       setSelectedTeamId(teamId);
-      // Preserve planId in URL when switching agents within a plan
-      if (activePlanId) {
-        pushRoute(`/teams/${encodeURIComponent(teamId)}/p/${encodeURIComponent(activePlanId)}`);
+      // Preserve goalId in URL when switching agents within a goal.
+      if (activeGoalId) {
+        pushRoute(`/teams/${encodeURIComponent(teamId)}/g/${encodeURIComponent(activeGoalId)}`);
       } else {
         pushRoute(`/teams/${encodeURIComponent(teamId)}`);
       }
     }
-  }, [agents, isMobileViewport, pushRoute, activePlanId]);
+  }, [agents, isMobileViewport, pushRoute, activeGoalId]);
 
   const handleOpenDiscussion = useCallback((thread: DiscussionThreadType) => {
     // Mark as read — the discussion content is now reachable from the task-scoped DetailPanel.
@@ -486,13 +484,13 @@ function InnerApp() {
       return;
     }
 
-    const planId = makePlanId(selectedTeamId, goal, Date.now());
-    useGoalSessionStore.getState().newGoal(selectedTeamId, serverGoalId, planId, goal);
+    useGoalSessionStore.getState().newGoal(selectedTeamId, serverGoalId, goal);
+    agentServiceV2.getState(serverGoalId);
     useGoalSessionStore.getState().sendUserMessage({
       teamId: selectedTeamId, agentId: selectedTeamId, goalId: serverGoalId,
       taskId: null, isChatAgent: false, isTeamView: true, content: goal,
     });
-    pushRoute(`/teams/${encodeURIComponent(selectedTeamId)}/p/${encodeURIComponent(planId)}`);
+    pushRoute(`/teams/${encodeURIComponent(selectedTeamId)}/g/${encodeURIComponent(serverGoalId)}`);
   }, [selectedTeamId, showToast, pushRoute]);
 
   /** Goal submitted from GoalScreen (teamId provided explicitly) */
@@ -518,13 +516,13 @@ function InnerApp() {
       return;
     }
 
-    const planId = makePlanId(teamId, goal, Date.now());
-    useGoalSessionStore.getState().newGoal(teamId, serverGoalId, planId, goal);
+    useGoalSessionStore.getState().newGoal(teamId, serverGoalId, goal);
+    agentServiceV2.getState(serverGoalId);
     useGoalSessionStore.getState().sendUserMessage({
       teamId, agentId: teamId, goalId: serverGoalId,
       taskId: null, isChatAgent: false, isTeamView: true, content: goal,
     });
-    pushRoute(`/teams/${encodeURIComponent(teamId)}/p/${encodeURIComponent(planId)}`);
+    pushRoute(`/teams/${encodeURIComponent(teamId)}/g/${encodeURIComponent(serverGoalId)}`);
   }, [selectedTeamId, showToast, pushRoute]);
 
   const handleApprove = useCallback((_tasks?: BackendTask[]) => {
@@ -598,7 +596,7 @@ function InnerApp() {
   // Plans list for switcher (from goalSessionStore — map to PlanList format)
   const storedPlans: PlanListSummary[] = React.useMemo(() =>
     plans.map(p => ({
-      planId: p.planId ?? p.goalId,
+      planId: p.goalId,
       goal: p.title,
       goalId: p.goalId,
       createdAt: p.createdAt,
@@ -632,7 +630,7 @@ function InnerApp() {
       planName={allTasks[0]?.title ?? undefined}
       selectedTaskId={selectedTaskId}
       onSelectTask={handleTaskClick}
-      activePlanId={activePlanId}
+      activeGoalId={activeGoalId}
       sessionState={sessionState}
       onBackToGoals={() => {
         useGoalSessionStore.getState().clearGoal();
@@ -643,12 +641,12 @@ function InnerApp() {
       onSelectPlan={(goalId) => {
         // Switch to a different plan via goalSessionStore.switchGoal()
         const plan = plans.find(p => p.goalId === goalId);
-        if (plan?.planId && selectedTeamId) {
+        if (plan?.goalId && selectedTeamId) {
           setActiveAgentId(selectedTeamId);
-          pushRoute(`/teams/${encodeURIComponent(selectedTeamId)}/p/${encodeURIComponent(plan.planId)}`);
+          pushRoute(`/teams/${encodeURIComponent(selectedTeamId)}/g/${encodeURIComponent(plan.goalId)}`);
           const selectedTeam = agents.find(a => a.id === selectedTeamId);
           const subAgents = selectedTeam?.subAgents ?? [];
-          useGoalSessionStore.getState().switchGoal(selectedTeamId, goalId, plan.planId, subAgents.map(s => ({ id: s.id, role: s.role })));
+          useGoalSessionStore.getState().switchGoal(selectedTeamId, goalId, subAgents.map(s => ({ id: s.id, role: s.role })));
         }
       }}
       onNewPlan={() => {
@@ -666,8 +664,8 @@ function InnerApp() {
     return (
       <TeamsPage
         onBack={() => {
-          if (selectedTeamId && activePlanId) {
-            pushRoute(`/teams/${encodeURIComponent(selectedTeamId)}/p/${encodeURIComponent(activePlanId)}`);
+          if (selectedTeamId && activeGoalId) {
+            pushRoute(`/teams/${encodeURIComponent(selectedTeamId)}/g/${encodeURIComponent(activeGoalId)}`);
           } else if (selectedTeamId) {
             pushRoute(`/teams/${encodeURIComponent(selectedTeamId)}`);
           } else {
@@ -691,13 +689,13 @@ function InnerApp() {
           teams={backendTeams}
           selectedTeamId={selectedTeamId}
           allTasks={allTasks}
-          activePlanId={activePlanId}
+          activeGoalId={activeGoalId}
           orchestrationLogs={orchestrationLogs}
           sessionState={sessionState}
           autoExecuteEnabled={autoExecuteEnabled}
           onBack={() => {
-            if (selectedTeamId && activePlanId) {
-              pushRoute(`/teams/${encodeURIComponent(selectedTeamId)}/p/${encodeURIComponent(activePlanId)}`);
+            if (selectedTeamId && activeGoalId) {
+              pushRoute(`/teams/${encodeURIComponent(selectedTeamId)}/g/${encodeURIComponent(activeGoalId)}`);
             } else if (selectedTeamId) {
               pushRoute(`/teams/${encodeURIComponent(selectedTeamId)}`);
             } else {
@@ -709,15 +707,13 @@ function InnerApp() {
           }}
           onOpenPlanChat={(teamId, planId) => {
             setSelectedTeamId(teamId);
-            const match = useGoalSessionStore.getState().plans.find(p => p.planId === planId);
+            const match = useGoalSessionStore.getState().plans.find(p => p.goalId === planId);
             if (match?.goalId) {
               const team = agents.find(a => a.id === teamId);
               const subAgents = team?.subAgents ?? [];
-              useGoalSessionStore.getState().switchGoal(teamId, match.goalId, planId, subAgents.map(s => ({ id: s.id, role: s.role })));
-            } else {
-              useGoalSessionStore.setState({ activePlanId: planId });
+              useGoalSessionStore.getState().switchGoal(teamId, match.goalId, subAgents.map(s => ({ id: s.id, role: s.role })));
             }
-            pushRoute(`/teams/${encodeURIComponent(teamId)}/p/${encodeURIComponent(planId)}`);
+            pushRoute(`/teams/${encodeURIComponent(teamId)}/g/${encodeURIComponent(planId)}`);
           }}
           onStartTask={handleStartTask}
         />
@@ -727,8 +723,8 @@ function InnerApp() {
   }
 
   // GoalScreen — default landing page. Shown when no plan is actively loaded.
-  // Uses store state (activePlanId), not URL — stale URLs don't bypass GoalScreen.
-  const showGoalScreen = !activePlanId && (currentPath === '/' || currentPath.match(/^\/teams\/[^/]+/));
+  // Uses store state (activeGoalId), not URL — stale URLs don't bypass GoalScreen.
+  const showGoalScreen = !activeGoalId && (currentPath === '/' || currentPath.match(/^\/teams\/[^/]+/));
 
   if (showGoalScreen) {
     return (
@@ -749,15 +745,14 @@ function InnerApp() {
           onSelectGoal={(planId) => {
             if (selectedTeamId) {
               // Resolve goalId from store plans (no sessionStorage dependency)
-              const match = plans.find(p => p.planId === planId);
+              const match = plans.find(p => p.goalId === planId);
               if (match?.goalId) {
                 const selectedTeam = agents.find(a => a.id === selectedTeamId);
                 const subAgents = selectedTeam?.subAgents ?? [];
-                pushRoute(`/teams/${encodeURIComponent(selectedTeamId)}/p/${encodeURIComponent(planId)}`);
-                useGoalSessionStore.getState().switchGoal(selectedTeamId, match.goalId, planId, subAgents.map(s => ({ id: s.id, role: s.role })));
+                pushRoute(`/teams/${encodeURIComponent(selectedTeamId)}/g/${encodeURIComponent(planId)}`);
+                useGoalSessionStore.getState().switchGoal(selectedTeamId, match.goalId, subAgents.map(s => ({ id: s.id, role: s.role })));
               } else {
-                useGoalSessionStore.setState({ activePlanId: planId });
-                pushRoute(`/teams/${encodeURIComponent(selectedTeamId)}/p/${encodeURIComponent(planId)}`);
+                pushRoute(`/teams/${encodeURIComponent(selectedTeamId)}/g/${encodeURIComponent(planId)}`);
               }
             }
           }}
@@ -765,24 +760,23 @@ function InnerApp() {
         <GoalScreen
           teams={backendTeams}
           activeTeamId={selectedTeamId}
-          activePlanId={activePlanId}
+          activeGoalId={activeGoalId}
           onSelectTeam={(teamId) => {
             setSelectedTeamId(teamId);
             pushRoute(`/teams/${encodeURIComponent(teamId)}`);
           }}
           onSubmitGoal={handleGoalScreenSubmit}
-          onSelectPlan={(planId) => {
+          onSelectGoal={(planId) => {
             if (selectedTeamId) {
               // Resolve goalId from store plans (no sessionStorage dependency)
-              const match = plans.find(p => p.planId === planId);
+              const match = plans.find(p => p.goalId === planId);
               if (match?.goalId) {
                 const selectedTeam = agents.find(a => a.id === selectedTeamId);
                 const subAgents = selectedTeam?.subAgents ?? [];
-                pushRoute(`/teams/${encodeURIComponent(selectedTeamId)}/p/${encodeURIComponent(planId)}`);
-                useGoalSessionStore.getState().switchGoal(selectedTeamId, match.goalId, planId, subAgents.map(s => ({ id: s.id, role: s.role })));
+                pushRoute(`/teams/${encodeURIComponent(selectedTeamId)}/g/${encodeURIComponent(planId)}`);
+                useGoalSessionStore.getState().switchGoal(selectedTeamId, match.goalId, subAgents.map(s => ({ id: s.id, role: s.role })));
               } else {
-                useGoalSessionStore.setState({ activePlanId: planId });
-                pushRoute(`/teams/${encodeURIComponent(selectedTeamId)}/p/${encodeURIComponent(planId)}`);
+                pushRoute(`/teams/${encodeURIComponent(selectedTeamId)}/g/${encodeURIComponent(planId)}`);
               }
             }
           }}
@@ -977,22 +971,21 @@ function InnerApp() {
           <div className="flex items-center gap-3 px-4 py-2 border-b border-border bg-card/80 shrink-0">
             <div className="flex items-center gap-2 min-w-0">
               {/* Plan switcher (when plan is active) */}
-              {activePlanId ? (
+              {activeGoalId ? (
                 <PlanSwitcher
                   plans={storedPlans}
-                  activePlanId={activePlanId}
-                  planName={storedPlans.find(p => p.planId === activePlanId)?.goal ?? 'Plan'}
+                  activeGoalId={activeGoalId}
+                  planName={storedPlans.find(p => p.goalId === activeGoalId)?.goal ?? 'Plan'}
                   sessionState={sessionState}
-                  onSelectPlan={(planId) => {
-                    const match = storedPlans.find(p => p.planId === planId);
+                  onSelectGoal={(planId) => {
+                    const match = storedPlans.find(p => p.goalId === planId);
                     if (match?.goalId && selectedTeamId) {
                       const selectedTeam = agents.find(a => a.id === selectedTeamId);
                       const subAgents = selectedTeam?.subAgents ?? [];
-                      pushRoute(`/teams/${encodeURIComponent(selectedTeamId)}/p/${encodeURIComponent(planId)}`);
-                      useGoalSessionStore.getState().switchGoal(selectedTeamId, match.goalId, planId, subAgents.map(s => ({ id: s.id, role: s.role })));
-                    } else {
-                      useGoalSessionStore.setState({ activePlanId: planId });
-                      if (selectedTeamId) pushRoute(`/teams/${encodeURIComponent(selectedTeamId)}/p/${encodeURIComponent(planId)}`);
+                      pushRoute(`/teams/${encodeURIComponent(selectedTeamId)}/g/${encodeURIComponent(planId)}`);
+                      useGoalSessionStore.getState().switchGoal(selectedTeamId, match.goalId, subAgents.map(s => ({ id: s.id, role: s.role })));
+                    } else if (selectedTeamId) {
+                      pushRoute(`/teams/${encodeURIComponent(selectedTeamId)}/g/${encodeURIComponent(planId)}`);
                     }
                   }}
                   onNewGoal={() => {
@@ -1026,12 +1019,12 @@ function InnerApp() {
                   </>
                 ) : null;
               })()}
-              {!activePlanId && !selectedTaskId && activeAgent?.role && (
+              {!activeGoalId && !selectedTaskId && activeAgent?.role && (
                 <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-muted text-muted-foreground uppercase tracking-wider shrink-0">
                   {activeAgent.role}
                 </span>
               )}
-              {!activePlanId && !selectedTaskId && sessionState && sessionState !== 'idle' && (
+              {!activeGoalId && !selectedTaskId && sessionState && sessionState !== 'idle' && (
                 <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-blue-500/20 text-blue-400 shrink-0">
                   {sessionState.replace('_', ' ')}
                 </span>
@@ -1097,12 +1090,12 @@ function InnerApp() {
                 onCompleteTask={(taskId: string) => useGoalSessionStore.getState().completeTask(taskId)}
                 onCancelTask={(taskId: string) => useGoalSessionStore.getState().cancelTask(taskId)}
                 isLoading={isLoadingTeams && activeAgentMessages.length === 0}
-                compactHeader={!!activePlanId}
+                compactHeader={!!activeGoalId}
                 taskScope={!activeAgent.parentId ? 'plan' : 'agent'}
                 allTasks={allTasks}
                 onSelectTask={handleTaskClick}
                 selectedTaskId={selectedTaskId}
-                goalId={activeGoalId}
+                goalId={activeGoalId ?? undefined}
               />
             </div>
           </div>
@@ -1122,7 +1115,7 @@ function InnerApp() {
               activeAgents={[]}
               allTasks={allTasks}
               currentPlanName={allTasks[0]?.title ?? undefined}
-              activePlanId={activeGoalId}
+              activeGoalId={activeGoalId}
               discussionThreads={discussionThreads}
               onOpenDiscussion={handleOpenDiscussion}
               agentName={activeAgent?.name}
