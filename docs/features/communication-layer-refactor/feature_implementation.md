@@ -9,7 +9,8 @@
 |---------|-------|--------|---------|
 | [v1.0](./v1.0/) | Patches | Superseded | GoalCoordinator, shared types, authFetch. All v1 files deleted — v2 is the active path. |
 | [v2.0](./v2.0/) | GoalSessionStore | **Complete** | Unified store. All goal transitions via switchGoal()/newGoal()/clearGoal(). All state emissions goal-scoped. |
-| [v3.0](./v3.0/) | Backend persistence | Not started | MongoDB for GoalContext + Tasks. Server survives restart. |
+| v2.5 | Goal-centric frontend | **Complete** | goalId-only identity, `/g/{goalId}` URLs, server auto-joins goal room, getState(goalId) replay, pending-plan goal-scoped. |
+| [v3.0](./v3.0/) | Backend persistence | Planned | Database as single source of truth for workflow state. CRDT for collaborative content only. File stores eliminated. |
 
 ## Key Decisions
 

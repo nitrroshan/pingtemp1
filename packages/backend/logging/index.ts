@@ -18,6 +18,12 @@ import path from "path";
 const isDev = process.env.NODE_ENV !== "production";
 const LOG_DIR = process.env.LOG_DIR || "./data/logs";
 
+// Session-stamped log file — each server start gets its own file
+const sessionTimestamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+const startupLogFile = path.resolve(LOG_DIR, `startup-${sessionTimestamp}.log`);
+// Also keep a "latest" symlink-style file for easy access
+const latestLogFile = path.resolve(LOG_DIR, "startup.log");
+
 export const rootLogger = pino({
   level: process.env.LOG_LEVEL || "info",
   // Redact known secret patterns from log output
@@ -48,11 +54,20 @@ export const rootLogger = pino({
             options: { destination: 1 }, // stdout
             level: process.env.LOG_LEVEL || "info",
           },
-      // Startup log file — always written, info level
+      // Session-stamped startup log — each server start gets its own file
       {
         target: "pino/file",
         options: {
-          destination: path.resolve(LOG_DIR, "startup.log"),
+          destination: startupLogFile,
+          mkdir: true,
+        },
+        level: "info",
+      },
+      // Latest startup log — always overwritten for easy access
+      {
+        target: "pino/file",
+        options: {
+          destination: latestLogFile,
           mkdir: true,
         },
         level: "info",

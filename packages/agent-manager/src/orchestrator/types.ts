@@ -70,8 +70,8 @@ export interface OrchestratorCallbacks {
   onEvent?: (data: { taskId: string; event: any }) => void;
   onDone?: (data: { taskId: string; role: string; output: any }) => void;
   onError?: (data: { taskId: string; error: string }) => void;
-  onPlanProposed?: (data: { plan: any; teamId: string; timestamp: string }) => void;
-  onPlanApproved?: (data: { planId: string; teamId: string; tasksQueued: number; timestamp: string }) => void;
+  onPlanProposed?: (data: { plan: any; teamId: string; goalId?: string; timestamp: string }) => void;
+  onPlanApproved?: (data: { planId: string; teamId: string; goalId?: string; tasksQueued: number; timestamp: string }) => void;
   onTaskUpdate?: (data: { taskId: string; status: string; role?: string; output?: any; timestamp?: number }) => void;
   /** Channel B — coarse-grained task lifecycle events for ChatAgent + Frontend sidebar */
   onWorkerTaskUpdate?: (update: import("../types/TaskUpdate.js").TaskUpdate) => void;
@@ -90,7 +90,7 @@ export interface OrchestratorCallbacks {
    */
   onPlannerInput?: (message: string) => Promise<void>;
   /** Goal status changed — all tasks completed or all failed */
-  onGoalStatusChange?: (data: { teamId: string; status: "completed" | "failed" }) => void;
+  onGoalStatusChange?: (data: { teamId: string; goalId: string; status: "completed" | "failed" }) => void;
 }
 
 /**
@@ -120,8 +120,8 @@ export interface OrchestratorContext {
   setState: (state: OrchestratorState) => void;
 
   // Pending plan management
-  getPendingPlan: () => AgentPlanOutput | null;
-  setPendingPlan: (plan: AgentPlanOutput | null) => void;
+  getPendingPlan: (goalId?: string) => AgentPlanOutput | null;
+  setPendingPlan: (plan: AgentPlanOutput | null, goalId?: string) => void;
 }
 
 /**
@@ -187,7 +187,7 @@ export interface GoalManagerCallbacks {
   /** A task became ready — dispatch it (GoalManager → OrchestratorService) */
   onDispatchTask: (taskId: string, role: string) => void;
   /** Send message to planner (GoalManager → planner via OrchestratorService) */
-  onNotifyPlanner: (message: string) => void;
+  onNotifyPlanner: (goalId: string, message: string) => void;
   /** Forward task status to frontend */
   onTaskUpdate?: OrchestratorCallbacks["onTaskUpdate"];
   /** Forward progress to frontend */
@@ -209,11 +209,11 @@ export interface IGoalManager {
   getState(): OrchestratorState;
   setState(state: OrchestratorState): void;
   getGoalId(): string | null;
-  getPendingPlan(): any | null;
-  setPendingPlan(plan: any | null): void;
+  getPendingPlan(goalId?: string): any | null;
+  setPendingPlan(plan: any | null, goalId?: string): void;
 
   // Lifecycle (wired from TaskStore/WorkerPool callbacks)
-  approvePlan(): Promise<{ success: boolean; tasksQueued?: number; error?: string }>;
+  approvePlan(goalId?: string): Promise<{ success: boolean; tasksQueued?: number; error?: string }>;
   onTaskReady(data: { taskId: string; role: string }): void;
   onTaskComplete(data: { taskId: string; output: any }): void;
   onTaskFailed(data: { taskId: string; error: string }): void;

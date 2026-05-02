@@ -94,23 +94,23 @@ export function createRequestTaskTool(ctx: RequestTaskContext) {
 
       // 3. Max tasks per agent per plan — derive from TaskStore for durability (Fix #2)
       const createdByTag = `agent:${ctx.role}`;
-      const currentCount = ctx.taskStore.getAll
-        ? ctx.taskStore.getAll().filter((t: any) => (t.context as any)?.createdBy === createdByTag).length
-        : (agentTaskCounts.get(`${ctx.role}:${ctx.planId}`) || 0);
+      const goalTasks = ctx.goalId && ctx.taskStore.getByGoal
+        ? ctx.taskStore.getByGoal(ctx.goalId)
+        : (ctx.taskStore.getAll ? ctx.taskStore.getAll() : []);
+      const currentCount = goalTasks.filter((t: any) => (t.context as any)?.createdBy === createdByTag).length;
       if (currentCount >= MAX_AGENT_TASKS_PER_PLAN) {
         return `Error: You have already created ${currentCount} tasks (max ${MAX_AGENT_TASKS_PER_PLAN}). Maximum reached.`;
       }
 
       // ── Create Task ────────────────────────────────────────────────
 
-      // R6-5 FIX: Use sequential task IDs consistent with planner (task-N format)
-      const existingNums = ctx.taskStore.getAll
-        ? ctx.taskStore.getAll().map((t: any) => {
-            const m = t.id.match(/^task-(\d+)$/);
+      // R6-5 FIX: Use sequential task IDs, prefixed with goal slug to avoid cross-goal collision
+      const goalPrefix = ctx.goalId ? ctx.goalId.slice(0, 8) : '';
+      const existingNums = goalTasks.map((t: any) => {
+            const m = t.id.match(/task-(\d+)$/);
             return m ? parseInt(m[1], 10) : 0;
-          })
-        : [0];
-      const newTaskId = `task-${Math.max(0, ...existingNums) + 1}`;
+          });
+      const newTaskId = goalPrefix ? `${goalPrefix}-task-${Math.max(0, ...existingNums) + 1}` : `task-${Math.max(0, ...existingNums) + 1}`;
 
       // Build the Task object
       const dependencies: string[] = [];
@@ -125,6 +125,7 @@ export function createRequestTaskTool(ctx: RequestTaskContext) {
         assigned_role: targetLower,
         status: "pending" as const,
         priority: input.priority,
+        goalId: ctx.goalId || undefined,
         prerequisites: new Map<string, boolean>(
           dependencies.map((d) => [d, false] as [string, boolean]),
         ),

@@ -110,86 +110,160 @@ Ping supports **all** Claude Code plugin components, plus Ping-specific addition
 
 ### 1.4 Plugin Manifest (`plugin.json`)
 
+The manifest has two layers: **standard fields** (from Claude Code, industry-wide) and **`ping` namespace** (Ping-specific team orchestration). This keeps Ping additions cleanly separated — a Claude Code-compatible tool can read the standard fields and ignore the `ping` block.
+
 ```json
 {
+  "$schema": "./schemas/plugin-manifest.json",
+
   "name": "engineering-team",
   "description": "Full-stack engineering team for web applications",
   "version": "1.0.0",
   "author": {
-    "name": "Your Name",
-    "email": "you@example.com"
+    "name": "[Author name]",
+    "email": "[Author email]",
+    "url": "[Author URL]"
   },
-  "homepage": "...",
-  "repository": "...",
+  "homepage": "[Repository URL]",
+  "repository": "[Repository URL]",
   "license": "MIT",
   "keywords": ["engineering", "fullstack", "web"],
-
-  "tags": ["engineering", "fullstack", "web"],
-
-  "settings": {
-    "executionMode": "sequential",
-    "maxConcurrency": 1
-  },
-  "modes": {
-    "planning": {
-      "description": "Architecture and design discussions",
-      "activeAgents": ["backend-developer", "frontend-developer"],
-      "icon": "pencil"
-    },
-    "implementation": {
-      "description": "Write and ship code",
-      "activeAgents": ["backend-developer", "frontend-developer", "qa-engineer"],
-      "icon": "code"
-    },
-    "review": {
-      "description": "Code review and quality checks",
-      "activeAgents": ["qa-engineer", "backend-developer"],
-      "icon": "check"
-    }
-  },
 
   "userConfig": {
     "api_endpoint": {
       "type": "string",
       "title": "API endpoint",
-      "description": "Your team's API endpoint"
+      "description": "Your team's API endpoint",
+      "required": false
+    },
+    "github_token": {
+      "type": "string",
+      "title": "GitHub token",
+      "description": "For repository access",
+      "sensitive": true
     }
   },
 
   "dependencies": [
-    "helper-lib",
-    { "name": "secrets-vault", "version": "~2.1.0" }
-  ]
-}
+    { "name": "shared-skills", "version": "^1.0.0" }
+  ],
+
+  "ping": {
+    "team": {
+      "executionMode": "parallel",
+      "maxConcurrency": 3,
+      "plannerModel": "sonnet",
+      "autoApprove": false
+    },
+    "modes": {
+      "planning": {
+        "description": "Architecture and design discussions",
+        "activeAgents": ["backend-developer", "frontend-developer"],
+        "icon": "pencil"
+      },
+      "implementation": {
+        "description": "Write and ship code",
+        "activeAgents": ["backend-developer", "frontend-developer", "qa-engineer"],
+        "icon": "code"
+      },
+      "review": {
+        "description": "Code review and quality checks",
+        "activeAgents": ["qa-engineer", "backend-developer"],
+        "icon": "check"
+      }
+    },
+    "discovery": {
+      "tags": ["engineering", "fullstack", "web", "typescript", "react"],
+      "category": "engineering",
+      "icon": "code"
+    }
   }
 }
 ```
 
-| Field | Required | Claude Code | Ping | Notes |
-|-------|:--------:|:-----------:|:----:|-------|
-| `name` | ✅ | ✅ | ✅ | Unique identifier, kebab-case |
-| `description` | Optional | Optional | Optional | Used for discovery |
-| `version` | Optional | Optional | Optional | Semver. If omitted, git SHA used |
-| `author` | Optional | Optional | Optional | `{ name, email?, url? }` |
-| `homepage` | Optional | Optional | Optional | Documentation URL |
-| `repository` | Optional | Optional | Optional | Source code URL |
-| `license` | Optional | Optional | Optional | License identifier |
-| `keywords` | Optional | Optional | Optional | Discovery tags (Claude Code name) |
-| `tags` | — | — | Optional | Discovery tags (Ping alias for `keywords`) |
-| `skills` | Optional | Optional | Optional | Custom skill path override |
-| `commands` | Optional | Optional | Optional | Custom commands path override |
-| `agents` | Optional | Optional | Optional | Custom agents path override |
-| `hooks` | Optional | Optional | Optional | Hook config path or inline |
-| `mcpServers` | Optional | Optional | Optional | MCP config path or inline |
-| `lspServers` | Optional | Optional | Optional | LSP config path or inline |
-| `monitors` | Optional | Optional | Optional | Monitor config path or inline |
-| `outputStyles` | Optional | Optional | Optional | Output style path |
-| `themes` | Optional | Optional | Optional | Theme files path |
-| `userConfig` | Optional | Optional | Optional | User-configurable values prompted at enable |
-| `channels` | Optional | Optional | Optional | Message injection channel declarations |
-| `dependencies` | Optional | Optional | Optional | Required plugins with optional semver |
-| `modes` | — | — | Optional | **Ping-only**: team mode switching |
-| `settings` | — | — | Optional | **Ping-only**: `executionMode`, `maxConcurrency` |
+### 1.4.1 Standard Fields (Industry / Claude Code)
+
+These fields are understood by Claude Code, other tools, and Ping. They're at the manifest root.
+
+| Field | Required | Type | Description |
+|-------|:--------:|------|-------------|
+| `$schema` | — | string | JSON Schema URL for editor autocomplete/validation |
+| `name` | ✅ | string | Unique identifier, kebab-case. Used for namespacing |
+| `description` | — | string | Brief plugin description. Used for discovery |
+| `version` | — | string | Semver. If omitted, git commit SHA used for versioning |
+| `author` | — | object | `{ name, email?, url? }` — attribution |
+| `homepage` | — | string | Documentation URL |
+| `repository` | — | string | Source code URL |
+| `license` | — | string | SPDX license identifier (e.g., `MIT`, `Apache-2.0`) |
+| `keywords` | — | array | Discovery tags (standard name from Claude Code / npm) |
+| `skills` | — | string\|array | Custom path override for skills directory |
+| `commands` | — | string\|array | Custom path override for commands directory |
+| `agents` | — | string\|array | Custom path override for agents directory |
+| `hooks` | — | string\|object | Hook config path or inline hooks object |
+| `mcpServers` | — | string\|object | MCP server config path or inline object |
+| `lspServers` | — | string\|object | LSP server config path or inline object |
+| `monitors` | — | string\|array | Background monitor config path |
+| `outputStyles` | — | string\|array | Output style file path |
+| `themes` | — | string\|array | Theme file path |
+| `userConfig` | — | object | User-configurable values prompted at enable. Each key: `{ type, title, description, sensitive?, required?, default? }` |
+| `channels` | — | array | Channel declarations for message injection via MCP |
+| `dependencies` | — | array | Required plugins. `string` or `{ name, version }` |
+
+### 1.4.2 Ping Namespace (`ping.*`)
+
+All Ping-specific team orchestration fields live under the `ping` key. This keeps them cleanly separated from standard fields.
+
+#### `ping.team` — Team Execution Configuration
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `executionMode` | `"sequential"` \| `"parallel"` \| `"hybrid"` | `"sequential"` | How tasks are dispatched to workers |
+| `maxConcurrency` | number | `1` | Max parallel task executions |
+| `plannerModel` | string | `"sonnet"` | Model for the system planner (if no `planner.md` exists) |
+| `autoApprove` | boolean | `false` | Auto-approve plans without user confirmation |
+| `goalTimeout` | number | `300000` | Max time (ms) for a goal before auto-cancel |
+
+#### `ping.modes` — Team Mode Switching
+
+```json
+{
+  "ping": {
+    "modes": {
+      "<mode-name>": {
+        "description": "What this mode is for",
+        "activeAgents": ["agent-one", "agent-two"],
+        "icon": "pencil"
+      }
+    }
+  }
+}
+```
+
+| Field | Required | Type | Description |
+|-------|:--------:|------|-------------|
+| `description` | ✅ | string | Shown in UI mode selector |
+| `activeAgents` | ✅ | array | Agent names active in this mode. Must match agent file names |
+| `icon` | — | string | Icon identifier for UI (pencil, code, check, users, etc.) |
+
+If `ping.modes` is omitted, all agents are active in a single default mode.
+
+#### `ping.discovery` — Registry Discovery Metadata
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `tags` | array | Tags for vector search discovery (superset of `keywords`) |
+| `category` | string | Plugin category: `engineering`, `marketing`, `sales`, `support`, `research`, `design`, `operations`, `custom` |
+| `icon` | string | Plugin icon for sidebar display |
+| `featured` | boolean | Whether to highlight in marketplace discovery |
+
+---
+
+### 1.4.3 Why `ping` Namespace?
+
+1. **Clean separation** — standard tools can read the root fields, Ping reads `ping.*`. No field collisions.
+2. **Forward compatible** — if Claude Code or Agent Skills adds new root fields in the future, they won't conflict with `ping.modes` or `ping.team`.
+3. **Explicit** — a developer reading `plugin.json` immediately knows which fields are Ping-specific vs standard.
+4. **Droppable** — to make a Ping plugin work as a basic Claude Code plugin, just drop the `ping` block. The root fields are valid Claude Code format.
 
 ### 1.4 Agent Definition Format (`.md`)
 

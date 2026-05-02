@@ -23,7 +23,6 @@ import { PromptLoader } from "./PromptLoader.js";
 import type {
   OrchestratorState,
   OrchestratorCallbacks,
-  OrchestratorMessage,
 } from "./types.js";
 import { GoalManager } from "./GoalManager.js";
 import { TaskContextBuilder } from "./TaskContextBuilder.js";
@@ -115,7 +114,6 @@ export class OrchestratorService {
   private dispatchManager: DispatchManager;
 
   private sessionId: string;
-  private messages: OrchestratorMessage[] = [];
   private autoExecute: boolean;
 
   // Dispatch tracking — delegated to DispatchManager
@@ -165,7 +163,7 @@ export class OrchestratorService {
       chatAgentsEnabled: config.chatAgentsEnabled,
       callbacks: {
         onDispatchTask: (taskId, role) => this.handleReadyTask(taskId, role),
-        onNotifyPlanner: (msg) => this.notifyPlanner(msg),
+        onNotifyPlanner: (goalId, msg) => this.notifyPlanner(goalId, msg),
         onTaskUpdate: this.callbacks.onTaskUpdate,
         onProgress: this.callbacks.onProgress,
         onGoalStatusChange: this.callbacks.onGoalStatusChange,
@@ -214,7 +212,8 @@ export class OrchestratorService {
           taskId: data.taskId, status: "pending", role: data.targetRole, timestamp: Date.now(),
         });
         // Notify planner so it can track agent-created tasks
-        this.notifyPlanner(
+        const createdTaskGoalId = this.taskStore.get(data.taskId)?.goalId || this.goalManager.getGoalId() || '';
+        this.notifyPlanner(createdTaskGoalId,
           PromptLoader.loadTemplate("orchestrator", "task-created", {
             createdBy: data.createdBy,
             taskId: data.taskId,
@@ -244,7 +243,8 @@ export class OrchestratorService {
 
         // Gap D: When ChatAgent handles this role, skip per-bounce planner notification
         if (!this.chatAgentDispatch) {
-          this.notifyPlanner(
+          const bouncedTaskGoalId = this.taskStore.get(data.taskId)?.goalId || this.goalManager.getGoalId() || '';
+          this.notifyPlanner(bouncedTaskGoalId,
             PromptLoader.loadTemplate("orchestrator", "task-bounced", {
               taskId: data.taskId,
               role: data.role,
@@ -283,15 +283,11 @@ export class OrchestratorService {
   }
 
   private async _handleMessage(content: string, goalId: string, repoUrl?: string, repoBranch?: string): Promise<string> {
-    this.messages.push({ role: "user", content, timestamp: new Date().toISOString() });
+    // Switch to the incoming goal BEFORE reading/writing state
+    this.goalManager.getOrCreateGoalPublic(goalId, content);
 
-    if (this.goalManager.getState() === "idle") {
-      this.goalManager.setState("executing");
-    }
-
-    // goalId is always provided by the client. No derivation, no fallback.
-    if (!this.goalManager.getGoalId()) {
-      this.goalManager.getOrCreateGoalPublic(goalId, content);
+    if (this.goalManager.getGoalState(goalId) === "idle") {
+      this.goalManager.setGoalState(goalId, "executing");
     }
 
     // Store repoUrl on GoalContext (direct — no LLM dependency)
@@ -309,8 +305,8 @@ export class OrchestratorService {
   /**
    * Approve the pending plan. Delegates to GoalManager.
    */
-  async approvePlan(): Promise<{ success: boolean; tasksQueued?: number; error?: string }> {
-    return this.goalManager.approvePlan();
+  async approvePlan(goalId?: string): Promise<{ success: boolean; tasksQueued?: number; error?: string }> {
+    return this.goalManager.approvePlan(goalId);
   }
 
   // ═══════════════════════════════════════════════════════════════════
@@ -318,9 +314,11 @@ export class OrchestratorService {
   // ═══════════════════════════════════════════════════════════════════
 
   getState(): OrchestratorState { return this.goalManager.getState(); }
+  getGoalState(goalId: string): OrchestratorState { return this.goalManager.getGoalState(goalId); }
   setState(state: OrchestratorState) { this.goalManager.setState(state); }
-  getPendingPlan() { return this.goalManager.getPendingPlan(); }
-  setPendingPlan(plan: any) { this.goalManager.setPendingPlan(plan); }
+  setGoalState(goalId: string, state: OrchestratorState) { this.goalManager.setGoalState(goalId, state); }
+  getPendingPlan(goalId?: string) { return this.goalManager.getPendingPlan(goalId); }
+  setPendingPlan(plan: any, goalId?: string) { this.goalManager.setPendingPlan(plan, goalId); }
   getAutoExecute(): boolean { return this.autoExecute; }
   setAutoExecute(enabled: boolean) {
     this.autoExecute = enabled;
@@ -369,11 +367,11 @@ export class OrchestratorService {
 
   /** Get ChatAgent from GoalManager (Phase 4.5). */
   getChatAgent(role: string, goalId?: string): import("../chatAgent/ChatAgent.js").ChatAgent | null {
-    // Try exact goal lookup first, then fall back to searching all goals
     if (goalId) {
-      const exact = this.goalManager.getChatAgent(goalId, role);
-      if (exact) return exact;
+      // Exact goal lookup — do NOT fall back to another goal's agent
+      return this.goalManager.getChatAgent(goalId, role);
     }
+    // No goalId provided — use activeGoalId fallback (legacy path)
     return this.goalManager.getChatAgentByRole(role);
   }
 
@@ -397,7 +395,8 @@ export class OrchestratorService {
    * GoalManager calls this via the onDispatchTask callback.
    */
   private handleReadyTask(taskId: string, role: string): void {
-    this.dispatchManager.dispatch(taskId, role, this.autoExecute);
+    const goalId = this.taskStore.get(taskId)?.goalId;
+    this.dispatchManager.dispatch(taskId, role, this.autoExecute, goalId);
   }
 
   /**
@@ -405,7 +404,8 @@ export class OrchestratorService {
    * Used by ChatAgent.onDispatchTask callback to actually run the task.
    */
   async directDispatchTask(taskId: string, role: string): Promise<void> {
-    await this.dispatchManager.directDispatch(taskId, role);
+    const goalId = this.taskStore.get(taskId)?.goalId;
+    await this.dispatchManager.directDispatch(taskId, role, goalId);
   }
   getDagResolver(): DependencyResolver { return this.dagResolver; }
   getUserInteractionManager(): UserInteractionManager | undefined { return this.uim; }
@@ -461,7 +461,13 @@ export class OrchestratorService {
    * Called when autoExecute is toggled ON to flush tasks that became ready while OFF.
    */
   private dispatchReadyTasks(): void {
-    const readyTasks = this.taskStore.getByStatus("ready");
+    const readyTasks = this.taskStore.getByStatus("ready")
+      .filter(t => {
+        // Only dispatch tasks for goals in executing state
+        if (!t.goalId) return true; // legacy tasks without goalId
+        const goal = this.goalManager.getGoalContext(t.goalId);
+        return goal?.state === "executing" || goal?.state === "researching";
+      });
     for (const task of readyTasks) {
       if (this.dispatchManager.isDispatching(task.id)) continue;
       this.handleReadyTask(task.id, task.assigned_role);
@@ -518,7 +524,8 @@ export class OrchestratorService {
    * Manually dispatch a ready task. Used when autoExecute is OFF.
    */
   async manualDispatch(taskId: string): Promise<void> {
-    await this.dispatchManager.manualDispatch(taskId);
+    const goalId = this.taskStore.get(taskId)?.goalId;
+    await this.dispatchManager.manualDispatch(taskId, goalId);
   }
 
   // ═══════════════════════════════════════════════════════════════════
@@ -602,7 +609,8 @@ export class OrchestratorService {
           // Publish + merge workspace before completing (same as onWorkerDone path)
           if (this.pluginRegistry) {
             try {
-              const result = await this.pluginRegistry.onTaskComplete(taskId, this.goalManager.getGoalId() || undefined);
+              const taskGoalForPlugin = this.taskStore.get(taskId)?.goalId;
+              const result = await this.pluginRegistry.onTaskComplete(taskId, taskGoalForPlugin || undefined);
               if (!result.success) {
                 console.warn(`[OrchestratorService] Auto-complete merge warning for ${taskId}: ${result.error}`);
               }
@@ -620,17 +628,16 @@ export class OrchestratorService {
       }
     } catch (error: any) {
       // Delegate error handling (retry/fail) to DispatchManager
-      this.dispatchManager.handleError(taskId, role, error);
+      const errorGoalId = this.taskStore.get(taskId)?.goalId;
+      this.dispatchManager.handleError(taskId, role, error, errorGoalId);
     }
   }
 
   /** Notify planner via NotificationQueue (debounce) or direct GoalManager call. */
-  private notifyPlanner(message: string): void {
+  private notifyPlanner(goalId: string, message: string): void {
     if (this.notificationQueue) {
-      this.notificationQueue.push(message);
+      this.notificationQueue.push(goalId, message);
     } else {
-      const goalId = this.goalManager.getGoalId();
-      if (!goalId) return; // No active goal = nothing to notify
       this.goalManager.executePlannerTurn(goalId, message).catch((err) => {
         log.error(`Planner notification error: ${err}`);
       });
@@ -638,11 +645,11 @@ export class OrchestratorService {
   }
 
   /** Public wrapper — used by ChatAgent to send role-level summaries through the same pipe. */
-  notifyPlannerFromRole(message: string): void {
-    this.notifyPlanner(message);
+  notifyPlannerFromRole(goalId: string, message: string): void {
+    this.notifyPlanner(goalId, message);
   }
 
-  reset(): void { this.goalManager.reset(); this.messages = []; }
+  reset(): void { this.goalManager.reset(); }
 
   async resetPlan(): Promise<{ deleted: boolean; planId?: string }> {
     return this.goalManager.resetPlan();

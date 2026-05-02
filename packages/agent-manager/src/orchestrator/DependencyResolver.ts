@@ -46,6 +46,24 @@ export class DependencyResolver {
   }
 
   /**
+   * Build the DAG from tasks scoped to a specific goal.
+   */
+  rebuildForGoal(source: TaskSource, goalId: string): void {
+    this.nodes.clear();
+    const goalTasks = source.getByGoal(goalId);
+    for (const task of goalTasks) {
+      const deps = task.prerequisites
+        ? Array.from(task.prerequisites.keys())
+        : [];
+      this.nodes.set(task.id, {
+        id: task.id,
+        dependencies: deps,
+        status: task.status,
+      });
+    }
+  }
+
+  /**
    * @deprecated Use rebuild() instead. Kept for backward compatibility.
    */
   rebuildFromMemoryManager(source: TaskSource): void {

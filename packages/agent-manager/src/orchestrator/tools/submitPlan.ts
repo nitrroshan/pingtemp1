@@ -83,16 +83,14 @@ export function createSubmitPlanTool(ctx: SubmitPlanContext) {
           return `Error: Invalid plan DAG — ${dagError}. Please fix dependencies and resubmit.`;
         }
 
-        // Store plan as pending, then auto-approve to create tasks immediately.
-        // In planner mode, the user has already been consulted via conversation.
-        // No separate approval step needed.
-        octx.setPendingPlan(plan as any);
-
+        // Store plan as pending on the correct goal context.
         // goalId is always set — planner was created with it via createPlanner(goalId)
         const goalId = octx.currentGoalId;
         if (!goalId) {
           return "Error: No goalId set — this is a bug. The planner should always have a goalId.";
         }
+
+        octx.setPendingPlan(plan as any, goalId);
 
         // Save plan
         if (octx.planStore) {
@@ -103,6 +101,7 @@ export function createSubmitPlanTool(ctx: SubmitPlanContext) {
         octx.callbacks.onPlanProposed?.({
           plan,
           teamId: octx.teamId,
+          goalId,
           timestamp: new Date().toISOString(),
         });
 

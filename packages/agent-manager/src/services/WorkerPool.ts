@@ -281,6 +281,9 @@ export class WorkerPool {
       await agent.initialize();
 
       // Assemble task-lifecycle tools (report_status, complete_task, request_task, bounce_task)
+      // Resolve goalId from the task itself, not the global scalar
+      const taskGoalId = this.taskStore?.get(taskId)?.goalId || this.currentGoalId || null;
+
       const { tools: lifecycleTools } = assembleLifecycleTools({
         taskId,
         roleKey,
@@ -291,7 +294,7 @@ export class WorkerPool {
           teamRoles: this.teamRoles || [],
           crdtTaskSync: this.crdtTaskSync,
           planId: this.currentPlanId || null,
-          goalId: this.currentGoalId || null,
+          goalId: taskGoalId,
         },
       });
       const additionalTools: any[] = [...lifecycleTools];
@@ -308,7 +311,7 @@ export class WorkerPool {
           consumer: "worker",
           role: roleKey,
           taskId,
-          goalId: this.currentGoalId || undefined,
+          goalId: taskGoalId || undefined,
           planId: this.currentPlanId || undefined,
           repoUrl: taskRepoUrl,
           repoBranch: taskRepoBranch,

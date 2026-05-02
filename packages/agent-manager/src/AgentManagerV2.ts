@@ -40,12 +40,12 @@ export interface ManagerStreamCallbacks {
   onDone?: (data: { taskId: string; role: string; output: any }) => void;
   onError?: (data: { taskId: string; error: string }) => void;
   onTaskUpdate?: (data: { taskId: string; status: string; role?: string; output?: any }) => void;
-  onPlanUpdate?: (data: { action: string; tasksQueued?: number; timestamp: number }) => void;
+  onPlanUpdate?: (data: { action: string; goalId?: string; tasksQueued?: number; timestamp: number }) => void;
   onPlanProposed?: (data: PlanProposedEvent) => void;
   /** Channel B — coarse-grained worker task updates for ChatAgent + Frontend sidebar */
   onWorkerTaskUpdate?: (update: import("./types/TaskUpdate.js").TaskUpdate) => void;
   /** Goal status changed — plan completed or all tasks failed */
-  onGoalStatusChange?: (data: { teamId: string; status: "completed" | "failed" }) => void;
+  onGoalStatusChange?: (data: { teamId: string; goalId: string; status: "completed" | "failed" }) => void;
 }
 
 
@@ -248,9 +248,7 @@ export class AgentManager {
     // The onFlush callback delegates to GoalManager.executePlannerTurn (wired after orchestrator creation)
     const notificationQueue = new NotificationQueue({
       debounceMs: 100,
-      onFlush: (batchedMessage) => {
-        const goalId = this.orchestrator?.getCurrentGoalId();
-        if (!goalId) return; // No active goal = nothing to notify
+      onFlush: (goalId, batchedMessage) => {
         this.orchestrator?.getGoalManager().executePlannerTurn(goalId, batchedMessage).catch((err) => {
           console.error("[AgentManager] Batched planner turn error:", err);
         });
@@ -283,10 +281,10 @@ export class AgentManager {
         currentGoalId: goalId,
         teamRoles,
         planBuilder: { invoke: async () => { throw new Error("PlanBuilder not used"); } },
-        getState: () => self.orchestrator!.getState(),
-        setState: (state: any) => self.orchestrator!.setState(state),
-        getPendingPlan: () => self.orchestrator!.getPendingPlan(),
-        setPendingPlan: (plan: any) => self.orchestrator!.setPendingPlan(plan),
+        getState: () => self.orchestrator!.getGoalState(goalId),
+        setState: (state: any) => self.orchestrator!.setGoalState(goalId, state),
+        getPendingPlan: (gid?: string) => self.orchestrator!.getPendingPlan(gid ?? goalId),
+        setPendingPlan: (plan: any, gid?: string) => self.orchestrator!.setPendingPlan(plan, gid ?? goalId),
       };
       const tools = createPlannerTools({
         orchestratorContext: goalOrchestratorContext,
@@ -314,7 +312,7 @@ export class AgentManager {
           }
         },
         onNotifyPlanner: (message) => {
-          self.orchestrator?.notifyPlannerFromRole(message);
+          self.orchestrator?.notifyPlannerFromRole(goalId, message);
         },
         loadConversation: self.loadConversationFn
           ? () => self.loadConversationFn!(teamId, `chat-${goalId}-${role.toLowerCase()}`)
@@ -354,8 +352,9 @@ export class AgentManager {
         },
         onPlanProposed: (data) => {
           this.streamCallbacks?.onPlanProposed?.(data);
-          // Auto-approve: planner already consulted user via natural chat
-          this.approveOrchestratorPlan().catch((err) => {
+          // Auto-approve with explicit goalId from the plan that was just proposed
+          const gid = (data as any)?.goalId;
+          this.approveOrchestratorPlan(gid).catch((err) => {
             console.error("[AgentManager] Auto-approve failed:", err);
           });
         },
@@ -458,12 +457,14 @@ export class AgentManager {
    * Send a user message to a ChatAgent and stream the response.
    */
   async *chatAgentMessage(role: string, content: string, goalId?: string): AsyncGenerator<AgentEvent> {
-    const gid = goalId || this.orchestrator?.getCurrentGoalId() || undefined;
-    const agent = this.getChatAgent(role, gid);
+    if (!goalId) {
+      throw new Error(`goalId is required for chatAgentMessage (role=${role})`);
+    }
+    const agent = this.getChatAgent(role, goalId);
     if (!agent) {
       const goalManager = this.orchestrator?.getGoalManager();
       const allGoals = goalManager?.getAllGoalSummaries() ?? [];
-      logger.error(`Chat agent not available for role '${role}' goalId='${gid}'. ` +
+      logger.error(`Chat agent not available for role '${role}' goalId='${goalId}'. ` +
         `chatAgentsEnabled=${this.chatAgentsEnabled}, goals=[${allGoals.map(g => `${g.goalId}(${g.state})`).join(',')}]`);
       throw new Error(`Chat agent not available for role '${role}'. Chat agents may not be enabled.`);
     }
@@ -493,8 +494,8 @@ export class AgentManager {
   /**
    * Get serialized ModelMessage[] from a ChatAgent (for context persistence).
    */
-  getChatAgentContext(role: string): string | null {
-    const chatAgent = this.getChatAgent(role);
+  getChatAgentContext(role: string, goalId?: string): string | null {
+    const chatAgent = this.getChatAgent(role, goalId);
     if (!chatAgent) return null;
     return chatAgent.getContextSnapshot();
   }
@@ -535,14 +536,12 @@ export class AgentManager {
    * Send message to orchestrator (conversational planning mode)
    * Returns orchestrator's response
    */
-  async orchestratorMessage(content: string, goalId?: string, repoUrl?: string, repoBranch?: string): Promise<{ response: string; goalId: string }> {
+  async orchestratorMessage(content: string, goalId: string, repoUrl?: string, repoBranch?: string): Promise<{ response: string; goalId: string }> {
     if (!this.orchestrator) {
       throw new Error(
         "Orchestrator not initialized. Call initializeOrchestrator() first.",
       );
     }
-    // Server generates goalId if client doesn't provide one (industry standard)
-    const resolvedGoalId = goalId || crypto.randomUUID();
 
     // Enrich content with repo context so the planner includes it in submit_plan
     let enrichedContent = content;
@@ -550,15 +549,15 @@ export class AgentManager {
       enrichedContent += `\n\n[Workspace: repo=${repoUrl}${repoBranch ? `, branch=${repoBranch}` : ''}]`;
     }
 
-    const response = await this.orchestrator.handleMessage(enrichedContent, resolvedGoalId, repoUrl, repoBranch);
-    return { response, goalId: resolvedGoalId };
+    const response = await this.orchestrator.handleMessage(enrichedContent, goalId, repoUrl, repoBranch);
+    return { response, goalId };
   }
 
   /**
    * Approve the pending plan (triggers task creation in TaskStore)
    * After tasks are created, auto-approve will be checked for each task
    */
-  async approveOrchestratorPlan(): Promise<{
+  async approveOrchestratorPlan(goalId?: string): Promise<{
     success: boolean;
     tasksQueued?: number;
     autoStarted?: number;
@@ -567,12 +566,13 @@ export class AgentManager {
     if (!this.orchestrator) {
       return { success: false, error: "Orchestrator not initialized" };
     }
-    const result = await this.orchestrator.approvePlan();
+    const result = await this.orchestrator.approvePlan(goalId);
 
     // Emit plan:update callback for socket broadcast
     if (result.success) {
       this.streamCallbacks?.onPlanUpdate?.({
         action: "approved",
+        goalId: goalId || this.orchestrator?.getGoalManager().getGoalId() || undefined,
         tasksQueued: result.tasksQueued,
         timestamp: Date.now(),
       });
@@ -605,8 +605,8 @@ export class AgentManager {
   /**
    * Get pending plan from orchestrator
    */
-  getOrchestratorPendingPlan(): any | null {
-    return this.orchestrator?.getPendingPlan() ?? null;
+  getOrchestratorPendingPlan(goalId?: string): any | null {
+    return this.orchestrator?.getPendingPlan(goalId) ?? null;
   }
 
   /**

@@ -30,7 +30,7 @@ interface DetailPanelProps {
   /** Name of the currently active plan (used to group the global Tasks pane) */
   currentPlanName?: string;
   /** Active plan ID, used as goalId for the discussion sub-tab CRDT doc */
-  activePlanId?: string | null;
+  activeGoalId?: string | null;
   discussionThreads?: DiscussionThreadType[];
   onOpenDiscussion?: (thread: DiscussionThreadType) => void;
   onPinDiscussion?: (thread: DiscussionThreadType) => void;
@@ -234,7 +234,7 @@ function TaskLogsTab({ logs, taskId }: { logs: OrchestrationEvent[]; taskId: str
 /**
  * TaskDiscussionTab — wires the per-task CRDT discussion thread.
  * Doc name follows the convention `{teamId}/{goalId}/{taskId}/discussion`.
- * Uses activePlanId as goalId since that's our single-plan-per-team model today.
+ * Uses activeGoalId as goalId since that's our single-plan-per-team model today.
  */
 function TaskDiscussionTab({
   teamId,
@@ -281,7 +281,7 @@ function TaskDiscussionTab({
   );
 }
 
-export function DetailPanel({ logs, activeAgents, allTasks, currentPlanName, activePlanId, discussionThreads, onOpenDiscussion, onPinDiscussion, agentName, agentId, teamId, isManager, onClose, selectedTask, onSelectTask, onStartTask, autoExecuteEnabled }: DetailPanelProps) {
+export function DetailPanel({ logs, activeAgents, allTasks, currentPlanName, activeGoalId, discussionThreads, onOpenDiscussion, onPinDiscussion, agentName, agentId, teamId, isManager, onClose, selectedTask, onSelectTask, onStartTask, autoExecuteEnabled }: DetailPanelProps) {
   const isTaskScoped = !!selectedTask;
   const mode: DetailMode = isTaskScoped ? 'task' : (isManager ? 'plan' : 'agent');
 
@@ -334,8 +334,8 @@ export function DetailPanel({ logs, activeAgents, allTasks, currentPlanName, act
             )}
             {taskTab === 'discussion' && (
               <div className="absolute inset-0 flex flex-col">
-                {teamId && activePlanId ? (
-                  <TaskDiscussionTab teamId={teamId} goalId={activePlanId} task={selectedTask!} />
+                {teamId && activeGoalId ? (
+                  <TaskDiscussionTab teamId={teamId} goalId={activeGoalId} task={selectedTask!} />
                 ) : (
                   <div className="flex flex-col items-center justify-center h-full text-xs text-muted-foreground gap-2 px-4 text-center">
                     <MessageCircle size={20} className="opacity-30" />

@@ -146,8 +146,16 @@ The meta-team itself uses skills to be good at its job:
 ### `plugin-format/SKILL.md`
 ```
 Instructions for writing valid .ping-plugin/ structures.
-Includes manifest schema, agent .md format with XML tags,
-SKILL.md frontmatter rules, mode definitions.
+Covers ALL component types:
+- Manifest: plugin.json schema, modes, settings, userConfig, dependencies
+- Agents: .md format with YAML frontmatter + XML body tags
+- Skills: SKILL.md frontmatter (Agent Skills standard), progressive disclosure
+- MCP servers: .mcp.json format, ${PING_PLUGIN_ROOT} variable, server lifecycle
+- LSP servers: .lsp.json format, extensionToLanguage mapping, transport options
+- Hooks: hooks.json format, event types (PreToolUse, PostToolUse, etc.), hook types (command, http, mcp_tool, prompt, agent)
+- Monitors: monitors.json format, when triggers, command variables
+- Bin: executable scripts added to PATH
+- Settings: settings.json for default agent and team config
 ```
 
 ### `agent-design/SKILL.md`
@@ -169,7 +177,9 @@ Mode design patterns.
 
 ---
 
-## Example Flow
+## Flows
+
+### Flow 1: Create New Plugin
 
 ```
 User: "I need a team for content marketing - blog posts, social media, SEO"
@@ -202,42 +212,98 @@ User: "I need a team for content marketing - blog posts, social media, SEO"
 4. Plugin folder is in workspace → user reviews → loads into Ping
 ```
 
+### Flow 2: Modify Existing Plugin (Add/Update Components)
+
+The same 2 agents handle modifications to installed plugins. The planner interprets the user's goal as a modification task, not a creation task.
+
+```
+User: "Add Stripe MCP server to the engineering-team plugin"
+
+1. PLANNER receives goal
+   → Creates 2 tasks:
+     Task 1: "Research Stripe MCP server configuration" → research-analyst
+     Task 2: "Add Stripe MCP server to engineering-team" → plugin-author (depends on Task 1)
+
+2. RESEARCH ANALYST executes Task 1:
+   → search_skills("stripe payment integration MCP")
+   → Reads existing engineering-team plugin structure (get_item_details)
+   → Checks if .mcp.json already exists in the plugin
+   → Reports: "Plugin has no .mcp.json. Stripe MCP server: @stripe/mcp-server via npx.
+     Also found stripe-webhooks skill that pairs well."
+
+3. PLUGIN AUTHOR executes Task 2:
+   → Reads existing engineering-team plugin folder
+   → Creates .mcp.json:
+     {
+       "mcpServers": {
+         "stripe": {
+           "command": "npx",
+           "args": ["-y", "@stripe/mcp-server"],
+           "env": { "STRIPE_API_KEY": "${user_config.stripe_key}" }
+         }
+       }
+     }
+   → Updates plugin.json to add userConfig for stripe_key
+   → Optionally adds stripe-webhooks skill to skills/ and updates agent defaultSkills
+   → Runs validate_plugin → pass
+   → Reports: "Added Stripe MCP server + userConfig for API key"
+```
+
+**Modification scenarios the Plugin Author handles:**
+
+| User request | Research Analyst does | Plugin Author does |
+|-------------|----------------------|-------------------|
+| "Add Stripe MCP server" | Finds MCP server config, checks existing `.mcp.json` | Creates/updates `.mcp.json` |
+| "Add TypeScript LSP" | Finds LSP config for typescript-language-server | Creates/updates `.lsp.json` |
+| "Add linting hook on file save" | Finds hook pattern for PostToolUse + Write matcher | Creates/updates `hooks/hooks.json` |
+| "Add a new SEO skill" | Searches existing SEO skills for reference | Creates `skills/seo/SKILL.md` + updates agent `defaultSkills` |
+| "Add a QA engineer agent" | Searches existing QA agents, analyzes team gaps | Creates `agents/qa-engineer.md`, updates modes in `plugin.json` |
+| "Change planner to use opus" | Reads current planner.md | Edits `agents/planner.md` frontmatter: `model: opus` |
+| "Add deploy monitoring" | Finds monitor patterns for deployment watchers | Creates `monitors/monitors.json` |
+| "Add a CLI tool to bin/" | Checks what scripts exist | Creates `bin/my-tool` script, marks executable |
+| "Update agent instructions" | Reads current agent, compares with goal | Edits `agents/<name>.md` body (XML tags) |
+| "Add a new mode" | Analyzes current modes and agent capabilities | Updates `plugin.json` modes section |
+
 ---
 
-## Tools Needed
+## Tools: RegistryPlugin (Standalone, Not Meta-Team-Specific)
 
-### Discovery Tools (for Research Analyst)
+The tools the meta-team needs are **not custom to the meta-team**. They're general-purpose registry tools that any team could use. They belong in a standalone `RegistryPlugin` — same pattern as `WorkspacePlugin`, `CollaborationPlugin`, `KnowledgePlugin`.
 
-| Tool | Implementation | Source |
-|------|---------------|--------|
-| `search_plugins` | `DiscoveryService.suggest(goal, { type: "plugins" })` | Already exists |
-| `search_agents` | `DiscoveryService.suggest(goal, { type: "agents" })` | Already exists |
-| `search_skills` | `DiscoveryService.suggest(goal, { type: "skills" })` | Already exists |
-| `get_item_details` | `PluginLoader.loadPlugin(name)` → return agent/skill content | Needs thin wrapper |
-| `check_duplicates` | `DiscoveryService.suggest(name)` → check if score > 0.9 | Needs thin wrapper |
+### RegistryPlugin
 
-### Authoring Tools (for Plugin Author)
+A new runtime plugin (`IPlugin`) that provides registry/discovery tools via `getMcpServers()`.
 
-| Tool | Implementation | Source |
-|------|---------------|--------|
-| Workspace tools | WorkspacePlugin's 32 tools (Read, Write, Edit, etc.) | Already exists |
-| `validate_plugin` | New tool — runs validation rules from §1.10 of parent doc | Needs building |
-| `list_models` | Returns supported model aliases (sonnet, opus, haiku, gpt-4o) | Trivial |
+| Tool | What it does | Wraps |
+|------|-------------|-------|
+| `search_plugins` | Vector search across plugins | `DiscoveryService.suggest(goal, { type: "plugins" })` |
+| `search_agents` | Find agent definitions by role/domain | `DiscoveryService.suggest(goal, { type: "agents" })` |
+| `search_skills` | Find SKILL.md files by topic | `DiscoveryService.suggest(goal, { type: "skills" })` |
+| `get_item_details` | Read full content of any agent/skill/plugin | `PluginLoader.loadPlugin(name)` |
+| `check_duplicates` | Check if similar item already exists | `DiscoveryService.suggest(name)` + threshold |
+| `validate_plugin` | Run validation rules on a plugin folder | Validation rules from plugin format spec |
+| `list_models` | Return supported model aliases | Static list (sonnet, opus, haiku, gpt-4o, etc.) |
+
+**Registration:** `AgentManagerRegistry.loadTeam()` registers `RegistryPlugin` alongside the other 4 plugins — but only for teams that need it (meta-team, or any team with `tools: [search_plugins, ...]` in agent definitions).
+
+**Reusable:** Any team can use these tools. An engineering team agent could use `search_skills` to find relevant skills. A DevOps agent could use `search_agents` to find helper agents. The meta-team just happens to use all of them.
 
 ### What Already Exists
 
-- `DiscoveryService` with vector search via OpenAI embeddings — **ready**
-- `PluginLoader` can read any plugin's agents/skills — **ready**
-- WorkspacePlugin provides full file manipulation — **ready**
-- `PluginTeamService` projects plugins as teams — **ready**
+| Component | Status |
+|-----------|--------|
+| `DiscoveryService` (vector search via OpenAI embeddings) | ✅ Ready |
+| `PluginLoader` (read any plugin's agents/skills) | ✅ Ready |
+| `WorkspacePlugin` (32 file manipulation tools) | ✅ Ready — Plugin Author uses these |
+| `PluginTeamService` (project plugins as teams) | ✅ Ready |
+| `IPlugin` interface + `PluginRegistry` | ✅ Ready — RegistryPlugin implements this |
 
 ### What Needs Building
 
-1. **2 agent .md files** — `research-analyst.md` + `plugin-author.md` in `meta-team/agents/`
-2. **3 skill files** — `plugin-format/SKILL.md`, `agent-design/SKILL.md`, `team-composition/SKILL.md`
-3. **5 discovery tools** — thin wrappers around DiscoveryService for the meta-team's planner to use
-4. **1 validation tool** — `validate_plugin` that runs the validation rules
-5. **Optional planner.md** — meta-team-specific planning instructions
+1. **`RegistryPlugin`** — new `IPlugin` implementation wrapping DiscoveryService + PluginLoader (one file, ~200 lines)
+2. **2 agent `.md` files** — `research-analyst.md` + `plugin-author.md` in `meta-team/agents/`
+3. **3 skill files** — `plugin-format/SKILL.md`, `agent-design/SKILL.md`, `team-composition/SKILL.md` in `meta-team/skills/`
+4. **Optional `planner.md`** — meta-team-specific planning instructions
 
 ---
 
@@ -245,9 +311,9 @@ User: "I need a team for content marketing - blog posts, social media, SEO"
 
 | Priority | Item | Effort |
 |----------|------|--------|
-| P0 | Write `research-analyst.md` agent definition | Low |
-| P0 | Write `plugin-author.md` agent definition | Low |
-| P1 | Write 3 skill SKILL.md files (plugin-format, agent-design, team-composition) | Low |
-| P2 | Build 5 discovery tool wrappers (AI SDK tool format) | Medium |
-| P3 | Build `validate_plugin` tool | Low |
+| P0 | `RegistryPlugin` — IPlugin with 7 tools wrapping DiscoveryService + PluginLoader | Medium |
+| P1 | Write `research-analyst.md` agent definition | Low |
+| P1 | Write `plugin-author.md` agent definition | Low |
+| P2 | Write 3 skill SKILL.md files (plugin-format, agent-design, team-composition) | Low |
+| P3 | Register RegistryPlugin for meta-team in AgentManagerRegistry | Low |
 | P4 | Test end-to-end: user goal → meta-team → valid plugin folder | Medium |

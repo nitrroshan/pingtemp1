@@ -66,7 +66,7 @@ interface SidebarProps {
   planName?: string;
   selectedTaskId?: string | null;
   onSelectTask?: (taskId: string) => void;
-  activePlanId?: string | null;
+  activeGoalId?: string | null;
   sessionState?: string | null;
   onBackToGoals?: () => void;
   /** All plans from backend (Phase 4 — shown when 2+ plans exist) */
@@ -75,10 +75,10 @@ interface SidebarProps {
   onSelectPlan?: (goalId: string) => void;
   /** Called when user wants to create a new plan */
   onNewPlan?: () => void;
-  /** Goals for the GoalScreen sidebar (shown when no activePlanId) */
+  /** Goals for the GoalScreen sidebar (shown when no activeGoalId) */
   goals?: GoalSummary[];
   /** Called when a goal is clicked in the GoalScreen sidebar */
-  onSelectGoal?: (planId: string) => void;
+  onSelectGoal?: (goalId: string) => void;
 }
 
 // ─── AgentRow ─────────────────────────────────────────────────────────────────
@@ -351,7 +351,7 @@ const Sidebar: React.FC<SidebarProps> = ({
   planName,
   selectedTaskId,
   onSelectTask,
-  activePlanId,
+  activeGoalId,
   sessionState,
   onBackToGoals,
   plans,
@@ -485,7 +485,7 @@ const Sidebar: React.FC<SidebarProps> = ({
           </div>
         )}
         {/* ── Navigation / Plan Tasks + Agents ── */}
-        {activePlanId && planTasks && isExpanded ? (
+        {activeGoalId && planTasks && isExpanded ? (
           /* Plan-scoped layout: collapsible PLAN + AGENTS sections */
           <SidebarPlanLayout
             planTasks={planTasks}
@@ -499,7 +499,7 @@ const Sidebar: React.FC<SidebarProps> = ({
             onToggleCollapse={onToggleCollapse}
             onAddAgent={onAddAgent}
             plans={plans}
-            activePlanGoalId={activePlanId}
+            activePlanGoalId={activeGoalId}
             onSelectPlan={onSelectPlan}
             onNewPlan={onNewPlan}
           />
@@ -525,8 +525,8 @@ const Sidebar: React.FC<SidebarProps> = ({
 
                     return (
                       <button
-                        key={g.planId}
-                        onClick={() => onSelectGoal?.(g.planId)}
+                        key={g.goalId}
+                        onClick={() => onSelectGoal?.(g.goalId)}
                         className="w-full flex items-center gap-2 px-2 py-1.5 rounded-md text-left transition-colors cursor-pointer hover:bg-accent/60 text-muted-foreground"
                       >
                         <span className="shrink-0">{statusIcon}</span>

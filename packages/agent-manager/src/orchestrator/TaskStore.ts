@@ -96,6 +96,9 @@ export class TaskStore implements ITaskProvider {
 
   /** Add a task. Queues it in RoleTaskQueue if ready. */
   create(task: Task): void {
+    if (!task.goalId) {
+      log.error(`Task '${task.id}' created without goalId — this is a data integrity bug. Caller must set goalId.`);
+    }
     if (this.tasks.has(task.id)) {
       throw new Error(`Task '${task.id}' already exists`);
     }
@@ -458,6 +461,7 @@ export class TaskStore implements ITaskProvider {
       description: task.description,
       assigned_role: task.assigned_role,
       priority: task.priority || 0,
+      goalId: task.goalId,
       context: {
         previousOutputs: Object.values(context),
         artifacts: [],

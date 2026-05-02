@@ -1,216 +1,267 @@
-# v3.0 — Backend Persistence (GoalContext + Tasks to MongoDB)
+# v3.0 — Backend Persistence (Single Source of Truth)
 
-> **Scope:** Persist GoalContext and Tasks to MongoDB. Server becomes recoverable on restart.  
-> **Depends on:** v2.0 (GoalSessionStore — frontend must use server as source of truth before we make it durable)  
-> **Architecture:** [../feature_architecture.md](../feature_architecture.md) — Layer 2
+> **Scope:** Database becomes the single source of truth for ALL workflow state. CRDT stays for collaborative document content only. File stores eliminated.  
+> **Depends on:** v2.5 (multi-goal crossing fix — explicit goalId everywhere)  
+> **Architecture:** [../feature_architecture.md](../feature_architecture.md) — Layer 2  
+> **Prerequisite:** [bug-multi-goal-plan-crossing.md](../bugs/bug-multi-goal-plan-crossing.md) — must ship as v2.5 before persistence
 
-## Problem
+## Problem: 5 Stores for the Same Data
 
-Backend restart loses ALL runtime state:
-- `GoalManager.goals` Map (GoalContext: state, title, repo, planId) — **lost**
-- `TaskStore` Map (task status, output, dependencies) — **lost**
-- Planner conversation history (per-goal `messages[]`) — **lost**
-- `autoExecute` flag — **lost**
+Task status is currently written to **5 different locations**:
 
-Messages and goal metadata survive (SQLite/MongoDB), but task progress and orchestrator state do not. After restart, the user sees their old messages but no tasks, no plan, and a stale state.
+| Store | Write Timing | Read Timing | Status Accuracy |
+|-------|-------------|-------------|:---------------:|
+| TaskStore (Map) | Synchronous on every change | Every dispatch, every API | ✅ Always current |
+| CrdtTaskSync | Fire-and-forget after TaskStore | On restart | ⚠️ May lag (async, errors swallowed) |
+| FileTaskStore | Debounced 2s after creation | On restart (before CRDT) | ❌ Stale (never updated during execution) |
+| FilePlanStore | On plan approval | On restart | ✅ Structure only (no status) |
+| MongoDB (goals) | On plan approval only | On restore endpoint | ❌ Goal-level only, not task-level |
 
-## What Gets Persisted (new)
+**Industry pattern:** CRDT is for collaborative document content. Workflow state belongs in a database. One source of truth, not five.
 
-| Collection | Fields | Currently | Write Frequency |
-|-----------|--------|-----------|----------------|
-| `goal_contexts` | goalId, teamId, userId, state, title, repoUrl, repoBranch, planId, createdAt, updatedAt | In-memory `GoalManager.goals` Map | On state change (~10/goal) |
-| `tasks` | id, goalId, teamId, title, description, status, assignedRole, priority, output, prerequisites, dependants, branchName, branchStatus | In-memory `TaskStore` Map | On status change (~5-10/task) |
+## Prerequisites
 
-## What Stays In-Memory (no persistence needed)
+### v2.5: Multi-Goal Crossing Fix (Ship Separately)
 
-| Component | Reason |
-|-----------|--------|
-| AiSdkAgent (active workers) | LLM streaming session — can't serialize mid-stream |
-| PlannerAgent | Active LLM session |
-| ChatAgent | Active LLM session |
-| DispatchManager queue | Transient concurrency tracking |
+This is a **code bug**, not a persistence feature. Must ship before v3 because v3's write-through needs goalId to be explicit everywhere.
 
-On restart: `in_progress` tasks are downgraded to `ready` (workers lost, but tasks are re-dispatchable).
+- [ ] Remove `if (!getGoalId())` guard in OrchestratorService — always switch to incoming goalId
+- [ ] `setPendingPlan(goalId, plan)` — explicit goalId parameter
+- [ ] `approvePlan(goalId)` — explicit goalId parameter
+- [ ] Add `goalId` to ActionPayloadSchema in SocketServerV2
+- [ ] Frontend sends `activeGoalId` with every action (approvePlan, startTask, cancelTask)
+- [ ] Wire goalId through all planner tool calls that create/modify plans
+
+**Files:** OrchestratorService.ts, GoalManager.ts, SocketServerV2.ts, AgentServiceV2.ts, goalSessionStore.ts
+
+### v2.5: Task Mutation Audit
+
+Every path that creates or mutates a task must be identified. Not just the 4 obvious ones in GoalManager, but also:
+
+- `GoalManager.approvePlan()` → creates tasks (main path)
+- `GoalManager.onTaskComplete()` → status + output
+- `GoalManager.onTaskFailed()` → status + error
+- `GoalManager.onTaskReady()` → status change from dependency resolution
+- `add_tasks` planner tool → dynamic task creation mid-execution
+- `remove_task` planner tool → task deletion
+- `replan` planner tool → clearByGoal + new task creation
+- `bounceTask` → status change (failed → ready with retry count)
+- `SocketServerV2.handleCompleteTask()` → manual complete by user
+- `SocketServerV2.handleStartTask()` → manual start by user
+- `SocketServerV2.handleCancelTask()` → cancel by user
+
+**All of these must persist through the same `ITaskService` interface.**
+
+## Architecture: Clean Separation
+
+```
+AFTER:
+  TaskStore.updateStatus()
+    → ITaskService.updateStatus()   (write-through, awaited)
+
+  On restart:
+    → ITaskService.getByTeam(teamId) → hydrate TaskStore
+    → IGoalService.getGoals(teamId)  → hydrate GoalManager
+
+  CRDT stays for:
+    → Discussion documents (agent collaboration)
+    → Shared docs (BlockNote editor)
+    → Agent presence (cursors, awareness)
+```
+
+### Storage Abstraction (DIP — agent-manager must not depend on Mongo)
+
+The `@ping/agent-manager` package defines **interfaces**. The `@ping/backend` package provides **implementations**.
+
+```
+@ping/agent-manager (interfaces):
+  ITaskService { createTasks, updateStatus, getByGoal, getByTeam, clearByGoal }
+  IGoalService { createGoal, updateStatus, getGoal, getGoals }
+
+@ping/backend (implementations):
+  MongoTaskService implements ITaskService
+  MongoGoalService implements IGoalService
+  SqliteTaskService implements ITaskService  (local dev mode)
+  SqliteGoalService implements IGoalService  (local dev mode)
+
+Injection:
+  AgentManagerV2 constructor receives ITaskService + IGoalService
+  → passes to GoalManager
+  → GoalManager calls interface methods, never knows about Mongo
+```
+
+This preserves:
+- `@ping/agent-manager` has zero dependency on `@ping/backend` or MongoDB
+- Local SQLite mode continues to work
+- Cloud MongoDB mode works with the same GoalManager code
+- Tests can inject mock `ITaskService`
 
 ## Implementation Steps
 
-### Step 1: GoalContext MongoDB Schema
+### Step 1: Define Storage Interfaces
 
-Create `packages/backend/services/mongo/schemas/GoalContextSchema.ts`:
+Create interfaces in `@ping/agent-manager`:
+
 ```typescript
-const GoalContextSchema = new Schema({
-  goalId: { type: String, required: true, index: true },
-  teamId: { type: String, required: true, index: true },
-  userId: { type: String, required: true },
-  state: { type: String, enum: ['idle','gathering','researching','awaiting_approval','executing','queued','done'], default: 'idle' },
-  title: { type: String, default: '' },
-  repoUrl: String,
-  repoBranch: String,
-  planId: String,
-  createdAt: { type: Number, default: Date.now },
-  updatedAt: { type: Number, default: Date.now },
-});
-GoalContextSchema.index({ teamId: 1, goalId: 1 }, { unique: true });
+// packages/agent-manager/src/orchestrator/contracts/ITaskService.ts
+export interface ITaskService {
+  createTasks(goalId: string, teamId: string, tasks: TaskData[]): Promise<void>;
+  updateStatus(taskId: string, status: string, output?: unknown): Promise<void>;
+  getByGoal(goalId: string): Promise<TaskData[]>;
+  getByTeam(teamId: string): Promise<TaskData[]>;
+  clearByGoal(goalId: string): Promise<void>;
+}
+
+// packages/agent-manager/src/orchestrator/contracts/IGoalService.ts
+export interface IGoalPersistence {
+  createGoal(goal: GoalData): Promise<void>;
+  updateGoalStatus(goalId: string, status: string, patch?: Partial<GoalData>): Promise<void>;
+  getGoal(goalId: string): Promise<GoalData | null>;
+  getGoals(teamId: string): Promise<GoalData[]>;
+}
 ```
 
-### Step 2: Task MongoDB Schema
+**Files:** New `contracts/ITaskService.ts`, `contracts/IGoalService.ts` in agent-manager
 
-Create `packages/backend/services/mongo/schemas/TaskSchema.ts`:
+### Step 2: Implement MongoDB Services
+
+Create implementations in `@ping/backend`:
+
+- [ ] `MongoTaskService implements ITaskService` — bulk insert, updateOne, find, deleteMany
+- [ ] Enhance existing `MongoGoalService` to implement `IGoalPersistence`
+- [ ] Task schema:
+  ```
+  { id, goalId, teamId, title, description, status, assignedRole,
+    priority, output, prerequisites, branchName, branchStatus,
+    createdAt, updatedAt }
+  Indexes: { goalId }, { teamId, status }, { id: 1 } (unique)
+  ```
+- [ ] Enhance Goal schema: add `repoUrl`, `repoBranch`, `planId`, `taskCount`, `completedCount`
+- [ ] Register in `ServiceRegistry` alongside existing chat/goals services
+
+**Files:** New `MongoTaskService.ts`, new `TaskSchema.ts`, modify `GoalSchema.ts`, modify `ServiceRegistry.ts`
+
+### Step 3: Inject Services into AgentManager
+
+- [ ] `AgentManagerV2` constructor accepts `ITaskService` + `IGoalPersistence` (optional — graceful degradation)
+- [ ] Passes to `GoalManager` constructor
+- [ ] `SocketServerV2.loadTeam()` resolves services from `ServiceRegistry`, passes to `AgentManagerV2`
+
+**Files:** AgentManagerV2.ts, GoalManager.ts constructors, SocketServerV2.ts team loading
+
+### Step 4: Wire Write-Through (Dual-Write Phase)
+
+Replace CRDT calls with interface calls. Keep existing CRDT+File writes temporarily for safety.
+
+- [ ] On `approvePlan(goalId)`: `await taskService.createTasks(goalId, teamId, tasks)`
+- [ ] On every task status change (ALL paths from audit): `await taskService.updateStatus(taskId, status, output?)`
+- [ ] On goal state transitions: `await goalService.updateGoalStatus(goalId, status)`
+- [ ] On goal creation (first message): `await goalService.createGoal({ goalId, teamId, ... })`
+- [ ] On replan: `await taskService.clearByGoal(goalId)`
+
+**Critical: cover ALL mutation paths, not just the obvious 4:**
 ```typescript
-const TaskSchema = new Schema({
-  id: { type: String, required: true, index: true },
-  goalId: { type: String, required: true, index: true },
-  teamId: { type: String, required: true },
-  title: String,
-  description: String,
-  status: { type: String, enum: ['ready','pending','in_progress','completed','failed'], default: 'pending' },
-  assignedRole: String,
-  priority: { type: Number, default: 0 },
-  output: Schema.Types.Mixed,
-  prerequisites: Schema.Types.Mixed,  // Map<string, boolean> serialized
-  dependants: [String],
-  branchName: String,
-  branchStatus: String,
-});
-TaskSchema.index({ goalId: 1 });
-TaskSchema.index({ teamId: 1, status: 1 });
+// Every TaskStore.create/updateStatus/completeTask call must also call:
+if (taskService) await taskService.updateStatus(taskId, newStatus, output);
 ```
 
-### Step 3: MongoGoalContextService
+**Files:** GoalManager.ts (add interface calls alongside existing CRDT/File calls)
 
-Create `packages/backend/services/mongo/MongoGoalContextService.ts`:
-- `createGoal(ctx: GoalContext): Promise<void>` — insert new goal
-- `updateState(goalId: string, state: string): Promise<void>` — update state + updatedAt
-- `updateGoal(goalId: string, patch: Partial<GoalContext>): Promise<void>` — generic update
-- `getGoal(goalId: string): Promise<GoalContext | null>` — single goal
-- `getGoals(teamId: string): Promise<GoalContext[]>` — all goals for team
-- `getActiveGoal(teamId: string): Promise<GoalContext | null>` — latest non-done goal
+### Step 5: Startup Recovery from Database
 
-### Step 4: MongoTaskService
-
-Create `packages/backend/services/mongo/MongoTaskService.ts`:
-- `createTasks(tasks: Task[]): Promise<void>` — bulk insert (plan approval)
-- `updateStatus(taskId: string, status: string, output?: any): Promise<void>`
-- `getByGoal(goalId: string): Promise<Task[]>`
-- `getByTeam(teamId: string): Promise<Task[]>`
-- `clearByGoal(goalId: string): Promise<void>` — for replan
-
-### Step 5: Wire GoalManager to use write-through persistence
-
-Modify `packages/agent-manager/src/orchestrator/GoalManager.ts`:
-- Accept `MongoGoalContextService` via constructor injection
-- On `getOrCreateGoalPublic()`: after creating GoalContext in Map, also write to MongoDB
-- On state transitions (`updateGoalState()`): write to MongoDB
-- On `loadFromDb()` (new method): hydrate Map from MongoDB on startup
-
-### Step 6: Wire TaskStore to use write-through persistence
-
-Modify `packages/agent-manager/src/orchestrator/TaskStore.ts`:
-- Accept `MongoTaskService` via constructor injection
-- On `create(task)`: write to MongoDB after Map update
-- On `updateStatus(taskId, status)`: write to MongoDB
-- On `loadFromDb(goalId)` (new method): hydrate Map from MongoDB
-
-### Step 7: Startup recovery
-
-Modify `packages/agent-manager/src/AgentManagerV2.ts`:
-- On team initialization: call `GoalManager.loadFromDb()` to hydrate goals
-- For each goal with `in_progress` tasks: downgrade to `ready`
-- Emit `state` event so frontend picks up recovered state
-
-### Step 8: Update restore endpoint
-
-Modify `packages/backend/api/HttpServer.ts` restore endpoint:
-- Prefer MongoDB goal data over in-memory (in-memory may not have recovered yet)
-- If GoalManager has no goals (fresh start) but MongoDB does, hydrate first
-
-## Files Changed
-
-| File | Change | New? |
-|------|--------|------|
-| `backend/services/mongo/schemas/GoalContextSchema.ts` | MongoDB schema | **New** |
-| `backend/services/mongo/schemas/TaskSchema.ts` | MongoDB schema | **New** |
-| `backend/services/mongo/MongoGoalContextService.ts` | CRUD service | **New** |
-| `backend/services/mongo/MongoTaskService.ts` | CRUD service | **New** |
-| `agent-manager/src/orchestrator/GoalManager.ts` | Write-through persistence | Modify |
-| `agent-manager/src/orchestrator/TaskStore.ts` | Write-through persistence | Modify |
-| `agent-manager/src/AgentManagerV2.ts` | Startup recovery | Modify |
-| `backend/api/HttpServer.ts` | Restore uses MongoDB | Modify |
-
-## Testing
-
-1. Submit goal → tasks created → restart backend → goals + tasks recovered from MongoDB
-2. Task completes → restart → task shows completed (not re-dispatched)
-3. `in_progress` task → restart → task shows `ready` (re-dispatchable)
-4. Multiple goals → restart → all goals recoverable (not just latest)
-5. Plan approved → restart → plan structure recovered
-6. Planner mid-stream → restart → planner conversation lost (expected) but goal/tasks survive
-
-## Rollback
-
-Remove MongoDB service injections from GoalManager/TaskStore constructors. Goals/tasks revert to in-memory only. No schema migrations to revert (collections are additive).
-  - `OrchestratorService.messages[]` → per-goal `Map<goalId, OrchestratorMessage[]>`
-  - Save planner messages to MongoDB on each turn (not just final)
-
-### API Endpoints
-
-- [ ] **Step 6**: New endpoint `GET /api/v2/goals/{goalId}/session`
-  - Returns complete GoalSession: messages, tasks, state, plan, agents
-  - Replaces the current `restore` endpoint (which mixes in-memory + MongoDB)
-
-- [ ] **Step 7**: New endpoint `GET /api/v2/teams/{teamId}/goals`
-  - Already exists partially — enhance to return full goal list with status + taskCount
-  - Used by GoalScreen PlanList
-
-- [ ] **Step 8**: `GoalManager.loadActivePlan()` reads from MongoDB instead of JSON files
-  - `FilePlanStore` becomes optional backup, MongoDB is primary
-  - All goals recoverable (not just the latest)
-
-### Frontend Simplification
-
-- [ ] **Step 9**: `goalSessionStore.goalLoaded()` populates from server response only
-  - Remove sessionStorage for plans
-  - Remove localStorage for chatHistories
-  - Server is sole source of truth
-
-- [ ] **Step 10**: GoalCoordinator.switchGoal() becomes thin:
+- [ ] `GoalManager.loadFromDb()`:
   ```typescript
-  async switchGoal(goalId: string) {
-    const session = await api.getGoalSession(goalId);
-    goalSessionStore.getState().goalLoaded(session);
-    agentServiceV2.subscribeToGoal(teamId, goalId);
+  const goals = await goalService.getGoals(teamId);
+  for (const g of goals.filter(g => g.status === "executing" || g.status === "awaiting_approval")) {
+    const tasks = await taskService.getByGoal(g.goalId);
+    // in_progress → ready (workers can't be recovered)
+    // Hydrate TaskStore + GoalContext
   }
   ```
+- [ ] Call `loadFromDb()` in `AgentManagerV2.initializeOrchestrator()` before plugin init
+- [ ] Falls back to old `loadActivePlan()` if database has no goals (transition period)
 
-- [ ] **Step 11**: Remove `savePlan()` / sessionStorage dependency entirely
-  - PlanList reads from server goals or orchestrationStore.plans
-  - No local persistence needed
+**Files:** GoalManager.ts (new method), AgentManagerV2.ts (call on init)
 
-## Files Changed
+### Step 6: Restore Endpoint from Database
 
-| File | Change | New? |
-|------|--------|------|
-| `backend/services/mongo/schemas/GoalContextSchema.ts` | GoalContext persistence | **New** |
-| `backend/services/mongo/schemas/TaskSchema.ts` | Task persistence | **New** |
-| `backend/services/mongo/MongoGoalContextService.ts` | CRUD for GoalContext | **New** |
-| `backend/services/mongo/MongoTaskService.ts` | CRUD for Tasks | **New** |
-| `backend/api/HttpServer.ts` | New session endpoint | Modify |
-| `agent-manager/src/orchestrator/GoalManager.ts` | MongoDB persistence hooks | Modify |
-| `agent-manager/src/orchestrator/TaskStore.ts` | MongoDB persistence hooks | Modify |
-| `agent-manager/src/orchestrator/OrchestratorService.ts` | Per-goal message scoping | Modify |
-| `frontend/stores/goalSessionStore.ts` | Server-only data source | Modify |
-| `frontend/lib/GoalCoordinator.ts` | Simplified switchGoal | Modify |
-| `frontend/components/GoalScreen/PlanList.tsx` | Remove sessionStorage | Modify |
+- [ ] Return goals from `IGoalService.getGoals(teamId)` (not `manager.getAllGoalSummaries()`)
+- [ ] Return tasks from `ITaskService.getByGoal(goalId)` (not in-memory TaskStore)
+- [ ] Active execution state (sessions, workers, streams) still from in-memory manager
+- [ ] Merge: database provides list + history, in-memory provides real-time overlay
+
+**Files:** HttpServer.ts (restore endpoint)
+
+### Step 7: Eliminate Old Stores
+
+Only after dual-write phase confirms database writes are correct:
+
+- [ ] Remove `CrdtTaskSync.persistTask/syncStatus/syncPlanStatus/updateIndex/loadAllTasks` calls
+- [ ] Remove `CrdtGoalStore.saveGoal/updateStatus` calls → delete `CrdtGoalStore.ts`
+- [ ] Remove `FilePlanStore.savePlan/archivePlan/updatePlanStatus` calls
+- [ ] Remove `FileTaskStore.addTask/updateStatus/setOutput/flush` calls
+- [ ] Remove `loadActivePlan()` recovery path (replaced by `loadFromDb()`)
+- [ ] Rename `CrdtTaskSync.ts` → `CrdtCollabDocs.ts` (keep `initCollabDocs`, `persistPlan`)
+
+**Files:** GoalManager.ts (remove old calls), CrdtTaskSync.ts → CrdtCollabDocs.ts, delete CrdtGoalStore.ts
+
+## Files Changed Summary
+
+| File | Change |
+|------|--------|
+| `agent-manager/src/orchestrator/contracts/ITaskService.ts` | **New** — interface |
+| `agent-manager/src/orchestrator/contracts/IGoalService.ts` | **New** — interface |
+| `backend/services/mongo/MongoTaskService.ts` | **New** — MongoDB implementation |
+| `backend/services/mongo/schemas/TaskSchema.ts` | **New** — task schema |
+| `backend/services/mongo/MongoGoalService.ts` | Modify — implement IGoalPersistence |
+| `backend/services/mongo/schemas/GoalSchema.ts` | Modify — add fields |
+| `backend/services/ServiceRegistry.ts` | Modify — register task service |
+| `agent-manager/src/orchestrator/GoalManager.ts` | Major — inject services, wire write-through, loadFromDb |
+| `agent-manager/src/AgentManagerV2.ts` | Modify — accept + pass services |
+| `backend/api/SocketServerV2.ts` | Modify — pass services to AgentManager |
+| `backend/api/HttpServer.ts` | Modify — restore from database |
+| `collaboration/src/L2/CrdtTaskSync.ts` | Reduce → CrdtCollabDocs |
+| `collaboration/src/L2/CrdtGoalStore.ts` | **Delete** |
+| `agent-manager/src/persistence/FilePlanStore.ts` | **Remove usage** |
+| `agent-manager/src/persistence/FileTaskStore.ts` | **Remove usage** |
+| `frontend/services/AgentServiceV2.ts` | Modify — goalId in actions (v2.5) |
+| `frontend/stores/goalSessionStore.ts` | Modify — pass goalId (v2.5) |
+
+## Migration Path
+
+```
+v2.5: Fix multi-goal bug (goalId explicit) — no persistence changes
+  ↓
+Step 1: Define interfaces — no runtime changes
+  ↓
+Step 2: Create implementations — additive, no existing data affected
+  ↓
+Step 3: Inject services — optional, graceful degradation if null
+  ↓
+Step 4: Dual-write — write to BOTH old stores AND database
+  ↓
+Step 5: Startup recovery — read from database, fallback to old path
+  ↓
+Step 6: Restore from database — read goals/tasks from DB
+  ↓
+Step 7: Remove old stores — only after confirming database works
+```
+
+Each step is independently deployable. No big bang.
 
 ## Testing
 
-1. Backend restart → all goals recoverable from MongoDB
-2. Close browser, reopen next day → full state restored
-3. Two tabs open same goal → both see same state via Socket.IO
-4. New device → login → see all previous goals with full history
-5. `start.sh` clean → drops MongoDB collections → fresh start
-6. 10+ goals per team → all listed, switchable, no state leaks
+1. Submit goal → saved to database immediately (not just on approval)
+2. Approve plan → tasks in database with correct goalId
+3. Task completes → database status = "completed"
+4. Server restart → goals + tasks restored from database
+5. Replan → old tasks cleared, new tasks created
+6. Multi-goal → Goal A and Goal B have separate tasks (requires v2.5 first)
+7. Local mode (SQLite) → same behavior, different implementation
+8. CRDT unavailable → workflows still work (CRDT only for discussions)
+9. Dynamic task creation (add_tasks tool) → persisted through ITaskService
+10. Manual task complete (user clicks) → persisted through ITaskService
 
 ## Rollback
 
-Revert MongoDB schema additions. GoalSessionStore falls back to in-memory + sessionStorage (v2.0 behavior). Backend GoalManager/TaskStore revert to in-memory only.
+Steps 2-4 are additive. To rollback: remove interface calls from GoalManager, system reverts to CRDT+File persistence. Old stores were still receiving writes during dual-write phase — no data loss.

@@ -715,7 +715,7 @@ function InnerApp() {
               const subAgents = team?.subAgents ?? [];
               useGoalSessionStore.getState().switchGoal(teamId, match.goalId, planId, subAgents.map(s => ({ id: s.id, role: s.role })));
             } else {
-              // Navigate only — restoreTeam resolves planId from server
+              useGoalSessionStore.setState({ activePlanId: planId });
             }
             pushRoute(`/teams/${encodeURIComponent(teamId)}/p/${encodeURIComponent(planId)}`);
           }}
@@ -756,7 +756,7 @@ function InnerApp() {
                 pushRoute(`/teams/${encodeURIComponent(selectedTeamId)}/p/${encodeURIComponent(planId)}`);
                 useGoalSessionStore.getState().switchGoal(selectedTeamId, match.goalId, planId, subAgents.map(s => ({ id: s.id, role: s.role })));
               } else {
-                // Navigate only — restoreTeam resolves planId from server
+                useGoalSessionStore.setState({ activePlanId: planId });
                 pushRoute(`/teams/${encodeURIComponent(selectedTeamId)}/p/${encodeURIComponent(planId)}`);
               }
             }
@@ -781,7 +781,7 @@ function InnerApp() {
                 pushRoute(`/teams/${encodeURIComponent(selectedTeamId)}/p/${encodeURIComponent(planId)}`);
                 useGoalSessionStore.getState().switchGoal(selectedTeamId, match.goalId, planId, subAgents.map(s => ({ id: s.id, role: s.role })));
               } else {
-                // Navigate only — restoreTeam resolves planId from server
+                useGoalSessionStore.setState({ activePlanId: planId });
                 pushRoute(`/teams/${encodeURIComponent(selectedTeamId)}/p/${encodeURIComponent(planId)}`);
               }
             }
@@ -991,7 +991,7 @@ function InnerApp() {
                       pushRoute(`/teams/${encodeURIComponent(selectedTeamId)}/p/${encodeURIComponent(planId)}`);
                       useGoalSessionStore.getState().switchGoal(selectedTeamId, match.goalId, planId, subAgents.map(s => ({ id: s.id, role: s.role })));
                     } else {
-                      // Navigate only — restoreTeam resolves planId from server
+                      useGoalSessionStore.setState({ activePlanId: planId });
                       if (selectedTeamId) pushRoute(`/teams/${encodeURIComponent(selectedTeamId)}/p/${encodeURIComponent(planId)}`);
                     }
                   }}

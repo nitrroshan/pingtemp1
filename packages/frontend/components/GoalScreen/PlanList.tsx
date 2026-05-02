@@ -10,9 +10,8 @@ import { FileText, ChevronRight } from 'lucide-react';
 import { useGoalSessionStore } from '../../stores/goalSessionStore';
 
 export type PlanSummary = {
-  planId: string;
+  goalId: string;
   goal: string;
-  goalId?: string;
   createdAt: number;
   status: 'active' | 'completed' | 'paused' | 'unknown';
   taskCount?: number;
@@ -21,8 +20,8 @@ export type PlanSummary = {
 
 type PlanListProps = {
   teamId: string | null;
-  activePlanId: string | null;
-  onSelectPlan: (planId: string) => void;
+  activeGoalId: string | null;
+  onSelectGoal: (goalId: string) => void;
 };
 
 const STATUS_ICON: Record<string, string> = {
@@ -32,16 +31,15 @@ const STATUS_ICON: Record<string, string> = {
   unknown: '⏳',
 };
 
-export const PlanList: React.FC<PlanListProps> = ({ teamId, activePlanId, onSelectPlan }) => {
+export const PlanList: React.FC<PlanListProps> = ({ teamId, activeGoalId, onSelectGoal }) => {
   const storePlans = useGoalSessionStore(s => s.plans);
 
   const plans = useMemo(() => {
     if (!teamId) return [];
     // Map from types.ts PlanSummary (title, state) to PlanList PlanSummary (goal, status)
     return storePlans.map(p => ({
-      planId: p.planId ?? p.goalId,
-      goal: p.title,
       goalId: p.goalId,
+      goal: p.title,
       createdAt: p.createdAt,
       status: (p.state === 'done' ? 'completed' : p.state === 'executing' ? 'active' : 'unknown') as PlanSummary['status'],
       taskCount: p.taskCount,
@@ -61,10 +59,10 @@ export const PlanList: React.FC<PlanListProps> = ({ teamId, activePlanId, onSele
       <div className="space-y-1.5">
         {plans.map(plan => (
           <button
-            key={plan.planId}
-            onClick={() => onSelectPlan(plan.planId)}
+            key={plan.goalId}
+            onClick={() => onSelectGoal(plan.goalId)}
             className={`w-full text-left px-3 py-2.5 rounded-lg border transition-colors cursor-pointer group flex items-center gap-3 ${
-              plan.planId === activePlanId
+              plan.goalId === activeGoalId
                 ? 'border-primary/40 bg-primary/5'
                 : 'border-border hover:bg-accent/50 hover:border-border/80'
             }`}

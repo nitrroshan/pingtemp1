@@ -16,10 +16,10 @@ import type { Agent } from '../../types';
 type GoalScreenProps = {
   teams: Agent[];
   activeTeamId: string | null;
-  activePlanId: string | null;
+  activeGoalId: string | null;
   onSelectTeam: (teamId: string) => void;
-  onSubmitGoal: (teamId: string, goal: string, repoUrl?: string, repoBranch?: string) => void;
-  onSelectPlan: (planId: string) => void;
+  onSubmitGoal: (teamId: string, goal: string, repoUrl?: string, repoBranch?: string) => Promise<void> | void;
+  onSelectGoal: (goalId: string) => void;
   onNavigateToTeams: () => void;
   onSignOut: () => void;
 };
@@ -33,10 +33,10 @@ const EXAMPLES = [
 export const GoalScreen: React.FC<GoalScreenProps> = ({
   teams,
   activeTeamId,
-  activePlanId,
+  activeGoalId,
   onSelectTeam,
   onSubmitGoal,
-  onSelectPlan,
+  onSelectGoal,
   onNavigateToTeams,
   onSignOut,
 }) => {
@@ -48,8 +48,7 @@ export const GoalScreen: React.FC<GoalScreenProps> = ({
   const dropdownRef = useRef<HTMLDivElement>(null);
 
   const selectedTeam = teams.find(t => t.id === activeTeamId);
-  // Each goal gets its own planner (GoalManager) — never block submission
-  const isSubmitting = false;
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
   // Auto-resize textarea
   const adjustHeight = useCallback(() => {
@@ -73,12 +72,17 @@ export const GoalScreen: React.FC<GoalScreenProps> = ({
     return () => document.removeEventListener('mousedown', handler);
   }, [isTeamDropdownOpen]);
 
-  const handleSubmit = (e?: React.FormEvent) => {
+  const handleSubmit = async (e?: React.FormEvent) => {
     e?.preventDefault();
     const trimmed = goal.trim();
     if (!trimmed || !activeTeamId || !repoUrl.trim() || !repoBranch.trim() || isSubmitting) return;
-    onSubmitGoal(activeTeamId, trimmed, repoUrl.trim(), repoBranch.trim());
-    setGoal('');
+    setIsSubmitting(true);
+    try {
+      await onSubmitGoal(activeTeamId, trimmed, repoUrl.trim(), repoBranch.trim());
+      setGoal('');
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -255,8 +259,8 @@ export const GoalScreen: React.FC<GoalScreenProps> = ({
           {/* Recent plans */}
           <PlanList
             teamId={activeTeamId}
-            activePlanId={activePlanId}
-            onSelectPlan={onSelectPlan}
+            activeGoalId={activeGoalId}
+            onSelectGoal={onSelectGoal}
           />
         </div>
       </div>

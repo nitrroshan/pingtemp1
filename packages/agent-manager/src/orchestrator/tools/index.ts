@@ -48,6 +48,7 @@ export function createPlannerTools(ctx: PlannerToolsContext) {
     tasks: octx.taskProvider,
     dagResolver: ctx.dagResolver,
     agentFactory: ctx.agentFactory,
+    currentGoalId: octx.currentGoalId ?? undefined,
     onCancelTask: ctx.onCancelTask,
   };
 

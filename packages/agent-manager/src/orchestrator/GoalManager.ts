@@ -249,37 +249,28 @@ export class GoalManager implements IGoalManager {
     return goal.chatAgents.get(role.toLowerCase()) ?? null;
   }
 
-  /** Get ChatAgent by role, searching across goals. Creates ChatAgents lazily if needed. */
-  getChatAgentByRole(role: string): ChatAgent | null {
+  /** Get ChatAgent by role for a specific goal. */
+  getChatAgentByRole(role: string, goalId?: string): ChatAgent | null {
     const roleKey = role.toLowerCase();
-    // Try active goal first
-    if (this.activeGoalId) {
-      const goal = this.goals.get(this.activeGoalId);
-      if (goal) {
-        // Lazy-create ChatAgents if goal has none (e.g., restored from previous session)
-        if (goal.chatAgents.size === 0 && this.chatAgentsEnabled) {
-          this.enableChatAgentsForGoal(this.activeGoalId, this.teamRoles);
-        }
-        const agent = goal.chatAgents.get(roleKey);
-        if (agent) return agent;
-      }
+    const gid = goalId ?? this.activeGoalId;
+    if (!gid) return null;
+
+    const goal = this.goals.get(gid);
+    if (!goal) return null;
+
+    // Lazy-create ChatAgents if goal has none
+    if (goal.chatAgents.size === 0 && this.chatAgentsEnabled) {
+      this.enableChatAgentsForGoal(gid, this.teamRoles);
     }
-    // Fallback: search all goals
-    for (const goal of this.goals.values()) {
-      if (goal.chatAgents.size === 0 && this.chatAgentsEnabled) {
-        this.enableChatAgentsForGoal(goal.goalId, this.teamRoles);
-      }
-      const agent = goal.chatAgents.get(roleKey);
-      if (agent) return agent;
-    }
-    return null;
+    return goal.chatAgents.get(roleKey) ?? null;
   }
 
   /** Ingest a task update into the appropriate ChatAgent. */
   ingestTaskUpdateToChatAgent(update: import("../types/TaskUpdate.js").TaskUpdate): void {
     const role = (update as any).role?.toLowerCase();
     if (!role) return;
-    const agent = this.getChatAgentByRole(role);
+    const taskGoalId = (update as any).taskId ? this.taskStore.get((update as any).taskId)?.goalId : undefined;
+    const agent = this.getChatAgentByRole(role, taskGoalId);
     agent?.ingestTaskUpdate(update);
   }
 
@@ -291,25 +282,33 @@ export class GoalManager implements IGoalManager {
     const goal = this.activeGoalId ? this.goals.get(this.activeGoalId) : undefined;
     return goal?.state ?? "idle";
   }
+  getGoalState(goalId: string): OrchestratorState {
+    return this.goals.get(goalId)?.state ?? "idle";
+  }
   setState(state: OrchestratorState): void {
     if (this.activeGoalId) {
       const goal = this.goals.get(this.activeGoalId);
       if (goal) goal.state = state;
     }
   }
+  setGoalState(goalId: string, state: OrchestratorState): void {
+    const goal = this.goals.get(goalId);
+    if (goal) goal.state = state;
+  }
   getGoalId(): string | null { return this.activeGoalId; }
-  getPendingPlan(): any | null {
-    const goal = this.activeGoalId ? this.goals.get(this.activeGoalId) : undefined;
+  getGoalContext(goalId: string) { return this.goals.get(goalId); }
+  getPendingPlan(goalId?: string): any | null {
+    const gid = goalId ?? this.activeGoalId;
+    const goal = gid ? this.goals.get(gid) : undefined;
     return goal?.pendingPlan ?? null;
   }
-  setPendingPlan(plan: any | null): void {
-    if (this.activeGoalId) {
-      const goal = this.goals.get(this.activeGoalId);
+  setPendingPlan(plan: any | null, goalId?: string): void {
+    const gid = goalId ?? this.activeGoalId;
+    if (gid) {
+      const goal = this.goals.get(gid);
       if (goal) goal.pendingPlan = plan;
     } else if (plan) {
-      // activeGoalId must be set by _handleMessage before plan submission.
-      // If we reach here, it's a bug — log and reject.
-      log.error(`setPendingPlan called without activeGoalId — this is a bug`);
+      log.error(`setPendingPlan called without goalId or activeGoalId — this is a bug`);
     }
   }
   setAutoExecute(enabled: boolean): void { this.autoExecute = enabled; }
@@ -319,12 +318,22 @@ export class GoalManager implements IGoalManager {
   // PLAN APPROVAL (moved from OrchestratorService.approvePlan)
   // ═══════════════════════════════════════════════════════════════════
 
-  async approvePlan(): Promise<{ success: boolean; tasksQueued?: number; error?: string }> {
-    // Find the goal with a pending plan
+  async approvePlan(goalId?: string): Promise<{ success: boolean; tasksQueued?: number; error?: string }> {
     let goal: GoalContext | undefined;
-    for (const g of this.goals.values()) {
-      if (g.pendingPlan) { goal = g; break; }
+
+    if (goalId) {
+      // Explicit goalId — only approve THAT goal. Never cross goals.
+      goal = this.goals.get(goalId);
+      if (!goal?.pendingPlan) {
+        return { success: false, error: `No pending plan for goal ${goalId}` };
+      }
+    } else {
+      // No goalId (legacy/backward compat) — scan for any goal with a pending plan
+      for (const g of this.goals.values()) {
+        if (g.pendingPlan) { goal = g; break; }
+      }
     }
+
     if (!goal || !goal.pendingPlan) {
       return { success: false, error: "No pending plan to approve" };
     }
@@ -344,13 +353,16 @@ export class GoalManager implements IGoalManager {
       await this.workerPool.disposeByGoal(goalId);
       this.taskStore.clearByGoal(goalId);
 
-      // Build dependants map
+      // Build dependants map (using goal-scoped task IDs to avoid collision across goals)
+      const goalPrefix = goalId.slice(0, 8);
+      const scopeId = (id: string) => id.startsWith(goalPrefix) ? id : `${goalPrefix}-${id}`;
+
       const dependantsMap = new Map<string, string[]>();
       for (const task of planToApprove.tasks) {
         for (const depId of task.dependencies) {
-          const existing = dependantsMap.get(depId) || [];
-          existing.push(task.id);
-          dependantsMap.set(depId, existing);
+          const existing = dependantsMap.get(scopeId(depId)) || [];
+          existing.push(scopeId(task.id));
+          dependantsMap.set(scopeId(depId), existing);
         }
       }
 
@@ -359,8 +371,9 @@ export class GoalManager implements IGoalManager {
       for (const task of planToApprove.tasks) {
         const taskContext = (task as any).context || {};
         const taskType = (task as any).type || taskContext.type || "work";
+        const scopedId = scopeId(task.id);
         this.taskStore.create({
-          id: task.id,
+          id: scopedId,
           title: task.title,
           description: `${task.title}: ${task.description}`,
           assigned_role: task.assignedRole.toLowerCase(),
@@ -371,9 +384,9 @@ export class GoalManager implements IGoalManager {
           goalId,
           planId,
           prerequisites: new Map<string, boolean>(
-            task.dependencies.map((depId: string) => [depId, false] as [string, boolean]),
+            task.dependencies.map((depId: string) => [scopeId(depId), false] as [string, boolean]),
           ),
-          dependants: dependantsMap.get(task.id) || [],
+          dependants: dependantsMap.get(scopedId) || [],
           context: {
             title: task.title,
             planId,
@@ -395,18 +408,12 @@ export class GoalManager implements IGoalManager {
         tasksQueued++;
       }
 
-      // Rebuild DAG from TaskStore
-      this.dagResolver.rebuild(this.taskStore);
+      // Rebuild DAG for this goal
+      this.dagResolver.rebuildForGoal(this.taskStore, goalId);
 
-      // Update state — execution mutex
-      const executing = this.getExecutingGoal();
-      if (executing && executing.goalId !== goalId) {
-        goal.state = "queued";
-        log.info(`Goal ${goalId} queued — ${executing.goalId} is executing`);
-      } else {
-        goal.state = "executing";
-        this.activeGoalId = goalId;
-      }
+      // All goals execute immediately — no mutex, no queuing
+      goal.state = "executing";
+      this.activeGoalId = goalId;
       goal.currentPlanId = planId;
       this.workerPool.setTeamId(this.teamId);
 
@@ -472,8 +479,8 @@ export class GoalManager implements IGoalManager {
       const crdtTaskSync = this.crdtTaskSyncProxy?.get?.();
       if (crdtTaskSync) {
         let persistedCount = 0;
-        const allTasks = this.taskStore.getAll();
-        for (const task of allTasks) {
+        const goalTasks = this.taskStore.getByGoal(goalId);
+        for (const task of goalTasks) {
           try {
             await crdtTaskSync.persistTask(task);
             persistedCount++;
@@ -481,7 +488,7 @@ export class GoalManager implements IGoalManager {
             log.error(`[approvePlan] Failed to persist task ${task.id} to CRDT: ${err}`);
           }
         }
-        log.info(`[approvePlan] Persisted ${persistedCount}/${allTasks.length} tasks to CRDT`);
+        log.info(`[approvePlan] Persisted ${persistedCount}/${goalTasks.length} tasks to CRDT`);
         try {
           await crdtTaskSync.persistPlan(planToApprove, goalId);
         } catch (err) {
@@ -499,6 +506,7 @@ export class GoalManager implements IGoalManager {
       this.callbacks.onPlanApproved?.({
         planId,
         teamId: this.teamId,
+        goalId,
         tasksQueued,
         timestamp: new Date().toISOString(),
       });
@@ -530,19 +538,20 @@ export class GoalManager implements IGoalManager {
   onTaskComplete({ taskId, output }: { taskId: string; output: any }): void {
     log.info(`onTaskComplete: ${taskId}`);
     const task = this.taskStore.get(taskId);
-    const goal = task?.goalId ? this.goals.get(task.goalId) : this.activeGoalId ? this.goals.get(this.activeGoalId) : undefined;
+    const goalId = task?.goalId;
+    if (!goalId) { log.warn(`onTaskComplete: task ${taskId} has no goalId`); }
+    const goal = goalId ? this.goals.get(goalId) : undefined;
 
     this.callbacks.onTaskUpdate?.({
       taskId, status: "completed", role: task?.assigned_role, output, timestamp: Date.now(),
     });
 
-    const goalId = task?.goalId || this.activeGoalId;
-    const allComplete = goalId ? this.taskStore.isAllCompleteForGoal(goalId) : this.taskStore.isAllComplete();
+    const allComplete = goalId ? this.taskStore.isAllCompleteForGoal(goalId) : false;
 
     if (allComplete && goal) {
       if (goal.state === "researching") {
         goal.state = "idle";
-        this.callbacks.onNotifyPlanner(
+        this.callbacks.onNotifyPlanner(goalId || "",
           PromptLoader.loadTemplate("orchestrator", "research-complete"),
         );
         this.callbacks.onProgress?.({
@@ -551,7 +560,8 @@ export class GoalManager implements IGoalManager {
           timestamp: new Date().toISOString(),
         });
       } else {
-        const goalTasks = goalId ? this.taskStore.getByGoal(goalId) : this.taskStore.getAll();
+        if (!goalId) log.error(`onTaskComplete: no goalId for completion summary — task ${taskId}`);
+        const goalTasks = goalId ? this.taskStore.getByGoal(goalId) : [];
         const failedTasks = goalTasks.filter(t => t.status === "failed");
         const discardedTasks = goalTasks.filter(t => t.status === "discarded");
         const completedTasks = goalTasks.filter(t => t.status === "completed");
@@ -559,7 +569,7 @@ export class GoalManager implements IGoalManager {
         goal.state = "done";
 
         if (failedTasks.length > 0) {
-          this.callbacks.onNotifyPlanner(
+          this.callbacks.onNotifyPlanner(goalId || "",
             `⚠️ All tasks finished but ${failedTasks.length} failed:\n` +
             failedTasks.map(t => `- ${t.id} (${t.assigned_role}): ${t.description?.slice(0, 80)}`).join("\n") +
             `\n\n${completedTasks.length} completed, ${discardedTasks.length} discarded.` +
@@ -571,7 +581,7 @@ export class GoalManager implements IGoalManager {
             `\nDo NOT just describe what happened — take action.`,
           );
           if (completedTasks.length === 0) {
-            this.callbacks.onGoalStatusChange?.({ teamId: this.teamId, status: "failed" });
+            this.callbacks.onGoalStatusChange?.({ teamId: this.teamId, goalId: goalId || "", status: "failed" });
           }
           this.callbacks.onProgress?.({
             teamId: this.teamId, state: "idle",
@@ -585,8 +595,8 @@ export class GoalManager implements IGoalManager {
               log.warn(`Failed to sync plan completion to CRDT: ${err}`);
             });
           }
-          this.callbacks.onNotifyPlanner(PromptLoader.loadTemplate("orchestrator", "all-complete"));
-          this.callbacks.onGoalStatusChange?.({ teamId: this.teamId, status: "completed" });
+          this.callbacks.onNotifyPlanner(goalId || "", PromptLoader.loadTemplate("orchestrator", "all-complete"));
+          this.callbacks.onGoalStatusChange?.({ teamId: this.teamId, goalId: goalId || "", status: "completed" });
           this.callbacks.onProgress?.({
             teamId: this.teamId, state: "idle",
             message: "All tasks completed successfully",
@@ -594,35 +604,10 @@ export class GoalManager implements IGoalManager {
           });
         }
 
-        // Auto-advance: if this goal is done, start the next queued goal
+        // Goal completed — dispose agents
         if (goal.state === "done") {
-          // Dispose agents for the completed goal (direct — no callback roundtrip)
           this.disposeGoalAgents(goal);
-          this.autoAdvanceToNextGoal();
         }
-      }
-    }
-  }
-
-  /** Auto-advance: find and start the next queued goal after the current one completes. */
-  private autoAdvanceToNextGoal(): void {
-    for (const candidate of this.goals.values()) {
-      if (candidate.state === "queued") {
-        candidate.state = "executing";
-        this.activeGoalId = candidate.goalId;
-        log.info(`Auto-advancing to queued goal: ${candidate.goalId} ("${candidate.title}")`);
-
-        // Enable ChatAgents for the new executing goal (direct)
-        this.enableChatAgentsForGoal(candidate.goalId, this.teamRoles);
-
-        // Dispatch ready tasks for the new active goal
-        for (const task of this.taskStore.getByGoal(candidate.goalId)) {
-          if (task.status === "ready") {
-            this.callbacks.onDispatchTask(task.id, task.assigned_role);
-          }
-        }
-        this.callbacks.onGoalStatusChange?.({ teamId: this.teamId, status: "executing" as any });
-        return;
       }
     }
   }
@@ -638,8 +623,12 @@ export class GoalManager implements IGoalManager {
   handleTaskFailure(taskId: string, reason: string): void {
     const task = this.taskStore.get(taskId);
     if (!task) return;
+    if (!task.goalId) {
+      log.error(`[GoalManager] handleTaskFailure: task ${taskId} has no goalId — cannot scope dependant scan`);
+      return;
+    }
 
-    const dependants = this.taskStore.getAll().filter(
+    const dependants = this.taskStore.getByGoal(task.goalId).filter(
       (t) => t.prerequisites?.has(taskId) && t.status !== "completed" && t.status !== "failed"
     );
 
@@ -711,18 +700,20 @@ export class GoalManager implements IGoalManager {
       crdtSync.syncStatus(taskId, "failed").catch((err: any) => {
         log.warn(`CRDT sync failed for task ${taskId}: ${err}`);
       });
-      crdtSync.updateIndex(this.taskStore.getAll()).catch(() => {});
+      if (!task?.goalId) log.error(`onTaskFailed: task ${taskId} has no goalId for CRDT index`);
+      crdtSync.updateIndex(task?.goalId ? this.taskStore.getByGoal(task.goalId) : []).catch(() => {});
     }
 
     // Check research phase completion
-    const goal = task?.goalId ? this.goals.get(task.goalId) : this.activeGoalId ? this.goals.get(this.activeGoalId) : undefined;
-    const goalId = task?.goalId || this.activeGoalId;
+    const goal = task?.goalId ? this.goals.get(task.goalId) : undefined;
+    const goalId = task?.goalId;
+    if (!goalId) { log.warn(`onTaskFailed: task ${taskId} has no goalId`); }
     const allTasksDone = goalId
       ? this.taskStore.getByGoal(goalId).every((t) => t.status === "completed" || t.status === "failed")
-      : this.taskStore.getAll().every((t) => t.status === "completed" || t.status === "failed");
+      : false;
     if (goal?.state === "researching" && allTasksDone) {
       goal.state = "idle";
-      this.callbacks.onNotifyPlanner(
+      this.callbacks.onNotifyPlanner(goalId || "",
         PromptLoader.loadTemplate("orchestrator", "research-failed"),
       );
       this.callbacks.onProgress?.({
@@ -740,12 +731,13 @@ export class GoalManager implements IGoalManager {
     this.handleTaskFailure(taskId, error);
 
     // Notify planner with blocked downstream info
-    const blockedTasks = this.taskStore.getAll()
+    if (!goalId) log.error(`onTaskFailed: task ${taskId} has no goalId for blocked task scan`);
+    const blockedTasks = (goalId ? this.taskStore.getByGoal(goalId) : [])
       .filter(t => t.prerequisites?.has(taskId) && t.status !== "completed" && t.status !== "failed")
       .map(t => `${t.id} (${t.assigned_role})`)
       .join(", ") || null;
 
-    this.callbacks.onNotifyPlanner(
+    this.callbacks.onNotifyPlanner(goalId || "",
       PromptLoader.loadTemplate("orchestrator", "task-failed", {
         description: task?.description || taskId,
         role: task?.assigned_role || "unknown",
@@ -808,7 +800,9 @@ export class GoalManager implements IGoalManager {
     //    Downstream tasks create worktrees from main — main must have this task's work.
     //    Merge failures are non-fatal: task still completes, dependents may lack files.
     if (this.pluginRegistry) {
-      const goalId = this.activeGoalId ?? undefined;
+      const taskForGoal = this.taskStore.get(data.taskId);
+      const goalId = taskForGoal?.goalId;
+      if (!goalId) log.error(`[GoalManager] onWorkerDone: task ${data.taskId} has no goalId — data integrity bug`);
       try {
         const result = await this.pluginRegistry.onTaskComplete(data.taskId, goalId);
         if (!result.success) {
@@ -841,7 +835,9 @@ export class GoalManager implements IGoalManager {
         deliverables: data.deliverables,
         nextSteps: data.nextSteps,
       });
-      await crdtSyncDone.updateIndex(this.taskStore.getAll());
+      const doneTask = this.taskStore.get(data.taskId);
+      if (!doneTask?.goalId) log.error(`onWorkerDone: task ${data.taskId} has no goalId for CRDT index`);
+      await crdtSyncDone.updateIndex(doneTask?.goalId ? this.taskStore.getByGoal(doneTask.goalId) : []);
     }
   }
 
@@ -918,10 +914,15 @@ export class GoalManager implements IGoalManager {
         log.info("[loadActivePlan] Plan awaiting approval");
       } else if (stored.metadata.status === "executing") {
         goal.currentPlanId = stored.plan?.planId || null;
+
+        // Apply goal-prefix to task IDs (same strategy as approvePlan)
+        const goalPrefix = goalId.slice(0, 8);
+        const scopeId = (id: string) => id.startsWith(goalPrefix) ? id : `${goalPrefix}-${id}`;
+
         const dep = new Map<string, string[]>();
         for (const t of stored.plan.tasks) {
           for (const d of t.dependencies) {
-            const e = dep.get(d) || []; e.push(t.id); dep.set(d, e);
+            const e = dep.get(scopeId(d)) || []; e.push(scopeId(t.id)); dep.set(scopeId(d), e);
           }
         }
 
@@ -950,23 +951,25 @@ export class GoalManager implements IGoalManager {
         }
 
         for (const t of stored.plan.tasks) {
-          const crdtTask = crdtTasks?.get(t.id);
+          const scopedId = scopeId(t.id);
+          // Try CRDT lookup with both scoped and raw ID (backward compat)
+          const crdtTask = crdtTasks?.get(scopedId) ?? crdtTasks?.get(t.id);
           let status = crdtTask?.status ?? "pending";
           if (status === "in_progress") status = "ready";
 
-          log.info(`  Restoring task ${t.id} (${t.assignedRole}): crdtStatus=${crdtTask?.status ?? 'NONE'} → finalStatus=${status}`);
+          log.info(`  Restoring task ${scopedId} (${t.assignedRole}): crdtStatus=${crdtTask?.status ?? 'NONE'} → finalStatus=${status}`);
 
           const prerequisites = crdtTask?.prerequisites
-            ?? new Map(t.dependencies.map((d: string) => [d, false] as [string, boolean]));
+            ?? new Map(t.dependencies.map((d: string) => [scopeId(d), false] as [string, boolean]));
 
           this.taskStore.create({
-            id: t.id,
+            id: scopedId,
             description: crdtTask?.description ?? `${t.title}: ${t.description}`,
             assigned_role: t.assignedRole.toLowerCase(),
             status,
             output: crdtTask?.output,
             prerequisites,
-            dependants: dep.get(t.id) || [],
+            dependants: dep.get(scopedId) || [],
             goalId,
             planId: stored.plan?.planId,
             context: crdtTask?.context ?? { title: t.title, planId: stored.plan.planId, goal: stored.plan.goal },

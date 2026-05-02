@@ -4,7 +4,7 @@
  * Single store that owns ALL state for the active goal:
  *   - Messages (replaces chatStore.chatHistories)
  *   - Tasks + session state (replaces orchestrationStore)
- *   - Goal/plan identity (replaces uiStore.activeGoalId/activePlanId/selectedTaskId)
+ *   - Goal/plan identity (replaces uiStore.activeGoalId/selectedTaskId)
  *   - Plan summaries (replaces sessionStorage ping:plans:{teamId})
  *   - Stream processing (migrated from chatStore.processStreamPart)
  *
@@ -32,7 +32,6 @@ type AgentRef = { id: string; role: string };
 interface GoalSessionState {
   // ── Goal-scoped identity ──
   activeGoalId: string | null;
-  activePlanId: string | null;
   selectedTaskId: string | null;
 
   // ── Session state ──
@@ -60,11 +59,11 @@ interface GoalSessionState {
 
   // ── Actions ──
   /** Switch to a different goal — atomic operation. THE only write path for goal transitions. */
-  switchGoal: (teamId: string, goalId: string, planId: string, agents: AgentRef[]) => Promise<void>;
-  /** Restore team on initial load or team switch. urlPlanId resolves goal from server goals. */
-  restoreTeam: (teamId: string, agents: AgentRef[], urlPlanId?: string) => Promise<RestoreResult>;
+  switchGoal: (teamId: string, goalId: string, agents: AgentRef[]) => Promise<void>;
+  /** Restore team on initial load or team switch. urlGoalId from URL for direct restore. */
+  restoreTeam: (teamId: string, agents: AgentRef[], urlGoalId?: string) => Promise<RestoreResult>;
   /** Create a new goal — sets identity + adds plan + user message + subscribes room. */
-  newGoal: (teamId: string, goalId: string, planId: string, goalText: string) => void;
+  newGoal: (teamId: string, goalId: string, goalText: string) => void;
   /** Clear active goal (back to goals screen). */
   clearGoal: () => void;
   /** Send a user message — routes to the correct chat key based on context. */
@@ -185,7 +184,7 @@ function mapBackendTask(bt: any): Task {
 
 export const useGoalSessionStore = create<GoalSessionState>()(devtools((set, get) => ({
   activeGoalId: null,
-  activePlanId: null,
+  
   selectedTaskId: null,
   sessionState: null,
   autoExecuteEnabled: false,
@@ -202,11 +201,10 @@ export const useGoalSessionStore = create<GoalSessionState>()(devtools((set, get
   // switchGoal — THE atomic goal transition
   // ────────────────────────────────────────────────────────────────────────
 
-  switchGoal: async (teamId, goalId, planId, agents) => {
+  switchGoal: async (teamId, goalId, agents) => {
     // 1. Optimistic UI update
     set({
       activeGoalId: goalId,
-      activePlanId: planId,
       selectedTaskId: null,
     });
 
@@ -280,132 +278,29 @@ export const useGoalSessionStore = create<GoalSessionState>()(devtools((set, get
   // restoreTeam — initial team load (single API call)
   // ────────────────────────────────────────────────────────────────────────
 
-  restoreTeam: async (teamId, agents, urlPlanId) => {
+  restoreTeam: async (teamId, agents, urlGoalId) => {
     try {
-      const goalIdForRestore = get().activeGoalId ?? undefined;
-      const data = await agentServiceV2.restoreSession(teamId, goalIdForRestore);
+      // If URL specifies a goalId, delegate directly to switchGoal (single restore)
+      const goalIdForRestore = urlGoalId ?? get().activeGoalId ?? undefined;
+      if (goalIdForRestore) {
+        await get().switchGoal(teamId, goalIdForRestore, agents);
+
+        // Load plan summaries (switchGoal may have set them from allGoalSummaries)
+        const state = get();
+        return {
+          success: true,
+          goals: undefined,
+          activeGoalId: state.activeGoalId,
+        };
+      }
+
+      // No goal specified — load team-level data only (plan list for GoalScreen)
+      const data = await agentServiceV2.restoreSession(teamId, undefined);
       if (!data) return { success: false, error: 'Session restore returned null' };
-
-      // URL planId takes priority — if present, resolve its goalId from server data
-      // allGoalSummaries has planId (set during plan approval), goals may not.
-      let resolvedGoalId: string | null = null;
-      let resolvedPlanId: string | null = null;
-
-      if (urlPlanId) {
-        // 1. Try allGoalSummaries first (has planId field)
-        const summaryMatch = (data.allGoalSummaries ?? []).find(
-          (g: any) => g.planId === urlPlanId,
-        );
-        if (summaryMatch?.goalId) {
-          resolvedGoalId = summaryMatch.goalId;
-          resolvedPlanId = urlPlanId;
-        }
-
-        // 2. Fall back to goals list (planId or id match)
-        if (!resolvedGoalId && data.goals?.length) {
-          const goalMatch = data.goals.find(
-            (g: any) => (g.planId || g.id || g._id) === urlPlanId,
-          );
-          if (goalMatch?.goalId) {
-            resolvedGoalId = goalMatch.goalId;
-            resolvedPlanId = urlPlanId;
-          }
-        }
-      }
-
-      // Fall back to server's activeGoalId if URL didn't resolve
-      if (!resolvedGoalId && data.activeGoalId) {
-        resolvedGoalId = data.activeGoalId;
-      }
-
-      if (resolvedGoalId) {
-        set({ activeGoalId: resolvedGoalId });
-        if (resolvedPlanId) set({ activePlanId: resolvedPlanId });
-      }
-
-      // Map messages
-      const restored: Record<string, Message[]> = {};
-      const activeGoal = resolvedGoalId || get().activeGoalId;
-
-      if (data.conversations) {
-        for (const [agentId, msgs] of Object.entries(data.conversations)) {
-          if (!(msgs as any[])?.length) continue;
-          let key = agentId;
-          if (agentId.startsWith('chat-')) {
-            const role = agentId.replace('chat-', '');
-            const agent = agents.find(a => a.role?.toLowerCase() === role);
-            key = agent ? `chat:${agent.id}` : agentId;
-          } else if (agentId === 'manager' || agentId === 'orchestrator' || agentId === 'planner') {
-            key = activeGoal ? `${teamId}:goal:${activeGoal}` : teamId;
-          }
-          const mapped = (msgs as any[]).map(mapServerMessage);
-          restored[key] = [...(restored[key] ?? []), ...mapped];
-        }
-      }
-
-      for (const key of Object.keys(restored)) {
-        restored[key].sort((a, b) => a.timestamp - b.timestamp);
-      }
-
-      if (data.workerMessages?.length) {
-        for (const m of data.workerMessages) {
-          // Resolve role-based agentId to frontend agentId (must match live stream keys)
-          const resolvedAgent = agents.find(a => a.role?.toLowerCase() === m.agentId?.toLowerCase());
-          const resolvedId = resolvedAgent?.id ?? m.agentId;
-          const key = m.taskId ? `${resolvedId}:task:${m.taskId}` : resolvedId;
-          if (!restored[key]) restored[key] = [];
-          restored[key].push(mapServerMessage(m));
-        }
-      }
-
-      // Hydrate tasks and state
-      if (data.plan?.length || data.tasks?.length) {
-        const tasks = (data.plan ?? data.tasks ?? []).map(mapBackendTask);
-        set({ tasks });
-        if (data.orchestratorState) {
-          const goalId = activeGoal;
-          set(prev => ({
-            sessionState: data.orchestratorState as SessionState,
-            goalSessionStates: goalId
-              ? { ...prev.goalSessionStates, [goalId]: data.orchestratorState }
-              : prev.goalSessionStates,
-          }));
-        }
-      }
-
-      // Merge messages (preserves local streamParts during active streams)
-      if (Object.keys(restored).length > 0) {
-        set(prev => {
-          const merged = { ...prev.chatHistories };
-          for (const [key, serverMsgs] of Object.entries(restored)) {
-            const localMsgs = merged[key];
-            if (!localMsgs || localMsgs.length === 0) {
-              merged[key] = serverMsgs;
-            } else {
-              const msgMap = new Map(localMsgs.map(m => [m.id, m]));
-              for (const serverMsg of serverMsgs) {
-                const local = msgMap.get(serverMsg.id);
-                msgMap.set(serverMsg.id, {
-                  ...local,
-                  ...serverMsg,
-                  streamParts: serverMsg.streamParts ?? local?.streamParts,
-                });
-              }
-              merged[key] = Array.from(msgMap.values()).sort((a, b) => a.timestamp - b.timestamp);
-            }
-          }
-          return { chatHistories: merged };
-        });
-      }
 
       // Update plan summaries
       if (data.allGoalSummaries?.length) {
         set({ plans: data.allGoalSummaries });
-      }
-
-      // If URL resolved a specific goal, do a full goal switch to load its data
-      if (resolvedGoalId && resolvedPlanId) {
-        await get().switchGoal(teamId, resolvedGoalId, resolvedPlanId, agents);
       }
 
       return {
@@ -424,14 +319,13 @@ export const useGoalSessionStore = create<GoalSessionState>()(devtools((set, get
   // newGoal — create a new goal (atomic identity + plan + room subscription)
   // ────────────────────────────────────────────────────────────────────────
 
-  newGoal: (teamId, goalId, planId, goalText) => {
+  newGoal: (teamId, goalId, goalText) => {
     set(prev => ({
       activeGoalId: goalId,
-      activePlanId: planId,
       selectedTaskId: null,
       plans: [{
         goalId, title: goalText, state: 'gathering' as const,
-        taskCount: 0, completedCount: 0, planId, createdAt: Date.now(),
+        taskCount: 0, completedCount: 0, createdAt: Date.now(),
       }, ...prev.plans],
     }));
     agentServiceV2.subscribeToGoal(teamId, goalId);
@@ -442,7 +336,7 @@ export const useGoalSessionStore = create<GoalSessionState>()(devtools((set, get
   // ────────────────────────────────────────────────────────────────────────
 
   clearGoal: () => {
-    set({ activeGoalId: null, activePlanId: null, selectedTaskId: null });
+    set({ activeGoalId: null, selectedTaskId: null });
   },
 
   // ────────────────────────────────────────────────────────────────────────
@@ -760,13 +654,8 @@ export const useGoalSessionStore = create<GoalSessionState>()(devtools((set, get
   // ────────────────────────────────────────────────────────────────────────
 
   handleStateEvent: (data) => {
-    // Goal-scope guard: if the update carries a goalId that doesn't match
-    // the active goal, only update the goalSessionStates cache — don't
-    // mutate the active tasks/sessionState.
     const incomingGoalId = data.goalId as string | undefined;
     const activeGoal = get().activeGoalId;
-    // Goal-scope guard: task/plan/session updates MUST include goalId to mutate active state.
-    // Missing goalId = unscoped broadcast → only update autoExecute (global), not tasks/state.
     const isForActiveGoal = incomingGoalId ? incomingGoalId === activeGoal : false;
 
     if (data.plan && Array.isArray(data.plan) && isForActiveGoal) {
@@ -811,23 +700,24 @@ export const useGoalSessionStore = create<GoalSessionState>()(devtools((set, get
   },
 
   approvePlan: () => {
-    agentServiceV2.approvePlan();
+    const goalId = get().activeGoalId;
+    agentServiceV2.approvePlan(goalId ?? undefined);
     get().addLog('SYSTEM', 'Plan approved, starting execution...', 'success');
     set({ sessionState: 'executing' });
   },
 
   startTask: (taskId) => {
-    agentServiceV2.startTask(taskId);
+    agentServiceV2.startTask(taskId, get().activeGoalId ?? undefined);
     get().addLog('SYSTEM', `Starting task: ${taskId}`, 'info');
   },
 
   completeTask: (taskId) => {
-    agentServiceV2.completeTask(taskId);
+    agentServiceV2.completeTask(taskId, undefined, get().activeGoalId ?? undefined);
     get().addLog('SYSTEM', `Completing task: ${taskId}`, 'success');
   },
 
   cancelTask: (taskId) => {
-    agentServiceV2.cancelTask(taskId);
+    agentServiceV2.cancelTask(taskId, get().activeGoalId ?? undefined);
     get().addLog('SYSTEM', `Cancelling task: ${taskId}`, 'warning');
   },
 
@@ -857,7 +747,7 @@ export const useGoalSessionStore = create<GoalSessionState>()(devtools((set, get
   resetForTeam: () => {
     set({
       activeGoalId: null,
-      activePlanId: null,
+      
       selectedTaskId: null,
       sessionState: null,
       autoExecuteEnabled: false,

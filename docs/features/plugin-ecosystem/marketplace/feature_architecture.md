@@ -312,13 +312,252 @@ But v1.0 keeps it simple: **one repo = one plugin = one team.**
 
 ---
 
+## Plugin Lifecycle Management
+
+### Full Lifecycle
+
+```
+discover → install → configure → use → disable → offboard → delete
+```
+
+| State | Description | API |
+|-------|-------------|-----|
+| **Available** | Plugin exists in a GitHub repo, not installed | Discovered via search/browsing |
+| **Installing** | Git clone in progress | `POST /api/v2/taps/add` |
+| **Installed** | Plugin on disk, team projected in sidebar | Automatic after clone |
+| **Configuring** | User filling in `userConfig` values (API keys, etc.) | `POST /api/v2/taps/:id/configure` |
+| **Active** | Team initialized, accepting goals | First message triggers lazy init |
+| **Disabled** | Team hidden, no new goals, existing goals continue | `POST /api/v2/taps/:id/disable` |
+| **Offboarding** | Active goals being cancelled/completed | `POST /api/v2/taps/:id/offboard` |
+| **Removed** | Plugin deleted from disk | `DELETE /api/v2/taps/:id` |
+
+### Install Flow (Complete)
+
+```
+POST /api/v2/taps/add { repo: "acme/engineering-team" }
+  │
+  ├─ 1. Check user limits (max taps reached? → 403)
+  ├─ 2. Check duplicate (already installed? → 409)
+  ├─ 3. git clone https://github.com/acme/engineering-team → ~/.ping/taps/acme--engineering-team/
+  ├─ 4. Validate .ping-plugin/plugin.json + agents/ + skills/
+  │     → Invalid? → delete clone, return 422 with validation errors
+  ├─ 5. Check if plugin has userConfig → return { needsConfig: true, fields: [...] }
+  ├─ 6. Save to config.json (tap registry)
+  ├─ 7. PluginTeamService projects it as team (deterministic teamId)
+  ├─ 8. Socket.IO: { type: "tap:installed", teamId, name, needsConfig }
+  │
+  ▼
+  Response: { tapId, teamId, name, agents: [...], skills: [...], needsConfig: boolean }
+```
+
+### Configure Flow (for plugins with `userConfig`)
+
+```
+POST /api/v2/taps/:tapId/configure
+  Body: { "api_endpoint": "https://...", "github_token": "ghp_..." }
+  │
+  ├─ 1. Validate required fields from manifest.userConfig
+  ├─ 2. Store non-sensitive in config.json
+  ├─ 3. Store sensitive in system keychain (or encrypted file)
+  ├─ 4. Socket.IO: { type: "tap:configured", tapId }
+  │
+  ▼
+  Response: { configured: true }
+```
+
+### Disable Flow
+
+```
+POST /api/v2/taps/:tapId/disable
+  │
+  ├─ 1. Mark tap as disabled in config.json
+  ├─ 2. If AgentManager cached → keep it (existing goals continue)
+  ├─ 3. Block new goals for this team
+  ├─ 4. Hide from sidebar
+  ├─ 5. Socket.IO: { type: "tap:disabled", tapId }
+  │
+  ▼
+  Response: { disabled: true }
+```
+
+### Offboard Flow (Full Removal)
+
+```
+POST /api/v2/taps/:tapId/offboard
+  │
+  ├─ Check active goals → 409 if any running
+  │    Response: { error: "active_goals", goals: [...], message: "Cancel or complete goals first" }
+  ├─ Check in-progress tasks → 409 if any
+  │    Response: { error: "active_tasks", tasks: [...], message: "Wait for tasks to complete" }
+  │
+  ▼ (all clear)
+  1. AgentManagerRegistry.remove(teamId) → dispose manager, stop workers
+  2. PluginRegistry disposes plugins (workspace cleanup, CRDT shutdown)
+  3. Remove from config.json
+  4. Delete ~/.ping/taps/<tapId>/
+  5. Delete userConfig values (including keychain entries)
+  6. Socket.IO: { type: "tap:offboarded", tapId }
+  7. Frontend removes team from sidebar
+
+  Response: { offboarded: true, cleaned: { workers: 4, skills: 7, goals: 2 } }
+```
+
+### Enable (Re-enable after disable)
+
+```
+POST /api/v2/taps/:tapId/enable
+  │
+  ├─ 1. Mark tap as enabled in config.json
+  ├─ 2. Show in sidebar
+  ├─ 3. Socket.IO: { type: "tap:enabled", tapId }
+  │
+  ▼
+  Response: { enabled: true }
+```
+
+---
+
+## User Limits & Usage Tracking
+
+### Industry Patterns
+
+| Platform | How limits work |
+|----------|----------------|
+| **GitHub Copilot** | Per-seat licensing. Usage-based billing on premium requests. Budget alerts at 75/90/100% |
+| **Claude Code** | Plugin count unlimited. LLM usage billed per-token via API key |
+| **CrewAI Enterprise** | Per-crew-run billing. Token usage tracked per agent per task |
+| **Homebrew** | No limits (free, OSS) |
+| **npm** | Unlimited public packages. Private package limits per plan |
+
+### Ping's Approach: Resource Limits, Not Plugin Limits
+
+The cost of a plugin isn't the plugin itself (it's just files) — it's the **LLM tokens consumed when the team runs goals**. So limits should be on usage, not on install count.
+
+#### Limit Levels
+
+```typescript
+interface UserLimits {
+  // Plugin/Team limits
+  maxInstalledTaps: number;        // Default: 20 (generous — plugins are just folders)
+  maxConcurrentTeams: number;      // Default: 3 (teams with active goals simultaneously)
+  maxAgentsPerTeam: number;        // Default: 10 (agents in one plugin)
+  
+  // Goal/Execution limits
+  maxConcurrentGoals: number;      // Default: 3 (across all teams)
+  maxGoalsPerDay: number;          // Default: 50
+  goalTimeoutMs: number;           // Default: 300000 (5 min per goal)
+  maxTasksPerGoal: number;         // Default: 50
+  
+  // LLM Token limits
+  maxTokensPerDay: number;         // Default: 1_000_000
+  maxTokensPerGoal: number;        // Default: 200_000
+  maxTokensPerTask: number;        // Default: 50_000
+}
+```
+
+#### Where Limits Are Enforced
+
+| Limit | Enforcement Point | Error |
+|-------|------------------|-------|
+| `maxInstalledTaps` | `TapService.add()` | 403: "Max installed teams reached (20). Remove a team first." |
+| `maxConcurrentTeams` | `AgentManagerRegistry.getForTeam()` | 429: "Max 3 teams can be active simultaneously." |
+| `maxAgentsPerTeam` | `PluginLoader.loadPlugin()` validation | 422: "Plugin has 15 agents, max is 10." |
+| `maxConcurrentGoals` | `OrchestratorService.handleMessage()` | 429: "Max 3 concurrent goals. Wait for one to complete." |
+| `maxGoalsPerDay` | `OrchestratorService.handleMessage()` | 429: "Daily goal limit reached (50). Resets at midnight UTC." |
+| `goalTimeoutMs` | `GoalManager` | Auto-cancel after timeout |
+| `maxTasksPerGoal` | `createPlannerTools()` → `submit_plan` | Planner told: "Plan rejected — max 50 tasks per goal." |
+| `maxTokensPerDay` | `AiSdkAgent.execute()` → token counting | 429: "Daily token limit reached." |
+| `maxTokensPerGoal` | `GoalManager` → aggregate across tasks | Goal auto-paused: "Token budget exhausted for this goal." |
+| `maxTokensPerTask` | `AiSdkAgent.execute()` | Task failed: "Task token limit reached." |
+
+#### Usage Tracking
+
+```typescript
+interface UsageRecord {
+  userId: string;
+  teamId: string;
+  goalId: string;
+  taskId?: string;
+  
+  tokensInput: number;
+  tokensOutput: number;
+  tokensTotal: number;
+  
+  modelId: string;
+  agentRole: string;
+  
+  timestamp: Date;
+  durationMs: number;
+}
+```
+
+**Storage:** MongoDB collection `usage_records`. Indexed by `userId + date` for daily aggregation.
+
+**API:**
+```
+GET /api/v2/usage
+  Query: ?from=2026-05-01&to=2026-05-02&teamId=optional
+  Response: { totalTokens, byTeam: [...], byDay: [...], remainingToday: number }
+
+GET /api/v2/usage/limits
+  Response: { limits: UserLimits, current: { installedTaps: 5, activeTeams: 2, goalsToday: 12, tokensToday: 450000 } }
+```
+
+### Config: Setting Limits
+
+Limits stored in environment or config:
+
+```bash
+# .env
+PING_MAX_INSTALLED_TAPS=20
+PING_MAX_CONCURRENT_TEAMS=3
+PING_MAX_CONCURRENT_GOALS=3
+PING_MAX_GOALS_PER_DAY=50
+PING_MAX_TOKENS_PER_DAY=1000000
+```
+
+For multi-tenant (future): limits per user stored in MongoDB `user_limits` collection.
+
+---
+
+## Complete API Summary
+
+```
+# Tap Lifecycle
+POST   /api/v2/taps/add            { repo: "user/repo" }              → Install
+GET    /api/v2/taps                                                     → List installed
+GET    /api/v2/taps/:tapId                                              → Get details
+POST   /api/v2/taps/:tapId/configure { key: "value" }                  → Set userConfig
+POST   /api/v2/taps/:tapId/update                                       → Git pull
+POST   /api/v2/taps/:tapId/disable                                      → Soft disable
+POST   /api/v2/taps/:tapId/enable                                       → Re-enable
+POST   /api/v2/taps/:tapId/offboard                                     → Full removal (checks goals)
+DELETE /api/v2/taps/:tapId                                              → Force delete (skips checks)
+
+# Usage & Limits
+GET    /api/v2/usage                ?from=&to=&teamId=                  → Usage records
+GET    /api/v2/usage/limits                                             → Current limits + usage
+
+# Discovery (existing)
+GET    /api/registry/suggest        ?goal=<text>                        → Search plugins/agents/skills
+GET    /api/registry/plugins                                            → All available plugins
+```
+
+---
+
 ## Implementation Priority
 
 | Priority | Item | Effort |
 |----------|------|--------|
-| P0 | `TapService` — git clone/pull/remove for GitHub repos | Medium |
-| P1 | Multi-storage `PluginLoader` — scan built-in + taps + local | Low |
-| P2 | REST API endpoints (`/api/v2/taps/add`, `list`, `update`, `remove`) | Medium |
-| P3 | Socket.IO notifications for tap changes | Low |
-| P4 | Frontend sidebar: show tapped teams alongside built-in | Medium |
-| P5 | Meta-team integration: push created plugin to user's GitHub repo | Medium |
+| P0 | `TapService` — git clone/pull/remove + config.json | Medium |
+| P1 | Install API — `POST /taps/add` with validation + limit checks | Medium |
+| P2 | Multi-storage `PluginLoader` — scan built-in + taps + local | Low |
+| P3 | Offboard API — `POST /taps/:id/offboard` with goal checks | Medium |
+| P4 | Disable/Enable API — soft disable without removal | Low |
+| P5 | Socket.IO notifications for all tap lifecycle events | Low |
+| P6 | Frontend sidebar: show tapped teams + install/remove UI | Medium |
+| P7 | `UserLimits` config + enforcement at install/goal/task checkpoints | Medium |
+| P8 | `UsageRecord` tracking in MongoDB + usage API | Medium |
+| P9 | Configure API — `POST /taps/:id/configure` for userConfig values | Low |
+| P10 | Update API — `POST /taps/:id/update` with git pull + eviction | Medium |
+| P11 | Meta-team integration: push created plugin to GitHub | Medium |

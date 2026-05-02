@@ -31,13 +31,13 @@ interface PlanViewerPageProps {
   teams: Agent[];
   selectedTeamId: string | null;
   allTasks: Task[];
-  activePlanId: string | null;
+  activeGoalId: string | null;
   orchestrationLogs: OrchestrationEvent[];
   sessionState: string | null;
   autoExecuteEnabled: boolean;
   onBack: () => void;
   onSelectTeam: (teamId: string) => void;
-  onOpenPlanChat: (teamId: string, planId: string) => void;
+  onOpenPlanChat: (teamId: string, goalId: string) => void;
   onStartTask?: (taskId: string) => void;
 }
 
@@ -289,11 +289,11 @@ function AgentsBar({
 // ─── Main Page ──────────────────────────────────────────────────────────────
 
 export function PlanViewerPage({
-  teams, selectedTeamId, allTasks, activePlanId, orchestrationLogs,
+  teams, selectedTeamId, allTasks, activeGoalId, orchestrationLogs,
   sessionState, autoExecuteEnabled,
   onBack, onSelectTeam, onOpenPlanChat, onStartTask,
 }: PlanViewerPageProps) {
-  const [selectedPlanId, setSelectedPlanId] = useState<string | null>(activePlanId);
+  const [selectedGoalId, setSelectedGoalId] = useState<string | null>(activeGoalId);
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<ViewMode>(() => {
     return (localStorage.getItem('ping:planviewer:view') as ViewMode) || 'list';
@@ -305,9 +305,8 @@ export function PlanViewerPage({
   const plans = useMemo(() => {
     if (!selectedTeamId) return [];
     return storePlans.map(p => ({
-      planId: p.planId ?? p.goalId,
-      goal: p.title,
       goalId: p.goalId,
+      goal: p.title,
       createdAt: p.createdAt,
       status: (p.state === 'done' ? 'completed' : p.state === 'executing' ? 'active' : 'unknown') as PlanSummary['status'],
       taskCount: p.taskCount,
@@ -316,7 +315,7 @@ export function PlanViewerPage({
   }, [selectedTeamId, storePlans]);
 
   // Auto-select first plan if none selected
-  const effectivePlanId = selectedPlanId ?? plans[0]?.planId ?? null;
+  const effectiveGoalId = selectedGoalId ?? plans[0]?.goalId ?? null;
 
   // Group tasks by role
   const tasksByRole = useMemo(() => {
@@ -332,7 +331,7 @@ export function PlanViewerPage({
   }, [allTasks, roleFilter]);
 
   const selectedTask = selectedTaskId ? allTasks.find(t => t.id === selectedTaskId) ?? null : null;
-  const selectedPlan = effectivePlanId ? plans.find(p => p.planId === effectivePlanId) : null;
+  const selectedPlan = effectiveGoalId ? plans.find(p => p.goalId === effectiveGoalId) : null;
 
   const completedCount = allTasks.filter(t => t.status === 'completed').length;
 
@@ -370,9 +369,9 @@ export function PlanViewerPage({
 
         <div className="flex-1" />
 
-        {effectivePlanId && selectedTeamId && (
+        {effectiveGoalId && selectedTeamId && (
           <button
-            onClick={() => onOpenPlanChat(selectedTeamId, effectivePlanId)}
+            onClick={() => onOpenPlanChat(selectedTeamId, effectiveGoalId)}
             className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs text-primary hover:bg-primary/10 transition-colors cursor-pointer"
           >
             Open in Chat
@@ -398,10 +397,10 @@ export function PlanViewerPage({
             ) : (
               plans.map(plan => (
                 <PlanCard
-                  key={plan.planId}
+                  key={plan.goalId}
                   plan={plan}
-                  isActive={plan.planId === effectivePlanId}
-                  onClick={() => { setSelectedPlanId(plan.planId); setSelectedTaskId(null); setRoleFilter(null); }}
+                  isActive={plan.goalId === effectiveGoalId}
+                  onClick={() => { setSelectedGoalId(plan.goalId); setSelectedTaskId(null); setRoleFilter(null); }}
                 />
               ))
             )}
@@ -410,7 +409,7 @@ export function PlanViewerPage({
 
         {/* Center: Task Detail */}
         <div className="flex-1 flex flex-col min-w-0">
-          {effectivePlanId && selectedPlan ? (
+          {effectiveGoalId && selectedPlan ? (
             <>
               {/* Plan header */}
               <div className="px-4 py-3 border-b border-border shrink-0">
@@ -501,7 +500,7 @@ export function PlanViewerPage({
               activeAgents={[]}
               allTasks={allTasks}
               currentPlanName={selectedPlan?.goal}
-              activePlanId={effectivePlanId}
+              activeGoalId={effectiveGoalId}
               agentName={selectedTask.assignedRole ?? undefined}
               isManager={false}
               onClose={() => setSelectedTaskId(null)}

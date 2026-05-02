@@ -31,4 +31,6 @@ export interface ITaskProvider {
    * instead of reaching into queue directly.
    */
   markReady(taskId: string): void;
+  /** Get tasks filtered by goalId */
+  getByGoal(goalId: string): Task[];
 }
