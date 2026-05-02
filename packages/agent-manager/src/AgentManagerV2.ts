@@ -73,6 +73,14 @@ export class AgentManager {
   private pluginRegistry: PluginRegistry = new PluginRegistry();
   private teamId: string = "default";
 
+  /** v3.0: Database persistence for tasks (set by SocketServerV2 from ServiceRegistry) */
+  private taskPersistence: import("./orchestrator/contracts/ITaskPersistence.js").ITaskPersistence | null = null;
+
+  /** Set database persistence service for tasks */
+  setTaskPersistence(service: import("./orchestrator/contracts/ITaskPersistence.js").ITaskPersistence): void {
+    this.taskPersistence = service;
+  }
+
   /** Feature flag: whether chat agents are enabled */
   private chatAgentsEnabled = false;
   /** Optional callback to load prior conversation from storage (injected by AgentManagerRegistry) */
@@ -285,6 +293,7 @@ export class AgentManager {
         setState: (state: any) => self.orchestrator!.setGoalState(goalId, state),
         getPendingPlan: (gid?: string) => self.orchestrator!.getPendingPlan(gid ?? goalId),
         setPendingPlan: (plan: any, gid?: string) => self.orchestrator!.setPendingPlan(plan, gid ?? goalId),
+        taskPersistence: self.taskPersistence,
       };
       const tools = createPlannerTools({
         orchestratorContext: goalOrchestratorContext,
@@ -338,6 +347,7 @@ export class AgentManager {
       createChatAgent,
       onPlannerStream: (data) => this.streamCallbacks?.onStream?.(data),
       chatAgentsEnabled: this.chatAgentsEnabled,
+      taskPersistence: this.taskPersistence,
       callbacks: {
         onStream: (data) => this.streamCallbacks?.onStream?.(data),
         onEvent: (data) => this.streamCallbacks?.onEvent?.(data),
@@ -818,6 +828,9 @@ export class AgentManager {
     this.taskStoreInstance.completeTask(taskId, finalOutput);
     this.filePersistence?.updateStatus(taskId, "completed");
     this.filePersistence?.setOutput(taskId, finalOutput);
+
+    // v3.0: Persist to database
+    this.taskPersistence?.updateTaskStatus(taskId, "completed", finalOutput).catch(() => {});
 
     logger.info(
       `Task ${taskId} completed by user${mergeResult.error ? " (merge failed)" : ""}`,

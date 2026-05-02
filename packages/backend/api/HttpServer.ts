@@ -472,7 +472,7 @@ export class HttpServer {
 
           allGoalSummaries = manager.getAllGoalSummaries?.() ?? [];
 
-          const pendingPlan = manager.getOrchestratorPendingPlan();
+          const pendingPlan = manager.getOrchestratorPendingPlan(activeGoalId || undefined);
           if (pendingPlan) {
             plan = pendingPlan.tasks || pendingPlan;
           }
@@ -498,6 +498,26 @@ export class HttpServer {
                 plan = tasks;
               }
             }
+          }
+
+          // v3.0: If in-memory TaskStore is empty, try database
+          if (tasks.length === 0 && options.services?.tasks && activeGoalId) {
+            try {
+              const dbTasks = await options.services.tasks.getTasksByGoal(activeGoalId);
+              if (dbTasks.length > 0) {
+                tasks = dbTasks.map(t => ({
+                  id: t.taskId,
+                  title: t.title || t.description?.slice(0, 80),
+                  description: t.description,
+                  status: t.status,
+                  assignedRole: t.assignedRole,
+                  priority: t.priority,
+                  dependencies: t.dependencies || [],
+                  goalId: t.goalId,
+                }));
+                if (!plan) plan = tasks;
+              }
+            } catch { /* database fallback is best-effort */ }
           }
         } catch {
           // Manager not initialized — return empty plan/tasks

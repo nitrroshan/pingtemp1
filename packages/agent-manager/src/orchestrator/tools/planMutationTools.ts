@@ -100,6 +100,10 @@ export interface PlanMutationContext {
   availableRoles: string[];
   /** Goal ID — all tasks created by mutation tools inherit this */
   currentGoalId: string;
+  /** Team ID — for persistence scoping */
+  teamId?: string;
+  /** v3.0: Database persistence (optional) */
+  taskPersistence?: { saveTasks(goalId: string, teamId: string, tasks: any[]): Promise<void>; updateTaskStatus(taskId: string, status: string, output?: unknown): Promise<void>; clearTasksByGoal(goalId: string): Promise<void> } | null;
   /** Callback to emit Socket.IO mutation events */
   onMutation?: (event: { type: string; data: any }) => void;
 }
@@ -206,6 +210,18 @@ function normalizeAndAddTasks(
   }
 
   ctx.currentGoalId ? ctx.dagResolver.rebuildForGoal(ctx.tasks, ctx.currentGoalId) : ctx.dagResolver.rebuild(ctx.tasks);
+
+  // v3.0: Persist added tasks to database
+  if (ctx.taskPersistence && ctx.teamId) {
+    ctx.taskPersistence.saveTasks(ctx.currentGoalId, ctx.teamId, rawTasks.map((t: any) => ({
+      taskId: idMap.get(t.id) || t.id,
+      goalId: ctx.currentGoalId, teamId: ctx.teamId,
+      title: t.title, description: `${t.title}: ${t.description}`,
+      status: "pending", assignedRole: t.assignedRole.toLowerCase(),
+      priority: t.priority, dependencies: (t.dependencies || []).map((d: string) => idMap.get(d) || d),
+    }))).catch(() => {});
+  }
+
   return rawTasks.map(t => idMap.get(t.id) || t.id);
 }
 
@@ -251,6 +267,18 @@ export function createUpdateTaskTool(ctx: PlanMutationContext) {
       }
 
       ctx.onMutation?.({ type: "plan:task_updated", data: { taskId: input.taskId, patch: input.patch } });
+
+      // v3.0: Persist updated task fields to database
+      if (ctx.taskPersistence && ctx.teamId) {
+        ctx.taskPersistence.saveTasks(ctx.currentGoalId, ctx.teamId, [{
+          taskId: input.taskId, goalId: ctx.currentGoalId, teamId: ctx.teamId,
+          title: task.title || "", description: task.description,
+          status: task.status, assignedRole: task.assigned_role,
+          priority: task.priority,
+          dependencies: task.prerequisites ? Array.from(task.prerequisites.keys()) : [],
+        }]).catch(() => {});
+      }
+
       return `Task '${input.taskId}' updated successfully`;
     },
     {
@@ -320,6 +348,14 @@ export function createRemoveTaskTool(ctx: PlanMutationContext) {
       }
 
       ctx.currentGoalId ? ctx.dagResolver.rebuildForGoal(ctx.tasks, ctx.currentGoalId) : ctx.dagResolver.rebuild(ctx.tasks);
+
+      // v3.0: Mark removed tasks in database
+      if (ctx.taskPersistence) {
+        for (const id of removed) {
+          ctx.taskPersistence.updateTaskStatus(id, "removed").catch(() => {});
+        }
+      }
+
       ctx.onMutation?.({ type: "plan:task_removed", data: { taskIds: removed } });
       return `Removed ${removed.length} task(s): ${removed.join(", ")}`;
     },
@@ -341,6 +377,17 @@ export function createReprioritizeTool(ctx: PlanMutationContext) {
       task.priority = input.priority;
 
       ctx.onMutation?.({ type: "plan:task_reprioritized", data: { taskId: input.taskId, priority: input.priority } });
+
+      // v3.0: Persist priority change
+      if (ctx.taskPersistence && ctx.teamId) {
+        ctx.taskPersistence.saveTasks(ctx.currentGoalId, ctx.teamId, [{
+          taskId: input.taskId, goalId: ctx.currentGoalId, teamId: ctx.teamId,
+          title: task.title || "", description: task.description,
+          status: task.status, assignedRole: task.assigned_role,
+          priority: input.priority,
+        }]).catch(() => {});
+      }
+
       return `Task '${input.taskId}' priority set to ${input.priority}`;
     },
     {
@@ -372,6 +419,17 @@ export function createReassignTaskTool(ctx: PlanMutationContext) {
       }
 
       ctx.onMutation?.({ type: "plan:task_reassigned", data: { taskId: input.taskId, oldRole, newRole: input.newRole, reason: input.reason, statusReset } });
+
+      // v3.0: Persist reassignment + status reset
+      if (ctx.taskPersistence && ctx.teamId) {
+        ctx.taskPersistence.saveTasks(ctx.currentGoalId, ctx.teamId, [{
+          taskId: input.taskId, goalId: ctx.currentGoalId, teamId: ctx.teamId,
+          title: task.title || "", description: task.description,
+          status: statusReset ? "ready" : task.status, assignedRole: input.newRole.toLowerCase(),
+          priority: task.priority,
+        }]).catch(() => {});
+      }
+
       return statusReset
         ? `Task '${input.taskId}' reassigned from '${oldRole}' to '${input.newRole}' and status reset to ready for re-dispatch.`
         : `Task '${input.taskId}' reassigned from '${oldRole}' to '${input.newRole}'`;
@@ -404,6 +462,14 @@ export function createReplanTool(ctx: PlanMutationContext) {
       }
 
       const normalizedNewIds = normalizeAndAddTasks(ctx, input.newTasks);
+
+      // v3.0: Persist discarded statuses to database
+      if (ctx.taskPersistence) {
+        for (const id of discarded) {
+          ctx.taskPersistence.updateTaskStatus(id, "discarded").catch(() => {});
+        }
+      }
+
       ctx.onMutation?.({ type: "plan:replanned", data: { reason: input.reason, discarded, newTasks: normalizedNewIds } });
       return `Replan complete. Discarded ${discarded.length} task(s), added ${input.newTasks.length} new task(s). Reason: ${input.reason}`;
     },

@@ -57,6 +57,8 @@ export function createPlannerTools(ctx: PlannerToolsContext) {
     dagResolver: ctx.dagResolver,
     availableRoles: octx.teamRoles,
     currentGoalId: octx.currentGoalId!,
+    teamId: octx.teamId,
+    taskPersistence: octx.taskPersistence || null,
     onMutation: ctx.onMutation,
   };
 

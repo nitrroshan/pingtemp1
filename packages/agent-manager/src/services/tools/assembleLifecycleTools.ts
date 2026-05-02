@@ -30,6 +30,8 @@ export interface TaskServices {
   crdtTaskSync: { persistTask(t: any): Promise<void>; syncStatus(id: string, s: string, o?: any): Promise<void>; updateIndex(tasks: any[]): Promise<void> } | null;
   planId: string | null;
   goalId: string | null;
+  taskPersistence?: { saveTasks(goalId: string, teamId: string, tasks: any[]): Promise<void>; updateTaskStatus(taskId: string, status: string, output?: unknown): Promise<void> } | null;
+  teamId?: string;
 }
 
 export interface AssembleLifecycleToolsParams {
@@ -93,6 +95,8 @@ export function assembleLifecycleTools(
         taskStore: taskServices.taskStore,
         dagResolver: taskServices.dagResolver,
         crdtTaskSync: taskServices.crdtTaskSync,
+        taskPersistence: taskServices.taskPersistence || null,
+        teamId: taskServices.teamId,
         onTaskCreated: (data) => callbacks.onTaskCreated?.(data),
       }),
     );

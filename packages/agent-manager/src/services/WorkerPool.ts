@@ -83,6 +83,7 @@ export class WorkerPool {
   private teamRoles: string[] = [];
   private crdtTaskSync: { persistTask(t: any): Promise<void>; syncStatus(id: string, s: string, o?: any): Promise<void>; updateIndex(tasks: any[]): Promise<void> } | null = null;
   private currentGoalId: string | null = null;
+  private taskPersistence: any = null;
 
   /** Resolver for auth token (e.g., GitHub OAuth) — set by AgentManager from user session */
   private authTokenResolver: (() => Promise<string | null>) | null = null;
@@ -132,12 +133,14 @@ export class WorkerPool {
     teamRoles: string[];
     crdtTaskSync?: any;
     goalId?: string | null;
+    taskPersistence?: any;
   }): void {
     this.taskStore = services.taskStore;
     this.dagResolver = services.dagResolver;
     this.teamRoles = services.teamRoles;
     this.crdtTaskSync = services.crdtTaskSync || null;
     this.currentGoalId = services.goalId || null;
+    this.taskPersistence = services.taskPersistence || null;
   }
 
   /**
@@ -294,6 +297,8 @@ export class WorkerPool {
           crdtTaskSync: this.crdtTaskSync,
           planId: taskPlanId || null,
           goalId: taskGoalId || null,
+          taskPersistence: this.taskPersistence,
+          teamId: this.teamId || undefined,
         },
       });
       const additionalTools: any[] = [...lifecycleTools];

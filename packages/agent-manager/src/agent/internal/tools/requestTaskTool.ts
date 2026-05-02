@@ -57,6 +57,10 @@ export interface RequestTaskContext {
   dagResolver: any;
   /** CrdtTaskSync for CRDT persistence */
   crdtTaskSync: any;
+  /** v3.0: Database persistence (optional) */
+  taskPersistence?: { saveTasks(goalId: string, teamId: string, tasks: any[]): Promise<void> } | null;
+  /** Team ID for persistence */
+  teamId?: string;
   /** Callback for notifying orchestrator */
   onTaskCreated?: (data: {
     taskId: string;
@@ -169,6 +173,26 @@ export function createRequestTaskTool(ctx: RequestTaskContext) {
             ctx.taskStore.remove(newTaskId);
             return `Error: Adding this dependency would create a cycle: ${cycleErr}`;
           }
+        }
+      }
+
+      // v3.0: Persist to database AFTER dependency edges are applied (fire-and-forget)
+      if (ctx.taskPersistence && ctx.goalId && ctx.teamId) {
+        ctx.taskPersistence.saveTasks(ctx.goalId, ctx.teamId, [{
+          taskId: newTaskId, goalId: ctx.goalId, teamId: ctx.teamId,
+          title: input.title, description: `${input.title}: ${input.description}`,
+          status: "pending", assignedRole: targetLower,
+          priority: input.priority, planId: ctx.planId || undefined,
+          dependencies: input.relationship === "blocks-me" ? [] : [],
+        }]).catch(() => {});
+        // If blocks-me, also update the parent task's dependencies in DB
+        if (input.relationship === "blocks-me") {
+          const parentDeps = Array.from(ctx.taskStore.get(ctx.taskId)?.prerequisites?.keys() || []);
+          ctx.taskPersistence.saveTasks(ctx.goalId, ctx.teamId, [{
+            taskId: ctx.taskId, goalId: ctx.goalId, teamId: ctx.teamId,
+            title: "", description: "", status: "in_progress",
+            assignedRole: ctx.role, dependencies: parentDeps,
+          }]).catch(() => {});
         }
       }
 

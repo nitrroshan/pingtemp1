@@ -79,6 +79,8 @@ export interface OrchestratorServiceConfig {
   createChatAgent: (goalId: string, role: string) => import("../chatAgent/ChatAgent.js").ChatAgent;
   onPlannerStream: (data: { goalId: string; taskId: string; agentId: string; part: any }) => void;
   chatAgentsEnabled: boolean;
+  /** v3.0: Database persistence for tasks */
+  taskPersistence?: import("./contracts/ITaskPersistence.js").ITaskPersistence | null;
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -161,6 +163,7 @@ export class OrchestratorService {
       createChatAgent: config.createChatAgent,
       onPlannerStream: config.onPlannerStream,
       chatAgentsEnabled: config.chatAgentsEnabled,
+      taskPersistence: config.taskPersistence || null,
       callbacks: {
         onDispatchTask: (taskId, role) => this.handleReadyTask(taskId, role),
         onNotifyPlanner: (goalId, msg) => this.notifyPlanner(goalId, msg),
@@ -260,8 +263,12 @@ export class OrchestratorService {
       onTaskUpdate: (update) => this.callbacks.onWorkerTaskUpdate?.(update),
     });
 
-    // Load active plan for restart recovery
-    await this.goalManager.loadActivePlan();
+    // v3.0: Try database recovery first, fall back to file/CRDT
+    const dbRecovered = await this.goalManager.loadFromDatabase();
+    if (!dbRecovered) {
+      // Load active plan from file/CRDT for restart recovery (legacy path)
+      await this.goalManager.loadActivePlan();
+    }
 
     this.goalManager.setState("idle");
     console.log(`[OrchestratorService] Initialized for team ${this.teamId}`);

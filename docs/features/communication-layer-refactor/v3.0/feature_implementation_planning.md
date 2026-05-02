@@ -4,59 +4,37 @@
 `feature/v3-persistence`
 
 ## Scope
-Task and goal state survives server restart via MongoDB write-through. CRDT stays for collaborative docs only. File stores eliminated.
+Tasks persist to MongoDB via dual-write. Goal metadata persists with goalId. On restart, tasks recover from DB; in_progress tasks reset to ready. Full GoalContext (planner, chat agents) is NOT serializable — only task data + minimal goal shell are recovered.
 
 ## Prerequisites (Complete)
-- [x] v2.5 goalId explicit everywhere (done — zero getCurrentGoalId in action handlers)
-- [x] Frontend sends goalId with every action (done — emitAction includes goalId)
-- [x] Workspace isolation uses goalId, not planId (done — per-task lookup, goalId-keyed directories)
+- [x] v2.5 goalId explicit everywhere
+- [x] Frontend sends goalId with every action
+- [x] Workspace isolation uses goalId, not planId
+- [x] Restore endpoint uses goal-scoped pending plan
 
-## Current State
+## Implementation Status
 
-**Persisted to database:** Goals (MongoGoalService), Chat messages (MongoChatService). Both have SQLite fallback.
+**Done:**
+- ITaskPersistence interface (agent-manager, DIP)
+- MongoTaskService + TaskSchema (compound teamId+taskId unique index)
+- GoalService goalId fix (persists goalId, updates by goalId field)
+- Injection chain: ServiceRegistry → AgentManagerRegistry → AgentManagerV2 → OrchestratorService → GoalManager
+- Dual-write on ALL 14 mutation paths (fire-and-forget with error logging)
+- Startup recovery: `loadFromDatabase()` hydrates TaskStore + GoalContext, resets in_progress→ready
+- Restore endpoint: DB fallback when in-memory TaskStore empty
+- taskPersistence wired through OrchestratorContext → PlanMutationContext → tools
 
-**NOT persisted (lost on restart):** Tasks (in-memory Map), GoalContext state, dependency DAG, worker agents, dispatch queue.
+**Remaining:**
+- [ ] SQLite task persistence (local dev — currently no-op stub)
+- [ ] Remove CRDT/File task persistence after confirming DB path works
 
-**File-based (stale):** FileTaskStore (debounced, never updated during execution), FilePlanStore (structure only), CrdtTaskSync (async, errors swallowed), CrdtGoalStore.
+## Design Decisions
 
-**Key gaps:** No ITaskPersistence interface in agent-manager. No MongoTaskService or TaskSchema. GoalManager constructor has no database injection point. AgentManagerV2 has zero-arg constructor.
+**Restore strategy:** During live execution, in-memory TaskStore is authoritative. The restore endpoint serves live state first, DB fallback second. After restart, `loadFromDatabase()` is the primary recovery source, with `loadActivePlan()` as legacy fallback. This is the intended two-mode design — not a gap.
 
-## Steps
+**GoalContext recovery is minimal:** Planner agents, chat agents, and conversation history can't be serialized. On restart, only task data + basic goal metadata are restored. Planners are re-created when the user interacts.
 
-- [ ] **Step 1: Define ITaskPersistence in agent-manager**
-  - New: `agent-manager/src/orchestrator/contracts/ITaskPersistence.ts`
-  - Methods: `saveTasks`, `updateTaskStatus`, `getTasksByGoal`, `getTasksByTeam`, `clearTasksByGoal`
-
-- [ ] **Step 2: Create MongoTaskService + TaskSchema**
-  - New: `backend/services/mongo/MongoTaskService.ts`, `schemas/TaskSchema.ts`
-  - Schema: `{ taskId, goalId, teamId, title, description, status, assignedRole, priority, output, planId, createdAt, updatedAt }`
-  - New: `backend/services/sqlite/SqliteTaskService.ts`
-  - Register in ServiceRegistry as `tasks`
-
-- [ ] **Step 3: Enhance GoalSchema**
-  - Add: `repoUrl`, `repoBranch`, `planId`, `taskCount`, `completedCount`, `state`
-  - MongoGoalService: add goalId-based lookup (current uses _id)
-
-- [ ] **Step 4: Inject into GoalManager**
-  - GoalManagerConfig: add `taskPersistence?: ITaskPersistence`
-  - AgentManagerV2: resolve from ServiceRegistry, pass to GoalManager
-  - Wire: SocketServerV2 → AgentManagerV2 → GoalManager
-
-- [ ] **Step 5: Wire write-through on ALL mutation paths**
-  - approvePlan → saveTasks
-  - onTaskComplete/Failed/Ready → updateTaskStatus
-  - planMutationTools (add_tasks, remove_task, replan) → saveTasks/clearTasksByGoal
-  - requestTaskTool → saveTasks
-  - handleCompleteTask/CancelTask → updateTaskStatus
-  - All fire-and-forget with error logging
-
-- [ ] **Step 6: Startup recovery**
-  - GoalManager.loadFromDatabase() — hydrate GoalContext + TaskStore from DB
-  - in_progress tasks → reset to ready (workers unrecoverable)
-  - Fallback to loadActivePlan() during transition
-
-- [ ] **Step 7: Restore endpoint from database**
-  - HttpServer restore: tasks from ITaskPersistence.getTasksByGoal instead of in-memory TaskStore
+**Fire-and-forget writes:** All DB writes are async with error logging. They don't block the task execution loop. If DB is down, execution continues and CRDT/File stores provide fallback.
 
 ## Rollback
-Each step independently deployable. Step 5 is dual-write. Revert by removing taskPersistence injection.
+Each step was independently deployable. Revert by removing taskPersistence injection from GoalManagerConfig.

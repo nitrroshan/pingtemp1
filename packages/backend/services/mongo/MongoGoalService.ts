@@ -17,6 +17,7 @@ export class MongoGoalService implements IGoalService {
       teamId: goal.teamId,
       userId: goal.userId,
       goal: goal.goal,
+      goalId: goal.goalId ?? null,
       status: goal.status ?? "pending",
       planId: goal.planId ?? null,
       result: goal.result ?? null,
@@ -36,7 +37,11 @@ export class MongoGoalService implements IGoalService {
 
   async updateGoal(goalId: string, updates: Partial<Goal>): Promise<Goal | null> {
     const GoalModel = await this.getModel();
-    const doc = await GoalModel.findByIdAndUpdate(goalId, updates, { new: true }).lean();
+    // Try goalId field first (v3.0 goal-scoped), fall back to _id (legacy)
+    let doc = await GoalModel.findOneAndUpdate({ goalId }, updates, { new: true }).lean();
+    if (!doc) {
+      doc = await GoalModel.findByIdAndUpdate(goalId, updates, { new: true }).lean();
+    }
     return doc ? this.toGoal(doc) : null;
   }
 
@@ -46,6 +51,7 @@ export class MongoGoalService implements IGoalService {
       teamId: doc.teamId,
       userId: doc.userId,
       goal: doc.goal,
+      goalId: doc.goalId ?? undefined,
       status: doc.status,
       planId: doc.planId ?? undefined,
       result: doc.result ?? undefined,

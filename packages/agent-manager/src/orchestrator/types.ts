@@ -122,6 +122,9 @@ export interface OrchestratorContext {
   // Pending plan management
   getPendingPlan: (goalId?: string) => AgentPlanOutput | null;
   setPendingPlan: (plan: AgentPlanOutput | null, goalId?: string) => void;
+
+  /** v3.0: Database persistence for tasks (optional) */
+  taskPersistence?: import("./contracts/ITaskPersistence.js").ITaskPersistence | null;
 }
 
 /**

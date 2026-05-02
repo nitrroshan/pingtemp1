@@ -122,6 +122,11 @@ export class AgentManagerRegistry {
     // Create AgentManager
     const manager = new AgentManager();
 
+    // v3.0: Inject task persistence service from ServiceRegistry
+    if (this.services?.tasks) {
+      manager.setTaskPersistence(this.services.tasks);
+    }
+
     // Compute workspace/collab paths
     const workspaceDir = process.env.WORKSPACE_BASE_DIR || "./data/workspaces";
     const teamRepoPath = `${workspaceDir}/${teamId}`;
