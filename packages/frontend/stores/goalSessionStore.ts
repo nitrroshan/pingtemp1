@@ -661,15 +661,6 @@ export const useGoalSessionStore = create<GoalSessionState>()(devtools((set, get
       ? incomingGoalId === activeGoal
       : !!activeGoal;
 
-    console.log('[goalSessionStore] handleStateEvent:', {
-      incomingGoalId,
-      activeGoal,
-      isForActiveGoal,
-      hasPlan: !!data.plan,
-      planLength: data.plan?.length,
-      sessionState: data.sessionState,
-    });
-
     if (data.plan && Array.isArray(data.plan) && isForActiveGoal) {
       const incomingTasks: Task[] = data.plan.map(mapBackendTask);
       set(prev => {
