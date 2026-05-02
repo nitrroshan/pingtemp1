@@ -9,7 +9,7 @@
   "knowledgeRefs": [],
   "dependencyTasks": [],
   "createdAt": "2026-05-02T15:37:17.061Z",
-  "lastCommitAt": "2026-05-02T15:43:49.750Z",
+  "lastCommitAt": "2026-05-02T15:44:07.226Z",
   "status": "published",
   "retryCount": 0,
   "publishedArtifacts": [
@@ -51,6 +51,16 @@
     {
       "id": "639047af-task-4-src-layout-index.ts",
       "path": "src/layout/index.ts",
+      "type": "file"
+    },
+    {
+      "id": "639047af-task-4-src-components-ChartComponent.tsx",
+      "path": "src/components/ChartComponent.tsx",
+      "type": "file"
+    },
+    {
+      "id": "639047af-task-4-src-hooks-useRealTimeData.ts",
+      "path": "src/hooks/useRealTimeData.ts",
       "type": "file"
     }
   ],
