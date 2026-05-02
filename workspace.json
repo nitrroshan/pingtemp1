@@ -9,9 +9,101 @@
   "knowledgeRefs": [],
   "dependencyTasks": [],
   "createdAt": "2026-05-02T18:06:34.391Z",
-  "lastCommitAt": "2026-05-02T18:07:17.327Z",
-  "status": "active",
+  "lastCommitAt": "2026-05-02T18:07:32.702Z",
+  "status": "published",
   "retryCount": 0,
+  "publishedArtifacts": [
+    {
+      "id": "fcf0e767-task-2-activity-activity.jsonl",
+      "path": "activity/activity.jsonl",
+      "type": "file"
+    },
+    {
+      "id": "fcf0e767-task-2-docs-websockets_vs_polling.md",
+      "path": "docs/websockets_vs_polling.md",
+      "type": "file"
+    },
+    {
+      "id": "fcf0e767-task-2-README.md",
+      "path": "README.md",
+      "type": "file"
+    },
+    {
+      "id": "fcf0e767-task-2-scratch-run_initialize-react.sh",
+      "path": "scratch/run_initialize-react.sh",
+      "type": "file"
+    },
+    {
+      "id": "fcf0e767-task-2-initialize-react.sh",
+      "path": "initialize-react.sh",
+      "type": "file"
+    },
+    {
+      "id": "fcf0e767-task-2-.gitignore",
+      "path": ".gitignore",
+      "type": "file"
+    },
+    {
+      "id": "fcf0e767-task-2-src-auth-user.model.ts",
+      "path": "src/auth/user.model.ts",
+      "type": "file"
+    },
+    {
+      "id": "fcf0e767-task-2-src-auth-auth.controller.ts",
+      "path": "src/auth/auth.controller.ts",
+      "type": "file"
+    },
+    {
+      "id": "fcf0e767-task-2-src-auth-auth.service.ts",
+      "path": "src/auth/auth.service.ts",
+      "type": "file"
+    },
+    {
+      "id": "fcf0e767-task-2-src-auth-auth.routes.ts",
+      "path": "src/auth/auth.routes.ts",
+      "type": "file"
+    },
+    {
+      "id": "fcf0e767-task-2-src-layout-DashboardLayout.tsx",
+      "path": "src/layout/DashboardLayout.tsx",
+      "type": "file"
+    },
+    {
+      "id": "fcf0e767-task-2-src-layout-index.ts",
+      "path": "src/layout/index.ts",
+      "type": "file"
+    },
+    {
+      "id": "fcf0e767-task-2-src-components-ChartComponent.tsx",
+      "path": "src/components/ChartComponent.tsx",
+      "type": "file"
+    },
+    {
+      "id": "fcf0e767-task-2-src-notes-notes.controller.ts",
+      "path": "src/notes/notes.controller.ts",
+      "type": "file"
+    },
+    {
+      "id": "fcf0e767-task-2-src-notes-notes.routes.ts",
+      "path": "src/notes/notes.routes.ts",
+      "type": "file"
+    },
+    {
+      "id": "fcf0e767-task-2-src-notes-note.model.ts",
+      "path": "src/notes/note.model.ts",
+      "type": "file"
+    },
+    {
+      "id": "fcf0e767-task-2-src-hooks-useRealTimeData.ts",
+      "path": "src/hooks/useRealTimeData.ts",
+      "type": "file"
+    },
+    {
+      "id": "fcf0e767-task-2-src-server.ts",
+      "path": "src/server.ts",
+      "type": "file"
+    }
+  ],
   "activityStats": {
     "totalEntries": 0,
     "toolCalls": 0,
