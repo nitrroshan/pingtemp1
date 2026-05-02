@@ -1,0 +1,20 @@
+{
+  "version": "1.0",
+  "workspaceId": "ws-639047af-task-1-moohmlij",
+  "taskId": "639047af-task-1",
+  "agentId": "frontend",
+  "branchName": "goal-639047af-5377-47ca-a664-784c47842d82/task-639047af-task-1",
+  "baseBranch": "main",
+  "baseCommit": "",
+  "knowledgeRefs": [],
+  "dependencyTasks": [],
+  "createdAt": "2026-05-02T15:19:43.745Z",
+  "lastCommitAt": "2026-05-02T15:19:43.745Z",
+  "status": "active",
+  "retryCount": 0,
+  "activityStats": {
+    "totalEntries": 0,
+    "toolCalls": 0,
+    "errors": 0
+  }
+}
