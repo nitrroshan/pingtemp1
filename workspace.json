@@ -9,9 +9,51 @@
   "knowledgeRefs": [],
   "dependencyTasks": [],
   "createdAt": "2026-05-02T15:26:48.648Z",
-  "lastCommitAt": "2026-05-02T15:28:19.569Z",
-  "status": "active",
+  "lastCommitAt": "2026-05-02T15:29:15.519Z",
+  "status": "published",
   "retryCount": 0,
+  "publishedArtifacts": [
+    {
+      "id": "639047af-task-3-activity-activity.jsonl",
+      "path": "activity/activity.jsonl",
+      "type": "file"
+    },
+    {
+      "id": "639047af-task-3-docs-websockets_vs_polling.md",
+      "path": "docs/websockets_vs_polling.md",
+      "type": "file"
+    },
+    {
+      "id": "639047af-task-3-README.md",
+      "path": "README.md",
+      "type": "file"
+    },
+    {
+      "id": "639047af-task-3-scratch-run_initialize-react.sh",
+      "path": "scratch/run_initialize-react.sh",
+      "type": "file"
+    },
+    {
+      "id": "639047af-task-3-initialize-react.sh",
+      "path": "initialize-react.sh",
+      "type": "file"
+    },
+    {
+      "id": "639047af-task-3-.gitignore",
+      "path": ".gitignore",
+      "type": "file"
+    },
+    {
+      "id": "639047af-task-3-src-layout-DashboardLayout.tsx",
+      "path": "src/layout/DashboardLayout.tsx",
+      "type": "file"
+    },
+    {
+      "id": "639047af-task-3-src-layout-index.ts",
+      "path": "src/layout/index.ts",
+      "type": "file"
+    }
+  ],
   "activityStats": {
     "totalEntries": 0,
     "toolCalls": 0,
