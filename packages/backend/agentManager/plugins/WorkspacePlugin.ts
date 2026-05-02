@@ -139,7 +139,6 @@ export class WorkspacePlugin implements IPlugin {
     if (!existing) {
       await this.l1.createWorkspace(context.role, context.taskId, {
         goalId: context.goalId,
-        planId: context.planId,
         repoUrl: context.repoUrl,
         repoBranch: context.repoBranch,
         authToken: context.authToken,

@@ -53,8 +53,8 @@ export class WorkspaceManager implements IWorkspaceManager {
   /** Merge strategy per workspace — keyed by taskId */
   private mergers: Map<string, IWorkspaceMerger> = new Map();
 
-  /** Tracks primary clone per plan for worktree reuse: planId → repo dir path */
-  private planRepos: Map<string, string> = new Map();
+  /** Tracks primary clone per goal for worktree reuse: goalId → repo dir path */
+  private goalRepos: Map<string, string> = new Map();
 
   /** Event emitter for workspace lifecycle events */
   public readonly events = new EventEmitter();
@@ -98,7 +98,7 @@ export class WorkspaceManager implements IWorkspaceManager {
   async createWorkspace(
     agentId: string,
     taskId: string,
-    initOptions?: WorkspaceInitOptions & { goalId?: string; planId?: string },
+    initOptions?: WorkspaceInitOptions & { goalId?: string },
   ): Promise<AgentWorkspace> {
     // Return existing workspace for this task
     if (this.workspaces.has(taskId)) {
@@ -106,7 +106,7 @@ export class WorkspaceManager implements IWorkspaceManager {
       return this.workspaces.get(taskId)!;
     }
 
-    const useIsolation = initOptions?.repoUrl && initOptions?.planId
+    const useIsolation = initOptions?.repoUrl && initOptions?.goalId
       && process.env.FF_WORKSPACE_ISOLATION !== "false";
     const workspaceId = generateWorkspaceId(taskId);
 
@@ -114,15 +114,16 @@ export class WorkspaceManager implements IWorkspaceManager {
 
     if (useIsolation) {
       // ── ISOLATED MODE: worktree optimization ──
-      // First task for a plan → full clone into plan-{planId}/repo/
+      // First task for a goal → full clone into goal-{goalId}/repo/
       // Subsequent tasks → git worktree add from the primary clone
-      const planDir = path.join(this.workspacesRoot, `plan-${initOptions.planId}`);
+      const dirKey = initOptions.goalId!;
+      const planDir = path.join(this.workspacesRoot, `goal-${dirKey}`);
       const taskDir = path.join(planDir, `task-${taskId}`);
       const branchName = initOptions.goalId
         ? `goal-${initOptions.goalId}/task-${taskId}`
         : `task-${taskId}`;
 
-      const primaryClone = this.planRepos.get(initOptions.planId!);
+      const primaryClone = this.goalRepos.get(dirKey);
 
       if (!primaryClone) {
         // First task → full clone
@@ -149,7 +150,7 @@ export class WorkspaceManager implements IWorkspaceManager {
           logger.info(`Seeded empty cloned repo with initial commit at ${repoDir}`);
         }
 
-        this.planRepos.set(initOptions.planId!, repoDir);
+        this.goalRepos.set(dirKey, repoDir);
 
         // Create worktree for this task from the clone
         const repoGit = cloneGitManager.getGit();
@@ -196,7 +197,7 @@ export class WorkspaceManager implements IWorkspaceManager {
       );
 
       // Store worktree merger — merges from primary clone (where main is checked out)
-      const clonePath = this.planRepos.get(initOptions.planId!) || path.join(planDir, "repo");
+      const clonePath = this.goalRepos.get(dirKey) || path.join(planDir, "repo");
       this.mergers.set(taskId, new WorktreeMerger(clonePath));
     } else {
       // ── SHARED MODE: existing behavior (branch isolation in shared repo) ──
@@ -392,18 +393,18 @@ export class WorkspaceManager implements IWorkspaceManager {
    * Clean up all workspace directories for a completed plan.
    * Removes the `plan-{planId}/` directory and all task workspaces inside it.
    */
-  async cleanupPlan(planId: string): Promise<void> {
+  async cleanupPlan(planId: string, goalId?: string): Promise<void> {
     // Validate planId to prevent path traversal
-    if (!/^[a-zA-Z0-9_\-]+$/.test(planId)) {
-      throw new Error(`Invalid planId format: ${planId}`);
+    if (!/^[a-zA-Z0-9_\-]+$/.test(goalId || planId)) {
+      throw new Error(`Invalid plan/goal key: ${goalId || planId}`);
     }
-    const planDir = path.resolve(this.workspacesRoot, `plan-${planId}`);
+    const planDir = path.resolve(this.workspacesRoot, `goal-${goalId || planId}`);
     if (!planDir.startsWith(path.resolve(this.workspacesRoot))) {
       throw new Error("Path escape detected in cleanupPlan");
     }
 
     // Remove worktrees from the primary clone before deleting directories
-    const primaryClone = this.planRepos.get(planId);
+    const primaryClone = this.goalRepos.get(goalId || planId);
     if (primaryClone) {
       try {
         const repoGitManager = new GitBranchManager(primaryClone, "main");
@@ -413,7 +414,7 @@ export class WorkspaceManager implements IWorkspaceManager {
       } catch {
         // Non-fatal — directory cleanup will still work
       }
-      this.planRepos.delete(planId);
+      this.goalRepos.delete(goalId || planId);
     }
 
     // Remove all workspace entries for this plan from registry

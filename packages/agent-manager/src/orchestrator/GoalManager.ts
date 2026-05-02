@@ -460,7 +460,6 @@ export class GoalManager implements IGoalManager {
           dagResolver: this.dagResolver,
           teamRoles: this.teamRoles,
           crdtTaskSync: resolvedCrdtSync,
-          planId,
           goalId,
         });
       }

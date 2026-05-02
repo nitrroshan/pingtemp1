@@ -23,8 +23,6 @@ export interface ToolContext {
   taskId?: string;
   /** Goal ID — used for goal-scoped branch naming and context */
   goalId?: string;
-  /** Plan ID — used for plan-scoped context */
-  planId?: string;
   /** Git repo URL for workspace isolation (v2.0) */
   repoUrl?: string;
   /** Git branch to clone from (v2.0) */

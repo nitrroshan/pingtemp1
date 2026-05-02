@@ -82,7 +82,6 @@ export class WorkerPool {
   private dagResolver: { rebuild(source: any): void; validateDependencies?(taskId: string, deps: string[]): string | null } | null = null;
   private teamRoles: string[] = [];
   private crdtTaskSync: { persistTask(t: any): Promise<void>; syncStatus(id: string, s: string, o?: any): Promise<void>; updateIndex(tasks: any[]): Promise<void> } | null = null;
-  private currentPlanId: string | null = null;
   private currentGoalId: string | null = null;
 
   /** Resolver for auth token (e.g., GitHub OAuth) — set by AgentManager from user session */
@@ -132,14 +131,12 @@ export class WorkerPool {
     dagResolver: any;
     teamRoles: string[];
     crdtTaskSync?: any;
-    planId?: string | null;
     goalId?: string | null;
   }): void {
     this.taskStore = services.taskStore;
     this.dagResolver = services.dagResolver;
     this.teamRoles = services.teamRoles;
     this.crdtTaskSync = services.crdtTaskSync || null;
-    this.currentPlanId = services.planId || null;
     this.currentGoalId = services.goalId || null;
   }
 
@@ -282,7 +279,9 @@ export class WorkerPool {
 
       // Assemble task-lifecycle tools (report_status, complete_task, request_task, bounce_task)
       // Resolve goalId from the task itself, not the global scalar
-      const taskGoalId = this.taskStore?.get(taskId)?.goalId || this.currentGoalId || null;
+      // Per-task identity — read from TaskStore, not pool-level scalars
+      const perTaskData = this.taskStore?.get(taskId);
+      const taskPlanId = perTaskData?.planId || perTaskData?.context?.planId || null;
 
       const { tools: lifecycleTools } = assembleLifecycleTools({
         taskId,
@@ -293,8 +292,8 @@ export class WorkerPool {
           dagResolver: this.dagResolver,
           teamRoles: this.teamRoles || [],
           crdtTaskSync: this.crdtTaskSync,
-          planId: this.currentPlanId || null,
-          goalId: taskGoalId,
+          planId: taskPlanId || null,
+          goalId: taskGoalId || null,
         },
       });
       const additionalTools: any[] = [...lifecycleTools];
@@ -312,7 +311,6 @@ export class WorkerPool {
           role: roleKey,
           taskId,
           goalId: taskGoalId || undefined,
-          planId: this.currentPlanId || undefined,
           repoUrl: taskRepoUrl,
           repoBranch: taskRepoBranch,
           authToken,

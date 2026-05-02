@@ -126,6 +126,7 @@ export function createRequestTaskTool(ctx: RequestTaskContext) {
         status: "pending" as const,
         priority: input.priority,
         goalId: ctx.goalId || undefined,
+        planId: ctx.planId || undefined,
         prerequisites: new Map<string, boolean>(
           dependencies.map((d) => [d, false] as [string, boolean]),
         ),
