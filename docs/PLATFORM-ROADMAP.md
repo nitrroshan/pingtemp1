@@ -28,13 +28,22 @@
 - ✅ GoalSchema has repoUrl/repoBranch fields
 - ✅ CrdtTaskSync page-type discriminator bug fixed (`type` vs `taskType`)
 - ✅ CRDT fallback recovery removed (MongoDB-only recovery)
+- ✅ TaskStore write-through: all writes await MongoDB BEFORE updating Map cache
+- ✅ MongoTaskService errors propagate (no swallowing)
+- ✅ SQLite unique key fixed: `{teamId, goalId, taskId}`
+- ✅ Dependency cascade routes through `updateStatus()` (persists to MongoDB)
+- ✅ planMutationTools duplicate persistence removed — TaskStore is single writer
+- ✅ request_task duplicate persistence removed — TaskStore is single writer
+- ✅ DocumentRef-based context: agents read via `collab read` URIs, no raw text summaries
+- ✅ `complete_task` upgraded with `producedDocs` + `decisions`
+- ✅ BlockNote server-side: `write-block`/`read-block` use `ServerBlockNoteEditor`
+- ✅ `record-decision` / `get-decisions` collab tool actions
 
 ### What's Still Broken / Missing
 - Plan approval is non-atomic — crash between clear and create loses all tasks
 - Hocuspocus currently uses local filesystem persistence — must switch to S3 for production
 - Planner conversation history lost on restart (in-memory only)
 - contextMessages saved to MongoDB but never restored
-- TaskStore is still in-memory Map (dual-write with MongoDB) — to be replaced by ITaskService/MongoDB-backed service
 
 ---
 
@@ -152,7 +161,7 @@ Server restarts
 | **`userQuotas`** (Phase 6) | userId, maxGoals, maxWorkers, tokenBudget | Resource limits per user |
 | **`metrics`** (future) | goalId, taskId, tokensUsed, cost, duration | Token usage, cost tracking, audit trail |
 
-> **No `output.summary` string.** Task output in MongoDB stores `producedDocs: DocumentRef[]` — URIs pointing to the actual CRDT completion report (`crdt:{taskId}/report`) and workspace files (`workspace:src/api.ts`). The rich content lives in the CRDT report doc. MongoDB only holds the references for querying and recovery.
+> **`output.summary` is kept for backward compatibility.** Task output in MongoDB stores both `summary` (short text) and `producedDocs: DocumentRef[]` (URIs pointing to CRDT completion reports and workspace files). Rich content lives in the CRDT report doc. Downstream agents receive `inputDocs` (DocumentRef URIs) and read content via `collab read` — not raw summary strings. Summary is used as a fallback description when no `producedDocs` are specified.
 
 ### DocumentRef: Universal Exchange Type Between Tasks
 

@@ -32,7 +32,7 @@ export interface WorkerCallbacks {
   onEvent?: (data: { taskId: string; event: any }) => void;
   onDone?: (data: { taskId: string; role: string; output: any }) => void;
   onError?: (data: { taskId: string; error: string }) => void;
-  onAgentComplete?: (data: { taskId: string; role: string; summary: string; deliverables: string[]; nextSteps: string[]; timestamp: number }) => void;
+  onAgentComplete?: (data: { taskId: string; role: string; summary: string; deliverables: string[]; nextSteps: string[]; producedDocs?: Array<{ uri: string; name: string; description?: string }>; decisions?: string[]; timestamp: number }) => void;
   onStatusUpdate?: (data: { taskId: string; role: string; status: string; summary: string; progress?: number; timestamp: number }) => void;
   /** Fired when an agent creates a task via request_task tool */
   onTaskCreated?: (data: { taskId: string; createdBy: string; targetRole: string; relationship: string; parentTaskId: string }) => void;
@@ -635,30 +635,40 @@ export class WorkerPool {
   // ===========================================================================
 
   /**
-   * Build message with context from dependency outputs and orchestrator conversation
-   * Injects previous task outputs and orchestrator context into the message for the agent
+   * Build message with DocumentRef-based context from dependencies.
+   * Agents read actual content via collab read / workspace_read_file — no raw summaries injected.
    */
   private buildMessageWithContext(task: TaskWithContext): string {
     let msg = task.description;
+    const ctx = task.context as any;
 
-    if (task.context.previousOutputs.length > 0) {
-      msg += "\n\n## Context from previous tasks:\n";
-      for (const prev of task.context.previousOutputs) {
-        msg += `\n### Task ${prev.taskId}:\n`;
-        msg += JSON.stringify(prev.output, null, 2) + "\n";
+    // Input Documents (DocumentRefs from upstream producedDocs)
+    const inputDocs = Array.isArray(ctx.inputDocs) ? ctx.inputDocs : [];
+    if (inputDocs.length > 0) {
+      msg += `\n\n## Input Documents`;
+      msg += `\nThese documents were produced by upstream tasks. Read them for context:`;
+      for (const doc of inputDocs) {
+        const scheme = doc.uri?.startsWith("crdt:") ? "collab read" : doc.uri?.startsWith("workspace:") ? "workspace_read_file" : "fetch";
+        const path = doc.uri?.replace(/^(crdt:|workspace:)/, "") || doc.uri;
+        msg += `\n- **${doc.name}**: \`${scheme} ${path}\`${doc.description ? ` — ${doc.description}` : ""}`;
       }
     }
 
+    // Upstream Decisions
+    const decisions = Array.isArray(ctx.upstreamDecisions) ? ctx.upstreamDecisions : [];
+    if (decisions.length > 0) {
+      msg += `\n\n## Upstream Decisions`;
+      for (const d of decisions) {
+        msg += `\n- ${d}`;
+      }
+    }
+
+    // Workspace artifacts (file paths)
     if (task.context.artifacts.length > 0) {
-      msg += `\n\n## Deliverables from Upstream Tasks`;
-      msg += `\nThese are references to work produced by completed tasks you depend on.`;
-      msg += `\n\n**How to access:**`;
-      msg += `\n- **File paths** (e.g. \`src/schema.ts\`): Use \`workspace_read_file\` — files are already merged into your workspace`;
-      msg += `\n- **CRDT docs** (e.g. \`task-1/task\`): Use \`collab read\` to retrieve structured data`;
-      msg += `\n- **Directories**: Use \`workspace_list_files\` to explore and discover related files`;
-      msg += `\n- **Search**: Use \`workspace_grep\` to search file contents, \`workspace_glob\` to find files by pattern`;
-      msg += `\n\nAlways read deliverables before starting work — don't rely solely on summaries.`;
-      msg += `\n\n${task.context.artifacts.join("\n")}`;
+      msg += `\n\n## Workspace Files`;
+      msg += `\nFiles from upstream tasks (already merged to your workspace):`;
+      msg += `\n${task.context.artifacts.join("\n")}`;
+      msg += `\nUse \`workspace_list_files\` to see all available files.`;
     }
 
     return msg;

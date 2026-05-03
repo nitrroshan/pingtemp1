@@ -41,7 +41,7 @@ export class TaskContextBuilder {
     const { task, role, teamRoles, crdtRefs, planStore } = input;
     const taskCtx = (typeof task.context === "object" ? task.context : {}) as Record<string, any>;
 
-    const previousOutputs = Array.isArray(taskCtx.upstreamOutputs) ? taskCtx.upstreamOutputs : [];
+    const previousOutputs: any[] = []; // kept for backward compat in return type
     const artifacts = [
       ...(Array.isArray(taskCtx.upstreamArtifacts) ? taskCtx.upstreamArtifacts : []),
       ...(Array.isArray(taskCtx.files) ? taskCtx.files : []),
@@ -50,24 +50,39 @@ export class TaskContextBuilder {
 
     let enrichedDescription = task.description;
 
-    // ── Upstream task outputs ───────────────────────────────────────
-    if (previousOutputs.length > 0) {
-      enrichedDescription += `\n\n## Completed Upstream Work`;
-      enrichedDescription += `\nThese tasks completed before yours. Their output files are already in your workspace (merged to main).`;
-      for (const po of previousOutputs) {
-        enrichedDescription += `\n\n### ${po.taskId} (${po.role})${po.status === "failed" ? " ❌ FAILED" : ""}`;
-        enrichedDescription += `\n${po.summary}`;
+    // ── Input Documents (DocumentRef — agents read via collab) ──────
+    const inputDocs = Array.isArray(taskCtx.inputDocs) ? taskCtx.inputDocs : [];
+    if (inputDocs.length > 0) {
+      enrichedDescription += `\n\n## Input Documents`;
+      enrichedDescription += `\nThese documents were produced by upstream tasks. Read them for context:`;
+      for (const doc of inputDocs) {
+        const scheme = doc.uri?.startsWith("crdt:") ? "collab read" : doc.uri?.startsWith("workspace:") ? "workspace_read_file" : "fetch";
+        const path = doc.uri?.replace(/^(crdt:|workspace:)/, "") || doc.uri;
+        enrichedDescription += `\n- **${doc.name}**: \`${scheme} ${path}\`${doc.description ? ` — ${doc.description}` : ""}${doc.hint ? ` (${doc.hint})` : ""}`;
       }
-      if (artifacts.length > 0) {
-        enrichedDescription += `\n\n**Files/artifacts from upstream:** ${artifacts.join(", ")}`;
+    }
+
+    // ── Upstream Decisions ───────────────────────────────────────────
+    const upstreamDecisions = Array.isArray(taskCtx.upstreamDecisions) ? taskCtx.upstreamDecisions : [];
+    if (upstreamDecisions.length > 0) {
+      enrichedDescription += `\n\n## Upstream Decisions`;
+      enrichedDescription += `\nThese decisions were made by upstream tasks. Respect them:`;
+      for (const d of upstreamDecisions) {
+        enrichedDescription += `\n- ${d}`;
       }
-      enrichedDescription += `\n\nUse \`workspace_list_files\` to see all available files in your workspace.`;
+    }
+
+    // ── Workspace artifacts ─────────────────────────────────────────
+    if (artifacts.length > 0) {
+      enrichedDescription += `\n\n## Workspace Files`;
+      enrichedDescription += `\nFiles from upstream tasks (already merged to your workspace):`;
+      enrichedDescription += `\n${artifacts.map((a: string) => `- ${a}`).join("\n")}`;
+      enrichedDescription += `\nUse \`workspace_list_files\` to see all available files.`;
     }
 
     // ── Notes + expected output ─────────────────────────────────────
     const allNotes: string[] = [
       ...(Array.isArray(taskCtx.notes) ? taskCtx.notes : taskCtx.notes ? [taskCtx.notes] : []),
-      ...(Array.isArray(taskCtx.upstreamNotes) ? taskCtx.upstreamNotes : []),
     ];
     if (allNotes.length > 0) {
       enrichedDescription += `\n\nNotes:\n${allNotes.map((n: string) => `- ${n}`).join("\n")}`;
@@ -80,7 +95,7 @@ export class TaskContextBuilder {
     const references = Array.isArray(taskCtx.references) ? taskCtx.references : [];
     const unresolvedRefs: string[] = [];
     if (references.length > 0 && planStore) {
-      const priorOutputs: string[] = [];
+      const resolvedRefs: Array<{ uri: string; name: string; description: string }> = [];
       for (const ref of references) {
         try {
           const [refPlanOrGoal, refTaskId] = ref.split("/");
@@ -93,11 +108,14 @@ export class TaskContextBuilder {
           if (matchPlan) {
             const stored = await planStore.loadPlan(matchPlan.planId, matchPlan.goalId);
             const refTask = stored?.plan?.tasks?.find((t: any) => t.id === refTaskId);
-            if (refTask?.output) {
-              const summary = typeof refTask.output === "string" ? refTask.output : JSON.stringify(refTask.output).slice(0, 500);
-              priorOutputs.push(`- ${ref}: ${summary}`);
+            if (refTask) {
+              resolvedRefs.push({
+                uri: `crdt:${refTaskId}/task`,
+                name: `${ref} (${refTask.assignedRole || "unknown"})`,
+                description: refTask.title || refTask.description?.slice(0, 100) || "Prior task output",
+              });
             } else {
-              unresolvedRefs.push(`${ref} (task found, no output)`);
+              unresolvedRefs.push(`${ref} (task not found in plan)`);
             }
           } else {
             unresolvedRefs.push(`${ref} (plan/goal not found)`);
@@ -106,8 +124,11 @@ export class TaskContextBuilder {
           unresolvedRefs.push(`${ref} (error: ${err})`);
         }
       }
-      if (priorOutputs.length > 0) {
-        enrichedDescription += `\n\n## Prior Work (from previous plans)\n${priorOutputs.join("\n")}`;
+      if (resolvedRefs.length > 0) {
+        enrichedDescription += `\n\n## Prior Work (from previous plans)`;
+        for (const doc of resolvedRefs) {
+          enrichedDescription += `\n- **${doc.name}**: \`collab read ${doc.uri.replace("crdt:", "")}\` — ${doc.description}`;
+        }
       }
       if (unresolvedRefs.length > 0) {
         log.warn(`Task ${task.id}: ${unresolvedRefs.length}/${references.length} cross-plan refs unresolved`);

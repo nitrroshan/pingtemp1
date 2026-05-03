@@ -58,7 +58,7 @@ export interface RequestTaskContext {
   /** CrdtTaskSync for CRDT persistence */
   crdtTaskSync: any;
   /** v3.0: Database persistence (optional) */
-  taskPersistence?: { saveTasks(goalId: string, teamId: string, tasks: any[]): Promise<void> } | null;
+  taskPersistence?: { saveTasks(goalId: string, teamId: string, tasks: any[]): Promise<void>; updateTaskStatus?(taskId: string, goalId: string, status: string, output?: unknown): Promise<void> } | null;
   /** Team ID for persistence */
   teamId?: string;
   /** Callback for notifying orchestrator */
@@ -161,40 +161,33 @@ export function createRequestTaskTool(ctx: RequestTaskContext) {
       if (input.relationship === "blocks-me") {
         const currentTask = ctx.taskStore.get(ctx.taskId);
         if (currentTask) {
-          currentTask.prerequisites.set(newTaskId, false);
-          // Validate no cycle
+          // Validate cycle BEFORE persisting
+          const testPrereqs = new Map(currentTask.prerequisites);
+          testPrereqs.set(newTaskId, false);
           const cycleErr = ctx.dagResolver.validateDependencies?.(
             ctx.taskId,
-            Array.from(currentTask.prerequisites.keys()),
+            Array.from(testPrereqs.keys()),
           );
           if (cycleErr) {
-            // Rollback
-            currentTask.prerequisites.delete(newTaskId);
+            // Rollback — remove child from Map AND mark discarded in durable storage
             ctx.taskStore.remove(newTaskId);
+            if (ctx.taskPersistence && ctx.goalId) {
+              try {
+                await ctx.taskPersistence.updateTaskStatus?.(newTaskId, ctx.goalId, "discarded");
+              } catch {
+                // Best effort — task may remain as pending in DB, cleaned up on next replan
+              }
+            }
             return `Error: Adding this dependency would create a cycle: ${cycleErr}`;
           }
+          // Add prerequisite via TaskStore (persists to MongoDB)
+          await ctx.taskStore.addPrerequisite(ctx.taskId, newTaskId);
         }
       }
 
-      // v3.0: Persist to database AFTER dependency edges are applied (fire-and-forget)
-      if (ctx.taskPersistence && ctx.goalId && ctx.teamId) {
-        ctx.taskPersistence.saveTasks(ctx.goalId, ctx.teamId, [{
-          taskId: newTaskId, goalId: ctx.goalId, teamId: ctx.teamId,
-          title: input.title, description: `${input.title}: ${input.description}`,
-          status: "pending", assignedRole: targetLower,
-          priority: input.priority, planId: ctx.planId || undefined,
-          dependencies: input.relationship === "blocks-me" ? [] : [],
-        }]).catch(() => {});
-        // If blocks-me, also update the parent task's dependencies in DB
-        if (input.relationship === "blocks-me") {
-          const parentDeps = Array.from(ctx.taskStore.get(ctx.taskId)?.prerequisites?.keys() || []);
-          ctx.taskPersistence.saveTasks(ctx.goalId, ctx.teamId, [{
-            taskId: ctx.taskId, goalId: ctx.goalId, teamId: ctx.teamId,
-            title: "", description: "", status: "in_progress",
-            assignedRole: ctx.role, dependencies: parentDeps,
-          }]).catch(() => {});
-        }
-      }
+      // TaskStore write-through already persisted the new task to MongoDB.
+      // Event bus already handles CRDT projection.
+      // No duplicate persistence calls needed.
 
       // Rebuild DAG
       try {
@@ -203,15 +196,7 @@ export function createRequestTaskTool(ctx: RequestTaskContext) {
         return `Error rebuilding DAG: ${err.message}`;
       }
 
-      // Persist to CRDT
-      if (ctx.crdtTaskSync) {
-        try {
-          await ctx.crdtTaskSync.persistTask(newTask);
-          await ctx.crdtTaskSync.updateIndex(ctx.taskStore.getAll());
-        } catch (err: any) {
-          // Non-fatal — task is in TaskStore, CRDT will sync later
-        }
-      }
+      // CRDT projection handled by event bus — no direct calls needed
 
       // Update runtime cache (secondary — TaskStore.getAll() is primary for guard rail check)
       const cacheKey = `${ctx.role}:${ctx.planId}`;

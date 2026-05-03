@@ -8,171 +8,44 @@
 import { tool } from "@langchain/core/tools";
 import { z } from "zod";
 import * as Y from "yjs";
-import crypto from "crypto";
 import type { StructuredToolInterface } from "@langchain/core/tools";
 import type { IL2CollaborationPlugin } from "../../types/plugins.js";
 import type { CollaborationSpace } from "../collaboration/CollaborationSpace.js";
 import type { CollabDocument } from "../collaboration/CollabDocument.js";
+import { ServerBlockNoteEditor } from "@blocknote/server-util";
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// BlockNote Y.XmlFragment helpers — lets agents write rich text blocks
+// BlockNote Server Editor — singleton for markdown ↔ Y.XmlFragment conversion
 // ═══════════════════════════════════════════════════════════════════════════════
 
-function generateBlockId(): string {
-  return crypto.randomUUID().slice(0, 8);
+let _serverEditor: ServerBlockNoteEditor | null = null;
+function getServerEditor(): ServerBlockNoteEditor {
+  if (!_serverEditor) {
+    _serverEditor = ServerBlockNoteEditor.create();
+  }
+  return _serverEditor;
 }
 
 /**
- * Insert a paragraph block into a BlockNote Y.XmlFragment.
- * Creates the exact XML structure BlockNote expects.
+ * Convert markdown text to BlockNote blocks and write to Y.XmlFragment.
+ * Replaces the old insertParagraph/insertHeading/markdownToBlocks helpers.
  */
-function insertParagraph(
-  fragment: Y.XmlFragment,
-  text: string,
-  attrs?: { textColor?: string; backgroundColor?: string },
-): void {
-  // Find or create the root blockGroup
-  let blockGroup: Y.XmlElement;
-  if (fragment.length > 0) {
-    blockGroup = fragment.get(0) as Y.XmlElement;
-  } else {
-    blockGroup = new Y.XmlElement("blockGroup");
-    fragment.insert(0, [blockGroup]);
-  }
-
-  const blockContainer = new Y.XmlElement("blockContainer");
-  blockContainer.setAttribute("id", generateBlockId());
-  blockContainer.setAttribute("textColor", attrs?.textColor || "default");
-  blockContainer.setAttribute(
-    "backgroundColor",
-    attrs?.backgroundColor || "default",
-  );
-  blockContainer.setAttribute("textAlignment", "left");
-
-  const paragraph = new Y.XmlElement("paragraph");
-  const xmlText = new Y.XmlText(text);
-  paragraph.insert(0, [xmlText]);
-  blockContainer.insert(0, [paragraph]);
-
-  blockGroup.insert(blockGroup.length, [blockContainer]);
+async function markdownToXmlFragment(fragment: Y.XmlFragment, markdown: string): Promise<number> {
+  const editor = getServerEditor();
+  const blocks = await editor.tryParseMarkdownToBlocks(markdown);
+  editor.blocksToYXmlFragment(blocks, fragment);
+  return blocks.length;
 }
 
 /**
- * Insert a heading block into a BlockNote Y.XmlFragment.
+ * Read Y.XmlFragment content as markdown text.
+ * Replaces the old xmlFragmentToText helper.
  */
-function insertHeading(
-  fragment: Y.XmlFragment,
-  text: string,
-  level: number = 2,
-): void {
-  let blockGroup: Y.XmlElement;
-  if (fragment.length > 0) {
-    blockGroup = fragment.get(0) as Y.XmlElement;
-  } else {
-    blockGroup = new Y.XmlElement("blockGroup");
-    fragment.insert(0, [blockGroup]);
-  }
-
-  const blockContainer = new Y.XmlElement("blockContainer");
-  blockContainer.setAttribute("id", generateBlockId());
-  blockContainer.setAttribute("textColor", "default");
-  blockContainer.setAttribute("backgroundColor", "default");
-  blockContainer.setAttribute("textAlignment", "left");
-
-  const heading = new Y.XmlElement("heading");
-  heading.setAttribute("level", String(level));
-  const xmlText = new Y.XmlText(text);
-  heading.insert(0, [xmlText]);
-  blockContainer.insert(0, [heading]);
-
-  blockGroup.insert(blockGroup.length, [blockContainer]);
-}
-
-/**
- * Extract plain text from a BlockNote Y.XmlFragment.
- * Reads headings, paragraphs, and other block types back as readable text.
- */
-function xmlFragmentToText(fragment: Y.XmlFragment): string {
-  const lines: string[] = [];
-
-  function extractText(node: any): string {
-    if (node instanceof Y.XmlText) {
-      return node.toString();
-    }
-    if (node instanceof Y.XmlElement || node instanceof Y.XmlFragment) {
-      let text = "";
-      for (let i = 0; i < node.length; i++) {
-        text += extractText(node.get(i));
-      }
-      return text;
-    }
-    return "";
-  }
-
-  function walkBlocks(node: any): void {
-    if (!(node instanceof Y.XmlElement) && !(node instanceof Y.XmlFragment))
-      return;
-
-    const nodeName = node instanceof Y.XmlElement ? node.nodeName : "";
-
-    if (nodeName === "heading") {
-      const level = parseInt(
-        (node as Y.XmlElement).getAttribute("level") || "2",
-      );
-      const prefix = "#".repeat(level);
-      lines.push(`${prefix} ${extractText(node)}`);
-    } else if (nodeName === "paragraph") {
-      const text = extractText(node);
-      if (text) lines.push(text);
-    } else if (nodeName === "bulletListItem") {
-      lines.push(`- ${extractText(node)}`);
-    } else if (nodeName === "numberedListItem") {
-      lines.push(`1. ${extractText(node)}`);
-    } else if (
-      nodeName === "blockContainer" ||
-      nodeName === "blockGroup" ||
-      nodeName === ""
-    ) {
-      // Recurse into containers
-      for (let i = 0; i < node.length; i++) {
-        walkBlocks(node.get(i));
-      }
-    } else {
-      // Unknown block type — extract raw text
-      const text = extractText(node);
-      if (text) lines.push(text);
-    }
-  }
-
-  walkBlocks(fragment);
-  return lines.join("\n");
-}
-
-/**
- * Convert markdown-like text to BlockNote blocks.
- * Supports: # headings, ## subheadings, plain paragraphs, --- dividers, - bullets
- */
-function markdownToBlocks(fragment: Y.XmlFragment, text: string): number {
-  const lines = text.split("\n").filter((l) => l.trim());
-  let count = 0;
-  for (const line of lines) {
-    const trimmed = line.trim();
-    if (trimmed.startsWith("### ")) {
-      insertHeading(fragment, trimmed.slice(4), 3);
-    } else if (trimmed.startsWith("## ")) {
-      insertHeading(fragment, trimmed.slice(3), 2);
-    } else if (trimmed.startsWith("# ")) {
-      insertHeading(fragment, trimmed.slice(2), 1);
-    } else if (trimmed.startsWith("- ") || trimmed.startsWith("* ")) {
-      insertParagraph(fragment, "• " + trimmed.slice(2));
-    } else if (trimmed === "---" || trimmed === "***") {
-      // Skip dividers
-    } else {
-      insertParagraph(fragment, trimmed);
-    }
-    count++;
-  }
-  return count;
+async function xmlFragmentToMarkdown(fragment: Y.XmlFragment): Promise<string> {
+  const editor = getServerEditor();
+  const blocks = editor.yXmlFragmentToBlocks(fragment);
+  if (blocks.length === 0) return "";
+  return await editor.blocksToMarkdownLossy(blocks);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -629,13 +502,13 @@ export function createCollabTool(
         const text =
           typeof value === "string" ? value : JSON.stringify(value, null, 2);
 
-        // If key is provided, add it as a heading first
-        if (key) {
-          insertHeading(fragment, `${key} (by ${agentRole})`, 2);
-        }
+        // Build markdown with optional heading
+        const markdown = key
+          ? `## ${key} (by ${agentRole})\n\n${text}`
+          : text;
 
-        // Convert text to BlockNote blocks
-        const blockCount = markdownToBlocks(fragment, text);
+        // Convert markdown → BlockNote blocks → Y.XmlFragment
+        const blockCount = await markdownToXmlFragment(fragment, markdown);
 
         // Auto-populate _meta
         await ensureMeta(doc, agentRole, description);
@@ -648,7 +521,7 @@ export function createCollabTool(
 
         const doc = await space.openDoc(docName);
         const fragment = doc.getXmlFragment("content");
-        const text = xmlFragmentToText(fragment);
+        const text = await xmlFragmentToMarkdown(fragment);
 
         if (!text.trim()) {
           return `Document "${docName}" editor is empty — no rich text content yet.`;
@@ -860,7 +733,47 @@ export function createCollabTool(
         return `Unknown discuss operation "${op}". Use key = "post" | "read" | "decide".`;
       }
 
-      return `Unknown action "${action}". Use: discover, list, read, read-block, write, write-block, discuss.`;
+      // === RECORD-DECISION: Store a key decision on a task/goal CRDT doc ===
+      if (action === "record-decision") {
+        if (!docName || !key || !value)
+          return "docName, key (decision name), and value (decision text or { decision, rationale?, agreedBy? }) required.";
+
+        const doc = await space.openDoc(docName);
+        const decisions = doc.getMap("decisions");
+        const parsed = typeof value === "string" ? { decision: value } : value;
+
+        decisions.set(key, {
+          decision: parsed.decision || String(value),
+          rationale: parsed.rationale || undefined,
+          agreedBy: parsed.agreedBy || [agentRole],
+          recordedBy: agentRole,
+          timestamp: new Date().toISOString(),
+        });
+
+        return `Decision "${key}" recorded on "${docName}": ${parsed.decision || value}`;
+      }
+
+      // === GET-DECISIONS: Read all decisions from a task/goal CRDT doc ===
+      if (action === "get-decisions") {
+        if (!docName) return "Provide docName to read decisions from.";
+
+        const doc = await space.openDoc(docName);
+        const decisions = doc.getMap("decisions");
+        const data = decisions.toJSON();
+        const keys = Object.keys(data);
+
+        if (keys.length === 0) {
+          return `No decisions recorded on "${docName}" yet. Use record-decision to add one.`;
+        }
+
+        const lines = keys.map(k => {
+          const d = data[k];
+          return `- **${k}**: ${d.decision} (by ${d.recordedBy}, ${d.timestamp})${d.rationale ? ` — ${d.rationale}` : ""}`;
+        });
+        return [`Decisions on "${docName}" (${keys.length}):`, ...lines].join("\n");
+      }
+
+      return `Unknown action "${action}". Use: discover, list, read, read-block, write, write-block, discuss, record-decision, get-decisions.`;
     },
     {
       name: "collab",
@@ -881,6 +794,8 @@ export function createCollabTool(
         '               post: push a message block { content, type?, mentions? }',
         '               read: get new blocks since your last read (cursor-based)',
         '               decide: record a decision { key, decision, agreedBy? }',
+        "  record-decision — store a key decision on any CRDT doc (key = decision name, value = { decision, rationale?, agreedBy? })",
+        "  get-decisions   — read all decisions from a CRDT doc",
       ].join("\n"),
       schema: z.object({
         action: z
@@ -892,9 +807,11 @@ export function createCollabTool(
             "write",
             "write-block",
             "discuss",
+            "record-decision",
+            "get-decisions",
           ])
           .describe(
-            "discover | list | read | read-block | write | write-block | discuss",
+            "discover | list | read | read-block | write | write-block | discuss | record-decision | get-decisions",
           ),
         docName: z
           .string()

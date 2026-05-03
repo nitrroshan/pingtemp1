@@ -752,7 +752,10 @@ export class GoalManager implements IGoalManager {
   /** Worker completed via complete_task tool → merge workspace, then mark complete */
   async onWorkerDone(data: {
     taskId: string; role: string; summary: string;
-    deliverables?: string[]; nextSteps?: string[]; timestamp: number;
+    deliverables?: string[]; nextSteps?: string[];
+    producedDocs?: Array<{ uri: string; name: string; description?: string }>;
+    decisions?: string[];
+    timestamp: number;
   }): Promise<void> {
     log.info(`[GoalManager] Worker done: ${data.taskId}`);
 
@@ -817,7 +820,10 @@ export class GoalManager implements IGoalManager {
     await this.taskStore.completeTask(data.taskId, {
       summary: data.summary,
       deliverables: data.deliverables,
-      nextSteps: data.nextSteps, completedBy: "agent", timestamp: data.timestamp,
+      nextSteps: data.nextSteps,
+      producedDocs: data.producedDocs,
+      decisions: data.decisions,
+      completedBy: "agent", timestamp: data.timestamp,
     });
     // Note: TaskStore write-through handles MongoDB persistence
 
@@ -827,7 +833,7 @@ export class GoalManager implements IGoalManager {
       type: "task_completed",
       goalId: doneGoalId, teamId: this.teamId,
       taskId: data.taskId, role: data.role,
-      output: { summary: data.summary, deliverables: data.deliverables },
+      output: { summary: data.summary, deliverables: data.deliverables, producedDocs: data.producedDocs, decisions: data.decisions },
       newlyReady: [],
       timestamp: data.timestamp,
     }]);

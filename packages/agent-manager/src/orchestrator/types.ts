@@ -222,7 +222,10 @@ export interface IGoalManager {
   onTaskFailed(data: { taskId: string; error: string }): void;
   onWorkerDone(data: {
     taskId: string; role: string; summary: string;
-    deliverables?: string[]; nextSteps?: string[]; timestamp: number;
+    deliverables?: string[]; nextSteps?: string[];
+    producedDocs?: Array<{ uri: string; name: string; description?: string }>;
+    decisions?: string[];
+    timestamp: number;
   }): Promise<void>;
 
   // State management

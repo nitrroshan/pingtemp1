@@ -328,6 +328,40 @@ export class TaskStore implements ITaskProvider {
     log.debug(`Task ${taskId} updated`);
   }
 
+  /** Add a prerequisite to a task. Persists to MongoDB. */
+  async addPrerequisite(taskId: string, prerequisiteTaskId: string): Promise<void> {
+    const task = this.tasks.get(taskId);
+    if (!task) throw new Error(`Task '${taskId}' not found`);
+
+    task.prerequisites.set(prerequisiteTaskId, false);
+
+    // Persist updated dependencies to MongoDB
+    if (this.persistence && task.goalId) {
+      await this.persistence.saveTasks(task.goalId, this.teamId, [{
+        taskId: task.id,
+        goalId: task.goalId,
+        teamId: this.teamId,
+        title: task.title || task.description?.slice(0, 80),
+        description: task.description,
+        status: task.status,
+        assignedRole: task.assigned_role,
+        priority: task.priority,
+        output: task.output,
+        planId: task.planId,
+        dependencies: Array.from(task.prerequisites.keys()),
+      }]);
+    }
+
+    log.debug(`Task ${taskId}: added prerequisite ${prerequisiteTaskId}`);
+  }
+
+  /** Remove a prerequisite from a task. */
+  removePrerequisite(taskId: string, prerequisiteTaskId: string): void {
+    const task = this.tasks.get(taskId);
+    if (!task) return;
+    task.prerequisites.delete(prerequisiteTaskId);
+  }
+
   /** Remove a task. Cleans up references in other tasks. */
   remove(taskId: string): boolean {
     const task = this.tasks.get(taskId);
@@ -481,37 +515,55 @@ export class TaskStore implements ITaskProvider {
   }
 
   /**
-   * Enrich a dependant task's context with an upstream task's output.
-   * Works for both completed tasks (output.summary) and failed tasks (output.error).
+   * Enrich a dependant task's context with upstream task's DocumentRefs and decisions.
+   * Agents read actual content via `collab read` — no raw text summaries injected.
    */
   private enrichDependantContext(dependant: Task, upstream: Task): void {
     const ctx = (typeof dependant.context === "object" ? dependant.context : {}) as Record<string, any>;
 
-    // Initialize arrays if needed
-    if (!Array.isArray(ctx.upstreamOutputs)) ctx.upstreamOutputs = [];
-    if (!Array.isArray(ctx.upstreamArtifacts)) ctx.upstreamArtifacts = [];
-    if (!Array.isArray(ctx.upstreamNotes)) ctx.upstreamNotes = [];
+    if (!upstream.output) {
+      dependant.context = ctx;
+      return;
+    }
 
-    // Add upstream task summary (works for both completed and failed tasks)
-    if (upstream.output) {
-      ctx.upstreamOutputs.push({
-        taskId: upstream.id,
-        role: upstream.assigned_role,
-        status: upstream.status,
-        summary: upstream.output.summary || upstream.output.error || "",
-      });
+    // InputDocs: DocumentRefs from upstream producedDocs
+    if (!Array.isArray(ctx.inputDocs)) ctx.inputDocs = [];
+    if (Array.isArray(upstream.output.producedDocs) && upstream.output.producedDocs.length > 0) {
+      ctx.inputDocs.push(...upstream.output.producedDocs);
+    }
 
-      // Collect deliverables as artifact references
-      if (Array.isArray(upstream.output.deliverables)) {
-        ctx.upstreamArtifacts.push(...upstream.output.deliverables);
+    // Auto-generate DocumentRefs from deliverables (workspace files) when no producedDocs specified
+    // This ensures downstream agents always know which files to read
+    if (!upstream.output.producedDocs?.length && Array.isArray(upstream.output.deliverables)) {
+      for (const path of upstream.output.deliverables) {
+        ctx.inputDocs.push({
+          uri: `workspace:${path}`,
+          name: path.split("/").pop() || path,
+          description: `Produced by ${upstream.assigned_role}`,
+        });
       }
+    }
 
-      // Collect next steps as notes for downstream
-      if (Array.isArray(upstream.output.nextSteps)) {
-        for (const step of upstream.output.nextSteps) {
-          ctx.upstreamNotes.push(`From ${upstream.assigned_role}: ${step}`);
-        }
-      }
+    // Always include CRDT task doc as a context reference (has description + metadata)
+    ctx.inputDocs.push({
+      uri: `crdt:${upstream.id}/task`,
+      name: `${upstream.assigned_role} task context`,
+      description: upstream.output.summary || upstream.output.error || "Task output",
+      hint: upstream.output.summary ? `Summary: ${upstream.output.summary.slice(0, 200)}` : undefined,
+    });
+
+    // Upstream decisions
+    if (Array.isArray(upstream.output.decisions)) {
+      if (!Array.isArray(ctx.upstreamDecisions)) ctx.upstreamDecisions = [];
+      ctx.upstreamDecisions.push(...upstream.output.decisions.map((d: string) =>
+        `[${upstream.assigned_role}] ${d}`
+      ));
+    }
+
+    // Workspace artifacts (file paths from deliverables)
+    if (Array.isArray(upstream.output.deliverables)) {
+      if (!Array.isArray(ctx.upstreamArtifacts)) ctx.upstreamArtifacts = [];
+      ctx.upstreamArtifacts.push(...upstream.output.deliverables);
     }
 
     dependant.context = ctx;
@@ -530,8 +582,10 @@ export class TaskStore implements ITaskProvider {
       priority: task.priority || 0,
       goalId: task.goalId,
       context: {
-        previousOutputs: Object.values(context),
-        artifacts: [],
+        previousOutputs: [],  // empty — DocumentRef-based context via inputDocs
+        inputDocs: Array.isArray(context.inputDocs) ? context.inputDocs : [],
+        upstreamDecisions: Array.isArray(context.upstreamDecisions) ? context.upstreamDecisions : [],
+        artifacts: Array.isArray(context.upstreamArtifacts) ? context.upstreamArtifacts : [],
       },
       createdAt: Date.now(),
       status: "queued",

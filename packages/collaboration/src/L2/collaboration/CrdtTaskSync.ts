@@ -144,6 +144,28 @@ export class CrdtTaskSync {
         map.set("completedAt", new Date().toISOString());
         if (output != null) {
           map.set("output", output);
+
+          // Write readable completion report to Y.XmlFragment("content")
+          // so downstream agents can read via `collab read-block {taskId}/task`
+          try {
+            const { ServerBlockNoteEditor } = await import("@blocknote/server-util");
+            const editor = ServerBlockNoteEditor.create();
+            const reportMd = [
+              `## Completion Report`,
+              ``,
+              `**Summary:** ${output.summary || "Completed"}`,
+              output.deliverables?.length ? `\n**Deliverables:**\n${output.deliverables.map((d: string) => `- ${d}`).join("\n")}` : "",
+              output.producedDocs?.length ? `\n**Produced Documents:**\n${output.producedDocs.map((d: any) => `- ${d.name}: ${d.uri}${d.description ? ` — ${d.description}` : ""}`).join("\n")}` : "",
+              output.decisions?.length ? `\n**Decisions:**\n${output.decisions.map((d: string) => `- ${d}`).join("\n")}` : "",
+              output.nextSteps?.length ? `\n**Next Steps:**\n${output.nextSteps.map((s: string) => `- ${s}`).join("\n")}` : "",
+            ].filter(Boolean).join("\n");
+
+            const blocks = await editor.tryParseMarkdownToBlocks(reportMd);
+            const fragment = doc.getXmlFragment("content");
+            editor.blocksToYXmlFragment(blocks, fragment);
+          } catch (err) {
+            logger.debug(`Failed to write completion report to XmlFragment: ${err}`);
+          }
         }
       }
       logger.debug(`Synced status ${taskId} → ${newStatus}`);

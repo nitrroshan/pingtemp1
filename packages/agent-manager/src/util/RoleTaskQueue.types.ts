@@ -5,12 +5,17 @@
  */
 
 /**
- * Context passed to a task from completed dependencies
+ * Context passed to a task from completed dependencies.
+ * Uses DocumentRef-based context — agents read content via collab read / workspace_read_file.
  */
 export interface TaskContext {
-  /** Outputs from prerequisite tasks */
+  /** @deprecated — always empty. Use inputDocs instead. */
   previousOutputs: Array<{ taskId: string; output: any }>;
-  /** Artifact paths/references available to this task */
+  /** DocumentRefs from upstream producedDocs — agents read via collab read / workspace_read_file */
+  inputDocs?: Array<{ uri: string; name: string; description?: string; hint?: string }>;
+  /** Decisions made by upstream tasks that downstream should respect */
+  upstreamDecisions?: string[];
+  /** Artifact file paths available to this task (workspace files from upstream) */
   artifacts: string[];
   /** CRDT document references for agent access via collab tool */
   crdtRefs?: Record<string, any>;

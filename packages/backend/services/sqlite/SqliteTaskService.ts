@@ -73,7 +73,10 @@ export class SqliteTaskService implements ITaskPersistence {
 
   async updateTaskStatus(taskId: string, goalId: string, status: string, output?: unknown): Promise<void> {
     const row = this.db.query(`SELECT output FROM tasks WHERE taskId = ? AND goalId = ?`).get(taskId, goalId) as { output: string | null } | null;
-    const nextOutput = output !== undefined ? JSON.stringify(output) : row?.output ?? null;
+    if (!row) {
+      throw new Error(`updateTaskStatus: task ${taskId} not found in goal ${goalId}`);
+    }
+    const nextOutput = output !== undefined ? JSON.stringify(output) : row.output ?? null;
     this.db.run(
       `UPDATE tasks SET status = ?, output = ?, updatedAt = ? WHERE taskId = ? AND goalId = ?`,
       [status, nextOutput, new Date().toISOString(), taskId, goalId],

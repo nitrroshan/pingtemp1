@@ -822,15 +822,18 @@ export class AgentManager {
     // Get structured context from task
     const taskContext = (task.context || {}) as Record<string, any>;
 
-    // Create TaskWithContext for WorkerPool
+    // Create TaskWithContext for WorkerPool — DocumentRef-based context
     const taskWithContext = {
       id: taskId,
       assigned_role: task.assigned_role,
       description: task.description,
       priority: task.priority || 0,
       context: {
-        previousOutputs: Array.isArray(taskContext.upstreamOutputs) ? taskContext.upstreamOutputs : [],
+        previousOutputs: [] as any[],  // empty — no raw summaries
+        inputDocs: Array.isArray(taskContext.inputDocs) ? taskContext.inputDocs : [],
+        upstreamDecisions: Array.isArray(taskContext.upstreamDecisions) ? taskContext.upstreamDecisions : [],
         artifacts: [
+          ...(Array.isArray(taskContext.upstreamArtifacts) ? taskContext.upstreamArtifacts : []),
           ...(Array.isArray(taskContext.files) ? taskContext.files : []),
           ...(Array.isArray(taskContext.artifacts) ? taskContext.artifacts : []),
         ],

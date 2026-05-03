@@ -17,8 +17,14 @@ import { PromptLoader } from "../../../orchestrator/PromptLoader.js";
  */
 export const CompleteTaskSchema = z.object({
   summary: z.string().describe("Summary of what was accomplished"),
-  deliverables: z.array(z.string()).optional().describe("List of deliverables or outputs produced"),
+  deliverables: z.array(z.string()).optional().describe("List of deliverables or outputs produced (file paths, URLs)"),
   nextSteps: z.array(z.string()).optional().describe("Recommended next steps for the user"),
+  producedDocs: z.array(z.object({
+    uri: z.string().describe("URI of the document (workspace:path, crdt:docName, https://...)"),
+    name: z.string().describe("Human-readable name for this document"),
+    description: z.string().optional().describe("What the document contains"),
+  })).optional().describe("Documents produced by this task — downstream tasks will receive these as inputDocs"),
+  decisions: z.array(z.string()).optional().describe("Key decisions made during this task — downstream tasks should respect these"),
 });
 
 export type CompleteTaskInput = z.infer<typeof CompleteTaskSchema>;
@@ -34,7 +40,7 @@ export type CompleteTaskInput = z.infer<typeof CompleteTaskSchema>;
 export function createCompleteTaskTool(
   taskId: string,
   role: string,
-  onComplete?: (data: { taskId: string; role: string; summary: string; deliverables: string[]; nextSteps: string[]; timestamp: number }) => void,
+  onComplete?: (data: { taskId: string; role: string; summary: string; deliverables: string[]; nextSteps: string[]; producedDocs?: Array<{ uri: string; name: string; description?: string }>; decisions?: string[]; timestamp: number }) => void,
   agentState?: { lastStatus: string },
 ) {
   return tool(
@@ -55,6 +61,8 @@ Do NOT fabricate output when blocked.`;
         summary: input.summary,
         deliverables: input.deliverables || [],
         nextSteps: input.nextSteps || [],
+        producedDocs: input.producedDocs,
+        decisions: input.decisions,
         timestamp: Date.now(),
       });
 

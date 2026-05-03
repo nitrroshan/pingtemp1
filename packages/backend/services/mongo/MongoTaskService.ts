@@ -42,7 +42,7 @@ export class MongoTaskService implements ITaskPersistence {
     if (output !== undefined) update.output = output;
     const result = await TaskModel.findOneAndUpdate({ taskId, goalId }, { $set: update });
     if (!result) {
-      logger.warn({ taskId, goalId, status }, "updateTaskStatus: no matching task in DB");
+      throw new Error(`updateTaskStatus: task ${taskId} not found in goal ${goalId}`);
     }
   }
 
