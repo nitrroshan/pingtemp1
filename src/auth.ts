@@ -106,3 +106,10 @@ export async function login(req: Request, res: Response): Promise<void> {
         res.status(500).json({ error: 'An unexpected error occurred.' });
     }
 }
+
+// Logout endpoint (stateless JWT example)
+export async function logout(_: Request, res: Response): Promise<void> {
+    // In stateless JWT, logout is handled by the client by removing the token
+    // Optionally, implement token blacklisting if required
+    res.status(200).json({ message: 'Logout successful.' });
+}

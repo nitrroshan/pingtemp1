@@ -110,4 +110,15 @@ describe('Authentication Endpoints', () => {
             expect(response.body).toHaveProperty('error', 'Invalid email or password.');
         });
     });
+
+    describe('POST /logout', () => {
+        it('should log out a user successfully', async () => {
+            const response = await request(app)
+                .post('/logout')
+                .send();
+
+            expect(response.status).toBe(200);
+            expect(response.body).toHaveProperty('message', 'Logout successful.');
+        });
+    });
 });
