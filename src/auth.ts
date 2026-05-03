@@ -66,3 +66,43 @@ export async function register(req: Request, res: Response): Promise<void> {
         res.status(500).json({ error: 'An unexpected error occurred.' });
     }
 }
+
+// Login endpoint
+export async function login(req: Request, res: Response): Promise<void> {
+    const { email, password } = req.body;
+
+    // Input validation
+    if (!email || !password) {
+        res.status(400).json({ error: 'Email and password are required.' });
+        return;
+    }
+
+    try {
+        // Check if user exists
+        const userQuery = 'SELECT id, password_hash FROM users WHERE email = $1';
+        const userResult = await pool.query(userQuery, [email]);
+
+        if (userResult.rowCount === 0) {
+            res.status(401).json({ error: 'Invalid email or password.' });
+            return;
+        }
+
+        const { id, password_hash: passwordHash } = userResult.rows[0];
+
+        // Verify password
+        const isPasswordValid = await verifyPassword(password, passwordHash);
+        if (!isPasswordValid) {
+            res.status(401).json({ error: 'Invalid email or password.' });
+            return;
+        }
+
+        // Generate JWT
+        const token = generateToken({ id, email });
+
+        // Return response
+        res.status(200).json({ message: 'Login successful.', token });
+    } catch (error) {
+        console.error('Error logging in user:', error);
+        res.status(500).json({ error: 'An unexpected error occurred.' });
+    }
+}

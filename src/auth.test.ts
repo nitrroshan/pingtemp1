@@ -62,4 +62,52 @@ describe('Authentication Endpoints', () => {
             expect(response.body).toHaveProperty('error', 'User with this email already exists.');
         });
     });
+
+    describe('POST /login', () => {
+        it('should log in a registered user successfully', async () => {
+            // Register a user first
+            await request(app)
+                .post('/register')
+                .send({
+                    email: 'loginuser@example.com',
+                    password: 'securepassword',
+                    name: 'Login User'
+                });
+
+            // Login with the same user
+            const response = await request(app)
+                .post('/login')
+                .send({
+                    email: 'loginuser@example.com',
+                    password: 'securepassword'
+                });
+
+            expect(response.status).toBe(200);
+            expect(response.body).toHaveProperty('message', 'Login successful.');
+            expect(response.body).toHaveProperty('token');
+        });
+
+        it('should return 400 if required fields are missing', async () => {
+            const response = await request(app)
+                .post('/login')
+                .send({
+                    email: 'loginuser@example.com'
+                });
+
+            expect(response.status).toBe(400);
+            expect(response.body).toHaveProperty('error', 'Email and password are required.');
+        });
+
+        it('should return 401 if credentials are invalid', async () => {
+            const response = await request(app)
+                .post('/login')
+                .send({
+                    email: 'nonexistentuser@example.com',
+                    password: 'wrongpassword'
+                });
+
+            expect(response.status).toBe(401);
+            expect(response.body).toHaveProperty('error', 'Invalid email or password.');
+        });
+    });
 });
