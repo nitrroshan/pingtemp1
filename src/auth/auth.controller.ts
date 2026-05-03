@@ -1,6 +1,10 @@
 import { Request, Response } from 'express';
 import { hashPassword, verifyPassword, generateToken } from './auth.service';
 import { UserModel } from './user.model';
+import { setCache, getCache, incrementCache } from './cache.service';
+
+const LOGIN_ATTEMPT_LIMIT = 5;
+const LOGIN_ATTEMPT_TTL = 60 * 10; // 10 minutes
 
 /**
  * User registration endpoint handler.
@@ -42,17 +46,32 @@ export async function loginUser(req: Request, res: Response): Promise<Response> 
             return res.status(400).json({ message: 'Email and password are required' });
         }
 
+        // Check login attempts
+        const loginAttemptsKey = `login_attempts:${email}`;
+        const attempts = await getCache(loginAttemptsKey);
+
+        if (attempts && parseInt(attempts) >= LOGIN_ATTEMPT_LIMIT) {
+            return res.status(429).json({ message: 'Too many login attempts. Please try again later.' });
+        }
+
         // Find user by email
         const user = await UserModel.findOne({ email });
         if (!user) {
+            await incrementCache(loginAttemptsKey);
+            await setCache(loginAttemptsKey, '1', LOGIN_ATTEMPT_TTL);
             return res.status(401).json({ message: 'Invalid credentials' });
         }
 
         // Verify password
         const isPasswordValid = await verifyPassword(password, user.password);
         if (!isPasswordValid) {
+            await incrementCache(loginAttemptsKey);
+            await setCache(loginAttemptsKey, '1', LOGIN_ATTEMPT_TTL);
             return res.status(401).json({ message: 'Invalid credentials' });
         }
+
+        // Reset login attempts on successful login
+        await deleteCache(loginAttemptsKey);
 
         // Generate JWT token
         const token = generateToken(user);
