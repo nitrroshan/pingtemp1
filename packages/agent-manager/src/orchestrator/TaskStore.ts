@@ -437,6 +437,10 @@ export class TaskStore implements ITaskProvider {
     // Set output BEFORE updateStatus so MongoDB gets both in one write
     task.output = output;
 
+    // Promote document-first fields to Task level (from output blob)
+    if (output?.producedDocs) task.producedDocs = output.producedDocs;
+    if (output?.decisions) task.decisions = output.decisions;
+
     // Persist to MongoDB FIRST, then update Map
     await this.updateStatus(taskId, "completed");
 
@@ -526,15 +530,16 @@ export class TaskStore implements ITaskProvider {
       return;
     }
 
-    // InputDocs: DocumentRefs from upstream producedDocs
+    // InputDocs: prefer Task-level producedDocs, fall back to output.producedDocs
     if (!Array.isArray(ctx.inputDocs)) ctx.inputDocs = [];
-    if (Array.isArray(upstream.output.producedDocs) && upstream.output.producedDocs.length > 0) {
-      ctx.inputDocs.push(...upstream.output.producedDocs);
+    const upstreamDocs = upstream.producedDocs ?? upstream.output.producedDocs;
+    if (Array.isArray(upstreamDocs) && upstreamDocs.length > 0) {
+      ctx.inputDocs.push(...upstreamDocs);
     }
 
     // Auto-generate DocumentRefs from deliverables (workspace files) when no producedDocs specified
     // This ensures downstream agents always know which files to read
-    if (!upstream.output.producedDocs?.length && Array.isArray(upstream.output.deliverables)) {
+    if (!upstreamDocs?.length && Array.isArray(upstream.output.deliverables)) {
       for (const path of upstream.output.deliverables) {
         ctx.inputDocs.push({
           uri: `workspace:${path}`,
@@ -544,19 +549,20 @@ export class TaskStore implements ITaskProvider {
       }
     }
 
-    // Always include CRDT task doc as a context reference (has description + metadata)
+    // Always include CRDT report doc as a context reference (LLM-written completion report)
     ctx.inputDocs.push({
-      uri: `crdt:${upstream.id}/task`,
-      name: `${upstream.assigned_role} task context`,
-      description: upstream.output.summary || upstream.output.error || "Task output",
-      hint: upstream.output.summary ? `Summary: ${upstream.output.summary.slice(0, 200)}` : undefined,
+      uri: `crdt:${upstream.id}/report`,
+      name: `${upstream.assigned_role} completion report`,
+      description: upstream.output.summary || upstream.output.error || "Task completion report",
+      hint: "Read this for the full handoff from the upstream agent",
     });
 
-    // Upstream decisions
-    if (Array.isArray(upstream.output.decisions)) {
+    // Upstream decisions — prefer Task-level, fall back to output.decisions
+    const upstreamDecisions = upstream.decisions ?? upstream.output.decisions;
+    if (Array.isArray(upstreamDecisions)) {
       if (!Array.isArray(ctx.upstreamDecisions)) ctx.upstreamDecisions = [];
-      ctx.upstreamDecisions.push(...upstream.output.decisions.map((d: string) =>
-        `[${upstream.assigned_role}] ${d}`
+      ctx.upstreamDecisions.push(...upstreamDecisions.map((d: any) =>
+        typeof d === "string" ? `[${upstream.assigned_role}] ${d}` : `[${upstream.assigned_role}] ${d.decision || JSON.stringify(d)}`
       ));
     }
 

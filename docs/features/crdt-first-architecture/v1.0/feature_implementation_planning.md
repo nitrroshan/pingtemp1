@@ -211,60 +211,129 @@ Create a shared `ServerBlockNoteEditor` instance on CrdtTaskSync (constructed on
 
 ## PR 4: Document-First Plan Session (2 weeks)
 
-**Branch:** `feature/plan-session` (from `dev` after PR 3 merged)
+**Branch:** `user/nitrroshan/fixplans` (from `dev`)
 **Risk:** High — changes planner tool, approval flow, adds frontend component
 
-### Backend
+### Backend (DONE)
 
-#### PR4.1. Refactor submitPlan to write CRDT document
+#### PR4.1. Plan doc written to CRDT at proposal time ✅
 
-**File:** `submitPlan.ts`
+**Status:** Implemented via domain events instead of direct `submitPlan.ts` call.
 
-Instead of storing JSON in `pendingPlan` and auto-approving:
-1. Write `plan-doc` CRDT page: `Y.Map("meta")` with `{ goal, approach, status: "draft", taskSummaries }` + `Y.XmlFragment("content")` with plan prose via ServerBlockNoteEditor
-2. Write per-task CRDT pages: each task gets `{taskId}/task` page
-3. Set `sessionState: "awaiting_approval"` (NOT "executing")
-4. Do NOT set `pendingPlan` — plan lives in CRDT
+**How it works:**
+1. `GoalManager.setPendingPlan()` emits `plan_proposed` domain event
+2. `CrdtProjectionHandler.onPlanProposed()` calls `resolveForGoal()` + `createPlanDoc()`
+3. `CrdtTaskSync.persistPlan()` writes `Y.Map("meta")` with `status: "pending"` + `Y.XmlFragment("content")` via ServerBlockNoteEditor
+4. Plan doc is in CRDT BEFORE user reviews — available at `{goalId}/plan`
 
-#### PR4.2. GoalManager reads from CRDT on approve
+**Files changed:**
+- `GoalEvents.ts` — added `PlanProposed` event type
+- `GoalManager.ts` — `setPendingPlan()` publishes `plan_proposed` event
+- `CrdtProjectionHandler.ts` — subscribes to `plan_proposed`, calls `createPlanDoc()`
+- `CrdtTaskSync.ts` — `persistPlan()` writes `status: "pending"` (was `"executing"`)
 
-**File:** `GoalManager.ts`
+**Design decision:** Plan lives in BOTH `pendingPlan` JSON (for approval logic) AND CRDT (for user review). `PlanStore` kept as backup. Full CRDT-only flow deferred — requires `GoalManager.deriveTasks()` to read from CRDT on approve, which is a bigger change.
 
-New method: `deriveTasks(goalId)` — reads plan-doc from CRDT `meta.taskSummaries`, returns task array.
+#### PR4.2. Remove auto-approve + awaiting_approval state ✅
 
-Change `approvePlan()`: read from CRDT (not `pendingPlan` JSON). Create MongoDB task records from CRDT data.
+**Files changed:**
+- `submitPlan.ts` — `octx.setState("awaiting_approval")` (was `"executing"`)
+- `AgentManagerV2.ts` — `onPlanProposed` callback no longer calls `approvePlan()`, comment: "No auto-approve"
+- Auto-approve APIs kept as opt-in (`setAutoApproveForRole`, `setAutoApproveAllRoles`)
 
-#### PR4.3. Delete PlanStore
+#### PR4.3. Planner prompt: write rationale before submit_plan ✅
 
-Remove `planStore.savePlan()`, `planStore.updatePlanStatus()`, `planStore.archivePlan()` calls from GoalManager. CRDT plan-doc + MongoDB is sufficient.
+**File:** `planner/system.xml` — Planning Protocol instructs: (1) analyze, (2) `collab write-block "plan"`, (3) THEN `submit_plan`
 
-### Frontend
+#### PR4.4. Agent completion protocol: write CRDT report first ✅
 
-#### PR4.4. DocumentPane component
+**Files changed:**
+- `generic-worker/system.xml` — `<finish-properly>` requires 4-step completion protocol
+- `skills/task-lifecycle/SKILL.md` — full completion protocol: commit → write-block to `{taskId}/report` → record-decision → complete_task
+- `CrdtTaskSync.ts` — `syncStatus()` no longer generates system report; agent's report IS the report
+- `completeTaskTool.ts` — schema accepts `producedDocs` + `decisions`
 
-**New file:** `packages/frontend/components/DocumentPane/DocumentPane.tsx`
+#### PR4.5. Task description to Y.XmlFragment on creation ✅
 
-Resizable right pane with:
-- File list view (all CRDT pages for goal, with status badges)
-- Document view (BlockNote editor bound to Hocuspocus Y.XmlFragment)
+**File:** `CrdtTaskSync.ts` `persistTask()` — writes task description as BlockNote content to `Y.XmlFragment("content")`
 
-#### PR4.5. Hocuspocus connection
+#### PR4.6. DocumentRef context pipeline ✅
 
-`HocuspocusProvider` → `Y.Doc` → `doc.getXmlFragment("content")` → `useCreateBlockNote({ collaboration: { fragment } })`
+**Files changed:**
+- `Task.types.ts` — first-class `inputDocs`, `producedDocs`, `decisions` fields
+- `DocumentRef.ts` — `DocumentRef` + `ExpectedDoc` types
+- `TaskStore.ts` `enrichDependantContext()` — auto-generates `crdt:{taskId}/report` refs
+- `TaskContextBuilder.ts` — "Input Documents" section with `collab read` URIs
 
-#### PR4.6. Wire into existing layout
+#### PR4.7. Write-through persistence fixes ✅
 
-- `DetailPanel.tsx` — add "📄 View Documents" button (plan + task modes)
-- `PlanTaskList.tsx` — add `📋 Plan Document` entry
-- `uiStore.ts` — `documentPaneOpen`, `documentPanePath` state
-- `App.tsx` — auto-open DocumentPane on `sessionState: "awaiting_approval"`
+- `DispatchManager.ts` — `updateTaskStatus` async-aware, error logging (not swallowed)
+- `OrchestratorService.ts` — passes TaskStore async call directly (no `.catch(() => {})`)
+- `requestTaskTool.ts` — cycle rollback via `taskStore.updateStatus("discarded")` (single writer)
 
-#### PR4.7. Approve / Replan buttons
+### Frontend (PARTIAL)
 
-- Document Pane footer: "✓ Approve Plan" → `agentServiceV2.approvePlan(goalId)`
-- "↻ Replan" → sends message to planner
+#### PR4.8. Plan approval UI ✅
 
-**Exit criteria:** Planner writes document (not JSON). No auto-approve. User reviews in BlockNote. Approve creates MongoDB tasks from CRDT. PlanStore gone.
+**File:** `PlanApproval.tsx` — dialog with task list, reorder, "Approve & Execute" button
+**File:** `App.tsx` — renders when `sessionState === "awaiting_approval"`
+**File:** `goalSessionStore.ts` — `approvePlan()` calls `agentServiceV2.approvePlan(goalId)`
+
+#### PR4.9. Replan / reject button ✅ DONE
+
+**What was done:**
+- `PlanApproval.tsx` — added "Request Changes" button with feedback textarea + "Send & Replan" submit
+- `AgentServiceV2.ts` — added `rejectPlan(goalId, feedback)`, `"reject-plan"` action type
+- `goalSessionStore.ts` — added `rejectPlan(feedback)` action
+- `socket-types.ts` — added `"reject-plan"` to action enum + `feedback` field
+- `SocketActionHandler.ts` — `handleRejectPlan()`: clears pendingPlan, sets state to gathering, routes feedback to planner
+- `AgentManagerV2.ts` — `rejectPlan(goalId)`: clears pendingPlan, sets goal state to `"gathering"`
+
+**Flow:** User clicks "Request Changes" → enters feedback → "Send & Replan" → dialog closes → state to `gathering` → feedback routed to planner → planner revises → new `awaiting_approval`
+
+#### PR4.10. Document Pane ❌ NOT IMPLEMENTED — DEFERRED
+
+**Gap:** No DocumentPane component. PlanApproval is a task-list modal, not a CRDT doc viewer. Users can't see the plan document the planner wrote.
+
+**Infrastructure already present:**
+- `CollaborativeEditor.tsx` — full BlockNote + Hocuspocus component (used by DevCollabButton)
+- All dependencies installed: `@blocknote/core`, `@blocknote/react`, `@blocknote/mantine`, `@hocuspocus/provider`, `yjs`
+- Hocuspocus connection pattern works in `useDiscussion.ts`
+
+**What's needed (separate feature — ~1 week):**
+
+1. **DocumentPane container** — resizable right panel with document list + viewer
+2. **Document list** — HTTP endpoint to list CRDT docs for a goal (from MongoDB goal/task records, not CRDT introspection — Liveblocks pattern)
+3. **CrdtDocViewer** — wraps `CollaborativeEditor` with goal-scoped `docId` construction (`{teamId}/{goalId}/{docName}`)
+4. **Layout integration** — split-pane in `App.tsx`, toggle state in `uiStore`
+5. **Auto-open** — on `sessionState === "awaiting_approval"`, open DocumentPane with plan doc
+6. **Approve/Replan buttons** — in DocumentPane footer when viewing plan doc during approval
+
+**See:** `docs/features/document-pane/feature_implementation_planning.md` for full plan.
+
+### Verification Checklist
+
+| # | Check | Status |
+|---|-------|--------|
+| 1 | Planner writes plan rationale to CRDT before calling submit_plan | ✅ Prompt instructs it |
+| 2 | Plan doc written to CRDT at proposal time (not just approval) | ✅ `plan_proposed` event |
+| 3 | `sessionState === "awaiting_approval"` after plan proposed | ✅ `submitPlan.ts` |
+| 4 | Auto-approve removed from AgentManagerV2.onPlanProposed | ✅ Comment in code |
+| 5 | "Approve Plan" button in frontend triggers approvePlan() | ✅ PlanApproval.tsx |
+| 6 | "Request Changes" button sends feedback to planner | ✅ PlanApproval + SocketActionHandler |
+| 7 | Task CRDT docs have description in Y.XmlFragment("content") | ✅ persistTask() |
+| 8 | Agent writes completion report to CRDT BEFORE calling complete_task | ✅ Prompt + SKILL.md |
+| 9 | System report doesn't overwrite agent's writing | ✅ Removed from syncStatus |
+| 10 | Downstream agent reads `collab read-block {id}/report` | ✅ enrichDependantContext |
+
+### What Was NOT Done From Original PR4 Plan
+
+| Original item | Status | Reason |
+|---|---|---|
+| GoalManager reads from CRDT on approve (`deriveTasks`) | Skipped | Would require CRDT→MongoDB derivation; `pendingPlan` JSON + event bus approach is simpler and works |
+| Delete PlanStore | Skipped | Kept as JSON backup until CRDT plan docs proven stable in production |
+| DocumentPane component | Deferred | Separate feature with its own implementation plan |
+| Feature flag `FF_DOCUMENT_FIRST_PLANNING` | Skipped | Behavior is always-on; auto-approve kept as opt-in API for testing |
 
 ---
 

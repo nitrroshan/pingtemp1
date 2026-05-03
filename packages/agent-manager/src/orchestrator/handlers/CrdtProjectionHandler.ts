@@ -15,6 +15,7 @@ import type {
   TasksCreated,
   TaskStatusChanged,
   TaskCompleted,
+  PlanProposed,
   PlanStatusChanged,
   GoalStatusChanged,
 } from "../events/GoalEvents.js";
@@ -27,6 +28,7 @@ export class CrdtProjectionHandler {
     bus.onProjection("tasks_created", (e) => this.onTasksCreated(e as TasksCreated));
     bus.onProjection("task_status_changed", (e) => this.onTaskStatusChanged(e as TaskStatusChanged));
     bus.onProjection("task_completed", (e) => this.onTaskCompleted(e as TaskCompleted));
+    bus.onProjection("plan_proposed", (e) => this.onPlanProposed(e as PlanProposed));
     bus.onProjection("plan_status_changed", (e) => this.onPlanStatusChanged(e as PlanStatusChanged));
     bus.onProjection("goal_status_changed", (e) => this.onGoalStatusChanged(e as GoalStatusChanged));
   }
@@ -61,6 +63,14 @@ export class CrdtProjectionHandler {
   private async onPlanStatusChanged(event: PlanStatusChanged): Promise<void> {
     if (!this.crdt.isAvailable()) return;
     await this.crdt.syncPlanStatus(event.status);
+  }
+
+  /** Flow C: Write plan doc to CRDT at proposal time (before approval). */
+  private async onPlanProposed(event: PlanProposed): Promise<void> {
+    // Resolve FIRST — CRDT may not be available until goal is resolved
+    await this.crdt.resolveForGoal(event.goalId);
+    if (!this.crdt.isAvailable()) return;
+    await this.crdt.createPlanDoc(event.plan, event.goalId);
   }
 
   /** Project goal status change. */

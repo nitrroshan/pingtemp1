@@ -20,8 +20,8 @@ export interface DispatchManagerConfig {
   getTask: (taskId: string) => { id: string; status: string; assigned_role: string } | undefined;
   /** Route through ChatAgent instead of direct dispatch */
   chatAgentDispatch?: (taskId: string, role: string) => Promise<void>;
-  /** Update task status in store */
-  updateTaskStatus?: (taskId: string, status: string) => void;
+  /** Update task status in store (may be async for write-through persistence) */
+  updateTaskStatus?: (taskId: string, status: string) => Promise<void> | void;
   /** Notify frontend of task status change */
   onTaskUpdate?: (data: { taskId: string; status: string; role: string; timestamp: number }) => void;
   /** Fail task in queue */
@@ -156,9 +156,12 @@ export class DispatchManager {
       this.taskAttempts.set(taskId, attempt + 1);
       this.config.onTaskUpdate?.({ taskId, status: "ready", role, timestamp: Date.now() });
 
-      // Reset status for re-dispatch
-      try { this.config.updateTaskStatus?.(taskId, "failed"); } catch { /* guard */ }
-      try { this.config.updateTaskStatus?.(taskId, "ready"); } catch { /* guard */ }
+      // Reset status for re-dispatch (async-safe: chain promises, log failures)
+      const resetStatus = async () => {
+        try { await this.config.updateTaskStatus?.(taskId, "failed"); } catch (e) { log.warn({ err: e }, `Failed to set ${taskId} to failed before retry`); }
+        try { await this.config.updateTaskStatus?.(taskId, "ready"); } catch (e) { log.warn({ err: e }, `Failed to reset ${taskId} to ready for retry`); }
+      };
+      resetStatus().catch((e) => log.error({ err: e }, `Status reset chain failed for ${taskId}`));
 
       setTimeout(() => {
         const retryTask = this.config.getTask(taskId);
@@ -178,8 +181,10 @@ export class DispatchManager {
         log.error(`Task ${taskId} exhausted all ${this.config.maxRetries} retry attempts, failing permanently`);
       }
       this.taskAttempts.delete(taskId);
-      try { this.config.updateTaskStatus?.(taskId, "failed"); } catch { /* guard */ }
-      this.config.failTask?.(taskId, report.message);
+      // Persist failure status (async-safe)
+      Promise.resolve(this.config.updateTaskStatus?.(taskId, "failed"))
+        .catch((e) => log.warn({ err: e }, `Failed to persist failed status for ${taskId}`))
+        .finally(() => this.config.failTask?.(taskId, report.message));
     }
   }
 

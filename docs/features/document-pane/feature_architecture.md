@@ -1,10 +1,10 @@
 # Document Pane — Feature Architecture
 
-**Date:** May 3, 2026
-**Status:** Architecture approved
+**Date:** May 4, 2026
+**Status:** MVP implemented — DocumentPane, DocumentList, CrdtDocViewer, WorkspaceFileViewer, backend endpoints all shipped
 **Priority:** P1 — Users can't see what agents produce until they dig into CRDT manually
-**Depends on:** CRDT-First Architecture (done), BlockNote server-side (done), DocumentRef (done)
-**Related:** [plan-session](../plan-session/feature_architecture.md), [crdt-first-architecture](../crdt-first-architecture/feature_architecture.md)
+**Depends on:** CRDT-First Architecture PR4 (done — plan approval, completion protocol, CRDT docs all in place)
+**Related:** [crdt-first-architecture](../crdt-first-architecture/feature_architecture.md)
 
 ---
 
@@ -79,6 +79,103 @@ Add a "Documents" tab to the existing DetailPanel. Reuse the 320px space.
 
 Replace DetailPanel with DocumentPane. 480px is the minimum for readable BlockNote content. Task metadata can be shown as a header section above the document content.
 
+## Wireframes
+
+### Document Pane — Plan Review (awaiting_approval)
+
+```
+┌──────────┬──────────────────────────┬────────────────────────────────────┐
+│ Sidebar  │   ChatArea               │  DOCUMENT PANE (480px, resizable)  │
+│          │                          │                                    │
+│          │  User: Build a todo app  │  📄 Plan Document                  │
+│          │  with auth               │  ─────────────────                 │
+│          │                          │                                    │
+│          │  🤖 Planner: I've        │  ## Approach                       │
+│          │  analyzed your goal...   │                                    │
+│          │                          │  We'll build a full-stack todo     │
+│          │  [Plan awaiting          │  app with JWT authentication...    │
+│          │   approval]              │                                    │
+│          │                          │  ## Key Decisions                  │
+│          │                          │                                    │
+│          │                          │  - PostgreSQL for persistence      │
+│          │                          │  - JWT with refresh tokens         │
+│          │                          │                                    │
+│          │                          │  ## Task Breakdown                 │
+│          │                          │                                    │
+│          │                          │  1. Database schema (backend-dev)  │
+│          │                          │  2. Auth endpoints (backend-dev)   │
+│          │                          │  3. Frontend components (fe-dev)   │
+│          │                          │                                    │
+│          │                          ├────────────────────────────────────┤
+│          │                          │  [↻ Request Changes] [✓ Approve]  │
+│          │                          ├────────────────────────────────────┤
+│          │  ┌────────────────────┐  │  📄 plan          (pending)        │
+│          │  │ Type a message  📤 │  │  📄 task-1/task    (ready)         │
+│          │  └────────────────────┘  │  📄 task-2/task    (pending)       │
+└──────────┴──────────────────────────┴────────────────────────────────────┘
+```
+
+### Document Pane — During Execution
+
+```
+┌──────────┬──────────────────────────┬────────────────────────────────────┐
+│ Sidebar  │   ChatArea               │  DOCUMENT PANE                     │
+│          │                          │                                    │
+│          │  🤖 backend-dev:         │  📄 task-1/report                  │
+│          │  Working on schema...    │  ─────────────────                 │
+│          │                          │                                    │
+│          │  ✅ task-1 completed     │  ## What Was Done                  │
+│          │  ⏳ task-2 in progress   │                                    │
+│          │                          │  Created PostgreSQL schema with    │
+│          │                          │  4 tables: users, products,        │
+│          │                          │  orders, payments...               │
+│          │                          │                                    │
+│          │                          │  ## Key Decisions                  │
+│          │                          │                                    │
+│          │                          │  - Used UUID PKs for portability   │
+│          │                          │  - CASCADE deletes on FKs          │
+│          │                          │                                    │
+│          │                          │  ## Files Produced                 │
+│          │                          │                                    │
+│          │                          │  - db/schema.sql                   │
+│          │                          │  - db/migrations/001-004           │
+│          │                          ├────────────────────────────────────┤
+│          │                          │  📋 Plan                           │
+│          │                          │  ── Tasks ──                       │
+│          │                          │  📄 task-1/task   ✅               │
+│          │                          │  📄 task-1/report ✅               │
+│          │                          │  📄 task-2/task   ⏳               │
+│          │                          │  ── Workspace ──                   │
+│          │                          │  📁 src/schema.ts                  │
+│          │                          │  📁 src/auth/login.ts              │
+└──────────┴──────────────────────────┴────────────────────────────────────┘
+```
+
+### Document List Panel (collapsed view)
+
+```
+┌────────────────────────────────────┐
+│  📄 Documents                [×]  │
+├────────────────────────────────────┤
+│                                    │
+│  📋 Plan                           │
+│    └── plan                 ⏸      │
+│                                    │
+│  📝 Tasks (3)                      │
+│    ├── task-1/task          ✅     │
+│    ├── task-1/report        ✅     │
+│    ├── task-2/task          ⏳     │
+│    └── task-3/task          ○      │
+│                                    │
+│  📁 Workspace Files (5)            │
+│    ├── src/schema.ts               │
+│    ├── src/auth/login.ts           │
+│    ├── src/routes/users.ts         │
+│    └── ... 2 more                  │
+│                                    │
+└────────────────────────────────────┘
+```
+
 ## Implementation Approach
 
 ### Components
@@ -111,18 +208,76 @@ User clicks a document
 User can browse back to list, switch between docs
 ```
 
-### Existing Infrastructure
+### Existing Infrastructure (PR4 + Document Pane MVP — Implemented)
 
 | Component | Status | Notes |
 |-----------|--------|-------|
 | Hocuspocus provider | ✅ Done | `CollaborativeEditor.tsx` connects via `HocuspocusProvider` |
 | BlockNote editor | ✅ Done | `@blocknote/react` + `@blocknote/mantine` installed |
-| CRDT docs with content | ✅ Done | `CrdtTaskSync.syncStatus` writes completion reports to `Y.XmlFragment("content")` |
+| CRDT docs with content | ✅ Done | `CrdtTaskSync` writes task descriptions + completion reports to `Y.XmlFragment("content")` |
+| Plan doc at proposal time | ✅ Done | `plan_proposed` event writes plan to CRDT before user reviews |
 | Doc metadata in Y.Map("meta") | ✅ Done | All docs have `type`, `status`, `assignedRole` etc. |
 | CRDT doc listing API | ✅ Done | `GET /api/collab/:teamId/docs` returns all doc names for a team |
-| `uiStore.viewMode: "collaborate"` | ✅ Exists | In the store, not wired to UI |
-| Workspace file listing | ❌ Missing | Need `GET /api/v2/workspaces/:teamId/files` endpoint |
-| Workspace file reading | ❌ Missing | Need `GET /api/v2/workspaces/:teamId/files/:path` endpoint |
+| Plan approval flow | ✅ Done | `PlanApproval.tsx` — task-list modal with Approve + Request Changes buttons |
+| Reject/replan flow | ✅ Done | `reject-plan` socket action routes feedback to planner |
+| Agent completion protocol | ✅ Done | Agents must write `{taskId}/report` before `complete_task` (enforced by tool) |
+| DocumentRef context pipeline | ✅ Done | `inputDocs`, `producedDocs`, `decisions` on Task type |
+| **DocumentPane container** | ✅ Done | `DocumentPane.tsx` — routes between list/editor/file viewer |
+| **DocumentList** | ✅ Done | Groups docs by type (plan/tasks/reports/workspace), status badges |
+| **CrdtDocViewer** | ✅ Done | Lazy-loads `CollaborativeEditor` with goal-scoped docId |
+| **WorkspaceFileViewer** | ✅ Done | Fetches + renders file content in monospace |
+| **Backend workspace endpoints** | ✅ Done | `GET /api/v2/workspaces/:teamId/goals/:goalId/files` + `/file/:path` |
+| **Auto-open on approval** | ✅ Done | Document Pane auto-opens with plan doc when `sessionState === "awaiting_approval"` |
+| **Keyboard shortcut** | ✅ Done | `Cmd+D` toggles Document Pane |
+| **DetailPanel entry points** | ✅ Done | "View Documents" button in task overview + plan mode |
+| Resizable pane | ❌ Planned | Fixed width (480px) with min/max constraints, no drag resize |
+| Doc metadata header | ❌ Planned | CrdtDocViewer wraps CollaborativeEditor directly, no metadata bar |
+| Read-only mode for system docs | ❌ Planned | All docs are currently editable |
+
+### Architecture Decision: Liveblocks Pattern (MongoDB Owns Directory)
+
+**Decision:** Follow the Liveblocks pattern — flat CRDT docs (rooms), MongoDB owns the hierarchy/directory.
+
+**Evaluated alternatives:**
+- **Notion pattern** (parentId in CRDT metadata) — requires every doc to carry hierarchy info, no queryable metadata, hard to integrate with Orama search
+- **Hocuspocus multi-fragment** (one Y.Doc per goal with fragments) — one giant doc per goal, all content syncs together, wasteful when agent only needs one task
+- **`_pages` CRDT registry** — initially designed, then rejected: makes CRDT responsible for directory structure, which MongoDB already handles better (queryable, indexed, recoverable)
+
+**Why Liveblocks pattern:**
+1. **MongoDB is already our source of truth** for tasks, goals, status. It should own the hierarchy too.
+2. **CRDT is for content, not structure.** Document names are opaque room IDs. The relationship "this doc belongs to this goal" lives in MongoDB.
+3. **Orama search integration** is clean: MongoDB provides faceted metadata (goalId, type, role, status), Hocuspocus `onChange` hook provides text content. Search results return MongoDB refs → frontend opens CRDT docs.
+4. **Fewer CRDT connections.** Frontend queries MongoDB for the directory (one HTTP call), then opens individual CRDT docs only when the user clicks.
+5. **Already how we work.** `tasks` collection knows all task docs. `goals` collection knows goal docs. No new registry needed.
+
+**How it works:**
+
+```
+MongoDB (directory/hierarchy):
+  tasks collection: [
+    { taskId: "t1", goalId: "goal-A", title: "Design Schema", status: "completed", crdtDocName: "t1/task" },
+    { taskId: "t2", goalId: "goal-A", title: "Build CRUD",    status: "in_progress", crdtDocName: "t2/task" },
+  ]
+  goals collection: [
+    { goalId: "goal-A", teamId: "team-1", status: "executing" },
+  ]
+
+Hocuspocus (flat content rooms):
+  "team-1/goal-A/plan"        → Y.Map("meta") + Y.XmlFragment("content")
+  "team-1/goal-A/t1/task"     → Y.Map("meta") + Y.XmlFragment("content")
+  "team-1/goal-A/t2/task"     → Y.Map("meta") + Y.XmlFragment("content")
+  "team-1/goal-A/research"    → Y.Map("meta") + Y.XmlFragment("content")
+
+Frontend DocumentList:
+  1. GET /api/goals/:goalId/tasks → MongoDB returns task list with metadata
+  2. Derive CRDT doc names from task IDs + known system docs (plan, goal)
+  3. Render tree from MongoDB data
+  4. User clicks doc → open HocuspocusProvider for that specific doc
+```
+
+**Agent discovery:** Agents use `collab discover` / `collab list` which queries the `CollaborationSpace.listDocs()` (server-side, no MongoDB needed). This is fine — agents run server-side and have direct CRDT access.
+
+**Frontend discovery:** Uses MongoDB HTTP API. No CRDT connection needed to browse the directory. Only opens CRDT connections for docs the user actually opens.
 
 ### Backend: New Workspace Endpoints
 
@@ -140,9 +295,8 @@ User can browse back to list, switch between docs
 
 **CollaborativeEditor.tsx** (reuse directly):
 ```typescript
-// Connect to CRDT doc:
 const provider = new HocuspocusProvider({
-  url: serverUrl,  // VITE_HOCUSPOCUS_URL || ws://localhost:1234
+  url: serverUrl,
   name: docId,     // "{teamId}/{goalId}/{docName}"
   token,
 });
@@ -150,19 +304,13 @@ const fragment = provider.document.getXmlFragment("content");
 const editor = useCreateBlockNote({ collaboration: { provider, fragment, user } });
 ```
 
-**useDiscussion hook** (pattern for Y.Map/Y.Array observation):
+**Document List data source** (Liveblocks pattern — MongoDB is the directory):
 ```typescript
-// Subscribe to Y.Map changes:
-const map = doc.getMap("meta");
-map.observe(() => setData(map.toJSON()));
-// Cleanup: map.unobserve(handler); provider.destroy();
-```
-
-**Document List data source** (combine 3 sources):
-```typescript
-// 1. CRDT docs: GET /api/collab/{teamId}/docs → filter by goalId prefix
-// 2. Workspace files: GET /api/v2/workspaces/{teamId}/goals/{goalId}/files
-// 3. Task metadata: goalSessionStore.tasks → derive expected docs
+// 1. MongoDB tasks: goalSessionStore.tasks → task docs with metadata
+// 2. Known system docs: ["plan", "goal"] → always exist per goal
+// 3. CRDT custom docs: GET /api/collab/{teamId}/docs → filter agent-created docs
+// 4. Workspace files: GET /api/v2/workspaces/{teamId}/goals/{goalId}/files
+// Frontend renders tree from MongoDB data, opens CRDT docs on click
 ```
 
 ### UI State (uiStore additions)
@@ -211,4 +359,146 @@ toggleDocumentPane: () => void;
 5. **Frontend: Auto-open on events**
    - On `sessionState === "awaiting_approval"` → auto-open plan doc
    - On task completion → show notification with "View Report" link
-- This is PR4 from the CRDT-first roadmap
+
+---
+
+## Goal Directory — Complete Structure
+
+Three layers, clear separation:
+- **MongoDB** = directory (what exists, who owns it, what status)
+- **Hocuspocus** = content rooms (rich text, readable by agents and users)
+- **Workspace** = code files (git-managed, per-goal repo clone)
+
+```
+Goal: "Build a REST API for user management"
+goalId: abc12345, teamId: team-1
+
+═══════════════════════════════════════════════════════════
+MongoDB (directory)
+═══════════════════════════════════════════════════════════
+goals: { goalId: "abc12345", title: "Build REST API", status: "executing" }
+tasks: [
+  { taskId: "abc1-task-1", title: "Design Schema",    status: "completed",   assignedRole: "backend" }
+  { taskId: "abc1-task-2", title: "Auth Endpoints",   status: "completed",   assignedRole: "backend" }
+  { taskId: "abc1-task-3", title: "CRUD Endpoints",   status: "in_progress", assignedRole: "backend" }
+]
+
+═══════════════════════════════════════════════════════════
+Hocuspocus (flat content rooms)
+═══════════════════════════════════════════════════════════
+team-1/abc12345/plan              → Y.Map("meta") + Y.XmlFragment("content")
+team-1/abc12345/goal              → Y.Map("meta") + Y.XmlFragment("content")
+team-1/abc12345/abc1-task-1/task  → Y.Map("meta") + Y.XmlFragment("content") [has completion report]
+team-1/abc12345/abc1-task-2/task  → Y.Map("meta") + Y.XmlFragment("content") [has completion report]
+team-1/abc12345/abc1-task-3/task  → Y.Map("meta") + Y.XmlFragment("content") [task description]
+team-1/abc12345/agent-statuses    → Y.Map("meta") [ephemeral]
+team-1/abc12345/_index            → Y.Map("meta") [byRole, byStatus]
+
+═══════════════════════════════════════════════════════════
+Workspace (git)
+═══════════════════════════════════════════════════════════
+/workspaces/abc12345/
+  ├── src/schema.ts          ← produced by task-1
+  ├── src/auth/login.ts      ← produced by task-2
+  └── src/routes/users.ts    ← being written by task-3
+
+═══════════════════════════════════════════════════════════
+Frontend Document Pane (tree rendered from MongoDB + workspace)
+═══════════════════════════════════════════════════════════
+📂 Build REST API
+├── 📋 Plan Document                      ← crdt: plan
+├── 📝 Tasks
+│   ├── ✅ Design Schema                  ← crdt: abc1-task-1/task
+│   ├── ✅ Auth Endpoints                 ← crdt: abc1-task-2/task
+│   └── 🔄 CRUD Endpoints                ← crdt: abc1-task-3/task
+└── 📁 Workspace Files
+    ├── src/schema.ts                     ← workspace
+    ├── src/auth/login.ts                 ← workspace
+    └── src/routes/users.ts               ← workspace
+```
+
+### How Agents Read the Goal Directory
+
+Agents run server-side and have direct CRDT access via the `collab` tool. They DON'T use MongoDB or HTTP APIs. The goal directory for agents comes from CRDT:
+
+```
+Agent dispatched for task "abc1-task-3" (Build CRUD Endpoints)
+
+1. ENRICHED DESCRIPTION (injected by TaskContextBuilder):
+   ─────────────────────────────────────────────────────
+   ## Build CRUD Endpoints
+   **Role:** backend | **Priority:** 3
+
+   ## Input Documents
+   - **schema.ts**: `workspace_read_file src/schema.ts` — Produced by backend
+   - **login.ts**: `workspace_read_file src/auth/login.ts` — Produced by backend
+   - **backend task context**: `collab read abc1-task-1/task` — Summary: Created database schema...
+   - **backend task context**: `collab read abc1-task-2/task` — Summary: JWT authentication...
+
+   ## Upstream Decisions
+   - [backend] Use UUID for primary keys
+   - [backend] Use bcrypt for password hashing
+
+   ## Context Sources (use collab read to access)
+   - Your task: collab read abc1-task-3/task
+   - Plan: collab read plan
+   - Goal: collab read goal
+   - Completed dependencies: abc1-task-1/task, abc1-task-2/task
+
+   ## Your Team
+   - technical-writer
+
+2. AGENT DISCOVERS DIRECTORY via collab tool:
+   ─────────────────────────────────────────
+   collab({ action: "discover" })
+   → "Available categories: crdt (7 docs), tasks (3), goal, plans"
+
+   collab({ action: "discover", docName: "crdt" })
+   → "CRDT docs: plan, goal, abc1-task-1/task, abc1-task-2/task,
+      abc1-task-3/task, agent-statuses, _index"
+
+   collab({ action: "list", docName: "abc1-task-1/task" })
+   → "Keys in abc1-task-1/task: type, id, title, assignedRole,
+      status, body, output, completedAt..."
+
+3. AGENT READS SPECIFIC DOCS:
+   ──────────────────────────
+   collab({ action: "read", docName: "plan" })
+   → Full plan overview with all tasks
+
+   collab({ action: "read-block", docName: "abc1-task-1/task" })
+   → Rich completion report in markdown (from Y.XmlFragment)
+
+   collab({ action: "read", docName: "_index" })
+   → { byRole: { backend: [...] }, byStatus: { completed: [...] } }
+
+   collab({ action: "read", docName: "agent-statuses" })
+   → { backend: { status: "busy", task: "abc1-task-3" } }
+
+4. AGENT READS WORKSPACE FILES:
+   ────────────────────────────
+   workspace_read_file("src/schema.ts")
+   → File content from git workspace
+
+   workspace_list_files("src/")
+   → ["schema.ts", "auth/login.ts", "auth/middleware.ts", "routes/users.ts"]
+
+5. AGENT WRITES DURING EXECUTION:
+   ──────────────────────────────
+   collab({ action: "write-block", docName: "abc1-task-3/task",
+     value: "## Progress\nImplemented GET /users endpoint..." })
+   → Writes to Y.XmlFragment — visible to user in Document Pane in real-time
+
+   collab({ action: "record-decision", docName: "abc1-task-3/task",
+     key: "pagination", value: { decision: "Use cursor-based pagination" } })
+   → Records decision for downstream agents
+```
+
+**Key difference: Agents vs Frontend:**
+
+| | Agents (server-side) | Frontend (browser) |
+|---|---|---|
+| **Directory** | `collab discover` / `collab list` (CRDT) | MongoDB HTTP API (tasks, goals) |
+| **Content** | `collab read` / `collab read-block` (CRDT) | HocuspocusProvider → BlockNote (CRDT) |
+| **Workspace** | `workspace_read_file` / `workspace_list_files` (filesystem) | HTTP API endpoint (new) |
+| **Why different** | Direct CRDT access via CollaborationSpace | Browser can't access filesystem or CRDT server directly |

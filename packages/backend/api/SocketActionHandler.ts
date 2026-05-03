@@ -46,7 +46,7 @@ export class SocketActionHandler {
       emitError(socket, { error: `Invalid action: ${parsed.error.issues[0]?.message || "validation failed"}` });
       return;
     }
-    const { teamId, type, sessionId, taskId, goalId: actionGoalId, output, changes } = parsed.data;
+    const { teamId, type, sessionId, taskId, goalId: actionGoalId, output, changes, feedback } = parsed.data;
 
     if (type !== "get-state" && !this.rateLimiter.allow(connection.userId)) {
       emitError(socket, { error: "Rate limit exceeded. Please wait." });
@@ -59,6 +59,9 @@ export class SocketActionHandler {
       switch (type) {
         case "approve-plan":
           await this.handleApprovePlan(socket, manager, sessionId, actionGoalId);
+          break;
+        case "reject-plan":
+          await this.handleRejectPlan(socket, manager, teamId, sessionId, actionGoalId, feedback);
           break;
         case "start-task":
           await this.handleStartTask(socket, manager, taskId!, actionGoalId);
@@ -266,5 +269,41 @@ export class SocketActionHandler {
       timestamp: Date.now(),
     };
     socket.emit("state", stateResponse);
+  }
+
+  private async handleRejectPlan(
+    socket: Socket,
+    manager: AgentManager,
+    teamId: string,
+    sessionId: string | undefined,
+    goalId?: string,
+    feedback?: string,
+  ): Promise<void> {
+    if (!goalId) {
+      emitError(socket, { error: "goalId is required for reject-plan" });
+      return;
+    }
+
+    // Clear the pending plan
+    manager.rejectPlan(goalId);
+
+    // Set state back to planning
+    const stateResponse = buildStateResponse(manager, sessionId, goalId);
+    stateResponse.sessionState = "planning";
+    stateResponse.plan = [];
+    socket.emit("state", stateResponse);
+
+    // Send user feedback to the planner so it can revise
+    if (feedback) {
+      const replanMessage = `The user rejected the plan and requests changes:\n\n${feedback}\n\nPlease revise your plan and resubmit with submit_plan.`;
+      try {
+        await manager.orchestratorMessage(replanMessage, goalId);
+      } catch (err: any) {
+        logger.error(`[SocketActionHandler] Failed to send replan feedback to planner:`, err);
+        emitError(socket, { error: "Plan rejected but failed to send feedback to planner" });
+      }
+    }
+
+    logger.info(`[SocketActionHandler] Plan rejected for goal ${goalId}${feedback ? ' with feedback' : ''}`);
   }
 }

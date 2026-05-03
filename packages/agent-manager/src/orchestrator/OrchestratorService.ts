@@ -144,7 +144,7 @@ export class OrchestratorService {
       maxRetries: MAX_TASK_RETRIES,
       executeTask: (taskId, role) => this.dispatchTask(taskId, role),
       getTask: (taskId) => this.taskStore.get(taskId),
-      updateTaskStatus: (taskId, status) => { try { this.taskStore.updateStatus(taskId, status as any).catch(() => {}); } catch { /* guard */ } },
+      updateTaskStatus: (taskId, status) => this.taskStore.updateStatus(taskId, status as any),
       onTaskUpdate: this.callbacks.onTaskUpdate ? (data) => this.callbacks.onTaskUpdate!(data) : undefined,
       failTask: (taskId, error) => this.taskStore.queue.failTask(taskId, error),
     });

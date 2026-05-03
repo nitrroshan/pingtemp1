@@ -57,14 +57,14 @@ Use this to understand what your team can do before assigning tasks.
 <!-- ═══ Workflow Tools (submitPlan.ts, submitResearch.ts) ═══ -->
 
 <template id="submit_plan">
-Submit a task plan and start execution. The plan must have:
+Submit a task plan for user review. The plan must have:
 - Valid task IDs with no duplicate IDs  
 - Dependencies that form a valid DAG (no cycles)
 - Roles assigned only from the available team roles
 - DEPENDENCIES ARE CRITICAL: tasks that need output from earlier tasks MUST list dependencies.
   Example: frontend depends on backend API, testing depends on implementation, deployment depends on everything.
   Only tasks with zero dependencies will run first. Others wait for their dependencies to complete.
-Plan is auto-approved and tasks begin executing immediately.
+After submission, the plan enters "awaiting_approval" state. The user will review and either approve or request changes.
 </template>
 
 <template id="submit_research">
@@ -124,12 +124,7 @@ Move a task to a different worker role. The new role must exist in the team.
 Replace the remaining plan. Cancels all pending/ready tasks and submits new ones. Use as a last resort when the current plan can't be salvaged.
 </template>
 
-<!-- ═══ Approval Tool (requestApproval.ts) ═══ -->
-
-<template id="request_approval">
-Request user approval for the submitted plan. Blocks until user approves or rejects.
-Call this AFTER submit_plan. If rejected, modify the plan and resubmit.
-</template>
+<!-- request_approval is no longer a separate tool — submit_plan automatically enters awaiting_approval state -->
 
 <!-- ═══ User Interaction Tools (userTools.ts) ═══ -->
 

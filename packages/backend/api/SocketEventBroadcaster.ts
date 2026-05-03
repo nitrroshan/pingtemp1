@@ -26,6 +26,7 @@ import {
   toStreamPart,
   buildStateResponse,
   buildPlan,
+  buildPlanFromPending,
 } from "./socket-types.js";
 
 const logger = rootLogger.child({ module: "SocketEventBroadcaster" });
@@ -272,7 +273,34 @@ export class SocketEventBroadcaster {
       },
 
       onPlanProposed: (_data) => {
-        logger.info(`[SocketEventBroadcaster] onPlanProposed fired, goalId=${(_data as any)?.goalId}`);
+        const proposedGoalId = (_data as any)?.goalId;
+        logger.info(`[SocketEventBroadcaster] onPlanProposed fired, goalId=${proposedGoalId}`);
+
+        // Build plan tasks from the proposed (pending) plan data — NOT from TaskStore
+        // (TaskStore is only populated after approval)
+        const planTasks = (_data as any)?.plan
+          ? buildPlanFromPending((_data as any).plan)
+          : [];
+
+        const target = proposedGoalId ? goalRoom(proposedGoalId) : room;
+        const stateResponse: StateResponse = {
+          sessionId: "default",
+          sessionState: "awaiting_approval",
+          plan: planTasks,
+          goalId: proposedGoalId,
+          timestamp: Date.now(),
+        };
+        this.io.to(target).emit("state", stateResponse);
+        // Also broadcast to team room if goal-scoped
+        if (target !== room) {
+          this.io.to(room).emit("state", {
+            sessionId: "default",
+            sessionState: "awaiting_approval",
+            goalId: proposedGoalId,
+            timestamp: Date.now(),
+          } as StateResponse);
+        }
+        logger.info(`[SocketEventBroadcaster] Plan proposed: emitted state with ${planTasks.length} tasks to ${target}`);
       },
 
       onWorkerTaskUpdate: (update) => {

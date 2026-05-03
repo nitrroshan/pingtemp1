@@ -48,6 +48,13 @@ export interface TaskCompleted extends GoalEvent {
 
 // ─── Plan Events ─────────────────────────────────────────────
 
+/** Plan proposed by planner — awaiting user approval. */
+export interface PlanProposed extends GoalEvent {
+  readonly type: "plan_proposed";
+  readonly planId: string;
+  readonly plan: any;
+}
+
 /** Plan status change (executing, completed, archived, interrupted). */
 export interface PlanStatusChanged extends GoalEvent {
   readonly type: "plan_status_changed";
@@ -76,6 +83,7 @@ export type AnyGoalEvent =
   | TasksCreated
   | TaskStatusChanged
   | TaskCompleted
+  | PlanProposed
   | PlanStatusChanged
   | GoalStatusChanged
   | TasksCleared;

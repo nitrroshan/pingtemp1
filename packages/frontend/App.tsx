@@ -20,6 +20,7 @@ import ChatArea from './components/ChatArea/ChatArea';
 import AgentModal from './components/AgentModal/AgentModal';
 import { DetailPanel } from './components/DetailPanel/DetailPanel';
 import { PlanApproval } from './components/PlanApproval';
+import { DocumentPane } from './components/DocumentPane';
 import { GoalScreen } from './components/GoalScreen';
 import { PlanSwitcher } from './components/PlanSwitcher';
 import { ToastContainer, useToast } from './components/Toast/Toast';
@@ -101,11 +102,23 @@ function InnerApp() {
   const closeModal = useUiStore(s => s.closeModal);
   const isPanelOpen = useUiStore(s => s.isPanelOpen);
   const setIsPanelOpen = useUiStore(s => s.setIsPanelOpen);
+  const documentPaneOpen = useUiStore(s => s.documentPaneOpen);
   const isSidebarExpanded = useUiStore(s => s.isSidebarExpanded);
   const toggleSidebar = useUiStore(s => s.toggleSidebar);
   const isMobileSidebarOpen = useUiStore(s => s.isMobileSidebarOpen);
   const setIsMobileSidebarOpen = useUiStore(s => s.setIsMobileSidebarOpen);
   const [isMobileViewport, setIsMobileViewport] = useState(() => window.innerWidth < 1024);
+  const [planDialogDismissed, setPlanDialogDismissed] = useState(false);
+
+  // Reset dismissed flag when sessionState changes (new plan proposed after replan, etc.)
+  React.useEffect(() => { setPlanDialogDismissed(false); }, [sessionState]);
+
+  // Listen for "show plan dialog" event from Document Pane's "Approve Plan" button
+  React.useEffect(() => {
+    const handler = () => setPlanDialogDismissed(false);
+    window.addEventListener('ping:showPlanDialog', handler);
+    return () => window.removeEventListener('ping:showPlanDialog', handler);
+  }, []);
   const isCommandPaletteOpen = useUiStore(s => s.isCommandPaletteOpen);
   const setIsCommandPaletteOpen = useUiStore(s => s.setIsCommandPaletteOpen);
   const activeMenu = useUiStore(s => s.activeMenu);
@@ -216,6 +229,10 @@ function InnerApp() {
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
         event.preventDefault();
         setIsCommandPaletteOpen(open => !open);
+      }
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'd') {
+        event.preventDefault();
+        useUiStore.getState().toggleDocumentPane();
       }
     };
 
@@ -946,33 +963,42 @@ function InnerApp() {
         </div>
         {/* ── end main content column ── */}
 
-        {/* ── Detail Panel (320px, optional) ── */}
-        <AnimatePresence>
-          {isPanelOpen && (
-            <DetailPanel
-              logs={orchestrationLogs}
-              activeAgents={[]}
-              allTasks={allTasks}
-              currentPlanName={allTasks[0]?.title ?? undefined}
-              activeGoalId={activeGoalId}
-              discussionThreads={discussionThreads}
-              onOpenDiscussion={handleOpenDiscussion}
-              agentName={activeAgent?.name}
-              agentId={activeAgent?.id}
-              teamId={selectedTeamId ?? undefined}
-              isManager={!!activeAgent && !activeAgent.parentId}
-              onClose={() => { setIsPanelOpen(false); useGoalSessionStore.setState({ selectedTaskId: null }); }}
-              selectedTask={selectedTaskId ? allTasks.find(t => t.id === selectedTaskId) ?? null : null}
-              onSelectTask={(taskId) => useGoalSessionStore.setState({ selectedTaskId: taskId })}
-              onStartTask={handleStartTask}
-              autoExecuteEnabled={autoExecuteEnabled}
-            />
-          )}
-        </AnimatePresence>
+        {/* ── Detail Panel / Document Pane (right side, optional) ── */}
+        {documentPaneOpen && selectedTeamId && activeGoalId ? (
+          <DocumentPane teamId={selectedTeamId} goalId={activeGoalId} />
+        ) : (
+          <AnimatePresence>
+            {isPanelOpen && (
+              <DetailPanel
+                logs={orchestrationLogs}
+                activeAgents={[]}
+                allTasks={allTasks}
+                currentPlanName={allTasks[0]?.title ?? undefined}
+                activeGoalId={activeGoalId}
+                discussionThreads={discussionThreads}
+                onOpenDiscussion={handleOpenDiscussion}
+                agentName={activeAgent?.name}
+                agentId={activeAgent?.id}
+                teamId={selectedTeamId ?? undefined}
+                isManager={!!activeAgent && !activeAgent.parentId}
+                onClose={() => { setIsPanelOpen(false); useGoalSessionStore.setState({ selectedTaskId: null }); }}
+                selectedTask={selectedTaskId ? allTasks.find(t => t.id === selectedTaskId) ?? null : null}
+                onSelectTask={(taskId) => useGoalSessionStore.setState({ selectedTaskId: taskId })}
+                onStartTask={handleStartTask}
+                autoExecuteEnabled={autoExecuteEnabled}
+              />
+            )}
+          </AnimatePresence>
+        )}
       </div>
 
-      {sessionState === 'awaiting_approval' && allTasks.length > 0 && (
-        <PlanApproval plan={allTasks as unknown as BackendTask[]} onApprove={handleApprove} onDismiss={() => useGoalSessionStore.getState().setSessionState(null)} />
+      {sessionState === 'awaiting_approval' && allTasks.length > 0 && !planDialogDismissed && (
+        <PlanApproval
+          plan={allTasks as unknown as BackendTask[]}
+          onApprove={handleApprove}
+          onReject={(feedback) => useGoalSessionStore.getState().rejectPlan(feedback)}
+          onDismiss={() => setPlanDialogDismissed(true)}
+        />
       )}
 
       <ToastContainer toasts={toasts} onDismiss={dismissToast} />

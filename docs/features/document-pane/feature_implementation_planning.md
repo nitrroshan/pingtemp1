@@ -1,8 +1,10 @@
 # Document Pane — Implementation Plan
 
-**Branch:** `feature/document-pane`
+**Branch:** `user/nitrroshan/fixplans`
 **Architecture:** [feature_architecture.md](./feature_architecture.md) — Option A (replace DetailPanel)
+**Depends on:** CRDT-First Architecture PR4 — all done
 **Build check:** `cd packages/frontend && npx vite build`
+**Status:** MVP implemented — all 9 steps done. Polish items remain (resize, metadata header, read-only).
 
 ---
 

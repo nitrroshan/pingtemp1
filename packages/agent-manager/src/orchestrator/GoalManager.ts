@@ -328,6 +328,18 @@ export class GoalManager implements IGoalManager {
     if (gid) {
       const goal = this.goals.get(gid);
       if (goal) goal.pendingPlan = plan;
+
+      // Emit plan_proposed so CRDT projection writes the plan doc for user review
+      if (plan && gid) {
+        this.publishEvents([{
+          type: "plan_proposed",
+          goalId: gid,
+          teamId: this.teamId,
+          timestamp: Date.now(),
+          planId: plan.planId || "unknown",
+          plan,
+        }]);
+      }
     } else if (plan) {
       log.error(`setPendingPlan called without goalId or activeGoalId — this is a bug`);
     }

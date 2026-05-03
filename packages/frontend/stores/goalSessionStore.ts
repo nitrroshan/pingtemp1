@@ -86,6 +86,8 @@ interface GoalSessionState {
   handleGoalStateChange: (data: any) => void;
   /** Approve the pending plan */
   approvePlan: () => void;
+  /** Reject the pending plan with optional feedback */
+  rejectPlan: (feedback?: string) => void;
   /** Start a task */
   startTask: (taskId: string) => void;
   /** Complete a task */
@@ -737,6 +739,13 @@ export const useGoalSessionStore = create<GoalSessionState>()(devtools((set, get
           ...(isForActiveGoal ? { sessionState: data.sessionState as SessionState } : {}),
           goalSessionStates: { ...prev.goalSessionStates, [goalId]: data.sessionState },
         }));
+
+        // Auto-open Document Pane with plan doc when plan is proposed
+        if (isForActiveGoal && data.sessionState === 'awaiting_approval') {
+          import('./uiStore').then(({ useUiStore }) => {
+            useUiStore.getState().setDocumentPane('crdt:plan');
+          });
+        }
       }
     }
   },
@@ -752,6 +761,13 @@ export const useGoalSessionStore = create<GoalSessionState>()(devtools((set, get
     agentServiceV2.approvePlan(goalId ?? undefined);
     get().addLog('SYSTEM', 'Plan approved, starting execution...', 'success');
     set({ sessionState: 'executing' });
+  },
+
+  rejectPlan: (feedback?: string) => {
+    const goalId = get().activeGoalId;
+    agentServiceV2.rejectPlan(goalId ?? undefined, feedback);
+    get().addLog('SYSTEM', feedback ? 'Plan rejected with feedback, replanning...' : 'Plan rejected, replanning...', 'warning');
+    set({ sessionState: 'planning', allTasks: [] });
   },
 
   startTask: (taskId) => {

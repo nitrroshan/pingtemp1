@@ -554,6 +554,13 @@ export class AgentServiceV2 {
   }
 
   /**
+   * Reject the current plan with optional feedback for the planner
+   */
+  rejectPlan(goalId?: string, feedback?: string): void {
+    this.emitAction("reject-plan", { goalId, feedback } as any);
+  }
+
+  /**
    * Start a task (enables user chat with worker)
    */
   startTask(taskId: string, goalId?: string): void {
@@ -597,12 +604,13 @@ export class AgentServiceV2 {
   private emitAction(
     type:
       | "approve-plan"
+      | "reject-plan"
       | "start-task"
       | "complete-task"
       | "cancel-task"
       | "auto-execute"
       | "get-state",
-    data?: { taskId?: string; output?: any; enabled?: boolean; goalId?: string },
+    data?: { taskId?: string; output?: any; enabled?: boolean; goalId?: string; feedback?: string },
   ): void {
     if (!this.isReady()) {
       logger.warn("[AgentServiceV2] emitAction skipped (not ready):", type);
@@ -981,6 +989,31 @@ export class AgentServiceV2 {
     }
 
     return response.json();
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // Document Pane — CRDT + workspace file browsing
+  // ═══════════════════════════════════════════════════════════════════════
+
+  async listCrdtDocs(teamId: string): Promise<string[]> {
+    const response = await this.authFetch(`${this.baseUrl}/api/collab/${teamId}/docs`);
+    if (!response.ok) return [];
+    const data = await response.json();
+    return data.docs || [];
+  }
+
+  async listWorkspaceFiles(teamId: string, goalId: string): Promise<Array<{ path: string; name: string; type: string; size?: number; taskId?: string; taskTitle?: string }>> {
+    const response = await this.authFetch(`${this.baseUrl}/api/v2/workspaces/${teamId}/goals/${goalId}/files`);
+    if (!response.ok) return [];
+    const data = await response.json();
+    return data.files || [];
+  }
+
+  async readWorkspaceFile(teamId: string, goalId: string, path: string, taskId: string): Promise<string> {
+    const response = await this.authFetch(`${this.baseUrl}/api/v2/workspaces/${teamId}/goals/${goalId}/file/${encodeURIComponent(path)}?taskId=${encodeURIComponent(taskId)}`);
+    if (!response.ok) throw new Error("Failed to read file");
+    const data = await response.json();
+    return data.content;
   }
 }
 

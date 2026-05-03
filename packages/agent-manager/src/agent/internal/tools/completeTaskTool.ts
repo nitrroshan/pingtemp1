@@ -55,6 +55,20 @@ export function createCompleteTaskTool(
 Do NOT fabricate output when blocked.`;
       }
 
+      // Completion protocol enforcement: require a CRDT report doc
+      const hasReportDoc = input.producedDocs?.some(
+        doc => doc.uri.includes("/report") || doc.uri.startsWith("crdt:")
+      );
+      if (!hasReportDoc) {
+        return `ERROR: Completion protocol not followed. Before calling complete_task, you MUST:
+
+1. Write your completion report: collab({ action: "write-block", docName: "${taskId}/report", value: "## What Was Done\\n...\\n## Key Decisions\\n...\\n## Files Produced\\n..." })
+2. Record key decisions: collab({ action: "record-decision", docName: "${taskId}/report", key: "decision-name", value: { decision: "...", rationale: "..." } })
+3. THEN call complete_task with producedDocs: [{ uri: "crdt:${taskId}/report", name: "completion-report" }]
+
+Your report doc is the full handoff to downstream agents. Write it now, then call complete_task again.`;
+      }
+
       onComplete?.({
         taskId,
         role,

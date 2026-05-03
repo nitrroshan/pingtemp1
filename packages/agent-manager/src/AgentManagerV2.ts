@@ -308,6 +308,18 @@ export class AgentManager {
           self.orchestrator?.onPlanMutation(event);
         },
       });
+
+      // Inject L2 collab tools so the planner can write plan documents to CRDT
+      if (self.pluginRegistry) {
+        const collabTools = self.pluginRegistry.getTools({
+          consumer: "planner",
+          role: "planner",
+          taskId: "plan",
+          goalId,
+        });
+        tools.push(...collabTools);
+      }
+
       await planner.setTools(tools);
       return planner;
     };
@@ -425,11 +437,7 @@ export class AgentManager {
         },
         onPlanProposed: (data) => {
           this.streamCallbacks?.onPlanProposed?.(data);
-          // Auto-approve with explicit goalId from the plan that was just proposed
-          const gid = (data as any)?.goalId;
-          this.approveOrchestratorPlan(gid).catch((err) => {
-            console.error("[AgentManager] Auto-approve failed:", err);
-          });
+          // No auto-approve — user reviews plan in Document Pane and explicitly approves
         },
         onGoalStatusChange: (data) => this.streamCallbacks?.onGoalStatusChange?.(data),
       },
@@ -656,6 +664,17 @@ export class AgentManager {
     }
 
     return result;
+  }
+
+  /**
+   * Reject the pending plan (clears pendingPlan, sets state back to planning)
+   * User feedback is sent separately via orchestratorMessage()
+   */
+  rejectPlan(goalId: string): void {
+    if (!this.orchestrator) return;
+    const goalManager = this.orchestrator.getGoalManager();
+    goalManager.setPendingPlan(null, goalId);
+    goalManager.setGoalState(goalId, "gathering");
   }
 
   /**

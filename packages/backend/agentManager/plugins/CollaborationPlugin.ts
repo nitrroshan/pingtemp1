@@ -59,14 +59,16 @@ class CollabMcpServer implements IMcpServer {
   }
 
   getTools(context: ToolContext): any[] {
-    // Planner doesn't need collab tools
-    if (context.consumer === "planner") return [];
-    if (!context.role) return [];
     if (!this.l2.isReady) return [];
 
-    const space = this.l2.getOrCreateSpace(this.goalId);
+    // Use goalId from context (planner passes it) or fall back to stored goalId (worker path)
+    const effectiveGoalId = context.goalId || this.goalId;
+    if (!effectiveGoalId) return [];
+
+    const role = context.role || context.consumer;
+    const space = this.l2.getOrCreateSpace(effectiveGoalId);
     const collabTool = createCollabTool(
-      space, context.role, this.l2, this.repoPath,
+      space, role, this.l2, this.repoPath,
       context.taskId, this.collabCallbacks,
     );
     return [collabTool];

@@ -124,6 +124,38 @@ export class CrdtTaskSync {
         createdBy: ctx.createdBy || "planner",
       });
 
+      // Write task as rich readable BlockNote content to Y.XmlFragment("content")
+      try {
+        const { ServerBlockNoteEditor } = await import("@blocknote/server-util");
+        const editor = ServerBlockNoteEditor.create();
+        const title = ctx.title || task.description.split(":")[0]?.trim() || task.id;
+        const deps = Array.from(task.prerequisites.keys());
+        const taskMd = [
+          `## ${title}`,
+          "",
+          `**Role:** ${task.assigned_role} | **Priority:** P${task.priority || 3} | **Type:** ${ctx.type || "work"}`,
+          "",
+          "### Description",
+          "",
+          task.description,
+          "",
+          ctx.expectedOutput ? `### Expected Output\n\n${ctx.expectedOutput}\n` : "",
+          deps.length ? `### Dependencies\n\n${deps.map(d => `- ${d}`).join("\n")}\n` : "",
+          ctx.notes ? `### Context & Notes\n\n${ctx.notes}\n` : "",
+          ctx.files?.length ? `### Related Files\n\n${ctx.files.map((f: string) => `- \`${f}\``).join("\n")}\n` : "",
+          ctx.artifacts?.length ? `### Artifacts\n\n${ctx.artifacts.map((a: string) => `- ${a}`).join("\n")}\n` : "",
+          "### Status",
+          "",
+          `Current: **${task.status}** | Created: ${new Date().toISOString().split("T")[0]}`,
+        ].filter(Boolean).join("\n");
+
+        const blocks = await editor.tryParseMarkdownToBlocks(taskMd);
+        const fragment = doc.getXmlFragment("content");
+        editor.blocksToYXmlFragment(blocks, fragment);
+      } catch (err) {
+        logger.debug(`Failed to write task description to XmlFragment: ${err}`);
+      }
+
       logger.debug(`Persisted task ${task.id} to CRDT at ${docName}`);
     } catch (err) {
       logger.error(`Failed to persist task ${task.id}: ${err}`);
@@ -144,29 +176,10 @@ export class CrdtTaskSync {
         map.set("completedAt", new Date().toISOString());
         if (output != null) {
           map.set("output", output);
-
-          // Write readable completion report to Y.XmlFragment("content")
-          // so downstream agents can read via `collab read-block {taskId}/task`
-          try {
-            const { ServerBlockNoteEditor } = await import("@blocknote/server-util");
-            const editor = ServerBlockNoteEditor.create();
-            const reportMd = [
-              `## Completion Report`,
-              ``,
-              `**Summary:** ${output.summary || "Completed"}`,
-              output.deliverables?.length ? `\n**Deliverables:**\n${output.deliverables.map((d: string) => `- ${d}`).join("\n")}` : "",
-              output.producedDocs?.length ? `\n**Produced Documents:**\n${output.producedDocs.map((d: any) => `- ${d.name}: ${d.uri}${d.description ? ` — ${d.description}` : ""}`).join("\n")}` : "",
-              output.decisions?.length ? `\n**Decisions:**\n${output.decisions.map((d: string) => `- ${d}`).join("\n")}` : "",
-              output.nextSteps?.length ? `\n**Next Steps:**\n${output.nextSteps.map((s: string) => `- ${s}`).join("\n")}` : "",
-            ].filter(Boolean).join("\n");
-
-            const blocks = await editor.tryParseMarkdownToBlocks(reportMd);
-            const fragment = doc.getXmlFragment("content");
-            editor.blocksToYXmlFragment(blocks, fragment);
-          } catch (err) {
-            logger.debug(`Failed to write completion report to XmlFragment: ${err}`);
-          }
         }
+        // Note: The agent writes the real completion report to {taskId}/report
+        // via collab write-block BEFORE calling complete_task.
+        // We don't generate a system report here — the agent's report IS the report.
       }
       logger.debug(`Synced status ${taskId} → ${newStatus}`);
     } catch (err) {
@@ -193,7 +206,7 @@ export class CrdtTaskSync {
       map.set("planId", plan.planId);
       map.set("goalId", goalId);
       map.set("goal", plan.goal);
-      map.set("status", "executing");
+      map.set("status", "pending");
       map.set("version", plan.version || 1);
       map.set("taskCount", plan.tasks?.length || 0);
       map.set("createdAt", new Date().toISOString());
@@ -208,21 +221,18 @@ export class CrdtTaskSync {
       }));
       map.set("tasks", taskSummary);
 
-      // Plan body with strategy notes (if present)
-      const body = [
-        `# ${plan.goal}`,
-        "",
-        "## Tasks",
-        ...(plan.tasks || []).map((t: any) =>
-          `- **${t.id}** — ${t.title} (${t.assignedRole}, P${t.priority})${t.dependencies?.length ? ` — depends on ${t.dependencies.join(", ")}` : ""}`
-        ),
-      ].join("\n");
-      map.set("body", body);
-
       doc.setMeta({
         description: `Plan: ${plan.goal} (${plan.tasks?.length || 0} tasks)`,
         createdBy: "planner",
       });
+
+      // Content is written by the planner LLM via collab write-block BEFORE submit_plan.
+      // No system-generated fallback — if the planner didn't write content, the user
+      // sees an empty doc and uses "Request Changes" to force a rewrite.
+      const fragment = doc.getXmlFragment("content");
+      if (fragment.length === 0) {
+        logger.warn(`Plan ${plan.planId}: planner did not write plan document content — user will see empty doc`);
+      }
 
       logger.debug(`Persisted plan ${plan.planId} to CRDT`);
     } catch (err) {

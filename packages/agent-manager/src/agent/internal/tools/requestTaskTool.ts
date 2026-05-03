@@ -169,15 +169,13 @@ export function createRequestTaskTool(ctx: RequestTaskContext) {
             Array.from(testPrereqs.keys()),
           );
           if (cycleErr) {
-            // Rollback — remove child from Map AND mark discarded in durable storage
-            ctx.taskStore.remove(newTaskId);
-            if (ctx.taskPersistence && ctx.goalId) {
-              try {
-                await ctx.taskPersistence.updateTaskStatus?.(newTaskId, ctx.goalId, "discarded");
-              } catch {
-                // Best effort — task may remain as pending in DB, cleaned up on next replan
-              }
+            // Rollback — mark discarded through TaskStore write-through, then remove from Map
+            try {
+              await ctx.taskStore.updateStatus(newTaskId, "discarded");
+            } catch {
+              // Best effort — task may remain as pending in DB, cleaned up on next replan
             }
+            ctx.taskStore.remove(newTaskId);
             return `Error: Adding this dependency would create a cycle: ${cycleErr}`;
           }
           // Add prerequisite via TaskStore (persists to MongoDB)

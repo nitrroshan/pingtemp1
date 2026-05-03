@@ -105,11 +105,10 @@ export function createSubmitPlanTool(ctx: SubmitPlanContext) {
           timestamp: new Date().toISOString(),
         });
 
-        // Auto-approve: the planner has already discussed the plan with the user.
-        // This creates tasks in TaskStore and starts execution.
-        octx.setState("executing");
+        // Set to awaiting_approval — user must review and approve
+        octx.setState("awaiting_approval");
 
-        return `Plan submitted and approved with ${plan.tasks.length} task(s). Tasks are now being dispatched to workers.`;
+        return `Plan submitted with ${plan.tasks.length} task(s). Awaiting user approval. The user will review your plan document and approve or request changes.`;
       } catch (error) {
         const errorMessage = error instanceof Error ? error.message : String(error);
         return `Error submitting plan: ${errorMessage}`;

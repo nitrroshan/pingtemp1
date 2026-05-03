@@ -187,16 +187,18 @@ interface DocumentRef {
 
 **Feature doc:** [task-context-and-crdt](features/task-context-and-crdt/feature_architecture.md) — full DocumentRef design, 13 context flows audited, SOLID analysis
 
-### What Gets Eliminated (Currently Redundant or Wrong Layer)
+### What Gets Eliminated (Future — When Document Pane Ships)
 
-| Current | What Happens |
+These eliminations are **planned**, not yet implemented. The current runtime still uses all of these.
+
+| Current | Future Target |
 |---------|-------------|
-| `state` Socket.IO event (sends full plan array on every task change) | **Eliminated** — frontend reads tasks from CRDT |
-| `goal:stateChange` event (sends all goal summaries) | **Reduced** — goal summaries stay in MongoDB, lightweight event notifies frontend to refresh |
-| `output` Socket.IO event | **Eliminated** — output written to CRDT task report |
-| PlanStore JSON disk files | **Eliminated** — plan is a CRDT document, MongoDB has task index |
-| `/api/v2/sessions/:teamId/restore` (full state dump via HTTP) | **Simplified** — frontend connects to CRDT for documents, HTTP for status only |
-| `goalSessionStore.handleStateEvent()` (processes full plan arrays) | **Simplified** — reads from CRDT for documents, small status updates via events |
+| `state` Socket.IO event (sends full plan array on every task change) | **Reduce** — frontend reads task content from CRDT docs, `state` event carries only status changes |
+| `goal:stateChange` event (sends all goal summaries) | **Reduce** — lightweight event notifies frontend to refresh |
+| `output` Socket.IO event | **Reduce** — output written to CRDT task report, event carries only taskId + status |
+| PlanStore JSON disk files | **Eliminate** — plan is a CRDT document, MongoDB has task index (PlanStore still active as backup) |
+| `/api/v2/sessions/:teamId/restore` (full state dump via HTTP) | **Simplify** — frontend connects to CRDT for documents, HTTP for status only |
+| `goalSessionStore.handleStateEvent()` (processes full plan arrays) | **Simplify** — reads from CRDT for documents, small status updates via events |
 
 ---
 

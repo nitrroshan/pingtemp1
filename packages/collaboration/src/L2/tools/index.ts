@@ -204,7 +204,7 @@ export function createCollabTool(
           for (const docPath of taskDocs) {
             try {
               const doc = await space.openDoc(docPath);
-              const map = doc.getMap("task");
+              const map = doc.getMap("meta");
               const data = map.toJSON();
               const taskId = docPath.replace("/task", "");
               summaries.push(`  ${data.id || taskId} [${data.status || "?"}] — ${data.title || "untitled"} (${data.assignedRole || "?"})`);
@@ -224,7 +224,7 @@ export function createCollabTool(
         if (docName === "goal") {
           try {
             const doc = await space.openDoc("goal");
-            const map = doc.getMap("goal");
+            const map = doc.getMap("meta");
             const data = map.toJSON();
             if (!data.id) return "No goal document found.";
             return [
@@ -307,7 +307,7 @@ export function createCollabTool(
           for (const docPath of taskDocs) {
             try {
               const doc = await space.openDoc(docPath);
-              const data = doc.getMap("task").toJSON();
+              const data = doc.getMap("meta").toJSON();
               items.push(`  - ${data.id} [${data.status}] — ${data.title} (${data.assignedRole})`);
             } catch {
               items.push(`  - ${docPath} (unreadable)`);

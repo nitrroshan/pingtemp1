@@ -26,13 +26,14 @@ export const MessagePayloadSchema = z.object({
 
 export const ActionPayloadSchema = z.object({
   teamId: z.string().min(1).max(200),
-  type: z.enum(["approve-plan", "start-task", "complete-task", "cancel-task", "modify-task", "auto-execute", "get-state"]),
+  type: z.enum(["approve-plan", "reject-plan", "start-task", "complete-task", "cancel-task", "modify-task", "auto-execute", "get-state"]),
   sessionId: z.string().max(200).optional(),
   taskId: z.string().max(200).optional(),
   goalId: z.string().max(200).optional(),
   output: z.any().optional(),
   changes: z.record(z.any()).optional(),
   enabled: z.boolean().optional(),
+  feedback: z.string().max(2000).optional(),
 });
 
 // ============================================================================
@@ -57,6 +58,7 @@ export interface ActionPayload {
   teamId: string;
   type:
     | "approve-plan"
+    | "reject-plan"
     | "start-task"
     | "complete-task"
     | "cancel-task"
@@ -68,6 +70,7 @@ export interface ActionPayload {
   goalId?: string;
   output?: any;
   changes?: Record<string, any>;
+  feedback?: string;
   enabled?: boolean;
 }
 

@@ -128,7 +128,13 @@ Call report_status periodically, especially before and after major steps.
 </report-progress>
 
 <finish-properly>
-Call complete_task with a summary when done. Never just stop responding.
+Follow the **Completion Protocol** before finishing:
+1. Commit all workspace changes (`workspace_commit`)
+2. Write your completion report to `{your-task-id}/report` via `collab write-block` — explain what you built, decisions made, and what downstream agents need to know
+3. Record key decisions via `collab record-decision`
+4. THEN call `complete_task` with summary, deliverables, and `producedDocs` referencing your report doc
+
+Never just call `complete_task` with a summary alone — downstream agents read your report doc for the full handoff. Never just stop responding.
 </finish-properly>
 
 </behaviors>

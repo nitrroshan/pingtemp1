@@ -31,6 +31,10 @@ interface UiState {
   isModalOpen: boolean;
   modalParentId: string | undefined;
 
+  // Document Pane
+  documentPaneOpen: boolean;
+  documentPanePath: string | null; // "crdt:{docName}" or "workspace:{filePath}"
+
   // Actions
   setSelectedTeamId: (id: string | null) => void;
   setActiveAgentId: (id: string) => void;
@@ -43,6 +47,8 @@ interface UiState {
   setActiveMenu: (menu: string | null) => void;
   openModal: (parentId?: string) => void;
   closeModal: () => void;
+  setDocumentPane: (path: string | null) => void;
+  toggleDocumentPane: () => void;
 }
 
 export const useUiStore = create<UiState>()(
@@ -63,6 +69,9 @@ export const useUiStore = create<UiState>()(
         isModalOpen: false,
         modalParentId: undefined,
 
+        documentPaneOpen: false,
+        documentPanePath: null,
+
         setSelectedTeamId: (id) => set({ selectedTeamId: id }),
         setActiveAgentId: (id) => set({ activeAgentId: id }),
         setViewMode: (mode) => set({ viewMode: mode }),
@@ -78,6 +87,8 @@ export const useUiStore = create<UiState>()(
         setActiveMenu: (menu) => set({ activeMenu: menu }),
         openModal: (parentId) => set({ isModalOpen: true, modalParentId: parentId }),
         closeModal: () => set({ isModalOpen: false, modalParentId: undefined }),
+        setDocumentPane: (path) => set({ documentPaneOpen: path !== null, documentPanePath: path }),
+        toggleDocumentPane: () => set((s) => ({ documentPaneOpen: !s.documentPaneOpen, documentPanePath: s.documentPaneOpen ? null : s.documentPanePath })),
       }),
       {
         name: 'ping:ui',
