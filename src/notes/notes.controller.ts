@@ -1,5 +1,6 @@
 import { Request, Response } from 'express';
 import { NoteModel } from './note.model';
+import { updateNoteService, deleteNoteService } from './notes.service';
 
 /**
  * Create a new note.
@@ -60,5 +61,50 @@ export async function searchNotes(req: Request, res: Response): Promise<Response
         return res.status(200).json(notes);
     } catch (error) {
         return res.status(500).json({ message: 'Failed to search notes' });
+    }
+}
+
+/**
+ * Update an existing note.
+ */
+export async function updateNote(req: Request, res: Response): Promise<Response> {
+    try {
+        const { id } = req.params;
+        const { title, content } = req.body;
+        const userId = req.user.id;
+
+        if (!title || !content) {
+            return res.status(400).json({ message: 'Title and content are required' });
+        }
+
+        const updatedNote = await updateNoteService(userId, id, title, content);
+
+        if (!updatedNote) {
+            return res.status(404).json({ message: 'Note not found or not authorized' });
+        }
+
+        return res.status(200).json(updatedNote);
+    } catch (error) {
+        return res.status(500).json({ message: error.message || 'Failed to update note' });
+    }
+}
+
+/**
+ * Delete a note.
+ */
+export async function deleteNote(req: Request, res: Response): Promise<Response> {
+    try {
+        const { id } = req.params;
+        const userId = req.user.id;
+
+        const deletedNote = await deleteNoteService(userId, id);
+
+        if (!deletedNote) {
+            return res.status(404).json({ message: 'Note not found or not authorized' });
+        }
+
+        return res.status(200).json({ message: 'Note deleted successfully' });
+    } catch (error) {
+        return res.status(500).json({ message: error.message || 'Failed to delete note' });
     }
 }
