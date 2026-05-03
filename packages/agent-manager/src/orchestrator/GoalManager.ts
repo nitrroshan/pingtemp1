@@ -107,39 +107,6 @@ export class GoalManager implements IGoalManager {
     log.info(`GoalManager created for team ${config.teamId}`);
   }
 
-  // ─── v3.0: Database persistence helpers (throw on failure — events only publish after success) ─
-
-  /** Persist tasks to database. Throws on failure — caller must not publish events if this fails. */
-  private async persistTasks(goalId: string, tasks: Array<{ id: string; description: string; assigned_role: string; status?: string; priority?: number; planId?: string; title?: string; dependencies?: string[] }>): Promise<void> {
-    if (!this.taskPersistence) return;
-    await this.taskPersistence.saveTasks(goalId, this.teamId, tasks.map(t => ({
-      taskId: t.id,
-      goalId,
-      teamId: this.teamId,
-      title: t.title || t.description?.slice(0, 80),
-      description: t.description,
-      status: t.status || "pending",
-      assignedRole: t.assigned_role,
-      priority: t.priority,
-      planId: t.planId,
-      dependencies: t.dependencies || [],
-    })));
-  }
-
-  /** Update task status in database. Throws on failure. */
-  private async persistTaskStatus(taskId: string, status: string, output?: unknown): Promise<void> {
-    if (!this.taskPersistence) return;
-    const goalId = this.taskStore.get(taskId)?.goalId;
-    if (!goalId) { log.warn(`persistTaskStatus: task ${taskId} has no goalId — skipping DB write`); return; }
-    await this.taskPersistence.updateTaskStatus(taskId, goalId, status, output);
-  }
-
-  /** Clear tasks for a goal in database. Throws on failure. */
-  private async persistClearGoalTasks(goalId: string): Promise<void> {
-    if (!this.taskPersistence) return;
-    await this.taskPersistence.clearTasksByGoal(goalId);
-  }
-
   // ─── Domain Event Publishing ──────────────────────────────────────
 
   /** Publish domain events after MongoDB writes succeed. CRDT + Socket.IO handled by subscribers. */
@@ -405,8 +372,7 @@ export class GoalManager implements IGoalManager {
 
       // Clear previous state for THIS goal only (preserve other goals)
       await this.workerPool.disposeByGoal(goalId);
-      this.taskStore.clearByGoal(goalId);
-      await this.persistClearGoalTasks(goalId); // v3.0: dual-write
+      await this.taskStore.clearByGoal(goalId);
 
       // Build dependants map (using goal-scoped task IDs to avoid collision across goals)
       const goalPrefix = goalId.slice(0, 8);
@@ -427,7 +393,7 @@ export class GoalManager implements IGoalManager {
         const taskContext = (task as any).context || {};
         const taskType = (task as any).type || taskContext.type || "work";
         const scopedId = scopeId(task.id);
-        this.taskStore.create({
+        await this.taskStore.create({
           id: scopedId,
           title: task.title,
           description: `${task.title}: ${task.description}`,
@@ -465,14 +431,6 @@ export class GoalManager implements IGoalManager {
 
       // Rebuild DAG for this goal
       this.dagResolver.rebuildForGoal(this.taskStore, goalId);
-
-      // v3.0: Persist tasks to database (dual-write alongside CRDT)
-      await this.persistTasks(goalId, planToApprove.tasks.map((t: any) => ({
-        id: scopeId(t.id), description: `${t.title}: ${t.description}`,
-        assigned_role: t.assignedRole.toLowerCase(), status: "pending",
-        priority: t.priority, planId, title: t.title,
-        dependencies: (t.dependencies || []).map((d: string) => scopeId(d)),
-      })));
 
       // All goals execute immediately — no mutex, no queuing
       goal.state = "executing";
@@ -554,10 +512,10 @@ export class GoalManager implements IGoalManager {
   // TASK LIFECYCLE CALLBACKS (wired from RoleTaskQueue via TaskStore)
   // ═══════════════════════════════════════════════════════════════════
 
-  /** Task became ready → persist, publish event, delegate dispatch */
+  /** Task became ready → publish event, delegate dispatch */
   async onTaskReady({ taskId, role }: { taskId: string; role: string }): Promise<void> {
     log.info(`onTaskReady: ${taskId} (${role})`);
-    await this.persistTaskStatus(taskId, "ready");
+    // Note: TaskStore write-through already persisted the status change to MongoDB
 
     const goalId = this.taskStore.get(taskId)?.goalId || "";
     await this.publishEvents([{
@@ -676,8 +634,7 @@ export class GoalManager implements IGoalManager {
 
       switch (strategy) {
         case "fail":
-          this.taskStore.updateStatus(dep.id, "failed");
-          await this.persistTaskStatus(dep.id, "failed"); // v3.0
+          await this.taskStore.updateStatus(dep.id, "failed");
           this.callbacks.onTaskUpdate?.({
             taskId: dep.id, status: "failed", role: dep.assigned_role, timestamp: Date.now(),
           });
@@ -686,12 +643,11 @@ export class GoalManager implements IGoalManager {
           break;
 
         case "skip":
-          this.taskStore.completeTask(dep.id, {
+          await this.taskStore.completeTask(dep.id, {
             summary: `Skipped: upstream dependency ${taskId} failed`,
             skipped: true,
             skipReason: reason,
           });
-          await this.persistTaskStatus(dep.id, "completed", { skipped: true, skipReason: reason }); // v3.0
           this.callbacks.onTaskUpdate?.({
             taskId: dep.id, status: "completed", role: dep.assigned_role, timestamp: Date.now(),
           });
@@ -724,7 +680,7 @@ export class GoalManager implements IGoalManager {
 
     log.error(`onTaskFailed: ${taskId}: ${error}`);
     const task = this.taskStore.get(taskId);
-    await this.persistTaskStatus(taskId, "failed", { error }); // v3.0
+    // Note: TaskStore write-through handles MongoDB persistence
 
     if (task) {
       task.output = { error, failedAt: new Date().toISOString(), summary: `FAILED: ${error}` };
@@ -858,12 +814,12 @@ export class GoalManager implements IGoalManager {
     // 2. Mark complete — agent work succeeded regardless of merge outcome
     //    completeTask() resolves dependents internally → unblocks downstream tasks
     //    Dependents create worktrees AFTER merge, so they see upstream files.
-    this.taskStore.completeTask(data.taskId, {
+    await this.taskStore.completeTask(data.taskId, {
       summary: data.summary,
       deliverables: data.deliverables,
       nextSteps: data.nextSteps, completedBy: "agent", timestamp: data.timestamp,
     });
-    await this.persistTaskStatus(data.taskId, "completed", { summary: data.summary, deliverables: data.deliverables }); // v3.0
+    // Note: TaskStore write-through handles MongoDB persistence
 
     // Publish task completed event (CRDT projection + notifications)
     const doneGoalId = this.taskStore.get(data.taskId)?.goalId || "";
@@ -983,7 +939,7 @@ export class GoalManager implements IGoalManager {
           // Reset in_progress → ready (workers can't survive restart)
           const status = t.status === "in_progress" ? "ready" : t.status;
 
-          this.taskStore.create({
+          await this.taskStore.create({
             id: t.taskId,
             title: t.title,
             description: t.description,

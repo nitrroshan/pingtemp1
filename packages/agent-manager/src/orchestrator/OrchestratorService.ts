@@ -144,7 +144,7 @@ export class OrchestratorService {
       maxRetries: MAX_TASK_RETRIES,
       executeTask: (taskId, role) => this.dispatchTask(taskId, role),
       getTask: (taskId) => this.taskStore.get(taskId),
-      updateTaskStatus: (taskId, status) => { try { this.taskStore.updateStatus(taskId, status as any); } catch { /* guard */ } },
+      updateTaskStatus: (taskId, status) => { try { this.taskStore.updateStatus(taskId, status as any).catch(() => {}); } catch { /* guard */ } },
       onTaskUpdate: this.callbacks.onTaskUpdate ? (data) => this.callbacks.onTaskUpdate!(data) : undefined,
       failTask: (taskId, error) => this.taskStore.queue.failTask(taskId, error),
     });
@@ -543,7 +543,7 @@ export class OrchestratorService {
     const task = this.taskStore.get(taskId);
     if (!task || task.status === "completed" || task.status === "failed") return;
 
-    this.taskStore.updateStatus(taskId, "in_progress");
+    await this.taskStore.updateStatus(taskId, "in_progress");
 
     this.callbacks.onTaskUpdate?.({
       taskId, status: "in_progress", role, timestamp: Date.now(),
@@ -607,7 +607,7 @@ export class OrchestratorService {
         const wasBlocked = afterTask.lastReportedStatus === "blocked";
         if (wasBlocked) {
           log.info(`[OrchestratorService] Worker for ${taskId} was blocked — marking as failed, not auto-completing`);
-          try { this.taskStore.updateStatus(taskId, "failed"); } catch { /* guard */ }
+          try { await this.taskStore.updateStatus(taskId, "failed"); } catch { /* guard */ }
           this.taskStore.queue.failTask(taskId, "Agent reported blocked and could not complete");
         } else {
           console.log(`[OrchestratorService] Worker finished without complete_task, auto-completing ${taskId}`);
@@ -625,7 +625,7 @@ export class OrchestratorService {
             }
           }
 
-          this.taskStore.completeTask(taskId, {
+          await this.taskStore.completeTask(taskId, {
             summary: "Task completed (auto-completed — worker finished without calling complete_task)",
             completedBy: "auto",
             timestamp: Date.now(),

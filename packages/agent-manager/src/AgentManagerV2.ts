@@ -245,6 +245,12 @@ export class AgentManager {
 
     // SOLID architecture — TaskStore + OrchestratorService + PlannerAgent as peers
     this.taskStoreInstance = new TaskStore();
+
+    // Write-through: TaskStore persists to MongoDB on every write
+    if (this.taskPersistence) {
+      this.taskStoreInstance.setPersistence(this.taskPersistence, teamId);
+    }
+
     const dagResolver = new DependencyResolver();
 
     // Session ID for planner conversation thread
@@ -747,7 +753,7 @@ export class AgentManager {
    * Approve a task - moves from proposed → ready, allows user to start chatting
    * This is the v2 approval that enables direct chat, NOT auto-execution
    */
-  approveTaskForChat(taskId: string): { taskId: string; role: string } {
+  async approveTaskForChat(taskId: string): Promise<{ taskId: string; role: string }> {
     if (!this.taskStoreInstance) {
       throw new Error("TaskStore not initialized");
     }
@@ -758,7 +764,7 @@ export class AgentManager {
     }
 
     // Update status to ready (approved, awaiting user to start chat)
-    this.taskStoreInstance.updateStatus(taskId, "ready");
+    await this.taskStoreInstance.updateStatus(taskId, "ready");
     logger.info(
       `Task ${taskId} approved for chat with role: ${task.assigned_role}`,
     );
@@ -809,7 +815,7 @@ export class AgentManager {
 
     // Mark as in_progress
     if (task.status !== "in_progress") {
-      this.taskStoreInstance.updateStatus(taskId, "in_progress");
+      await this.taskStoreInstance.updateStatus(taskId, "in_progress");
     }
     logger.info(`Task ${taskId} execution started`);
 
@@ -879,14 +885,11 @@ export class AgentManager {
       // Continue with completion but include merge error
     }
 
-    // Complete task via TaskStore
-    this.taskStoreInstance.completeTask(taskId, finalOutput);
+    // Complete task via TaskStore (persists to MongoDB via write-through)
+    await this.taskStoreInstance.completeTask(taskId, finalOutput);
 
-    // v3.1: Persist to database (scoped by goalId)
+    // v3.1: TaskStore write-through handles persistence — no separate call needed
     const taskGoalId = task.goalId;
-    if (taskGoalId) {
-      this.taskPersistence?.updateTaskStatus(taskId, taskGoalId, "completed", finalOutput).catch(() => {});
-    }
 
     logger.info(
       `Task ${taskId} completed by user${mergeResult.error ? " (merge failed)" : ""}`,
@@ -1078,7 +1081,7 @@ export class AgentManager {
    *
    * @param taskId - ID of task to discard
    */
-  discardTask(taskId: string): void {
+  async discardTask(taskId: string): Promise<void> {
     if (!this.taskStoreInstance) {
       throw new Error("TaskStore not initialized");
     }
@@ -1099,7 +1102,7 @@ export class AgentManager {
     }
 
     // Remove from TaskStore
-    this.taskStoreInstance.updateStatus(taskId, "failed");
+    await this.taskStoreInstance.updateStatus(taskId, "failed");
 
     logger.info(`Discarded task ${taskId}`);
   }

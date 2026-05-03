@@ -24,33 +24,25 @@ export class MongoTaskService implements ITaskPersistence {
       dependencies: t.dependencies || [],
     }));
 
-    try {
-      await TaskModel.bulkWrite(
-        docs.map((doc) => ({
-          updateOne: {
-            filter: { teamId: doc.teamId, goalId: doc.goalId, taskId: doc.taskId },
-            update: { $set: doc },
-            upsert: true,
-          },
-        })),
-      );
-      logger.info(`Saved ${tasks.length} tasks for goal ${goalId}`);
-    } catch (err) {
-      logger.error({ err, goalId }, "Failed to save tasks");
-    }
+    await TaskModel.bulkWrite(
+      docs.map((doc) => ({
+        updateOne: {
+          filter: { teamId: doc.teamId, goalId: doc.goalId, taskId: doc.taskId },
+          update: { $set: doc },
+          upsert: true,
+        },
+      })),
+    );
+    logger.info(`Saved ${tasks.length} tasks for goal ${goalId}`);
   }
 
   async updateTaskStatus(taskId: string, goalId: string, status: string, output?: unknown): Promise<void> {
     const TaskModel = await this.getModel();
-    try {
-      const update: Record<string, any> = { status };
-      if (output !== undefined) update.output = output;
-      const result = await TaskModel.findOneAndUpdate({ taskId, goalId }, { $set: update });
-      if (!result) {
-        logger.warn({ taskId, goalId, status }, "updateTaskStatus: no matching task in DB");
-      }
-    } catch (err) {
-      logger.error({ err, taskId, goalId, status }, "Failed to update task status");
+    const update: Record<string, any> = { status };
+    if (output !== undefined) update.output = output;
+    const result = await TaskModel.findOneAndUpdate({ taskId, goalId }, { $set: update });
+    if (!result) {
+      logger.warn({ taskId, goalId, status }, "updateTaskStatus: no matching task in DB");
     }
   }
 
@@ -68,12 +60,8 @@ export class MongoTaskService implements ITaskPersistence {
 
   async clearTasksByGoal(goalId: string): Promise<void> {
     const TaskModel = await this.getModel();
-    try {
-      const result = await TaskModel.deleteMany({ goalId });
-      logger.info(`Cleared ${result.deletedCount} tasks for goal ${goalId}`);
-    } catch (err) {
-      logger.error({ err, goalId }, "Failed to clear tasks");
-    }
+    const result = await TaskModel.deleteMany({ goalId });
+    logger.info(`Cleared ${result.deletedCount} tasks for goal ${goalId}`);
   }
 
   private toTaskData(doc: any): TaskData {

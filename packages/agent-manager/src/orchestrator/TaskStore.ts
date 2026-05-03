@@ -39,6 +39,26 @@ export interface TaskStoreCallbacks {
   onTaskRemoved?: (taskId: string) => void;
 }
 
+/**
+ * TaskStorePersistence — Write-through adapter for durable persistence.
+ *
+ * When set, TaskStore writes to this adapter BEFORE updating the in-memory Map.
+ * If the adapter throws, the in-memory Map is NOT updated (consistency).
+ * Reads always come from the in-memory Map (fast, sync).
+ *
+ * This eliminates the dual-write problem: MongoDB is the authoritative write target,
+ * the Map is just a read cache.
+ */
+export interface TaskStorePersistence {
+  saveTasks(goalId: string, teamId: string, tasks: Array<{
+    taskId: string; goalId: string; teamId: string; title?: string;
+    description: string; status: string; assignedRole: string;
+    priority?: number; output?: unknown; planId?: string; dependencies?: string[];
+  }>): Promise<void>;
+  updateTaskStatus(taskId: string, goalId: string, status: string, output?: unknown): Promise<void>;
+  clearTasksByGoal(goalId: string): Promise<void>;
+}
+
 export class TaskStore implements ITaskProvider {
   private tasks = new Map<string, Task>();
   public readonly queue: RoleTaskQueue;
@@ -50,9 +70,20 @@ export class TaskStore implements ITaskProvider {
   /** Role-filtered event listeners: Map<"role:event", callback[]> */
   private roleListeners = new Map<string, Array<(task: Task) => void>>();
 
+  /** Write-through persistence adapter (MongoDB). When set, writes go to DB first. */
+  private persistence: TaskStorePersistence | null = null;
+  private teamId: string = "";
+
   constructor() {
     this.queue = new RoleTaskQueue();
     log.info("TaskStore initialized");
+  }
+
+  /** Set the write-through persistence adapter. Writes go to DB BEFORE updating the Map. */
+  setPersistence(persistence: TaskStorePersistence, teamId: string): void {
+    this.persistence = persistence;
+    this.teamId = teamId;
+    log.info(`TaskStore persistence enabled (teamId: ${teamId})`);
   }
 
   /**
@@ -94,8 +125,8 @@ export class TaskStore implements ITaskProvider {
   // CRUD
   // ═══════════════════════════════════════════════════════════════════
 
-  /** Add a task. Queues it in RoleTaskQueue if ready. */
-  create(task: Task): void {
+  /** Add a task. Persists to MongoDB FIRST, then updates Map. Queues if ready. */
+  async create(task: Task): Promise<void> {
     if (!task.goalId) {
       log.error(`Task '${task.id}' created without goalId — this is a data integrity bug. Caller must set goalId.`);
     }
@@ -104,7 +135,6 @@ export class TaskStore implements ITaskProvider {
     }
 
     // Inject goal config into task context (repoUrl, repoBranch)
-    // Lookup by goalId — multi-goal safe. Task-specific context wins.
     if (task.goalId) {
       const goalConfig = this.goalConfigs.get(task.goalId);
       if (goalConfig) {
@@ -116,15 +146,33 @@ export class TaskStore implements ITaskProvider {
       }
     }
 
-    this.tasks.set(task.id, task);
-
-    // If task is ready (no unmet prerequisites), queue it
-    // BUT don't override completed/failed status (important for plan recovery from CRDT)
+    // Determine final status before persisting
     if (this.isReady(task) && (task.status === "pending" || task.status === "ready")) {
       task.status = "ready";
+    }
 
-      // Enrich context with outputs from already-completed/failed upstream tasks
-      // (handles tasks created by add_tasks/replan after upstream already finished)
+    // Persist to MongoDB FIRST — if this fails, Map is NOT updated
+    if (this.persistence && task.goalId) {
+      await this.persistence.saveTasks(task.goalId, this.teamId, [{
+        taskId: task.id,
+        goalId: task.goalId,
+        teamId: this.teamId,
+        title: task.title || task.description?.slice(0, 80),
+        description: task.description,
+        status: task.status,
+        assignedRole: task.assigned_role,
+        priority: task.priority,
+        output: task.output,
+        planId: task.planId,
+        dependencies: task.prerequisites ? Array.from(task.prerequisites.keys()) : [],
+      }]);
+    }
+
+    // MongoDB succeeded — update Map (read cache)
+    this.tasks.set(task.id, task);
+
+    // Enrich context with upstream outputs + queue if ready
+    if (task.status === "ready") {
       if (task.prerequisites) {
         for (const [depId, met] of task.prerequisites) {
           if (met) {
@@ -135,7 +183,6 @@ export class TaskStore implements ITaskProvider {
           }
         }
       }
-
       this.queueTask(task);
     }
 
@@ -154,8 +201,8 @@ export class TaskStore implements ITaskProvider {
   }
 
   /** Add a task. Alias for create() — satisfies ITaskProvider interface. */
-  addTask(task: Task): void {
-    this.create(task);
+  async addTask(task: Task): Promise<void> {
+    await this.create(task);
   }
 
   /** Get all tasks. */
@@ -196,7 +243,13 @@ export class TaskStore implements ITaskProvider {
   }
 
   /** Remove all tasks for a specific goal. Used when replanning within a goal. */
-  clearByGoal(goalId: string): void {
+  /** Clear all tasks for a goal. Persists to MongoDB FIRST. */
+  async clearByGoal(goalId: string): Promise<void> {
+    // MongoDB FIRST — prevents zombie tasks on crash
+    if (this.persistence) {
+      await this.persistence.clearTasksByGoal(goalId);
+    }
+
     const toRemove = this.getByGoal(goalId);
     for (const task of toRemove) {
       this.remove(task.id);
@@ -209,10 +262,10 @@ export class TaskStore implements ITaskProvider {
   // ═══════════════════════════════════════════════════════════════════
 
   /**
-   * Update task status with state machine enforcement.
+   * Update task status. Persists to MongoDB FIRST, then updates Map.
    * Invalid transitions throw.
    */
-  updateStatus(taskId: string, newStatus: TaskStatus): void {
+  async updateStatus(taskId: string, newStatus: TaskStatus): Promise<void> {
     const task = this.tasks.get(taskId);
     if (!task) throw new Error(`Task '${taskId}' not found`);
 
@@ -223,7 +276,11 @@ export class TaskStore implements ITaskProvider {
       if (oldStatus === "completed") {
         throw new Error(`Cannot cancel completed task '${taskId}'`);
       }
-      task.status = "failed"; // map cancelled → failed for compatibility
+      // Persist to MongoDB FIRST
+      if (this.persistence && task.goalId) {
+        await this.persistence.updateTaskStatus(taskId, task.goalId, "failed", task.output);
+      }
+      task.status = "failed";
       this.storeCallbacks.onStatusChanged?.(taskId, oldStatus, "failed");
       this.fireRoleEvent(task, "failed");
       return;
@@ -237,6 +294,12 @@ export class TaskStore implements ITaskProvider {
       );
     }
 
+    // Persist to MongoDB FIRST — if this fails, Map is NOT updated
+    if (this.persistence && task.goalId) {
+      await this.persistence.updateTaskStatus(taskId, task.goalId, newStatus, task.output);
+    }
+
+    // MongoDB succeeded — update Map
     task.status = newStatus;
     this.storeCallbacks.onStatusChanged?.(taskId, oldStatus, newStatus);
 
@@ -294,16 +357,16 @@ export class TaskStore implements ITaskProvider {
   }
 
   /** Alias for updateStatus() — satisfies ITaskProvider interface. */
-  updateTaskStatus(taskId: string, status: TaskStatus): void {
-    this.updateStatus(taskId, status);
+  async updateTaskStatus(taskId: string, status: TaskStatus): Promise<void> {
+    await this.updateStatus(taskId, status);
   }
 
   /** Mark a task as ready and enqueue for dispatch. Satisfies ITaskProvider. */
-  markReady(taskId: string): void {
+  async markReady(taskId: string): Promise<void> {
     const task = this.tasks.get(taskId);
     if (!task) throw new Error(`Task '${taskId}' not found`);
     if (task.status !== "pending" && task.status !== "failed") return;
-    task.status = "ready";
+    await this.updateStatus(taskId, "ready" as TaskStatus);
     this.queueTask(task);
     log.debug(`Task ${taskId} marked ready and queued`);
   }
@@ -327,18 +390,21 @@ export class TaskStore implements ITaskProvider {
   // ═══════════════════════════════════════════════════════════════════
 
   /**
-   * Complete a task: store output, update dependants, return newly ready tasks.
+   * Complete a task: persist to MongoDB, update Map, cascade dependants.
+   * Returns newly ready tasks.
    */
-  completeTask(taskId: string, output: any): Task[] {
+  async completeTask(taskId: string, output: any): Promise<Task[]> {
     const task = this.tasks.get(taskId);
     if (!task) {
       log.error(`completeTask: Task '${taskId}' not found`);
       return [];
     }
 
-    // Update status
-    this.updateStatus(taskId, "completed");
+    // Set output BEFORE updateStatus so MongoDB gets both in one write
     task.output = output;
+
+    // Persist to MongoDB FIRST, then update Map
+    await this.updateStatus(taskId, "completed");
 
     // Complete in queue (metrics)
     try {
@@ -358,7 +424,8 @@ export class TaskStore implements ITaskProvider {
 
         if (this.isReady(other) && (other.status === "pending" || other.status === "failed")) {
           const wasRetry = other.status === "failed";
-          other.status = "ready";
+          // Route through updateStatus for MongoDB persistence + callbacks
+          await this.updateStatus(other.id, "ready" as TaskStatus);
           this.queueTask(other);
           newlyReady.push(other);
           if (wasRetry) {

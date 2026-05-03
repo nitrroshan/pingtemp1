@@ -152,7 +152,7 @@ export function createRequestTaskTool(ctx: RequestTaskContext) {
 
       // Register in TaskStore
       try {
-        ctx.taskStore.create(newTask);
+        await ctx.taskStore.create(newTask);
       } catch (err: any) {
         return `Error creating task: ${err.message}`;
       }

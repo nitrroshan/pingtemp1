@@ -21,7 +21,7 @@ export class SqliteTaskService implements ITaskPersistence {
         dependencies TEXT,
         createdAt TEXT NOT NULL,
         updatedAt TEXT NOT NULL,
-        PRIMARY KEY (teamId, taskId)
+        PRIMARY KEY (teamId, goalId, taskId)
       );
       CREATE INDEX IF NOT EXISTS idx_tasks_goal ON tasks(goalId, updatedAt);
       CREATE INDEX IF NOT EXISTS idx_tasks_team ON tasks(teamId, updatedAt);
@@ -35,7 +35,7 @@ export class SqliteTaskService implements ITaskPersistence {
         taskId, goalId, teamId, title, description, status, assignedRole,
         priority, output, planId, dependencies, createdAt, updatedAt
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT(teamId, taskId) DO UPDATE SET
+      ON CONFLICT(teamId, goalId, taskId) DO UPDATE SET
         goalId = excluded.goalId,
         title = excluded.title,
         description = excluded.description,

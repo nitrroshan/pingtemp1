@@ -73,7 +73,7 @@ export function createCancelTaskTool(ctx: ExecutionToolContext) {
       }
 
       // Mark as failed in TaskStore
-      ctx.tasks.updateTaskStatus(input.taskId, "failed");
+      await ctx.tasks.updateTaskStatus(input.taskId, "failed");
 
       return `Task '${input.taskId}' cancelled. Reason: ${input.reason}`;
     },
