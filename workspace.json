@@ -1,195 +1,205 @@
 {
   "version": "1.0",
-  "workspaceId": "ws-eea91db2-task-3-moq8pnvq",
-  "taskId": "eea91db2-task-3",
+  "workspaceId": "ws-94a64ef8-task-1-moqbi0gs",
+  "taskId": "94a64ef8-task-1",
   "agentId": "backend",
-  "branchName": "goal-eea91db2-cc74-4300-b2fd-85f2bcd92930/task-eea91db2-task-3",
+  "branchName": "goal-94a64ef8-c719-4aeb-aa35-e321faa0b9e7/task-94a64ef8-task-1",
   "baseBranch": "main",
   "baseCommit": "",
   "knowledgeRefs": [],
   "dependencyTasks": [],
-  "createdAt": "2026-05-03T20:45:41.111Z",
-  "lastCommitAt": "2026-05-03T20:46:31.993Z",
+  "createdAt": "2026-05-03T22:03:44.051Z",
+  "lastCommitAt": "2026-05-03T22:03:54.853Z",
   "status": "published",
   "retryCount": 0,
   "publishedArtifacts": [
     {
-      "id": "eea91db2-task-3-migrations-create_users_table.sql",
+      "id": "94a64ef8-task-1-migrations-create_users_table.sql",
       "path": "migrations/create_users_table.sql",
       "type": "file"
     },
     {
-      "id": "eea91db2-task-3-migrations-002_create_notes_table.sql",
+      "id": "94a64ef8-task-1-migrations-002_create_notes_table.sql",
       "path": "migrations/002_create_notes_table.sql",
       "type": "file"
     },
     {
-      "id": "eea91db2-task-3-migrations-001-create-users-and-notes.sql",
+      "id": "94a64ef8-task-1-migrations-002-create-notes-table.sql",
+      "path": "migrations/002-create-notes-table.sql",
+      "type": "file"
+    },
+    {
+      "id": "94a64ef8-task-1-migrations-001-create-users-table.sql",
+      "path": "migrations/001-create-users-table.sql",
+      "type": "file"
+    },
+    {
+      "id": "94a64ef8-task-1-migrations-001-create-users-and-notes.sql",
       "path": "migrations/001-create-users-and-notes.sql",
       "type": "file"
     },
     {
-      "id": "eea91db2-task-3-migrations-001_create_users_table.sql",
+      "id": "94a64ef8-task-1-migrations-001_create_users_table.sql",
       "path": "migrations/001_create_users_table.sql",
       "type": "file"
     },
     {
-      "id": "eea91db2-task-3-migrations-create_notes_table.sql",
+      "id": "94a64ef8-task-1-migrations-create_notes_table.sql",
       "path": "migrations/create_notes_table.sql",
       "type": "file"
     },
     {
-      "id": "eea91db2-task-3-migrations-001_create_users_and_notes.sql",
+      "id": "94a64ef8-task-1-migrations-001_create_users_and_notes.sql",
       "path": "migrations/001_create_users_and_notes.sql",
       "type": "file"
     },
     {
-      "id": "eea91db2-task-3-activity-activity.jsonl",
+      "id": "94a64ef8-task-1-activity-activity.jsonl",
       "path": "activity/activity.jsonl",
       "type": "file"
     },
     {
-      "id": "eea91db2-task-3-docs-websockets_vs_polling.md",
+      "id": "94a64ef8-task-1-docs-websockets_vs_polling.md",
       "path": "docs/websockets_vs_polling.md",
       "type": "file"
     },
     {
-      "id": "eea91db2-task-3-README.md",
+      "id": "94a64ef8-task-1-README.md",
       "path": "README.md",
       "type": "file"
     },
     {
-      "id": "eea91db2-task-3-scratch-run_initialize-react.sh",
+      "id": "94a64ef8-task-1-scratch-run_initialize-react.sh",
       "path": "scratch/run_initialize-react.sh",
       "type": "file"
     },
     {
-      "id": "eea91db2-task-3-initialize-react.sh",
+      "id": "94a64ef8-task-1-initialize-react.sh",
       "path": "initialize-react.sh",
       "type": "file"
     },
     {
-      "id": "eea91db2-task-3-.gitignore",
+      "id": "94a64ef8-task-1-.gitignore",
       "path": ".gitignore",
       "type": "file"
     },
     {
-      "id": "eea91db2-task-3-src-middleware-rateLimit.middleware.ts",
+      "id": "94a64ef8-task-1-src-middleware-rateLimit.middleware.ts",
       "path": "src/middleware/rateLimit.middleware.ts",
       "type": "file"
     },
     {
-      "id": "eea91db2-task-3-src-auth.test.ts",
+      "id": "94a64ef8-task-1-src-auth.test.ts",
       "path": "src/auth.test.ts",
       "type": "file"
     },
     {
-      "id": "eea91db2-task-3-src-auth-user.model.ts",
+      "id": "94a64ef8-task-1-src-auth-user.model.ts",
       "path": "src/auth/user.model.ts",
       "type": "file"
     },
     {
-      "id": "eea91db2-task-3-src-auth-auth.controller.ts",
+      "id": "94a64ef8-task-1-src-auth-auth.controller.ts",
       "path": "src/auth/auth.controller.ts",
       "type": "file"
     },
     {
-      "id": "eea91db2-task-3-src-auth-auth.service.ts",
+      "id": "94a64ef8-task-1-src-auth-auth.service.ts",
       "path": "src/auth/auth.service.ts",
       "type": "file"
     },
     {
-      "id": "eea91db2-task-3-src-auth-validators.ts",
+      "id": "94a64ef8-task-1-src-auth-validators.ts",
       "path": "src/auth/validators.ts",
       "type": "file"
     },
     {
-      "id": "eea91db2-task-3-src-auth-auth.middleware.ts",
+      "id": "94a64ef8-task-1-src-auth-auth.middleware.ts",
       "path": "src/auth/auth.middleware.ts",
       "type": "file"
     },
     {
-      "id": "eea91db2-task-3-src-auth-auth.routes.ts",
+      "id": "94a64ef8-task-1-src-auth-auth.routes.ts",
       "path": "src/auth/auth.routes.ts",
       "type": "file"
     },
     {
-      "id": "eea91db2-task-3-src-auth-cache.service.ts",
+      "id": "94a64ef8-task-1-src-auth-cache.service.ts",
       "path": "src/auth/cache.service.ts",
       "type": "file"
     },
     {
-      "id": "eea91db2-task-3-src-layout-DashboardLayout.tsx",
+      "id": "94a64ef8-task-1-src-layout-DashboardLayout.tsx",
       "path": "src/layout/DashboardLayout.tsx",
       "type": "file"
     },
     {
-      "id": "eea91db2-task-3-src-layout-index.ts",
+      "id": "94a64ef8-task-1-src-layout-index.ts",
       "path": "src/layout/index.ts",
       "type": "file"
     },
     {
-      "id": "eea91db2-task-3-src-app.ts",
+      "id": "94a64ef8-task-1-src-app.ts",
       "path": "src/app.ts",
       "type": "file"
     },
     {
-      "id": "eea91db2-task-3-src-utils-retryRequest.ts",
+      "id": "94a64ef8-task-1-src-utils-retryRequest.ts",
       "path": "src/utils/retryRequest.ts",
       "type": "file"
     },
     {
-      "id": "eea91db2-task-3-src-components-ChartComponent.tsx",
+      "id": "94a64ef8-task-1-src-components-ChartComponent.tsx",
       "path": "src/components/ChartComponent.tsx",
       "type": "file"
     },
     {
-      "id": "eea91db2-task-3-src-notes-notes.controller.ts",
+      "id": "94a64ef8-task-1-src-notes-notes.controller.ts",
       "path": "src/notes/notes.controller.ts",
       "type": "file"
     },
     {
-      "id": "eea91db2-task-3-src-notes-notes.routes.ts",
+      "id": "94a64ef8-task-1-src-notes-notes.routes.ts",
       "path": "src/notes/notes.routes.ts",
       "type": "file"
     },
     {
-      "id": "eea91db2-task-3-src-notes-notes.service.ts",
+      "id": "94a64ef8-task-1-src-notes-notes.service.ts",
       "path": "src/notes/notes.service.ts",
       "type": "file"
     },
     {
-      "id": "eea91db2-task-3-src-notes-note.model.ts",
+      "id": "94a64ef8-task-1-src-notes-note.model.ts",
       "path": "src/notes/note.model.ts",
       "type": "file"
     },
     {
-      "id": "eea91db2-task-3-src-hooks-useRealTimeData.ts",
+      "id": "94a64ef8-task-1-src-hooks-useRealTimeData.ts",
       "path": "src/hooks/useRealTimeData.ts",
       "type": "file"
     },
     {
-      "id": "eea91db2-task-3-src-server.ts",
+      "id": "94a64ef8-task-1-src-server.ts",
       "path": "src/server.ts",
       "type": "file"
     },
     {
-      "id": "eea91db2-task-3-src-db.ts",
+      "id": "94a64ef8-task-1-src-db.ts",
       "path": "src/db.ts",
       "type": "file"
     },
     {
-      "id": "eea91db2-task-3-src-routes-search.ts",
+      "id": "94a64ef8-task-1-src-routes-search.ts",
       "path": "src/routes/search.ts",
       "type": "file"
     },
     {
-      "id": "eea91db2-task-3-src-routes-search.test.ts",
+      "id": "94a64ef8-task-1-src-routes-search.test.ts",
       "path": "src/routes/search.test.ts",
       "type": "file"
     },
     {
-      "id": "eea91db2-task-3-src-auth.ts",
+      "id": "94a64ef8-task-1-src-auth.ts",
       "path": "src/auth.ts",
       "type": "file"
     }
