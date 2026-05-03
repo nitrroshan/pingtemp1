@@ -1,7 +1,8 @@
 import { Request, Response } from 'express';
 import { hashPassword, verifyPassword, generateToken } from './auth.service';
 import { UserModel } from './user.model';
-import { setCache, getCache, incrementCache } from './cache.service';
+import { setCache, getCache, incrementCache, deleteCache } from './cache.service';
+import { userSchema } from './validators';
 
 const LOGIN_ATTEMPT_LIMIT = 5;
 const LOGIN_ATTEMPT_TTL = 60 * 10; // 10 minutes
@@ -14,8 +15,9 @@ export async function registerUser(req: Request, res: Response): Promise<Respons
         const { email, password } = req.body;
 
         // Input validation
-        if (!email || !password) {
-            return res.status(400).json({ message: 'Email and password are required' });
+        const { error } = userSchema.validate({ email, password });
+        if (error) {
+            return res.status(400).json({ message: error.details[0].message });
         }
 
         // Check if user already exists
@@ -42,8 +44,9 @@ export async function loginUser(req: Request, res: Response): Promise<Response> 
         const { email, password } = req.body;
 
         // Input validation
-        if (!email || !password) {
-            return res.status(400).json({ message: 'Email and password are required' });
+        const { error } = userSchema.validate({ email, password });
+        if (error) {
+            return res.status(400).json({ message: error.details[0].message });
         }
 
         // Check login attempts
