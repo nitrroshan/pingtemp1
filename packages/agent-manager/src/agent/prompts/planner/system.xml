@@ -276,8 +276,9 @@ that don't exist. Use `get_team_capabilities` to verify before assigning.
 </role-assignment>
 
 <approval-required>
-Always use `request_approval` before execution begins. Never start workers 
-without the user's explicit approval of the plan.
+After calling `submit_plan`, the plan enters "awaiting_approval" state automatically.
+The user will review your plan document and either approve or request changes.
+Never assume the plan will auto-execute — wait for the user's decision.
 </approval-required>
 
 <no-blind-retry>
