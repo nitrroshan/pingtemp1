@@ -84,12 +84,21 @@ Three industry patterns mapped to Ping:
 ### Progress
 
 ```
-Infrastructure ████████████████████ 100%  (collab-service extracted, deployed)
-Scoped Memory  ░░░░░░░░░░░░░░░░░░░░   0%  (agent rooms + team memory — NEXT)
-Goal Lifecycle ░░░░░░░░░░░░░░░░░░░░   0%  (archive + cleanup + decay)
-Search         ░░░░░░░░░░░░░░░░░░░░   0%  (Orama integration)
-Symbols        ░░░░░░░░░░░░░░░░░░░░   0%  (entity index, navigation)
-Versioning     ░░░░░░░░░░░░░░░░░░░░   0%  (diffs, snapshots, rollback)
+Phase A — Single-User Foundation
+  Infrastructure ████████████████████ 100%  (collab-service extracted)
+  A1 Scoped Memory ░░░░░░░░░░░░░░░░░░   0%  (rooms, identity, tools — NEXT)
+  A2 Goal Lifecycle ░░░░░░░░░░░░░░░░░░   0%  (archive, cleanup, decay)
+  A3 Search         ░░░░░░░░░░░░░░░░░░   0%  (Orama integration)
+
+Phase B — Multi-User + Auth (after parallel-goals)
+  B1 Multi-User     ░░░░░░░░░░░░░░░░░░   0%  (userId, teams, authorization)
+  B2 CRDT Migration ░░░░░░░░░░░░░░░░░░   0%  (userId prefix on rooms)
+  B3 Auth/ACL       ░░░░░░░░░░░░░░░░░░   0%  (JWT, production security)
+
+Phase C — Intelligence (any time after Phase A)
+  C1 Consolidation  ░░░░░░░░░░░░░░░░░░   0%  (dedup, semantic recall)
+  C2 Symbols+Vers   ░░░░░░░░░░░░░░░░░░   0%  (entity nav, history)
+  C3 Collaboration  ░░░░░░░░░░░░░░░░░░   0%  (@mentions, discussions)
 ```
 
 ---
@@ -480,12 +489,60 @@ Feature 0 (DONE) ─────────────────────
 
 ### Implementation Order
 
-| Phase | Features | Can Parallelize |
-|-------|----------|----------------|
-| **Phase 1** | F1 (Scoped Memory) + F2 (Goal Lifecycle) | Together — same package |
-| **Phase 2** | F3 (Search) | Independent — can start during Phase 1 |
-| **Phase 3** | F4 (Consolidation) + F5 (Auth/ACL) | Independent of each other |
-| **Phase 4** | F6 (Symbols + Versioning) + F7 (Collaboration) | Independent of each other |
+**Phase A — Single-User Foundation (now, no infrastructure changes)**
+
+| Step | Features | Effort | What It Delivers |
+|------|----------|--------|-----------------|
+| A1 | F1: Scoped Memory (rooms, identity, workspace, tools) | ~500 lines | Agents have personal rooms + team memory. `userId: "default"`. |
+| A2 | F2: Goal Lifecycle (archive, cleanup, decay) | ~200 lines | Completed goals archived. Memory doesn't grow forever. |
+| A3 | F3: Search (Orama) | ~280 lines | Agents can grep/search/glob CRDT like files. recall() uses BM25. |
+
+After Phase A: Agents have personal workspaces, shared team memory, goal archival, and search. Single-user, in-process. No Redis/BullMQ/MongoDB needed.
+
+**Phase B — Multi-User + Production Auth (after parallel-goals ships)**
+
+| Step | Features | Effort | What It Delivers |
+|------|----------|--------|-----------------|
+| B1 | Multi-User Phases 1-3 (userId on goals, team membership, authorization) | See multi-user doc | Goals have owners. Team roles. Access control. |
+| B2 | CRDT Migration: add `{userId}/` prefix to personal + goal rooms | ~50 lines | Per-user agent context isolation. Alice's coder ≠ Bob's coder. |
+| B3 | F5: Auth/ACL (JWT tokens, Hocuspocus auth enforcement) | ~300 lines | Real tokens replace role strings. Production security. |
+| B4 | Multi-User Phases 4-5 (quotas, dashboard) | See multi-user doc | Resource fairness. User dashboard. |
+
+After Phase B: Full multi-user with per-user CRDT isolation, JWT auth, team roles mapped to room permissions.
+
+**Phase C — Intelligence Layer (independent, any time)**
+
+| Step | Features | Effort | What It Delivers |
+|------|----------|--------|-----------------|
+| C1 | F4: Consolidation (dedup, semantic recall) | ~200 lines | Memory doesn't bloat after 50 goals. Smart recall scoring. |
+| C2 | F6: Symbols + Versioning | ~400 lines | Entity navigation + history + rollback. |
+| C3 | F7: Inter-Agent Collaboration | ~300 lines | @mentions, decision tracking, structured discussions. |
+
+After Phase C: Full CRDT intelligence — search, symbols, versioning, consolidation, collaboration.
+
+### Phase Dependency Map
+
+```
+Phase A (NOW — single-user)
+  A1: Scoped Memory ───┐
+  A2: Goal Lifecycle ───┤── all independent, can parallelize
+  A3: Search ───────────┘
+
+         │
+         ▼ (A1 done → rooms exist)
+
+Phase B (AFTER parallel-goals)
+  B1: Multi-User identity + teams ──→ B2: CRDT userId prefix migration
+  B3: CRDT Auth/ACL (JWT) ──────────→ B4: Multi-User quotas + dashboard
+
+         │
+         ▼ (rooms + search exist)
+
+Phase C (ANY TIME after A)
+  C1: Consolidation (needs A1 + A3)
+  C2: Symbols + Versioning (needs A3)
+  C3: Collaboration (needs A1)
+```
 
 ## Research Packages Selected (from research.md)
 

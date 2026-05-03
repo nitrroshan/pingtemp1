@@ -29,7 +29,7 @@ const logger = rootLogger.child({ module: "CrdtTaskSync" });
 
 export type TaskStatus = "ready" | "pending" | "in_progress" | "completed" | "failed";
 
-/** Shape of task data stored in CRDT Y.Map("task") */
+/** Shape of task data stored in CRDT Y.Map("meta") */
 export interface CrdtTaskData {
   id: string;
   title: string;
@@ -92,17 +92,18 @@ export class CrdtTaskSync {
     const docName = `${task.id}/task`;
     try {
       const doc = await this._space.openDoc(docName);
-      const map = doc.getMap("task");
+      const map = doc.getMap("meta");
 
       const ctx = (task.context || {}) as Record<string, any>;
 
+      map.set("type", "task");
       map.set("id", task.id);
       map.set("title", ctx.title || task.description.split(":")[0]?.trim() || task.id);
       map.set("assignedRole", task.assigned_role);
       map.set("status", task.status);
       map.set("priority", task.priority || 3);
       map.set("complexity", ctx.complexity || "medium");
-      map.set("type", ctx.type || "work");
+      map.set("taskType", ctx.type || "work");
       map.set("dependencies", Array.from(task.prerequisites.keys()));
       map.set("createdBy", ctx.createdBy || "planner");
       map.set("parentTask", ctx.parentTask || null);
@@ -137,7 +138,7 @@ export class CrdtTaskSync {
     const docName = `${taskId}/task`;
     try {
       const doc = await this._space.openDoc(docName);
-      const map = doc.getMap("task");
+      const map = doc.getMap("meta");
       map.set("status", newStatus);
       if (newStatus === "completed") {
         map.set("completedAt", new Date().toISOString());
@@ -165,7 +166,8 @@ export class CrdtTaskSync {
   async persistPlan(plan: any, goalId: string): Promise<void> {
     try {
       const doc = await this._space.openDoc("plan");
-      const map = doc.getMap("plan");
+      const map = doc.getMap("meta");
+      map.set("type", "plan");
       map.set("planId", plan.planId);
       map.set("goalId", goalId);
       map.set("goal", plan.goal);
@@ -217,7 +219,7 @@ export class CrdtTaskSync {
   async syncPlanStatus(status: string): Promise<void> {
     try {
       const doc = await this._space.openDoc("plan");
-      const map = doc.getMap("plan");
+      const map = doc.getMap("meta");
       map.set("status", status);
       map.set("updatedAt", new Date().toISOString());
       logger.debug(`Synced plan status to "${status}" in CRDT`);
@@ -238,7 +240,8 @@ export class CrdtTaskSync {
   async updateIndex(tasks: TaskLike[]): Promise<void> {
     try {
       const doc = await this._space.openDoc("_index");
-      const map = doc.getMap("_index");
+      const map = doc.getMap("meta");
+      map.set("type", "index");
 
       // Group by role
       const byRole: Record<string, string[]> = {};
@@ -261,6 +264,25 @@ export class CrdtTaskSync {
       map.set("updatedAt", new Date().toISOString());
     } catch (err) {
       logger.debug(`Index update failed (non-critical): ${err}`);
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // AGENT STATUS — Track which agents are busy/idle
+  // ─────────────────────────────────────────────────────────────────────────
+
+  /**
+   * Update agent status in CRDT. Called before/after task execution.
+   * Readable via `collab read agent-statuses`.
+   */
+  async updateAgentStatus(role: string, status: 'busy' | 'idle', taskId?: string): Promise<void> {
+    try {
+      const doc = await this._space.openDoc('agent-statuses');
+      const map = doc.getMap('meta');
+      map.set('type', 'agent-statuses');
+      map.set(role, { status, task: taskId || null, since: Date.now() });
+    } catch (err) {
+      logger.debug(`Agent status update failed (non-critical): ${err}`);
     }
   }
 
@@ -291,7 +313,7 @@ export class CrdtTaskSync {
       for (const docName of taskDocNames) {
         try {
           const doc = await this._space.openDoc(docName);
-          const map = doc.getMap("task");
+          const map = doc.getMap("meta");
           const data = map.toJSON() as CrdtTaskData;
 
           if (!data.id) {

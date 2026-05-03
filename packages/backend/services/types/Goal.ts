@@ -8,6 +8,8 @@ export interface Goal {
   status: "pending" | "planning" | "executing" | "completed" | "failed";
   planId?: string;
   result?: string;
+  repoUrl?: string;
+  repoBranch?: string;
   createdAt: string;
   updatedAt: string;
 }

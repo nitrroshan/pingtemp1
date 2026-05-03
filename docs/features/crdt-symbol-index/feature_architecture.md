@@ -1,10 +1,11 @@
 # CRDT Symbol Index — Architecture
 
-**Date:** April 27, 2026  
-**Status:** Research complete, ready for implementation planning  
+**Date:** May 3, 2026  
+**Status:** Research complete, architecture updated with page + identity map model  
 **Priority:** P1 — Makes CRDT navigable like code with LSP  
 **Research:** [crdt-team-memory/research.md](../crdt-team-memory/research.md)  
-**Depends on:** `crdt-search` (Orama must be running)
+**Depends on:** `crdt-search` (Orama for full-text search acceleration)  
+**Related:** [crdt-first-architecture](../crdt-first-architecture/feature_architecture.md) — triple pattern + page model
 
 ---
 
@@ -12,78 +13,104 @@
 
 LSP gives code agents instant "go to definition" and "find references" by maintaining a symbol table. CRDT docs have no equivalent — agents must read every doc to find decisions, tasks, and conventions. This is like navigating code without LSP: grep everything, read everything, guess.
 
-## Core Insight
+## Core Insight (Updated)
 
-**Orama IS the symbol index.** One Orama instance with a richer schema handles definition lookup, reference finding, keyword search, and filtering — no separate EntityIndex or BacklinkIndex Maps needed.
+**`_identities` is the symbol table. Orama is the search acceleration layer.**
+
+The [page model](../crdt-first-architecture/feature_architecture.md#page-model-inspired-by-notions-block-tree) introduces two registry docs per scope:
+- **`_pages`** (`Y.Map("pages")`) — lists what pages exist (like a file system)
+- **`_identities`** (`Y.Map("identities")`) — maps entity IDs to `{ page, blockId, type }` addresses (like LSP's symbol table)
+
+`_identities` is a CRDT doc that **survives restarts**, **syncs in real-time**, and provides **O(1) direct lookups**. Orama adds full-text search and fuzzy matching on top — it indexes FROM `_identities` + page content.
+
+```
+_identities (Y.Map in CRDT)          Orama (in-memory search index)
+= Source of truth                    = Search acceleration layer
+= Survives restarts                  = Rebuilt from _identities on startup
+= Direct lookup by entity ID        = Full-text search, fuzzy matching
+= Real-time synced via CRDT          = Periodically synced from CRDT
+= Small (entity refs only)           = Larger (includes content for search)
+```
 
 ## Architecture
 
+### Two-Level Symbol Model (LSP-Inspired)
+
+LSP has **two separate symbol requests**. We mirror this:
+
+| LSP Request | Scope | CRDT Equivalent | Storage |
+|---|---|---|---|
+| `textDocument/documentSymbol` | Single file → hierarchical tree | Per-page `Y.Map("symbols")` | Inside each page's Y.Doc |
+| `workspace/symbol` | All files → flat query results | Per-scope `_identities` | Separate registry Y.Doc |
+
+**Level 1: Per-page symbols** — each page's Y.Doc has a `Y.Map("symbols")` slot listing entities defined in THAT page. Agents write to it when creating significant content (decisions, conventions, risks):
+
+```typescript
+// plan-doc page → Y.Map("symbols")
+{
+  "decision:db-choice":    { blockId: "b-4f2a", kind: "decision", summary: "Use PostgreSQL" },
+  "risk:api-breaking":     { blockId: "b-7e3f", kind: "risk", summary: "V1 clients will break" },
+  "convention:rest-naming": { blockId: "b-1c9d", kind: "convention", summary: "kebab-case URLs" },
+}
+```
+
+**Level 2: Scope-level `_identities`** — aggregated from all page symbols + page-level entries. Adds `page` field for cross-page lookup:
+
+```typescript
+// {goalId}/_identities → Y.Map("identities")
+{
+  // Page-level (auto-registered on page creation from meta.id)
+  "plan:plan-doc":         { page: "plan-doc", kind: "plan", summary: "API Redesign" },
+  "task:task-001":          { page: "task-001/task", kind: "task", summary: "Design REST endpoints" },
+  // Block-level (propagated from page symbols)
+  "decision:db-choice":    { page: "plan-doc", blockId: "b-4f2a", kind: "decision", summary: "Use PostgreSQL" },
+  "risk:api-breaking":     { page: "plan-doc", blockId: "b-7e3f", kind: "risk", summary: "V1 clients will break" },
+}
+```
+
+**Level 3: Orama** — indexes FROM `_identities` + page content. Adds full-text search and fuzzy matching. Acceleration layer only.
+
 ### The CRDT Grammar: `CRDT_SYMBOL_SPEC`
 
-In code, language grammars define symbols (`function`, `class`, `const`). In CRDT, we define our own grammar — a declarative spec that says what counts as a symbol:
+With the page pattern ([crdt-first-architecture](../crdt-first-architecture/feature_architecture.md#standard-crdt-document-structure)), every page has `Y.Map("meta")` with `id` and `type`, `Y.Map("symbols")` for in-page entities. The `CRDT_SYMBOL_SPEC` configures how **page-level** symbols are auto-extracted from `meta`:
 
 ```typescript
 const CRDT_SYMBOL_SPEC = {
-  decision: {
-    docPattern: "team-memory/decisions",
-    symbolSource: "map-keys",       // each Y.Map key = symbol
-    kind: "decision",
-    extractContent: (key, val) => val.text,
-    extractRefs: (key, val) => [],
-  },
-  task: {
-    docPattern: "**/task",
-    symbolSource: "map-field",      // "id" field = symbol
-    symbolField: "id",
-    kind: "task",
-    extractContent: (key, val) => val.title,
-    extractRefs: (key, val) => val.dependencies?.map(dep => ({
-      targetSymbol: dep, kind: "depends-on",
-    })),
-  },
-  convention: {
-    docPattern: "team-memory/conventions",
-    symbolSource: "map-keys",
-    kind: "convention",
-    extractContent: (key, val) => val.text,
-  },
-  goal: {
-    docPattern: "**/goal",
-    symbolSource: "map-field",
-    symbolField: "id",
-    kind: "goal",
-    extractContent: (key, val) => val.title,
-  },
-  agent: {
-    docPattern: "agent:*",
-    symbolSource: "doc-name",
-    kind: "agent",
-    extractContent: (docName) => docName.split(":")[1],
-  },
+  // Page-level: meta.id → auto-registered in _identities on page creation
+  task:       { docPattern: "**/task",        symbolField: "meta.id", kind: "task" },
+  plan:       { docPattern: "**/plan-doc",    symbolField: "meta.id", kind: "plan" },
+  goal:       { docPattern: "**/goal",        symbolField: "meta.id", kind: "goal" },
+  report:     { docPattern: "**/report",      symbolField: "meta.taskId", kind: "report" },
+  research:   { docPattern: "**/research/*",  symbolField: "meta.topic", kind: "research" },
+  // Key-based: each Y.Map("meta") key = one symbol
+  decision:   { docPattern: "**/decisions",   symbolSource: "meta-keys", kind: "decision" },
+  convention: { docPattern: "**/conventions", symbolSource: "meta-keys", kind: "convention" },
 };
 ```
 
-Adding new entity types = adding one entry. No code changes to the indexer.
+**Block-level symbols** (decisions, risks, conventions inside pages) are NOT auto-extracted — agents register them explicitly in `Y.Map("symbols")` when writing significant content. The observer/system propagates them to `_identities`.
 
 ### Two-Tier Entity Model
 
-Not everything is an entity. Structure defines entities, content is searchable text:
+Not everything is an entity. Page-level entities are auto-extracted; block-level entities are agent-registered:
 
-| Tier | What | Example | Parallel |
-|------|------|---------|----------|
-| **Tier 1: Entity** | Y.Map key, `id` field, doc name | `"db-choice"`, `"task-003"` | `function getUserById` — the symbol |
-| **Tier 2: Content** | Text inside entities | "Use PostgreSQL because..." | Function body — searchable, not a symbol |
+| Tier | What | Example | Registration | Parallel |
+|------|------|---------|-------------|----------|
+| **Tier 1: Page entity** | `meta.id` or Y.Map key | `"task:task-001"`, `"plan:plan-doc"` | Auto (from `CRDT_SYMBOL_SPEC`) | `class UserService` — the file-level symbol |
+| **Tier 2: Block entity** | Agent-registered in `Y.Map("symbols")` | `"decision:db-choice"`, `"risk:api-breaking"` | Agent writes block + registers symbol | `function getUserById` — the in-file symbol |
+| **Tier 3: Content** | Text in `Y.XmlFragment("content")` or `Y.Text("source")` | "Use PostgreSQL because..." | Indexed by Orama for search | Function body — searchable, not a symbol |
+| **Tier 2: Content** | Text in `Y.XmlFragment("content")` or `Y.Text("source")` | "Use PostgreSQL because..." | Function body — searchable, not a symbol |
 
 ### Orama Schema (Unified Index)
 
 ```typescript
 const symbolIndex = create({
   schema: {
-    entityId: 'string',        // the symbol
-    kind: 'enum',              // decision | task | convention | goal | agent
-    docName: 'string',         // doc address
-    blockPath: 'string',       // block address within doc
-    content: 'string',         // searchable text (Tier 2)
+    entityId: 'string',        // the symbol (e.g. "decision:db-choice")
+    kind: 'enum',              // decision | task | convention | goal | risk | report | research
+    page: 'string',            // page path (from _identities)
+    blockId: 'string',         // block ID within page (if block-level)
+    content: 'string',         // searchable text (Tier 3)
     title: 'string',           // short label
     createdBy: 'string',       // who created it
     createdAt: 'number',       // when
@@ -95,17 +122,30 @@ const symbolIndex = create({
 
 No embeddings in Phase 1 (~70KB per 100 entities, not ~700KB). Add vectors later.
 
-### Symbol Resolution: `symbol → doc:block`
+### Symbol Resolution: `entity → page:block`
 
-Three paths (identical to LSP):
+Three paths (identical to LSP), now using `_identities` for direct lookup and Orama for search:
 
-1. **Direct lookup** (agent knows symbol): `search({ where: { entityId: "db-choice" } })` → O(1)
-2. **Search → lookup** (agent doesn't know): `search({ term: "database" })` → finds entity → navigate
-3. **Browse → lookup** (agent explores): `search({ where: { kind: "decision" } })` → list all → pick one
+1. **Direct lookup** (agent knows entity): `_identities.get("decision:db-choice")` → `{ page, blockId }` → O(1), no Orama needed
+2. **Search → lookup** (agent doesn't know): Orama `search({ term: "database" })` → finds entity → resolve via `_identities`
+3. **Browse → lookup** (agent explores): Orama `search({ where: { kind: "decision" } })` → list all → pick one
 
-Address format: `doc:block` (like `file:line`)
-- `team-memory/decisions:decisions.db-choice`
-- Resolution: `hocuspocus.getDoc(docName).getMap("decisions").get("db-choice")` → instant, in-memory
+**Direct lookup flow (most common):**
+```
+l2_navigate({ action: "definition", entity: "decision:db-choice" })
+  → reads _identities.get("decision:db-choice")
+  → { page: "plan-doc", blockId: "b-4f2a", type: "decision", summary: "Use PostgreSQL" }
+  → opens page "plan-doc" → navigates to block b-4f2a
+  → returns block content
+```
+
+**Search flow (fuzzy/full-text):**
+```
+l2_navigate({ action: "definition", entity: "database" })  // doesn't match any identity exactly
+  → falls back to Orama: search({ term: "database" })
+  → finds entity "decision:db-choice" with content matching "database"
+  → resolves via _identities → same page:block address
+```
 
 ### Auto-Generation from Zod Schemas
 
@@ -141,11 +181,11 @@ tool({
 
 ### LSP Feature Comparison
 
-| LSP Feature | CRDT Equivalent | Possible? | Precision |
-|-------------|----------------|-----------|-----------|
-| Go to definition | Orama `{ entityId }` filter | ✅ Exact | Exact for structured data |
-| Find references | Orama `{ references: containsAll }` filter | ✅ | 90% (explicit refs exact, text mentions fuzzy) |
-| Symbol tree | Orama `groupBy: kind` | ✅ | Exact |
+| LSP Feature | CRDT Equivalent | Layer | Precision |
+|-------------|----------------|-------|-----------|
+| Go to definition | `_identities.get("decision:db-choice")` → `{ page, blockId }` | `_identities` (CRDT) | Exact — O(1) |
+| Find references | Orama `search({ where: { references: "decision:db-choice" } })` | Orama (search) | 90% (explicit refs exact, text mentions fuzzy) |
+| Symbol tree | Orama `groupBy: kind` or `_pages` filtered by type | Both | Exact |
 | Type info / hover | Entity metadata (createdBy, createdAt, content) | ✅ Richer than code LSP | Exact |
 | Rename | Structured fields: exact. Text: needs LLM | ⚠️ Partial | |
 | Diagnostics | Orphaned refs, contradictions | ⚠️ Different, more useful | Custom |
@@ -155,23 +195,37 @@ tool({
 
 ```
 packages/collaboration/src/L2/
+  registry/
+    PageRegistry.ts                — NEW: auto-populate _pages on page create/update (~60 lines)
+    IdentityRegistry.ts            — NEW: auto-populate _identities on page create + entity registration API (~80 lines)
   search/
-    CrdtSearchExtension.ts         — EXTEND: add entity extraction to onChange
+    CrdtSearchExtension.ts         — EXTEND: index from _identities + page content into Orama
     CrdtSymbolSpec.ts              — NEW: symbol spec definition (~40 lines)
-    zodToSymbolSpec.ts             — NEW: auto-generate from Zod (~30 lines)
   tools/
-    l2-navigate.ts                 — NEW: agent navigation tool (~80 lines)
+    l2-navigate.ts                 — NEW: agent navigation tool — reads _identities first, falls back to Orama (~80 lines)
 ```
 
 ### Effort
 
-~120 lines custom code. Orama schema is the index — no separate data structures.
+~260 lines custom code. `_identities` CRDT map is the primary symbol table. Orama accelerates search but is not required for direct lookups.
 
 ---
 
 ## Bloat Analysis
 
-### Index Size (Without Embeddings)
+### `_identities` Size (CRDT)
+
+Each identity entry: ~150 bytes (entityId key + { page, blockId, type, summary } value).
+
+| Scale | Entities | `_identities` size |
+|-------|----------|-------------------|
+| 1 user, 1 team | ~100 | ~15KB |
+| 5 users, 3 teams | ~5,000 | ~750KB |
+| 20 users, 10 teams | ~50,000 | ~7.5MB |
+
+This is small enough to live in a single CRDT doc per scope.
+
+### Orama Index Size (Without Embeddings)
 
 Each Orama entity document: ~700 bytes (entityId, kind, docName, blockPath, content, metadata).
 

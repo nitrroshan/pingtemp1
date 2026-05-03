@@ -21,6 +21,8 @@ export class MongoGoalService implements IGoalService {
       status: goal.status ?? "pending",
       planId: goal.planId ?? null,
       result: goal.result ?? null,
+      repoUrl: goal.repoUrl ?? null,
+      repoBranch: goal.repoBranch ?? null,
     });
     return this.toGoal(doc);
   }
@@ -55,6 +57,8 @@ export class MongoGoalService implements IGoalService {
       status: doc.status,
       planId: doc.planId ?? undefined,
       result: doc.result ?? undefined,
+      repoUrl: doc.repoUrl ?? undefined,
+      repoBranch: doc.repoBranch ?? undefined,
       createdAt: doc.createdAt?.toISOString?.() ?? new Date().toISOString(),
       updatedAt: doc.updatedAt?.toISOString?.() ?? new Date().toISOString(),
     };

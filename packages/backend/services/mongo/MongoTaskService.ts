@@ -28,7 +28,7 @@ export class MongoTaskService implements ITaskPersistence {
       await TaskModel.bulkWrite(
         docs.map((doc) => ({
           updateOne: {
-            filter: { teamId: doc.teamId, taskId: doc.taskId },
+            filter: { teamId: doc.teamId, goalId: doc.goalId, taskId: doc.taskId },
             update: { $set: doc },
             upsert: true,
           },

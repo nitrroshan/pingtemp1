@@ -12,6 +12,7 @@ export type { L2CollaborationPluginConfig } from "./L2/L2CollaborationPlugin.js"
 export { PlanStore } from "./L2/collaboration/PlanStore.js";
 export { CrdtTaskSync } from "./L2/collaboration/CrdtTaskSync.js";
 export type { CrdtTaskData, TaskLike } from "./L2/collaboration/CrdtTaskSync.js";
+export type { ICrdtTaskSync } from "./L2/collaboration/types/ICrdtTaskSync.js";
 export { CrdtGoalStore } from "./L2/collaboration/CrdtGoalStore.js";
 export type { GoalData, GoalStatus } from "./L2/collaboration/CrdtGoalStore.js";
 export { CollabServer } from "./L2/collaboration/HocuspocusServer.js";

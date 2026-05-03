@@ -13,6 +13,8 @@ export interface IGoal extends Document {
   status: "pending" | "planning" | "executing" | "completed" | "failed";
   planId?: string;
   result?: string;
+  repoUrl?: string;
+  repoBranch?: string;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -30,6 +32,8 @@ const goalSchema = new Schema<IGoal>(
     },
     planId: { type: String, default: null },
     result: { type: String, default: null },
+    repoUrl: { type: String, default: null },
+    repoBranch: { type: String, default: null },
   },
   { timestamps: true },
 );

@@ -229,6 +229,5 @@ export interface IGoalManager {
   reset(): void;
   resetPlan(): Promise<{ deleted: boolean; planId?: string }>;
   interruptPlan(): Promise<void>;
-  loadActivePlan(): Promise<void>;
   dispose(): void;
 }

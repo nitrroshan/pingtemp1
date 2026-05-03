@@ -14,6 +14,8 @@ import type { WorkerPool } from "../services/WorkerPool.js";
 import type { PluginRegistry } from "../plugin/PluginRegistry.js";
 import type { CrdtProxy } from "./OrchestratorService.js";
 import type { OrchestratorState, GoalManagerCallbacks, IGoalManager, GoalContext, GoalSummary } from "./types.js";
+import type { GoalEventBus } from "./events/GoalEventBus.js";
+import type { AnyGoalEvent } from "./events/GoalEvents.js";
 import type { PlannerAgent } from "./PlannerAgent.js";
 import type { ChatAgent } from "../chatAgent/ChatAgent.js";
 import type { AgentEvent } from "../agent/types.js";
@@ -49,6 +51,8 @@ export interface GoalManagerConfig {
   loadConversationFn?: ((teamId: string, agentId: string) => Promise<Array<{ role: "user" | "assistant" | "system"; content: string }>>) | null;
   /** Database persistence for tasks (v3.0 — optional, graceful degradation) */
   taskPersistence?: import("./contracts/ITaskPersistence.js").ITaskPersistence | null;
+  /** Domain event bus for CRDT projection + notifications */
+  eventBus?: GoalEventBus;
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -75,6 +79,8 @@ export class GoalManager implements IGoalManager {
   private chatAgentsEnabled: boolean;
   /** v3.0: Database persistence for tasks (optional — graceful degradation if null) */
   private taskPersistence: import("./contracts/ITaskPersistence.js").ITaskPersistence | null = null;
+  /** Domain event bus — publishes events after MongoDB writes for CRDT projection + notifications */
+  private eventBus?: GoalEventBus;
 
   // Goal state — Map<goalId, GoalContext> for multi-goal support (Phase 4)
   private goals = new Map<string, GoalContext>();
@@ -97,15 +103,16 @@ export class GoalManager implements IGoalManager {
     this.onPlannerStream = config.onPlannerStream;
     this.chatAgentsEnabled = config.chatAgentsEnabled;
     this.taskPersistence = config.taskPersistence || null;
+    this.eventBus = config.eventBus;
     log.info(`GoalManager created for team ${config.teamId}`);
   }
 
-  // ─── v3.0: Database persistence helpers (fire-and-forget) ─────────────
+  // ─── v3.0: Database persistence helpers (throw on failure — events only publish after success) ─
 
-  /** Persist tasks to database (fire-and-forget with error logging) */
-  private persistTasks(goalId: string, tasks: Array<{ id: string; description: string; assigned_role: string; status?: string; priority?: number; planId?: string; title?: string; dependencies?: string[] }>): void {
+  /** Persist tasks to database. Throws on failure — caller must not publish events if this fails. */
+  private async persistTasks(goalId: string, tasks: Array<{ id: string; description: string; assigned_role: string; status?: string; priority?: number; planId?: string; title?: string; dependencies?: string[] }>): Promise<void> {
     if (!this.taskPersistence) return;
-    this.taskPersistence.saveTasks(goalId, this.teamId, tasks.map(t => ({
+    await this.taskPersistence.saveTasks(goalId, this.teamId, tasks.map(t => ({
       taskId: t.id,
       goalId,
       teamId: this.teamId,
@@ -116,23 +123,30 @@ export class GoalManager implements IGoalManager {
       priority: t.priority,
       planId: t.planId,
       dependencies: t.dependencies || [],
-    }))).catch(err => log.error({ err }, "Failed to persist tasks to database"));
+    })));
   }
 
-  /** Update task status in database (fire-and-forget, scoped by goalId) */
-  private persistTaskStatus(taskId: string, status: string, output?: unknown): void {
+  /** Update task status in database. Throws on failure. */
+  private async persistTaskStatus(taskId: string, status: string, output?: unknown): Promise<void> {
     if (!this.taskPersistence) return;
     const goalId = this.taskStore.get(taskId)?.goalId;
     if (!goalId) { log.warn(`persistTaskStatus: task ${taskId} has no goalId — skipping DB write`); return; }
-    this.taskPersistence.updateTaskStatus(taskId, goalId, status, output)
-      .catch(err => log.error({ err, taskId }, "Failed to persist task status"));
+    await this.taskPersistence.updateTaskStatus(taskId, goalId, status, output);
   }
 
-  /** Clear tasks for a goal in database (fire-and-forget) */
-  private persistClearGoalTasks(goalId: string): void {
+  /** Clear tasks for a goal in database. Throws on failure. */
+  private async persistClearGoalTasks(goalId: string): Promise<void> {
     if (!this.taskPersistence) return;
-    this.taskPersistence.clearTasksByGoal(goalId)
-      .catch(err => log.error({ err, goalId }, "Failed to clear goal tasks from database"));
+    await this.taskPersistence.clearTasksByGoal(goalId);
+  }
+
+  // ─── Domain Event Publishing ──────────────────────────────────────
+
+  /** Publish domain events after MongoDB writes succeed. CRDT + Socket.IO handled by subscribers. */
+  private async publishEvents(events: AnyGoalEvent[]): Promise<void> {
+    if (this.eventBus) {
+      await this.eventBus.publish(events);
+    }
   }
 
   // ═══════════════════════════════════════════════════════════════════
@@ -392,7 +406,7 @@ export class GoalManager implements IGoalManager {
       // Clear previous state for THIS goal only (preserve other goals)
       await this.workerPool.disposeByGoal(goalId);
       this.taskStore.clearByGoal(goalId);
-      this.persistClearGoalTasks(goalId); // v3.0: dual-write
+      await this.persistClearGoalTasks(goalId); // v3.0: dual-write
 
       // Build dependants map (using goal-scoped task IDs to avoid collision across goals)
       const goalPrefix = goalId.slice(0, 8);
@@ -453,7 +467,7 @@ export class GoalManager implements IGoalManager {
       this.dagResolver.rebuildForGoal(this.taskStore, goalId);
 
       // v3.0: Persist tasks to database (dual-write alongside CRDT)
-      this.persistTasks(goalId, planToApprove.tasks.map((t: any) => ({
+      await this.persistTasks(goalId, planToApprove.tasks.map((t: any) => ({
         id: scopeId(t.id), description: `${t.title}: ${t.description}`,
         assigned_role: t.assignedRole.toLowerCase(), status: "pending",
         priority: t.priority, planId, title: t.title,
@@ -474,16 +488,17 @@ export class GoalManager implements IGoalManager {
         this.crdtTaskSyncProxy.resolveForGoal(goalId);
       }
 
-      // Persist all tasks to CRDT (enables restore on restart)
-
-
-
-
-
-
-
-
-
+      // Publish domain event — CRDT projection + notifications handled by subscribers
+      const allTasks = this.taskStore.getByGoal(goalId);
+      await this.publishEvents([{
+        type: "tasks_created",
+        goalId,
+        teamId: this.teamId,
+        tasks: allTasks,
+        planId,
+        plan: planToApprove,
+        timestamp: Date.now(),
+      }]);
 
       // Update CollaborationPlugin goalId
       const collabPlugin = this.pluginRegistry?.get("collaboration");
@@ -514,37 +529,6 @@ export class GoalManager implements IGoalManager {
         });
       }
 
-      // Persist goal, plan, and tasks to CRDT
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
       // Persist plan to disk
       if (this.planStore) {
         await this.planStore.savePlan(planToApprove, { goalId, status: "approved" });
@@ -570,22 +554,25 @@ export class GoalManager implements IGoalManager {
   // TASK LIFECYCLE CALLBACKS (wired from RoleTaskQueue via TaskStore)
   // ═══════════════════════════════════════════════════════════════════
 
-  /** Task became ready → notify frontend, delegate dispatch to OrchestratorService */
-  onTaskReady({ taskId, role }: { taskId: string; role: string }): void {
+  /** Task became ready → persist, publish event, delegate dispatch */
+  async onTaskReady({ taskId, role }: { taskId: string; role: string }): Promise<void> {
     log.info(`onTaskReady: ${taskId} (${role})`);
-    this.persistTaskStatus(taskId, "ready"); // v3.0
+    await this.persistTaskStatus(taskId, "ready");
 
-    this.callbacks.onTaskUpdate?.({
-      taskId, status: "ready", role, timestamp: Date.now(),
-    });
+    const goalId = this.taskStore.get(taskId)?.goalId || "";
+    await this.publishEvents([{
+      type: "task_status_changed",
+      goalId, teamId: this.teamId,
+      taskId, oldStatus: "pending", newStatus: "ready", role,
+      timestamp: Date.now(),
+    }]);
 
     // Delegate dispatch decision to OrchestratorService
-    // (handles autoExecute check, ChatAgent routing, concurrency limits)
     this.callbacks.onDispatchTask(taskId, role);
   }
 
   /** Task completed → check if all done for this goal, notify planner */
-  onTaskComplete({ taskId, output }: { taskId: string; output: any }): void {
+  async onTaskComplete({ taskId, output }: { taskId: string; output: any }): Promise<void> {
     log.info(`onTaskComplete: ${taskId}`);
     const task = this.taskStore.get(taskId);
     const goalId = task?.goalId;
@@ -639,11 +626,11 @@ export class GoalManager implements IGoalManager {
             timestamp: new Date().toISOString(),
           });
         } else {
-
-
-
-
-
+          // Publish plan + goal completed events
+          await this.publishEvents([
+            { type: "plan_status_changed", goalId: goalId || "", teamId: this.teamId, status: "completed", timestamp: Date.now() },
+            { type: "goal_status_changed", goalId: goalId || "", teamId: this.teamId, status: "completed", timestamp: Date.now() },
+          ]);
 
           this.callbacks.onNotifyPlanner(goalId || "", PromptLoader.loadTemplate("orchestrator", "all-complete"));
           this.callbacks.onGoalStatusChange?.({ teamId: this.teamId, goalId: goalId || "", status: "completed" });
@@ -670,7 +657,7 @@ export class GoalManager implements IGoalManager {
    * Handle dependency failure — applies onDependencyFail strategy to downstream tasks.
    * Strategies: "replan" (default), "fail" (cascade), "skip" (mark complete with note)
    */
-  handleTaskFailure(taskId: string, reason: string): void {
+  async handleTaskFailure(taskId: string, reason: string): Promise<void> {
     const task = this.taskStore.get(taskId);
     if (!task) return;
     if (!task.goalId) {
@@ -690,7 +677,7 @@ export class GoalManager implements IGoalManager {
       switch (strategy) {
         case "fail":
           this.taskStore.updateStatus(dep.id, "failed");
-          this.persistTaskStatus(dep.id, "failed"); // v3.0
+          await this.persistTaskStatus(dep.id, "failed"); // v3.0
           this.callbacks.onTaskUpdate?.({
             taskId: dep.id, status: "failed", role: dep.assigned_role, timestamp: Date.now(),
           });
@@ -704,7 +691,7 @@ export class GoalManager implements IGoalManager {
             skipped: true,
             skipReason: reason,
           });
-          this.persistTaskStatus(dep.id, "completed", { skipped: true, skipReason: reason }); // v3.0
+          await this.persistTaskStatus(dep.id, "completed", { skipped: true, skipReason: reason }); // v3.0
           this.callbacks.onTaskUpdate?.({
             taskId: dep.id, status: "completed", role: dep.assigned_role, timestamp: Date.now(),
           });
@@ -720,7 +707,7 @@ export class GoalManager implements IGoalManager {
   }
 
   /** Task failed → notify plugins, sync CRDT, cascade, notify planner */
-  onTaskFailed({ taskId, error }: { taskId: string; error: string }): void {
+  async onTaskFailed({ taskId, error }: { taskId: string; error: string }): Promise<void> {
     const lowerError = error.toLowerCase();
     const isRateLimit = lowerError.includes("rate limit") || lowerError.includes("429") || lowerError.includes("too many requests");
 
@@ -737,7 +724,7 @@ export class GoalManager implements IGoalManager {
 
     log.error(`onTaskFailed: ${taskId}: ${error}`);
     const task = this.taskStore.get(taskId);
-    this.persistTaskStatus(taskId, "failed", { error }); // v3.0
+    await this.persistTaskStatus(taskId, "failed", { error }); // v3.0
 
     if (task) {
       task.output = { error, failedAt: new Date().toISOString(), summary: `FAILED: ${error}` };
@@ -747,15 +734,15 @@ export class GoalManager implements IGoalManager {
       log.warn(`Plugin onTaskFailed error for ${taskId}: ${err}`);
     });
 
-    // CRDT sync
-
-
-
-
-
-
-
-
+    // Publish task failed event (CRDT projection + notifications)
+    const failGoalId = task?.goalId || "";
+    await this.publishEvents([{
+      type: "task_status_changed",
+      goalId: failGoalId, teamId: this.teamId,
+      taskId, oldStatus: task?.status || "in_progress", newStatus: "failed",
+      role: task?.assigned_role, output: { error },
+      timestamp: Date.now(),
+    }]);
 
     // Check research phase completion
     const goal = task?.goalId ? this.goals.get(task.goalId) : undefined;
@@ -781,7 +768,7 @@ export class GoalManager implements IGoalManager {
     });
 
     // Cascade to dependants
-    this.handleTaskFailure(taskId, error);
+    await this.handleTaskFailure(taskId, error);
 
     // Notify planner with blocked downstream info
     if (!goalId) log.error(`onTaskFailed: task ${taskId} has no goalId for blocked task scan`);
@@ -876,23 +863,18 @@ export class GoalManager implements IGoalManager {
       deliverables: data.deliverables,
       nextSteps: data.nextSteps, completedBy: "agent", timestamp: data.timestamp,
     });
-    this.persistTaskStatus(data.taskId, "completed", { summary: data.summary, deliverables: data.deliverables }); // v3.0
+    await this.persistTaskStatus(data.taskId, "completed", { summary: data.summary, deliverables: data.deliverables }); // v3.0
 
-    // Notify frontend: task completed
-    this.callbacks.onTaskUpdate?.({ taskId: data.taskId, status: "completed", timestamp: data.timestamp });
-
-    // CRDT persistence
-
-
-
-
-
-
-
-
-
-
-
+    // Publish task completed event (CRDT projection + notifications)
+    const doneGoalId = this.taskStore.get(data.taskId)?.goalId || "";
+    await this.publishEvents([{
+      type: "task_completed",
+      goalId: doneGoalId, teamId: this.teamId,
+      taskId: data.taskId, role: data.role,
+      output: { summary: data.summary, deliverables: data.deliverables },
+      newlyReady: [],
+      timestamp: data.timestamp,
+    }]);
   }
 
   // ═══════════════════════════════════════════════════════════════════
@@ -915,10 +897,12 @@ export class GoalManager implements IGoalManager {
         const s = await this.planStore.getLatestActivePlan();
         if (s && (s.metadata.status === "executing" || s.metadata.status === "approved")) {
           await this.planStore.archivePlan(s.plan.planId, s.metadata.goalId);
-
-
-
-
+          await this.publishEvents([{
+            type: "plan_status_changed",
+            goalId: s.metadata.goalId || "", teamId: this.teamId,
+            status: "archived", planId: s.plan.planId,
+            timestamp: Date.now(),
+          }]);
           this.reset();
           return { deleted: true, planId: s.plan.planId };
         }
@@ -937,10 +921,12 @@ export class GoalManager implements IGoalManager {
       const s = await this.planStore.getLatestActivePlan();
       if (s?.metadata.status === "executing") {
         await this.planStore.updatePlanStatus(s.plan.planId, s.metadata.goalId, "interrupted");
-
-
-
-
+        await this.publishEvents([{
+          type: "plan_status_changed",
+          goalId: s.metadata.goalId || "", teamId: this.teamId,
+          status: "interrupted", planId: s.plan.planId,
+          timestamp: Date.now(),
+        }]);
       }
     } catch { /* best effort */ }
   }
@@ -1025,111 +1011,8 @@ export class GoalManager implements IGoalManager {
       log.info(`[loadFromDatabase] Recovered ${tasks.length} tasks across ${byGoal.size} goals`);
       return true;
     } catch (err) {
-      log.error({ err }, "[loadFromDatabase] Database recovery failed — falling back to file/CRDT");
+      log.error({ err }, "[loadFromDatabase] Database recovery failed — no fallback, system will start without prior state");
       return false;
-    }
-  }
-
-  // ═══════════════════════════════════════════════════════════════════
-
-  async loadActivePlan(): Promise<void> {
-    if (!this.planStore) { log.info("[loadActivePlan] No planStore — skipping"); return; }
-    try {
-      const stored = await this.planStore.getLatestActivePlan();
-      if (!stored) { log.info("[loadActivePlan] No active plan found on disk"); return; }
-      const goalId = stored.metadata.goalId || null;
-      if (!goalId) { log.info("[loadActivePlan] Plan has no goalId — skipping"); return; }
-
-      log.info(`[loadActivePlan] Found plan: goalId=${goalId}, planId=${stored.plan?.planId}, status=${stored.metadata.status}, tasks=${stored.plan?.tasks?.length}`);
-
-      this.activeGoalId = goalId;
-      const goal = this.getOrCreateGoal(goalId, stored.plan?.goal || goalId);
-
-      if (stored.metadata.status === "approved") {
-        goal.pendingPlan = stored.plan;
-        goal.state = "awaiting_approval";
-        log.info("[loadActivePlan] Plan awaiting approval");
-      } else if (stored.metadata.status === "executing") {
-        goal.currentPlanId = stored.plan?.planId || null;
-
-        // Apply goal-prefix to task IDs (same strategy as approvePlan)
-        const goalPrefix = goalId.slice(0, 8);
-        const scopeId = (id: string) => id.startsWith(goalPrefix) ? id : `${goalPrefix}-${id}`;
-
-        const dep = new Map<string, string[]>();
-        for (const t of stored.plan.tasks) {
-          for (const d of t.dependencies) {
-            const e = dep.get(scopeId(d)) || []; e.push(scopeId(t.id)); dep.set(scopeId(d), e);
-          }
-        }
-
-        // Restore task statuses from CRDT
-        let crdtTasks: Map<string, any> | null = null;
-        log.info(`[loadActivePlan] crdtTaskSyncProxy exists: ${!!this.crdtTaskSyncProxy}`);
-        if (this.crdtTaskSyncProxy) {
-          try {
-            this.crdtTaskSyncProxy.resolveForGoal(goalId);
-            this.crdtGoalStoreProxy?.resolveForGoal?.(goalId);
-            const crdtSync = this.crdtTaskSyncProxy.get?.();
-            log.info(`[loadActivePlan] crdtSync resolved: ${!!crdtSync}, hasLoadAllTasks: ${!!crdtSync?.loadAllTasks}`);
-            if (crdtSync?.loadAllTasks) {
-              const loaded = await crdtSync.loadAllTasks();
-              log.info(`[loadActivePlan] CRDT returned ${loaded.length} tasks`);
-              if (loaded.length > 0) {
-                crdtTasks = new Map(loaded.map((t: any) => [t.id, t]));
-                for (const t of loaded) {
-                  log.info(`  CRDT task ${t.id}: status=${t.status}, hasOutput=${!!t.output}`);
-                }
-              }
-            }
-          } catch (err) {
-            log.warn(`[loadActivePlan] Failed to read CRDT task state: ${err}`);
-          }
-        }
-
-        for (const t of stored.plan.tasks) {
-          const scopedId = scopeId(t.id);
-          // Try CRDT lookup with both scoped and raw ID (backward compat)
-          const crdtTask = crdtTasks?.get(scopedId) ?? crdtTasks?.get(t.id);
-          let status = crdtTask?.status ?? "pending";
-          if (status === "in_progress") status = "ready";
-
-          log.info(`  Restoring task ${scopedId} (${t.assignedRole}): crdtStatus=${crdtTask?.status ?? 'NONE'} → finalStatus=${status}`);
-
-          const prerequisites = crdtTask?.prerequisites
-            ?? new Map(t.dependencies.map((d: string) => [scopeId(d), false] as [string, boolean]));
-
-          this.taskStore.create({
-            id: scopedId,
-            description: crdtTask?.description ?? `${t.title}: ${t.description}`,
-            assigned_role: t.assignedRole.toLowerCase(),
-            status,
-            output: crdtTask?.output,
-            prerequisites,
-            dependants: dep.get(scopedId) || [],
-            goalId,
-            planId: stored.plan?.planId,
-            context: crdtTask?.context ?? { title: t.title, planId: stored.plan.planId, goal: stored.plan.goal },
-          });
-        }
-        goal.state = "executing";
-
-        const completed = this.taskStore.getByGoal(goalId).filter(t => t.status === "completed").length;
-        const total = this.taskStore.getByGoal(goalId).length;
-        log.info(`[loadActivePlan] Restored ${completed}/${total} tasks completed for goal ${goalId}`);
-
-        if (this.taskStore.isAllCompleteForGoal(goalId)) {
-          goal.state = "done";
-          log.info("[loadActivePlan] All tasks already completed — plan finished");
-        }
-      }
-
-      if (stored.metadata.status === "completed") {
-        goal.state = "done";
-        log.info("[loadActivePlan] Plan already completed");
-      }
-    } catch (error) {
-      log.error(`[GoalManager] Failed to load active plan: ${error}`);
     }
   }
 

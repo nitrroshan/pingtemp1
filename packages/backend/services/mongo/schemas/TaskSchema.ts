@@ -38,6 +38,6 @@ const TaskSchema = new Schema<ITask>(
 );
 
 TaskSchema.index({ teamId: 1, status: 1 });
-TaskSchema.index({ teamId: 1, taskId: 1 }, { unique: true });
+TaskSchema.index({ teamId: 1, goalId: 1, taskId: 1 }, { unique: true });
 
 export const TaskModel = mongoose.model<ITask>("Task", TaskSchema);

@@ -28,6 +28,9 @@ import { UserInteractionManager } from "./orchestrator/UserInteractionManager.js
 import { NotificationQueue } from "./orchestrator/NotificationQueue.js";
 import { createPlannerTools } from "./orchestrator/tools/index.js";
 import { PluginRegistry } from "./plugin/PluginRegistry.js";
+import { GoalEventBus } from "./orchestrator/events/GoalEventBus.js";
+import { CrdtProjectionHandler } from "./orchestrator/handlers/CrdtProjectionHandler.js";
+import { SocketNotificationHandler } from "./orchestrator/handlers/SocketNotificationHandler.js";
 import type { IPlugin } from "./plugin/types.js";
 import { PromptLoader } from "./orchestrator/PromptLoader.js";
 
@@ -324,6 +327,64 @@ export class AgentManager {
       });
     };
 
+    // ─── Domain Event Bus — CRDT projection + Socket.IO notifications ───
+    const eventBus = new GoalEventBus();
+
+    // CRDT projection handler: projects MongoDB state changes → CRDT docs (best-effort)
+    const crdtProjectionHandler = new CrdtProjectionHandler({
+      createTaskDoc: async (task) => {
+        const sync = crdtResolver.taskSync;
+        if (!sync) return;
+        await sync.persistTask(task);
+      },
+      createPlanDoc: async (plan, goalId) => {
+        const sync = crdtResolver.taskSync;
+        if (!sync) return;
+        await sync.persistPlan(plan, goalId);
+      },
+      createGoalDoc: async (goalId, title, message) => {
+        const store = crdtResolver.goalStore;
+        if (!store) return;
+        await store.saveGoal(goalId, title, message);
+      },
+      syncTaskStatus: async (taskId, status, output) => {
+        const sync = crdtResolver.taskSync;
+        if (!sync) return;
+        await sync.syncStatus(taskId, status, output);
+      },
+      syncPlanStatus: async (status) => {
+        const sync = crdtResolver.taskSync;
+        if (!sync) return;
+        await sync.syncPlanStatus(status);
+      },
+      syncGoalStatus: async (status) => {
+        const store = crdtResolver.goalStore;
+        if (!store) return;
+        await store.updateStatus(status);
+      },
+      updateIndex: async (tasks) => {
+        const sync = crdtResolver.taskSync;
+        if (!sync) return;
+        await sync.updateIndex(tasks);
+      },
+      updateAgentStatus: async (role, status, taskId) => {
+        const sync = crdtResolver.taskSync;
+        if (!sync) return;
+        await sync.updateAgentStatus(role, status, taskId);
+      },
+      resolveForGoal: (goalId) => crdtResolver.resolveForGoal(goalId),
+      isAvailable: () => !!crdtResolver.taskSync,
+    });
+    crdtProjectionHandler.register(eventBus);
+
+    // Socket.IO notification handler: emits events to frontend (fire-and-forget)
+    const socketHandler = new SocketNotificationHandler({
+      onTaskUpdate: (data) => this.streamCallbacks?.onTaskUpdate?.(data),
+      onGoalStatusChange: (data) => this.streamCallbacks?.onGoalStatusChange?.(data as any),
+      onPlanApproved: (data) => this.streamCallbacks?.onPlanProposed?.(data as any),
+    });
+    socketHandler.register(eventBus);
+
     // Create OrchestratorService (reactive runtime)
     this.orchestrator = new OrchestratorService({
       teamId,
@@ -343,6 +404,7 @@ export class AgentManager {
       onPlannerStream: (data) => this.streamCallbacks?.onStream?.(data),
       chatAgentsEnabled: this.chatAgentsEnabled,
       taskPersistence: this.taskPersistence,
+      eventBus,
       callbacks: {
         onStream: (data) => this.streamCallbacks?.onStream?.(data),
         onEvent: (data) => this.streamCallbacks?.onEvent?.(data),

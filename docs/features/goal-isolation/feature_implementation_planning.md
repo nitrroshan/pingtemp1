@@ -53,14 +53,16 @@ Phase 1: Fix 18 contamination violations. Phase 2: Remove 11 serialization barri
 - [x] **Step 11: Remove execution mutex** (GoalManager:411)
   - All goals execute immediately on approval — no queuing. DAG rebuild scoped per goal. `autoAdvanceToNextGoal()` removed.
 
-- [x] **Step 12: Per-goal dispatch** (V23, V24)
-  - `DispatchManager.ts` — per-goal tracking via `goalDispatches` Map for ALL paths: `dispatch`, `directDispatch`, `manualDispatch`, `handleError` retry. Deferred drain respects per-goal caps.
+- [x] **Step 12: Per-goal dispatch** (V23, V24) — PARTIAL
+  - `DispatchManager.ts` — Still uses global `activeDispatches` set + single deferred queue. Per-goal `goalDispatches` Map NOT implemented yet. Parallel goals still work (goalId on every task), but concurrency is shared across goals — one goal can starve another.
+  - **Phase 3 optimization:** Per-goal concurrency budgets for fairness. Not a correctness issue.
 
 - [x] **Step 13: handleTaskFailure scope** (V8)
   - `GoalManager.ts:623` — `getByGoal(task.goalId)` instead of `getAll()`
 
-- [x] **Step 14: getChatAgentByRole scope** (V9)
-  - `GoalManager.ts:269` — requires goalId, removed all-goals fallback search
+- [x] **Step 14: getChatAgentByRole scope** (V9) — PARTIAL
+  - `GoalManager.ts:308` — accepts `goalId?` param but still falls back to `activeGoalId` when not provided. All-goals search removed, but `activeGoalId` fallback remains.
+  - **Phase 3 optimization:** Make goalId required. Not a correctness issue — callers already pass goalId in practice.
 
 - [x] **Step 15: chatAgentMessage scope** (V13)
   - `AgentManagerV2.ts:462` — goalId required, throws if not provided

@@ -226,67 +226,26 @@ async function ensureMeta(
 }
 
 /**
- * R5-2 + R6-1 FIX: Resolve the correct Y.Map name for a CRDT doc.
- *
- * System docs (task, plan, goal) store data in a Y.Map named by type ("task", "plan", "goal"),
- * NOT by the full docName ("task-5/task"). Custom agent docs use docName as the Y.Map name.
- *
- * This function introspects the doc's shared types to find the correct data map.
+ * All system and agent docs now use Y.Map("meta") as the standard data map.
+ * Custom agent docs also use "meta" — the "type" field inside distinguishes doc types.
  */
-const KNOWN_MAP_NAMES = ["task", "plan", "goal", "_index", "config", "cursors", "decisions", "discussion"];
-
-function resolveDataMap(doc: CollabDocument, docName: string): { mapName: string; map: Y.Map<any> } {
-  // Check ydoc.share directly — more reliable than toJSON() which may miss empty-but-registered maps
-  for (const name of KNOWN_MAP_NAMES) {
-    if (doc.ydoc.share.has(name)) {
-      const shared = doc.ydoc.share.get(name);
-      if (shared instanceof Y.Map) {
-        return { mapName: name, map: shared as Y.Map<any> };
-      }
-    }
-  }
-
-  // Also try toJSON for docs where share types aren't registered yet
-  const json = doc.toJSON();
-  for (const name of KNOWN_MAP_NAMES) {
-    if (json[name] !== undefined && name !== "default") {
-      return { mapName: name, map: doc.getMap(name) };
-    }
-  }
-
-  // Fallback: use docName as map name (custom agent docs)
-  return { mapName: docName, map: doc.getMap(docName) };
+function getDocMap(doc: CollabDocument): Y.Map<any> {
+  return doc.getMap("meta");
 }
 
 /**
- * R5-2 FIX: Extract clean data from a CRDT doc for full reads.
- * Strips the "default" meta map and returns only the data map.
+ * Extract clean data from a CRDT doc for full reads.
+ * Returns the "meta" map contents directly.
  */
-function extractDocData(doc: CollabDocument, docName: string): any {
+function extractDocData(doc: CollabDocument): any {
+  const meta = doc.getMap("meta").toJSON();
+  if (meta && Object.keys(meta).length > 0) return meta;
+
+  // Fallback for legacy docs that haven't been migrated yet
   const json = doc.toJSON();
-
-  // Try known map names first
-  for (const name of KNOWN_MAP_NAMES) {
-    if (json[name] !== undefined && typeof json[name] === "object") {
-      const data = json[name];
-      if (Object.keys(data).length > 0) return data;
-    }
-  }
-
-  // Try docName as map name
-  if (json[docName] !== undefined) {
-    const data = json[docName];
-    if (typeof data === "object" && "_meta" in data) {
-      const { _meta, ...rest } = data;
-      return rest;
-    }
-    return data;
-  }
-
-  // Return everything except "default"
   const { default: _default, ...rest } = json;
   const keys = Object.keys(rest);
-  if (keys.length === 1 && keys[0]) return rest[keys[0]];
+  if (keys.length === 1 && keys[0]) return rest[keys[0]!];
   if (keys.length > 1) return rest;
   return json;
 }
@@ -534,8 +493,7 @@ export function createCollabTool(
 
         // CRDT doc — list keys with value previews (filter out _meta)
         const doc = await space.openDoc(docName);
-        // R5-2 + R6-1 FIX: Resolve correct Y.Map name instead of using docName
-        const { map } = resolveDataMap(doc, docName);
+        const map = getDocMap(doc);
         const keys = Array.from(map.keys()).filter(
           (k: string) => k !== "_meta",
         );
@@ -615,11 +573,9 @@ export function createCollabTool(
         const doc = await space.openDoc(docName);
         if (key) {
           if (key === "_meta") return JSON.stringify(doc.getMeta(), null, 2);
-          // R5-2 FIX: Resolve correct Y.Map name instead of using docName
-          const { mapName, map } = resolveDataMap(doc, docName);
-          // R7-1 FIX: If key matches the map name (e.g., key="task" on a task doc),
-          // the agent wants the full data, not a literal key called "task"
-          if (key === mapName) {
+          const map = getDocMap(doc);
+          // R7-1 FIX: If key is "meta" or matches old type names, return full data
+          if (key === "meta" || key === "task" || key === "plan" || key === "goal") {
             return JSON.stringify(map.toJSON(), null, 2);
           }
           const val = map.get(key);
@@ -627,8 +583,8 @@ export function createCollabTool(
             ? JSON.stringify(val, null, 2)
             : `Key "${key}" not found in "${docName}".`;
         }
-        // Full doc read — R5-2 FIX: extract clean data from doc
-        const data = extractDocData(doc, docName);
+        // Full doc read
+        const data = extractDocData(doc);
         return JSON.stringify(data, null, 2);
       }
 
@@ -645,7 +601,12 @@ export function createCollabTool(
 
         const doc = await space.openDoc(docName);
         const parsed = typeof value === "string" ? JSON.parse(value) : value;
-        doc.getMap(docName).set(key, parsed);
+        const map = doc.getMap("meta");
+        // Set type on first write if not already set
+        if (!map.get("type")) {
+          map.set("type", "custom");
+        }
+        map.set(key, parsed);
 
         // Auto-populate _meta on first write
         await ensureMeta(doc, agentRole, description);

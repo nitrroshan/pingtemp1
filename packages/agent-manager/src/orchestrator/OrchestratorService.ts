@@ -81,6 +81,8 @@ export interface OrchestratorServiceConfig {
   chatAgentsEnabled: boolean;
   /** v3.0: Database persistence for tasks */
   taskPersistence?: import("./contracts/ITaskPersistence.js").ITaskPersistence | null;
+  /** Domain event bus for CRDT projection + notifications */
+  eventBus?: import("./events/GoalEventBus.js").GoalEventBus;
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -164,6 +166,7 @@ export class OrchestratorService {
       onPlannerStream: config.onPlannerStream,
       chatAgentsEnabled: config.chatAgentsEnabled,
       taskPersistence: config.taskPersistence || null,
+      eventBus: config.eventBus,
       callbacks: {
         onDispatchTask: (taskId, role) => this.handleReadyTask(taskId, role),
         onNotifyPlanner: (goalId, msg) => this.notifyPlanner(goalId, msg),
@@ -399,7 +402,7 @@ export class OrchestratorService {
    */
   private handleReadyTask(taskId: string, role: string): void {
     const goalId = this.taskStore.get(taskId)?.goalId;
-    this.dispatchManager.dispatch(taskId, role, this.autoExecute, goalId);
+    this.dispatchManager.dispatch(taskId, role, this.autoExecute);
   }
 
   /**
@@ -408,7 +411,7 @@ export class OrchestratorService {
    */
   async directDispatchTask(taskId: string, role: string): Promise<void> {
     const goalId = this.taskStore.get(taskId)?.goalId;
-    await this.dispatchManager.directDispatch(taskId, role, goalId);
+    await this.dispatchManager.directDispatch(taskId, role);
   }
   getDagResolver(): DependencyResolver { return this.dagResolver; }
   getUserInteractionManager(): UserInteractionManager | undefined { return this.uim; }
@@ -528,7 +531,7 @@ export class OrchestratorService {
    */
   async manualDispatch(taskId: string): Promise<void> {
     const goalId = this.taskStore.get(taskId)?.goalId;
-    await this.dispatchManager.manualDispatch(taskId, goalId);
+    await this.dispatchManager.manualDispatch(taskId);
   }
 
   // ═══════════════════════════════════════════════════════════════════
@@ -632,7 +635,7 @@ export class OrchestratorService {
     } catch (error: any) {
       // Delegate error handling (retry/fail) to DispatchManager
       const errorGoalId = this.taskStore.get(taskId)?.goalId;
-      this.dispatchManager.handleError(taskId, role, error, errorGoalId);
+      this.dispatchManager.handleError(taskId, role, error);
     }
   }
 

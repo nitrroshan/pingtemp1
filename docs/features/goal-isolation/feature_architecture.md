@@ -67,6 +67,17 @@ No new infrastructure. No database changes. Just fix the existing code.
 | `DispatchManager.ts` | 2 | V23-V24 — per-goal dispatch chains |
 | `RoleTaskQueue.ts` | 2 | V28 — goal-aware queue keys |
 
+## Current Status (May 2026)
+
+**Parallel goals work.** Goal isolation is functionally complete — goals run independently with goal-scoped tasks, notifications, DAG, dispatch, and CRDT. All events carry goalId.
+
+**Remaining Phase 3 optimizations** (not correctness issues):
+- **DispatchManager** uses a global concurrency pool — one goal can starve another under high load. Fix: per-goal concurrency budgets.
+- **GoalManager.getChatAgentByRole** falls back to `activeGoalId` when goalId not passed — callers already pass goalId, so this is dead-code cleanup.
+- **WorkerPool.currentGoalId** scalar is legacy dead state — per-task goalId from TaskStore is used in practice.
+
+None of these break parallel goals. They're fairness/cleanup items for Phase 3.
+
 ## Frontend Changes
 
 Frontend identity migration (goalId-only URLs, `activeGoalId`, `getState(goalId)` replay) handled in `communication-layer-refactor/v2.5`. Goal isolation itself is backend-only — the frontend already scopes display by goalId.

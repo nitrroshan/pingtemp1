@@ -81,7 +81,14 @@ export class WorkerPool {
   private taskStore: { getAll(): any[]; get(id: string): any; create(t: any): void; remove(id: string): boolean; updateStatus(id: string, s: string): void } | null = null;
   private dagResolver: { rebuild(source: any): void; validateDependencies?(taskId: string, deps: string[]): string | null } | null = null;
   private teamRoles: string[] = [];
-  private crdtTaskSync: { persistTask(t: any): Promise<void>; syncStatus(id: string, s: string, o?: any): Promise<void>; updateIndex(tasks: any[]): Promise<void> } | null = null;
+  private crdtTaskSync: {
+    persistTask(t: any): Promise<void>;
+    syncStatus(id: string, s: string, o?: any): Promise<void>;
+    updateIndex(tasks: any[]): Promise<void>;
+    updateAgentStatus(role: string, status: 'busy' | 'idle', taskId?: string): Promise<void>;
+    initCollabDocs?(taskId: string, config: any): Promise<void>;
+    readonly space: any;
+  } | null = null;
   private currentGoalId: string | null = null;
   private taskPersistence: any = null;
 
@@ -398,6 +405,11 @@ export class WorkerPool {
     }
 
     try {
+      // CRDT: mark agent as busy
+      if (this.crdtTaskSync) {
+        this.crdtTaskSync.updateAgentStatus(roleKey, 'busy', taskId).catch(() => {});
+      }
+
       const input: AgentInput = {
         message: finalMessage,
         threadId: taskId, // Use taskId as thread for conversation continuity
@@ -495,6 +507,11 @@ export class WorkerPool {
       });
 
       throw error;
+    } finally {
+      // CRDT: mark agent as idle
+      if (this.crdtTaskSync) {
+        this.crdtTaskSync.updateAgentStatus(roleKey, 'idle', taskId).catch(() => {});
+      }
     }
 
     return output;

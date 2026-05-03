@@ -30,9 +30,7 @@ export interface DispatchManagerConfig {
 
 export class DispatchManager {
   private activeDispatches = new Set<string>();
-  /** Per-goal active dispatch tracking for concurrency fairness */
-  private goalDispatches = new Map<string, Set<string>>();
-  private deferredDispatches: Array<{ taskId: string; role: string; goalId?: string }> = [];
+  private deferredDispatches: Array<{ taskId: string; role: string }> = [];
   private taskAttempts = new Map<string, number>();
   private manualDispatchChain: Promise<void> = Promise.resolve();
   private config: DispatchManagerConfig;
@@ -51,28 +49,6 @@ export class DispatchManager {
     return this.activeDispatches.size;
   }
 
-  /** Get active dispatch count for a specific goal. */
-  goalActiveCount(goalId: string): number {
-    return this.goalDispatches.get(goalId)?.size ?? 0;
-  }
-
-  private trackGoalDispatch(taskId: string, goalId?: string): void {
-    this.activeDispatches.add(taskId);
-    if (goalId) {
-      let set = this.goalDispatches.get(goalId);
-      if (!set) { set = new Set(); this.goalDispatches.set(goalId, set); }
-      set.add(taskId);
-    }
-  }
-
-  private untrackGoalDispatch(taskId: string, goalId?: string): void {
-    this.activeDispatches.delete(taskId);
-    if (goalId) {
-      const set = this.goalDispatches.get(goalId);
-      if (set) { set.delete(taskId); if (set.size === 0) this.goalDispatches.delete(goalId); }
-    }
-  }
-
   /** Update ChatAgent dispatch callback. */
   setChatAgentDispatch(dispatch: (taskId: string, role: string) => Promise<void>): void {
     this.config.chatAgentDispatch = dispatch;
@@ -82,7 +58,7 @@ export class DispatchManager {
    * Handle a ready task — manages concurrency limit, ChatAgent routing, deferral.
    * Called by GoalManager.onTaskReady → OrchestratorService callback.
    */
-  dispatch(taskId: string, role: string, autoExecute: boolean, goalId?: string): void {
+  dispatch(taskId: string, role: string, autoExecute: boolean): void {
     if (!autoExecute) return;
     if (this.activeDispatches.has(taskId)) return;
 
@@ -94,17 +70,17 @@ export class DispatchManager {
       return;
     }
 
-    // Per-goal concurrency limit
-    if (goalId && this.goalActiveCount(goalId) >= this.config.maxConcurrent) {
-      this.deferredDispatches.push({ taskId, role, goalId });
+    // Concurrency limit: defer if too many active dispatches
+    if (this.activeDispatches.size >= this.config.maxConcurrent) {
+      this.deferredDispatches.push({ taskId, role });
       return;
     }
 
-    this.trackGoalDispatch(taskId, goalId);
+    this.activeDispatches.add(taskId);
     this.config.executeTask(taskId, role).catch((err) => {
       log.error(`Auto-dispatch error for ${taskId}:`, err);
     }).finally(() => {
-      this.untrackGoalDispatch(taskId, goalId);
+      this.activeDispatches.delete(taskId);
       this.drainDeferred();
     });
   }
@@ -113,20 +89,13 @@ export class DispatchManager {
    * Direct dispatch — bypasses ChatAgent routing.
    * Used by ChatAgent.onDispatchTask callback to actually run the task.
    */
-  async directDispatch(taskId: string, role: string, goalId?: string): Promise<void> {
+  async directDispatch(taskId: string, role: string): Promise<void> {
     if (this.activeDispatches.has(taskId)) return;
-
-    // Per-goal concurrency cap (same as auto-dispatch)
-    if (goalId && this.goalActiveCount(goalId) >= this.config.maxConcurrent) {
-      this.deferredDispatches.push({ taskId, role, goalId });
-      return;
-    }
-
-    this.trackGoalDispatch(taskId, goalId);
+    this.activeDispatches.add(taskId);
     try {
       await this.config.executeTask(taskId, role);
     } finally {
-      this.untrackGoalDispatch(taskId, goalId);
+      this.activeDispatches.delete(taskId);
       this.drainDeferred();
     }
   }
@@ -135,7 +104,7 @@ export class DispatchManager {
    * Manual dispatch — serialized, caller awaits.
    * Used when autoExecute is OFF and user triggers start-task from frontend.
    */
-  async manualDispatch(taskId: string, goalId?: string): Promise<void> {
+  async manualDispatch(taskId: string): Promise<void> {
     const task = this.config.getTask(taskId);
     if (!task) throw new Error(`Task ${taskId} not found`);
     if (task.status === "in_progress") {
@@ -160,25 +129,18 @@ export class DispatchManager {
       return;
     }
 
-    // Per-goal concurrency cap
-    if (goalId && this.goalActiveCount(goalId) >= this.config.maxConcurrent) {
-      this.deferredDispatches.push({ taskId, role, goalId });
-      log.info(`Manual dispatch deferred — goal ${goalId} at max concurrency`);
-      return;
-    }
-
-    this.trackGoalDispatch(taskId, goalId);
+    this.activeDispatches.add(taskId);
     this.manualDispatchChain = this.manualDispatchChain
       .then(() => this.config.executeTask(taskId, role))
       .catch((err) => { log.error(`Dispatch error for ${taskId}:`, err); })
-      .finally(() => this.untrackGoalDispatch(taskId, goalId));
+      .finally(() => this.activeDispatches.delete(taskId));
     await this.manualDispatchChain;
   }
 
   /**
    * Handle dispatch error — classify, retry with backoff, or fail permanently.
    */
-  handleError(taskId: string, role: string, error: unknown, goalId?: string): void {
+  handleError(taskId: string, role: string, error: unknown): void {
     const task = this.config.getTask(taskId);
     if (task?.status === "completed") return;
 
@@ -203,17 +165,11 @@ export class DispatchManager {
         if (!retryTask || retryTask.status !== "ready") return;
         if (this.activeDispatches.has(taskId)) return;
 
-        // Per-goal concurrency cap on retry
-        if (goalId && this.goalActiveCount(goalId) >= this.config.maxConcurrent) {
-          this.deferredDispatches.push({ taskId, role, goalId });
-          return;
-        }
-
-        this.trackGoalDispatch(taskId, goalId);
+        this.activeDispatches.add(taskId);
         this.config.executeTask(taskId, role).catch((err) => {
           log.error(`Retry dispatch error for ${taskId}:`, err);
         }).finally(() => {
-          this.untrackGoalDispatch(taskId, goalId);
+          this.activeDispatches.delete(taskId);
           this.drainDeferred();
         });
       }, backoffMs);
@@ -229,27 +185,23 @@ export class DispatchManager {
 
   /** Drain deferred queue when a slot opens. */
   private drainDeferred(): void {
-    const remaining: typeof this.deferredDispatches = [];
-    for (const next of this.deferredDispatches) {
+    while (
+      this.deferredDispatches.length > 0 &&
+      this.activeDispatches.size < this.config.maxConcurrent
+    ) {
+      const next = this.deferredDispatches.shift()!;
       if (this.activeDispatches.has(next.taskId)) continue;
 
       const task = this.config.getTask(next.taskId);
       if (!task || task.status === "completed" || task.status === "failed") continue;
 
-      // Per-goal concurrency check
-      if (next.goalId && this.goalActiveCount(next.goalId) >= this.config.maxConcurrent) {
-        remaining.push(next);
-        continue;
-      }
-
-      this.trackGoalDispatch(next.taskId, next.goalId);
+      this.activeDispatches.add(next.taskId);
       this.config.executeTask(next.taskId, next.role).catch((err) => {
         log.error(`Deferred dispatch error for ${next.taskId}:`, err);
       }).finally(() => {
-        this.untrackGoalDispatch(next.taskId, next.goalId);
+        this.activeDispatches.delete(next.taskId);
         this.drainDeferred();
       });
     }
-    this.deferredDispatches = remaining;
   }
 }
