@@ -119,10 +119,12 @@ export class GoalManager implements IGoalManager {
     }))).catch(err => log.error({ err }, "Failed to persist tasks to database"));
   }
 
-  /** Update task status in database (fire-and-forget) */
+  /** Update task status in database (fire-and-forget, scoped by goalId) */
   private persistTaskStatus(taskId: string, status: string, output?: unknown): void {
     if (!this.taskPersistence) return;
-    this.taskPersistence.updateTaskStatus(taskId, status, output)
+    const goalId = this.taskStore.get(taskId)?.goalId;
+    if (!goalId) { log.warn(`persistTaskStatus: task ${taskId} has no goalId — skipping DB write`); return; }
+    this.taskPersistence.updateTaskStatus(taskId, goalId, status, output)
       .catch(err => log.error({ err, taskId }, "Failed to persist task status"));
   }
 
@@ -473,15 +475,15 @@ export class GoalManager implements IGoalManager {
       }
 
       // Persist all tasks to CRDT (enables restore on restart)
-      const crdtSync = this.crdtTaskSyncProxy?.get?.();
-      if (crdtSync?.persistTask) {
-        const allTasks = this.taskStore.getByGoal(goalId);
-        for (const task of allTasks) {
-          await crdtSync.persistTask(task);
-        }
-        await crdtSync.updateIndex(allTasks);
-        log.info(`[approvePlan] Persisted ${allTasks.length} tasks to CRDT`);
-      }
+
+
+
+
+
+
+
+
+
 
       // Update CollaborationPlugin goalId
       const collabPlugin = this.pluginRegistry?.get("collaboration");
@@ -513,35 +515,35 @@ export class GoalManager implements IGoalManager {
       }
 
       // Persist goal, plan, and tasks to CRDT
-      const crdtGoalStore = this.crdtGoalStoreProxy?.get?.();
-      if (crdtGoalStore) {
-        await crdtGoalStore.saveGoal(
-          goalId,
-          planToApprove.goal || planId,
-          planToApprove.goal || "",
-        );
-        await crdtGoalStore.updateStatus("executing", planId);
-      }
 
-      const crdtTaskSync = this.crdtTaskSyncProxy?.get?.();
-      if (crdtTaskSync) {
-        let persistedCount = 0;
-        const goalTasks = this.taskStore.getByGoal(goalId);
-        for (const task of goalTasks) {
-          try {
-            await crdtTaskSync.persistTask(task);
-            persistedCount++;
-          } catch (err) {
-            log.error(`[approvePlan] Failed to persist task ${task.id} to CRDT: ${err}`);
-          }
-        }
-        log.info(`[approvePlan] Persisted ${persistedCount}/${goalTasks.length} tasks to CRDT`);
-        try {
-          await crdtTaskSync.persistPlan(planToApprove, goalId);
-        } catch (err) {
-          log.error(`[approvePlan] Failed to persist plan to CRDT: ${err}`);
-        }
-      }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
       // Persist plan to disk
       if (this.planStore) {
@@ -637,12 +639,12 @@ export class GoalManager implements IGoalManager {
             timestamp: new Date().toISOString(),
           });
         } else {
-          const crdtSyncComplete = this.crdtTaskSyncProxy?.get?.();
-          if (crdtSyncComplete?.syncPlanStatus) {
-            crdtSyncComplete.syncPlanStatus("completed").catch((err: any) => {
-              log.warn(`Failed to sync plan completion to CRDT: ${err}`);
-            });
-          }
+
+
+
+
+
+
           this.callbacks.onNotifyPlanner(goalId || "", PromptLoader.loadTemplate("orchestrator", "all-complete"));
           this.callbacks.onGoalStatusChange?.({ teamId: this.teamId, goalId: goalId || "", status: "completed" });
           this.callbacks.onProgress?.({
@@ -746,14 +748,14 @@ export class GoalManager implements IGoalManager {
     });
 
     // CRDT sync
-    const crdtSync = this.crdtTaskSyncProxy?.get?.();
-    if (crdtSync) {
-      crdtSync.syncStatus(taskId, "failed").catch((err: any) => {
-        log.warn(`CRDT sync failed for task ${taskId}: ${err}`);
-      });
-      if (!task?.goalId) log.error(`onTaskFailed: task ${taskId} has no goalId for CRDT index`);
-      crdtSync.updateIndex(task?.goalId ? this.taskStore.getByGoal(task.goalId) : []).catch(() => {});
-    }
+
+
+
+
+
+
+
+
 
     // Check research phase completion
     const goal = task?.goalId ? this.goals.get(task.goalId) : undefined;
@@ -880,17 +882,17 @@ export class GoalManager implements IGoalManager {
     this.callbacks.onTaskUpdate?.({ taskId: data.taskId, status: "completed", timestamp: data.timestamp });
 
     // CRDT persistence
-    const crdtSyncDone = this.crdtTaskSyncProxy?.get?.();
-    if (crdtSyncDone) {
-      await crdtSyncDone.syncStatus(data.taskId, "completed", {
-        summary: data.summary,
-        deliverables: data.deliverables,
-        nextSteps: data.nextSteps,
-      });
-      const doneTask = this.taskStore.get(data.taskId);
-      if (!doneTask?.goalId) log.error(`onWorkerDone: task ${data.taskId} has no goalId for CRDT index`);
-      await crdtSyncDone.updateIndex(doneTask?.goalId ? this.taskStore.getByGoal(doneTask.goalId) : []);
-    }
+
+
+
+
+
+
+
+
+
+
+
   }
 
   // ═══════════════════════════════════════════════════════════════════
@@ -913,10 +915,10 @@ export class GoalManager implements IGoalManager {
         const s = await this.planStore.getLatestActivePlan();
         if (s && (s.metadata.status === "executing" || s.metadata.status === "approved")) {
           await this.planStore.archivePlan(s.plan.planId, s.metadata.goalId);
-          const crdtSync = this.crdtTaskSyncProxy?.get?.();
-          if (crdtSync?.syncPlanStatus) {
-            await crdtSync.syncPlanStatus("interrupted").catch(() => {});
-          }
+
+
+
+
           this.reset();
           return { deleted: true, planId: s.plan.planId };
         }
@@ -935,10 +937,10 @@ export class GoalManager implements IGoalManager {
       const s = await this.planStore.getLatestActivePlan();
       if (s?.metadata.status === "executing") {
         await this.planStore.updatePlanStatus(s.plan.planId, s.metadata.goalId, "interrupted");
-        const crdtSync = this.crdtTaskSyncProxy?.get?.();
-        if (crdtSync?.syncPlanStatus) {
-          await crdtSync.syncPlanStatus("interrupted").catch(() => {});
-        }
+
+
+
+
       }
     } catch { /* best effort */ }
   }

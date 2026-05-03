@@ -12,7 +12,6 @@
 
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { BrowserRouter, Routes, Route } from 'react-router-dom';
-import { v4 as uuidv4 } from 'uuid';
 import { Menu, PanelRight, Search, Sun, Moon, LogOut } from 'lucide-react';
 import { AnimatePresence, motion } from 'framer-motion';
 
@@ -42,6 +41,9 @@ import { TeamsPage } from './components/TeamsPage/TeamsPage';
 import { PlanViewerPage } from './components/PlanViewer/PlanViewerPage';
 import { useDiscussionNotifications } from './hooks/useDiscussion';
 import type { DiscussionThread as DiscussionThreadType } from './hooks/useDiscussion';
+import { bindSocketMiddleware } from './stores/socketMiddleware';
+import { bindErrorBoundaryService } from './services/ErrorBoundaryService';
+import { useDiscussionStore } from './stores/discussionStore';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // InnerApp
@@ -70,13 +72,7 @@ function InnerApp() {
   const isLoadingTeams = useAgentStore(s => s.isLoadingTeams);
   const findAgentById = useAgentStore(s => s.findAgentById);
   const handleToggleCollapse = useAgentStore(s => s.handleToggleCollapse);
-  // agentsRef: kept in sync with store for Socket.IO callbacks that need fresh agent data
-  const agentsRef = useRef<Agent[]>(agents);
-  useEffect(() => { agentsRef.current = agents; }, [agents]);
-
   const chatHistories = useGoalSessionStore(s => s.chatHistories);
-  const addMessage = useGoalSessionStore(s => s.addMessage);
-  const processStreamPart = useGoalSessionStore(s => s.processStreamPart);
 
   // Orchestration state (from goalSessionStore — unified)
   const sessionState = useGoalSessionStore(s => s.sessionState);
@@ -94,10 +90,8 @@ function InnerApp() {
   // ── Navigation state (from uiStore Zustand) ────────────────────────────
   const activeAgentId = useUiStore(s => s.activeAgentId);
   const setActiveAgentId = useUiStore(s => s.setActiveAgentId);
-  const activeAgentIdRef = useRef(activeAgentId);
   const selectedTeamId = useUiStore(s => s.selectedTeamId);
   const setSelectedTeamId = useUiStore(s => s.setSelectedTeamId);
-  const selectedTeamIdRef = useRef<string | null>(selectedTeamId);
   const connectedTeamRef = useRef<string | null>(null);
 
   // ── Layout state (from uiStore Zustand) ───────────────────────────────
@@ -117,43 +111,12 @@ function InnerApp() {
   const activeMenu = useUiStore(s => s.activeMenu);
   const setActiveMenu = useUiStore(s => s.setActiveMenu);
 
-  // Discussion state — selected thread for full-view rendering
-  const [discussionThreads, setDiscussionThreads] = useState<DiscussionThreadType[]>([]);
+  // Discussion state — from discussionStore (populated by socketMiddleware)
+  const discussionThreads = useDiscussionStore(s => s.threads);
 
   // Discussion notifications (Socket.IO badges)
   // Subscribe to discussion notification badges (unread count surfaces in DetailPanel discussion tab)
   useDiscussionNotifications(agentServiceV2);
-
-  // Track discussion activity from Socket.IO → build thread list
-  useEffect(() => {
-    const unsub = agentServiceV2.onDiscussionActivity?.((data: any) => {
-      setDiscussionThreads(prev => {
-        const idx = prev.findIndex(t => t.docName === data.docName);
-        if (idx >= 0) {
-          const updated = [...prev];
-          updated[idx] = {
-            ...updated[idx],
-            blockCount: data.blockCount,
-            lastActivity: new Date(data.timestamp).toISOString(),
-            unreadCount: updated[idx].unreadCount + 1,
-          };
-          return updated;
-        }
-        // New thread discovered via activity
-        return [...prev, {
-          docName: data.docName,
-          taskId: data.taskId,
-          title: `Discussion: ${data.taskId}`,
-          participants: [],
-          blockCount: data.blockCount,
-          status: 'active' as const,
-          unreadCount: 1,
-          lastActivity: new Date(data.timestamp).toISOString(),
-        }];
-      });
-    });
-    return () => unsub?.();
-  }, []);
 
   // Close menu on click outside
   useEffect(() => {
@@ -185,8 +148,6 @@ function InnerApp() {
     return { nextTeamId, nextPlanId };
   }, []);
 
-  useEffect(() => { activeAgentIdRef.current = activeAgentId; }, [activeAgentId]);
-  useEffect(() => { selectedTeamIdRef.current = selectedTeamId; }, [selectedTeamId]);
 
   // selectedTeamId now persisted via uiStore Zustand persist (ping:ui key)
 
@@ -275,142 +236,22 @@ function InnerApp() {
 
     // Clear stale state from previous team
     useGoalSessionStore.getState().resetForTeam();
+    useDiscussionStore.getState().reset();
 
     connectedTeamRef.current = selectedTeamId;
 
     agentServiceV2.connect(selectedTeamId)
       .catch(err => { connectedTeamRef.current = null; showToast(`Connection failed: ${err.message}`, 'error'); });
 
-    // Wire global HTTP error handler → toast notifications
-    const unsubHttpError = agentServiceV2.onHttpError((message, status) => {
-      if (status === 401) {
-        showToast(message, 'error');
-        // Optionally redirect to login — uncomment when login page is ready:
-        // window.location.href = '/login';
-      } else {
-        showToast(message, 'error');
-      }
-    });
-
-    // Wire Socket.IO events → stores
-    const findAgentByRole = (roleName: string): Agent | undefined => {
-      return useAgentStore.getState().findAgentByRole(roleName, selectedTeamIdRef.current);
-    };
-
-    const unsubMessage = agentServiceV2.onMessage((data) => {
-      const content = data.content;
-      if (!content) return;
-
-      useGoalSessionStore.getState().addLog(data.agentId, content.length > 100 ? content.substring(0, 100) + '...' : content, 'info');
-
-      const isManager = data.agentId === 'manager' || data.agentId === 'orchestrator' || data.agentId === 'planner';
-      // Goal-scoped key for planner messages
-      const targetAgentId = isManager
-        ? (data.goalId ? `${selectedTeamId}:goal:${data.goalId}` : selectedTeamId)
-        : (findAgentByRole(data.agentId)?.id ?? data.agentId);
-
-      addMessage(targetAgentId, { id: uuidv4(), role: 'model', content, timestamp: data.timestamp ?? Date.now() });
-      if (data.taskId && activeAgentIdRef.current !== targetAgentId) setActiveAgentId(targetAgentId);
-    });
-
-    const unsubState = agentServiceV2.onState((data) => {
-      useGoalSessionStore.getState().addLog('SYSTEM', `State: ${data.sessionState}`, 'info');
-      useGoalSessionStore.getState().handleStateEvent(data);
-    });
-
-    const unsubOutput = agentServiceV2.onOutput((data) => {
-      const outputPreview = data.output.content.length > 100 ? data.output.content.substring(0, 100) + '...' : data.output.content;
-      useGoalSessionStore.getState().addLog(data.agentId, `Output: ${outputPreview}`, 'success');
-    });
-
-    const unsubError = agentServiceV2.onError((data) => {
-      useGoalSessionStore.getState().addLog('ERROR', data.error, 'error');
-    });
-
-    const unsubStream = agentServiceV2.onStream((payload: any) => {
-      if (!payload?.part) return;
-      const { part, agentId: streamAgentId, taskId: streamTaskId, goalId: streamGoalId } = payload;
-
-      // Goal isolation handled by Socket.IO rooms (server-side) — no client-side filter needed.
-
-      // ChatAgent responses → route to "chat:{resolvedAgentId}"
-      if (streamAgentId?.startsWith('chat-')) {
-        const role = streamAgentId.replace('chat-', '');
-        const resolved = findAgentByRole(role);
-        if (resolved) processStreamPart(`chat:${resolved.id}`, part);
-        return;
-      }
-
-      // Map role-based agentId to MongoDB agent ID
-      const isOrchestrator = streamAgentId === 'manager' || streamAgentId === 'orchestrator' || streamAgentId === 'planner';
-      const resolved = isOrchestrator ? null : findAgentByRole(streamAgentId);
-      if (!isOrchestrator && !resolved) {
-        // Don't silently drop — use role key directly so messages aren't lost
-        const fallbackKey = streamTaskId ? `${streamAgentId}:task:${streamTaskId}` : streamAgentId;
-        processStreamPart(fallbackKey, part);
-        return;
-      }
-
-      const targetAgentId = isOrchestrator ? selectedTeamId : resolved!.id;
-
-      // Chat key routing:
-      // - Planner/orchestrator: goal-scoped "teamId:goal:goalId" (each goal has its own planner chat)
-      // - Workers: task-scoped "agentId:task:taskId" (each task has its own worker chat)
-      // - Fallback: plain agentId
-      let chatKey: string;
-      if (isOrchestrator && streamGoalId) {
-        chatKey = `${selectedTeamId}:goal:${streamGoalId}`;
-      } else if (!isOrchestrator && streamTaskId) {
-        chatKey = `${targetAgentId}:task:${streamTaskId}`;
-      } else {
-        chatKey = targetAgentId;
-      }
-      processStreamPart(chatKey, part);
-    });
-
-    const TASK_UPDATE_LOG: Record<string, { fmt: (u: any) => string; type: string }> = {
-      started:        { fmt: (u) => `${u.taskId}: Started`,                                    type: 'info' },
-      progress:       { fmt: (u) => `${u.taskId}: ${u.note || `Step ${u.stepIdx}`}`,            type: 'info' },
-      tool_milestone: { fmt: (u) => `${u.taskId}: ${u.tool} — ${u.summary?.slice(0, 100) || 'done'}`, type: 'info' },
-      completed:      { fmt: (u) => `${u.taskId}: Completed — ${u.summary?.slice(0, 100) || ''}`, type: 'success' },
-      failed:         { fmt: (u) => `${u.taskId}: Failed — ${u.error?.slice(0, 100) || ''}`,     type: 'error' },
-      blocked:        { fmt: (u) => `${u.taskId}: Blocked — ${u.reason?.slice(0, 100) || ''}`,   type: 'warning' },
-    };
-
-    const unsubTaskUpdate = agentServiceV2.onTaskUpdate((update: any) => {
-      if (!update?.taskId) return;
-      const config = TASK_UPDATE_LOG[update.type] || { fmt: () => update.type, type: 'info' };
-      useGoalSessionStore.getState().addLog(`${update.taskId} [${update.role || 'worker'}]`, config.fmt(update), config.type as any);
-
-      // Auto-select first executing task so worker output is visible
-      if (update.type === 'started' && !useGoalSessionStore.getState().selectedTaskId) {
-        useGoalSessionStore.setState({ selectedTaskId: update.taskId });
-      }
-    });
-
-    const unsubGoalState = agentServiceV2.onGoalStateChange((data: any) => {
-      useGoalSessionStore.getState().handleGoalStateChange(data);
-    });
-
-    // Server-generated goalId — auto-subscribe to the goal's Socket.IO room
-    const unsubGoalCreated = agentServiceV2.onGoalCreated(({ goalId }) => {
-      if (selectedTeamId) {
-        agentServiceV2.subscribeToGoal(selectedTeamId, goalId);
-      }
-    });
+    // Wire all Socket.IO events → Zustand stores via middleware
+    const unsubMiddleware = bindSocketMiddleware(agentServiceV2, selectedTeamId);
+    const unsubErrorBoundary = bindErrorBoundaryService(agentServiceV2, { showToast });
 
     return () => {
-      unsubMessage();
-      unsubState();
-      unsubOutput();
-      unsubError();
-      unsubStream();
-      unsubTaskUpdate();
-      unsubGoalState();
-      unsubGoalCreated();
-      unsubHttpError();
+      unsubMiddleware();
+      unsubErrorBoundary();
     };
-  }, [selectedTeamId, agentsRef, addMessage, processStreamPart, showToast]);
+  }, [selectedTeamId, showToast]);
 
   // Error toasts from orchestration logs
   const prevLogsLen = useRef(0);
@@ -464,9 +305,7 @@ function InnerApp() {
 
   const handleOpenDiscussion = useCallback((thread: DiscussionThreadType) => {
     // Mark as read — the discussion content is now reachable from the task-scoped DetailPanel.
-    setDiscussionThreads(prev =>
-      prev.map(t => t.docName === thread.docName ? { ...t, unreadCount: 0 } : t)
-    );
+    useDiscussionStore.getState().markThreadRead(thread.docName);
   }, []);
 
   // remapChatKey removed — goalSessionStore uses atomic switchGoal

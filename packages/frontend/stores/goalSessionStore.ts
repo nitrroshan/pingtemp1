@@ -211,15 +211,62 @@ export const useGoalSessionStore = create<GoalSessionState>()(devtools((set, get
     // 2. Subscribe Socket.IO room (server leaves previous room automatically)
     agentServiceV2.subscribeToGoal(teamId, goalId);
 
-    // 3. Load from server (single API call)
+    // 3. Load from server — prefer v4 goal session endpoint, fallback to restoreSession
     try {
+      const session = await agentServiceV2.getGoalSession(goalId, teamId);
+
+      if (session) {
+        // ── v4 path: server-computed session with flat messages ──
+        const restored: Record<string, Message[]> = {};
+
+        if (session.messages?.length) {
+          for (const m of session.messages) {
+            const agentId = m.agentId as string;
+            let key: string;
+            if (agentId?.startsWith('chat-')) {
+              const role = agentId.replace('chat-', '');
+              const agent = agents.find(a => a.role?.toLowerCase() === role);
+              key = agent ? `chat:${agent.id}` : agentId;
+            } else if (agentId === 'manager' || agentId === 'orchestrator' || agentId === 'planner') {
+              key = `${teamId}:goal:${goalId}`;
+            } else {
+              const resolved = agents.find(a => a.role?.toLowerCase() === agentId?.toLowerCase());
+              const resolvedId = resolved?.id ?? agentId;
+              key = m.taskId ? `${resolvedId}:task:${m.taskId}` : resolvedId;
+            }
+            if (!restored[key]) restored[key] = [];
+            restored[key].push(mapServerMessage(m));
+          }
+          for (const key of Object.keys(restored)) {
+            restored[key].sort((a, b) => a.timestamp - b.timestamp);
+          }
+        }
+
+        const tasks = (session.tasks ?? []).map(mapBackendTask);
+        set({
+          chatHistories: restored,
+          tasks,
+          sessionState: session.sessionState as SessionState,
+          autoExecuteEnabled: session.autoExecute ?? false,
+          goalSessionStates: {
+            ...get().goalSessionStates,
+            [goalId]: session.sessionState,
+          },
+          plans: session.allGoalSummaries?.length ? session.allGoalSummaries : get().plans,
+          _streamingIds: {},
+          _activeTextParts: {},
+          _activeReasoningParts: {},
+        });
+        return;
+      }
+
+      // ── Fallback: legacy restoreSession ──
       const data = await agentServiceV2.restoreSession(teamId, goalId);
       if (!data) {
         set({ sessionState: null });
         return;
       }
 
-      // 4. Map server data → store format
       const restored: Record<string, Message[]> = {};
 
       if (data.conversations) {
@@ -244,7 +291,6 @@ export const useGoalSessionStore = create<GoalSessionState>()(devtools((set, get
 
       if (data.workerMessages?.length) {
         for (const m of data.workerMessages) {
-          // Resolve role-based agentId to frontend agentId (must match live stream keys)
           const resolvedAgent = agents.find(a => a.role?.toLowerCase() === m.agentId?.toLowerCase());
           const resolvedId = resolvedAgent?.id ?? m.agentId;
           const key = m.taskId ? `${resolvedId}:task:${m.taskId}` : resolvedId;
@@ -253,7 +299,6 @@ export const useGoalSessionStore = create<GoalSessionState>()(devtools((set, get
         }
       }
 
-      // 5. Atomic state update
       const tasks = (data.plan ?? data.tasks ?? []).map(mapBackendTask);
       set({
         chatHistories: restored,

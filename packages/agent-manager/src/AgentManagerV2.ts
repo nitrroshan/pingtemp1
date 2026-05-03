@@ -29,7 +29,6 @@ import { NotificationQueue } from "./orchestrator/NotificationQueue.js";
 import { createPlannerTools } from "./orchestrator/tools/index.js";
 import { PluginRegistry } from "./plugin/PluginRegistry.js";
 import type { IPlugin } from "./plugin/types.js";
-import { FileTaskStore } from "./persistence/FileTaskStore.js";
 import { PromptLoader } from "./orchestrator/PromptLoader.js";
 
 const logger = rootLogger.child({ module: "AgentManager" });
@@ -69,7 +68,6 @@ export class AgentManager {
   private orchestrator: OrchestratorService | null = null;
   private taskStoreInstance: TaskStore | null = null;
   private userInteractionManager: UserInteractionManager | null = null;
-  private filePersistence: FileTaskStore | null = null;
   private pluginRegistry: PluginRegistry = new PluginRegistry();
   private teamId: string = "default";
 
@@ -138,9 +136,6 @@ export class AgentManager {
   ): Promise<void> {
     this.teamId = teamId;
 
-    // Initialize file-based task persistence (survives restarts)
-    this.filePersistence = new FileTaskStore(teamId);
-    await this.filePersistence.load();
 
     const workspaceDir = process.env.WORKSPACE_BASE_DIR || "./data/workspaces";
     const teamRepoPath = `${workspaceDir}/${teamId}`;
@@ -702,7 +697,6 @@ export class AgentManager {
 
     // Update status to ready (approved, awaiting user to start chat)
     this.taskStoreInstance.updateStatus(taskId, "ready");
-    this.filePersistence?.updateStatus(taskId, "ready");
     logger.info(
       `Task ${taskId} approved for chat with role: ${task.assigned_role}`,
     );
@@ -754,7 +748,6 @@ export class AgentManager {
     // Mark as in_progress
     if (task.status !== "in_progress") {
       this.taskStoreInstance.updateStatus(taskId, "in_progress");
-      this.filePersistence?.updateStatus(taskId, "in_progress");
     }
     logger.info(`Task ${taskId} execution started`);
 
@@ -826,11 +819,12 @@ export class AgentManager {
 
     // Complete task via TaskStore
     this.taskStoreInstance.completeTask(taskId, finalOutput);
-    this.filePersistence?.updateStatus(taskId, "completed");
-    this.filePersistence?.setOutput(taskId, finalOutput);
 
-    // v3.0: Persist to database
-    this.taskPersistence?.updateTaskStatus(taskId, "completed", finalOutput).catch(() => {});
+    // v3.1: Persist to database (scoped by goalId)
+    const taskGoalId = task.goalId;
+    if (taskGoalId) {
+      this.taskPersistence?.updateTaskStatus(taskId, taskGoalId, "completed", finalOutput).catch(() => {});
+    }
 
     logger.info(
       `Task ${taskId} completed by user${mergeResult.error ? " (merge failed)" : ""}`,
@@ -1044,7 +1038,6 @@ export class AgentManager {
 
     // Remove from TaskStore
     this.taskStoreInstance.updateStatus(taskId, "failed");
-    this.filePersistence?.updateStatus(taskId, "failed");
 
     logger.info(`Discarded task ${taskId}`);
   }
@@ -1210,9 +1203,6 @@ export class AgentManager {
    * Call during graceful shutdown to persist pending writes.
    */
   async flush(): Promise<void> {
-    if (this.filePersistence) {
-      await this.filePersistence.flush();
-    }
   }
 }
 

@@ -263,12 +263,8 @@ export class OrchestratorService {
       onTaskUpdate: (update) => this.callbacks.onWorkerTaskUpdate?.(update),
     });
 
-    // v3.0: Try database recovery first, fall back to file/CRDT
-    const dbRecovered = await this.goalManager.loadFromDatabase();
-    if (!dbRecovered) {
-      // Load active plan from file/CRDT for restart recovery (legacy path)
-      await this.goalManager.loadActivePlan();
-    }
+    // v3.1: Database recovery is now the only startup path
+    await this.goalManager.loadFromDatabase();
 
     this.goalManager.setState("idle");
     console.log(`[OrchestratorService] Initialized for team ${this.teamId}`);

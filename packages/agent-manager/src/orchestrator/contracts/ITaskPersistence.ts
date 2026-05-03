@@ -23,8 +23,8 @@ export interface TaskData {
 export interface ITaskPersistence {
   /** Bulk-insert tasks (plan approval, add_tasks tool) */
   saveTasks(goalId: string, teamId: string, tasks: TaskData[]): Promise<void>;
-  /** Update a single task's status + optional output */
-  updateTaskStatus(taskId: string, status: string, output?: unknown): Promise<void>;
+  /** Update a single task's status + optional output (scoped by goalId for safety) */
+  updateTaskStatus(taskId: string, goalId: string, status: string, output?: unknown): Promise<void>;
   /** Get all tasks for a goal */
   getTasksByGoal(goalId: string): Promise<TaskData[]>;
   /** Get all tasks for a team */

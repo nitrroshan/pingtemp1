@@ -14,7 +14,7 @@
 import { io, Socket } from "socket.io-client";
 import { logger } from "../utils/logger";
 import { API_BASE_URL } from "../constants";
-import type { ServerToClientEvents, ClientToServerEvents } from "@ping/shared";
+import type { ServerToClientEvents, ClientToServerEvents } from "../types/socketEvents";
 
 // ============================================================================
 // Types
@@ -517,7 +517,7 @@ export class AgentServiceV2 {
    * Send message to a persistent ChatAgent (L2) for a role.
    * Uses "chat-{role}" agentId convention — backend routes to ChatAgent.
    */
-  sendToChatAgent(role: string, content: string): void {
+  sendToChatAgent(role: string, content: string, goalId?: string): void {
     if (!this.isReady()) {
       logger.error("[AgentServiceV2] Cannot send: socket =", !!this.socket, "clientId =", this.clientId, "teamId =", this.teamId);
       throw new Error("Not connected or no team selected");
@@ -529,6 +529,7 @@ export class AgentServiceV2 {
     logger.info("[AgentServiceV2] sendToChatAgent:", {
       teamId,
       agentId,
+      goalId,
       contentPreview: content?.substring(0, 50),
     });
 
@@ -536,6 +537,7 @@ export class AgentServiceV2 {
       teamId,
       agentId,
       sessionId: this.sessionId,
+      goalId: goalId || null,
       content,
     });
   }
@@ -776,6 +778,37 @@ export class AgentServiceV2 {
       return response.json();
     } catch (err) {
       logger.error('[AgentServiceV2] restoreSession error:', err);
+      return null;
+    }
+  }
+
+  /**
+   * v4.0: Goal-scoped session snapshot — DB-primary with live overlay.
+   * Replaces restoreSession for goal-specific fetches.
+   */
+  async getGoalSession(goalId: string, teamId: string): Promise<{
+    goalId: string;
+    title: string;
+    status: string;
+    tasks: any[];
+    messages: any[];
+    pendingPlan: any;
+    sessionState: string | null;
+    autoExecute: boolean;
+    allGoalSummaries: any[];
+    repoUrl?: string;
+    repoBranch?: string;
+  } | null> {
+    try {
+      const url = `${this.baseUrl}/api/v2/goals/${encodeURIComponent(goalId)}/session?teamId=${encodeURIComponent(teamId)}`;
+      const response = await this.authFetch(url);
+      if (!response.ok) {
+        logger.warn(`[AgentServiceV2] getGoalSession failed: ${response.status}`);
+        return null;
+      }
+      return response.json();
+    } catch (err) {
+      logger.error('[AgentServiceV2] getGoalSession error:', err);
       return null;
     }
   }

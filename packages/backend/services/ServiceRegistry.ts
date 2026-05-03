@@ -79,14 +79,9 @@ export async function createServiceRegistry(dataDir: string = "./data"): Promise
     chatService = new SqliteChatService(db);
     goalService = new SqliteGoalService(db);
     teamRegistryService = new SqliteTeamRegistryService(db);
-    // SQLite task persistence — stub that logs but doesn't persist (local dev mode)
-    taskService = {
-      async saveTasks() {},
-      async updateTaskStatus() {},
-      async getTasksByGoal() { return []; },
-      async getTasksByTeam() { return []; },
-      async clearTasksByGoal() {},
-    };
+    // v3.1: Real SQLite task persistence for local dev
+    const { SqliteTaskService } = await import("./sqlite/SqliteTaskService.js");
+    taskService = new SqliteTaskService(db);
   }
 
   return {

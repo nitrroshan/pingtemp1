@@ -186,7 +186,7 @@ const ChatArea: React.FC<ChatAreaProps> = ({
         agentServiceV2.sendToManager(userMsg.content, goalId);
       } else if (FEATURES.chatAgentChat) {
         // Send to persistent ChatAgent (L2) for the role
-        agentServiceV2.sendToChatAgent(agent.role.toLowerCase(), userMsg.content);
+        agentServiceV2.sendToChatAgent(agent.role.toLowerCase(), userMsg.content, goalId);
       } else {
         // Send to worker agent for task execution (legacy path)
         // Pass taskId if there's an active (in_progress) task for this agent

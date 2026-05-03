@@ -40,17 +40,17 @@ export class MongoTaskService implements ITaskPersistence {
     }
   }
 
-  async updateTaskStatus(taskId: string, status: string, output?: unknown): Promise<void> {
+  async updateTaskStatus(taskId: string, goalId: string, status: string, output?: unknown): Promise<void> {
     const TaskModel = await this.getModel();
     try {
       const update: Record<string, any> = { status };
       if (output !== undefined) update.output = output;
-      const result = await TaskModel.findOneAndUpdate({ taskId }, { $set: update });
+      const result = await TaskModel.findOneAndUpdate({ taskId, goalId }, { $set: update });
       if (!result) {
-        logger.warn({ taskId, status }, "updateTaskStatus: no matching task in DB");
+        logger.warn({ taskId, goalId, status }, "updateTaskStatus: no matching task in DB");
       }
     } catch (err) {
-      logger.error({ err, taskId, status }, "Failed to update task status");
+      logger.error({ err, taskId, goalId, status }, "Failed to update task status");
     }
   }
 

@@ -17,7 +17,6 @@
     "@ping/collaboration": "workspace:*",
     "@ping/knowledge": "workspace:*",
     "@ping/registry": "workspace:*",
-    "@ping/shared": "workspace:*",
     "@ping/workspace": "workspace:*",
     "@vscode/ripgrep": "^1.17.1",
     "ai": "^6.0.143",

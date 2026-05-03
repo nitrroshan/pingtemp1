@@ -103,7 +103,7 @@ export interface PlanMutationContext {
   /** Team ID — for persistence scoping */
   teamId?: string;
   /** v3.0: Database persistence (optional) */
-  taskPersistence?: { saveTasks(goalId: string, teamId: string, tasks: any[]): Promise<void>; updateTaskStatus(taskId: string, status: string, output?: unknown): Promise<void>; clearTasksByGoal(goalId: string): Promise<void> } | null;
+  taskPersistence?: { saveTasks(goalId: string, teamId: string, tasks: any[]): Promise<void>; updateTaskStatus(taskId: string, goalId: string, status: string, output?: unknown): Promise<void>; clearTasksByGoal(goalId: string): Promise<void> } | null;
   /** Callback to emit Socket.IO mutation events */
   onMutation?: (event: { type: string; data: any }) => void;
 }
@@ -352,7 +352,7 @@ export function createRemoveTaskTool(ctx: PlanMutationContext) {
       // v3.0: Mark removed tasks in database
       if (ctx.taskPersistence) {
         for (const id of removed) {
-          ctx.taskPersistence.updateTaskStatus(id, "removed").catch(() => {});
+          ctx.taskPersistence.updateTaskStatus(id, ctx.currentGoalId, "removed").catch(() => {});
         }
       }
 
@@ -466,7 +466,7 @@ export function createReplanTool(ctx: PlanMutationContext) {
       // v3.0: Persist discarded statuses to database
       if (ctx.taskPersistence) {
         for (const id of discarded) {
-          ctx.taskPersistence.updateTaskStatus(id, "discarded").catch(() => {});
+          ctx.taskPersistence.updateTaskStatus(id, ctx.currentGoalId, "discarded").catch(() => {});
         }
       }
 
