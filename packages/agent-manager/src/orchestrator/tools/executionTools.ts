@@ -42,6 +42,8 @@ export interface ExecutionToolContext {
   tasks: ITaskProvider;
   dagResolver: DependencyResolver;
   agentFactory: AgentFactory;
+  /** Current goal ID for scoping queries */
+  currentGoalId?: string;
   /** Callback to cancel a running worker */
   onCancelTask?: (taskId: string, reason: string) => Promise<boolean>;
 }
@@ -53,6 +55,11 @@ export function createCancelTaskTool(ctx: ExecutionToolContext) {
     async (input) => {
       const task = ctx.tasks.getTask(input.taskId);
       if (!task) return `Error: Task '${input.taskId}' not found`;
+
+      // Goal ownership check — planner can only cancel its own goal's tasks
+      if (ctx.currentGoalId && task.goalId && task.goalId !== ctx.currentGoalId) {
+        return `Error: Task '${input.taskId}' belongs to a different goal`;
+      }
 
       if (task.status === "completed") return `Error: Task '${input.taskId}' is already completed`;
       if (task.status === "failed") return `Task '${input.taskId}' has already failed`;
@@ -66,7 +73,7 @@ export function createCancelTaskTool(ctx: ExecutionToolContext) {
       }
 
       // Mark as failed in TaskStore
-      ctx.tasks.updateTaskStatus(input.taskId, "failed");
+      await ctx.tasks.updateTaskStatus(input.taskId, "failed");
 
       return `Task '${input.taskId}' cancelled. Reason: ${input.reason}`;
     },
@@ -81,6 +88,10 @@ export function createCancelTaskTool(ctx: ExecutionToolContext) {
 export function createGetBlockedTool(ctx: ExecutionToolContext) {
   return tool(
     async (input) => {
+      // Rebuild DAG scoped to current goal before querying
+      if (ctx.currentGoalId) {
+        ctx.dagResolver.rebuildForGoal(ctx.tasks, ctx.currentGoalId);
+      }
       const blocked = ctx.dagResolver.getBlocked();
 
       if (blocked.length === 0) {
@@ -111,6 +122,10 @@ export function createGetBlockedTool(ctx: ExecutionToolContext) {
 export function createGetCriticalPathTool(ctx: ExecutionToolContext) {
   return tool(
     async () => {
+      // Rebuild DAG scoped to current goal before querying
+      if (ctx.currentGoalId) {
+        ctx.dagResolver.rebuildForGoal(ctx.tasks, ctx.currentGoalId);
+      }
       const path = ctx.dagResolver.getCriticalPath();
 
       if (path.length === 0) {

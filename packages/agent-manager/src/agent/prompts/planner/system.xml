@@ -87,7 +87,42 @@ Context injection:
 Every task must be assigned to an existing team role (see `<team-config>`).
 
 Tools:
-- `submit_plan` — Submit and auto-approve plan. Tasks start executing immediately.
+- `submit_plan` — Submit plan for user review. Plan goes to "awaiting_approval" state — user must approve before execution starts.
+
+Planning Protocol:
+1. Analyze the goal thoroughly
+2. Write a **detailed** plan document to the shared CRDT doc. This is what the user reads to decide whether to approve:
+   ```
+   collab({ action: "write-block", docName: "plan", value: `
+   ## Goal
+   [Restate the goal in your own words — what the user actually wants]
+
+   ## Approach
+   [Your high-level strategy. What architecture, tech choices, and patterns you'll use and WHY]
+
+   ## Key Decisions
+   - [Decision 1]: [Rationale — why this over the alternative]
+   - [Decision 2]: [Rationale]
+
+   ## Risks & Mitigations
+   - [Risk]: [How you'll handle it]
+
+   ## Task Breakdown
+   [For each task, explain WHY it exists and what it produces — not just a title]
+
+   1. **Task Name** (role) — [What this task does, what it produces, why it's needed]
+      - Dependencies: [what it needs from upstream]
+      - Deliverables: [concrete outputs — files, APIs, schemas]
+   2. ...
+
+   ## Execution Order
+   [Explain the dependency chain — what runs first, what waits, and why]
+   ` })
+   ```
+3. THEN call `submit_plan` with the structured task list
+4. The user will review your plan document and either approve or ask for changes
+
+**Important:** The plan document is your chance to explain your reasoning. A bare task list is not enough. Write it like a technical proposal — the user needs to understand your approach before approving.
 </planning>
 
 <output-formats>
@@ -241,8 +276,9 @@ that don't exist. Use `get_team_capabilities` to verify before assigning.
 </role-assignment>
 
 <approval-required>
-Always use `request_approval` before execution begins. Never start workers 
-without the user's explicit approval of the plan.
+After calling `submit_plan`, the plan enters "awaiting_approval" state automatically.
+The user will review your plan document and either approve or request changes.
+Never assume the plan will auto-execute — wait for the user's decision.
 </approval-required>
 
 <no-blind-retry>

@@ -19,7 +19,7 @@ export class SqliteGoalService implements IGoalService {
       CREATE TABLE IF NOT EXISTS goals (
         id TEXT PRIMARY KEY,
         teamId TEXT NOT NULL,
-        sessionId TEXT NOT NULL,
+        userId TEXT NOT NULL,
         goal TEXT NOT NULL,
         status TEXT NOT NULL DEFAULT 'pending',
         planId TEXT,
@@ -29,15 +29,21 @@ export class SqliteGoalService implements IGoalService {
       );
       CREATE INDEX IF NOT EXISTS idx_goals_team ON goals(teamId, createdAt);
     `);
+    // Migration: rename sessionId → userId (existing databases)
+    try {
+      this.db.exec(`ALTER TABLE goals RENAME COLUMN sessionId TO userId`);
+    } catch {
+      // Column already renamed or doesn't exist — ignore
+    }
   }
 
   async addGoal(goal: Omit<Goal, "id" | "createdAt" | "updatedAt">): Promise<Goal> {
     const id = randomUUID();
     const now = new Date().toISOString();
     this.db.run(
-      `INSERT INTO goals (id, teamId, sessionId, goal, status, planId, result, createdAt, updatedAt)
+      `INSERT INTO goals (id, teamId, userId, goal, status, planId, result, createdAt, updatedAt)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [id, goal.teamId, goal.sessionId, goal.goal, goal.status ?? "pending",
+      [id, goal.teamId, goal.userId, goal.goal, goal.status ?? "pending",
        goal.planId ?? null, goal.result ?? null, now, now],
     );
     return { ...goal, id, createdAt: now, updatedAt: now };

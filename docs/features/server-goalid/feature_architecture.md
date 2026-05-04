@@ -1,0 +1,153 @@
+# Server-Generated GoalId
+
+> **Status:** Architecture review
+> **Fixes:** Issue 26 (duplicate goals collide), aligns with default-goalid-elimination
+> **Priority:** Critical — data corruption on duplicate prompts
+
+## Problem
+
+`toGoalId()` in `packages/frontend/lib/planId.ts` generates goalId **deterministically** from the goal text. Two identical prompts produce the same goalId, causing:
+
+- Chat messages merge into one conversation
+- Backend reuses the first goal's GoalManager (planner, agents, state)
+- Tasks from both goals appear together
+- Stream events cross-wire between goals
+- Socket.IO rooms collide
+- MongoDB chat records merge
+- Workspace directories overlap
+
+See [workspace-push-issues.md Issue 26](../github-connect/workspace-push-issues.md) for the full 15-location impact map.
+
+## Existing Infrastructure
+
+The backend **already supports** server-generated goalIds:
+
+| Component | Current State |
+|-----------|--------------|
+| `AgentManagerV2.ts` L44 | `resolvedGoalId = goalId \|\| crypto.randomUUID()` — generates UUID when client omits goalId |
+| `SocketServerV2.ts` L1056 | `socket.emit("goal:created", { goalId })` — sends goalId back to client |
+| `AgentServiceV2.ts` L312 | `socket.on("goal:created", cb)` — frontend already listens for this event |
+| `AgentServiceV2.ts` L591 | `onGoalCreated(callback)` — public API for subscribing |
+
+## Architecture Options
+
+### Option A: Server UUID via `goal:created` Event
+
+**Implementation:** Frontend stops sending goalId. Backend generates `crypto.randomUUID()`. Frontend waits for `goal:created` event to receive the goalId, then keys chat/plan with it.
+
+```
+Frontend                          Backend
+   │                                 │
+   │ sendToManager(goal)             │
+   │ ──────────────────────────────► │
+   │    (no goalId)                  │ goalId = crypto.randomUUID()
+   │                                 │ GoalManager.getOrCreateGoal(goalId)
+   │         goal:created {goalId}   │
+   │ ◄────────────────────────────── │
+   │                                 │
+   │ addMessage(chatKey, userMsg)    │
+   │ savePlan({goalId, planId})      │
+   │ subscribeToGoal(teamId, goalId) │
+   │ pushRoute(/teams/.../p/planId)  │
+```
+
+**Changes:**
+
+| File | Change |
+|------|--------|
+| `lib/planId.ts` | Delete `toGoalId()` (or keep for display slug only) |
+| `AgentServiceV2.ts` | Add `sendToManagerAsync()` that returns `Promise<{goalId}>` via `goal:created` |
+| `App.tsx` — `handleGoalSubmit` | Await goalId from server before adding message/saving plan |
+| `App.tsx` — `handleGoalScreenSubmit` | Same — await goalId |
+| `PlanList.tsx` / `savePlan()` | No change — already uses whatever goalId is provided |
+| Backend | No change — already generates UUID and emits `goal:created` |
+
+**Pros:**
+- Minimal backend changes (already works)
+- Guaranteed unique — `crypto.randomUUID()` never collides
+- Single source of truth — server owns goalId
+- Aligns with default-goalid-elimination doc
+- `toGoalId()` removed from critical path
+
+**Cons:**
+- ~50ms latency before user message appears (waiting for `goal:created` round-trip)
+- Frontend submission becomes async (currently fire-and-forget)
+- If socket disconnects mid-submission, goalId is lost
+
+**Effort:** Small — 3 files changed (frontend only), backend untouched
+
+### Option B: Frontend UUID (No Server Round-Trip)
+
+**Implementation:** Replace `toGoalId(goal)` with `crypto.randomUUID()` in the frontend. No server coordination needed.
+
+```
+Frontend                          Backend
+   │                                 │
+   │ goalId = crypto.randomUUID()    │
+   │ addMessage(chatKey, userMsg)    │
+   │ sendToManager(goal, goalId)     │
+   │ ──────────────────────────────► │
+   │                                 │ Uses client goalId as-is
+```
+
+**Changes:**
+
+| File | Change |
+|------|--------|
+| `lib/planId.ts` | `toGoalId()` returns `crypto.randomUUID()` |
+| Backend | No change |
+| Frontend | No change (already sends goalId) |
+
+**Pros:**
+- One-line change
+- No latency — user message appears instantly
+- No async coordination needed
+- Backend already accepts client-provided goalId
+
+**Cons:**
+- Client controls the ID — less secure (client could send crafted IDs)
+- Two ID generators (frontend UUID + backend fallback UUID) — potential confusion
+- No server validation that goalId is unique
+- Doesn't align with "server is source of truth" principle
+
+**Effort:** Minimal — 1 function change
+
+### Option C: Frontend Timestamp-Based GoalId
+
+**Implementation:** Add timestamp to `toGoalId()` so it's unique per-submission but still human-readable.
+
+```ts
+export function toGoalId(goal: string): string {
+  const slug = goal.toLowerCase().trim()
+    .replace(/[^a-z0-9\s-]/g, "").replace(/\s+/g, "-")
+    .substring(0, 50);
+  const ts = Date.now().toString(36);
+  return `${slug}-${ts}`;
+}
+```
+
+**Pros:**
+- Human-readable goalId (useful in logs, URLs, workspace dirs)
+- Still generated by frontend — no async gap
+- One function change
+
+**Cons:**
+- Millisecond-precision — two rapid submissions could still collide (unlikely)
+- Client controls the ID
+- Slug can leak goal content into filesystem paths
+
+**Effort:** Minimal — 1 function change
+
+## Recommendation
+
+**Option A (Server UUID)** — because:
+
+1. Server should own identifiers (security + consistency)
+2. Infrastructure already exists (backend UUID + `goal:created` event + frontend listener)
+3. Eliminates `toGoalId()` entirely — no slug derivation, no hash collisions
+4. Aligns with the [default-goalid-elimination](../parallel-plans/phase-4.5/default-goalid-elimination.md) doc
+5. The ~50ms latency is invisible to users (they're about to wait for an LLM response anyway)
+
+If latency is a concern, Option B (frontend UUID) is the fallback — one-line change, zero coordination.
+
+**Decision Required:** Please choose Option A, B, or C.

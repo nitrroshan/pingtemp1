@@ -2,8 +2,10 @@
 import React, { useState, useEffect } from 'react';
 import { Agent, Message, Task } from '../../types';
 import { agentServiceV2 } from '../../services/AgentServiceV2';
+import { FEATURES } from '../../lib/features';
 import { logger } from '../../utils/logger';
 import { Header, MessageList, ChatInput, TaskList } from '.';
+import { RunningWorkersPanel } from './RunningWorkersPanel';
 import { AnimatePresence, motion } from 'framer-motion';
 import { Skeleton } from '../ui/skeleton';
 
@@ -47,6 +49,8 @@ interface ChatAreaProps {
   /** Click a task row to open the DetailPanel for it */
   onSelectTask?: (taskId: string) => void;
   selectedTaskId?: string | null;
+  /** Active goalId for message routing */
+  goalId?: string;
 }
 
 function ChatAreaSkeleton() {
@@ -113,6 +117,7 @@ const ChatArea: React.FC<ChatAreaProps> = ({
   allTasks,
   onSelectTask,
   selectedTaskId,
+  goalId,
 }) => {
   const [viewMode, setViewMode] = useState<'chat' | 'tasks'>('chat');
   const [inputValue, setInputValue] = useState('');
@@ -178,9 +183,12 @@ const ChatArea: React.FC<ChatAreaProps> = ({
       
       if (isOrchestrator) {
         // Send to manager/orchestrator for planning
-        agentServiceV2.sendToManager(userMsg.content);
+        agentServiceV2.sendToManager(userMsg.content, goalId);
+      } else if (FEATURES.chatAgentChat) {
+        // Send to persistent ChatAgent (L2) for the role
+        agentServiceV2.sendToChatAgent(agent.role.toLowerCase(), userMsg.content, goalId);
       } else {
-        // Send to worker agent for task execution
+        // Send to worker agent for task execution (legacy path)
         // Pass taskId if there's an active (in_progress) task for this agent
         await agentServiceV2.sendToWorker(
           agent.role.toLowerCase(), 
@@ -223,6 +231,15 @@ const ChatArea: React.FC<ChatAreaProps> = ({
 
       {/* Content Area */}
       <div className="flex-1 overflow-hidden relative flex flex-col">
+        {/* Running Workers Panel — shown for ChatAgent R1 chat ONLY (not worker stream view) */}
+        {FEATURES.chatAgentChat && agent.parentId && allTasks && !selectedTaskId && (
+          <RunningWorkersPanel
+            tasks={allTasks}
+            role={agent.role}
+            onJumpToTask={(taskId) => onSelectTask?.(taskId)}
+          />
+        )}
+
         <AnimatePresence mode="wait" initial={false}>
           {viewMode === 'chat' ? (
             <motion.div

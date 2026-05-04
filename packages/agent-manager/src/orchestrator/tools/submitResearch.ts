@@ -64,17 +64,21 @@ export function createSubmitResearchTool(ctx: SubmitResearchContext) {
       // TaskStore may not have .addTask() — it uses .create()
       const taskStore = octx.taskProvider as any;
       const createdTasks: any[] = [];
+      const goalPrefix = octx.currentGoalId ? octx.currentGoalId.slice(0, 8) : '';
+      const scopeId = (id: string) => goalPrefix && !id.startsWith(goalPrefix) ? `${goalPrefix}-${id}` : id;
+
       for (const task of input.tasks) {
         const createFn = taskStore.create || taskStore.addTask;
         if (!createFn) {
           return `Error: TaskStore does not support task creation. Internal error.`;
         }
         const taskObj = {
-          id: task.id,
+          id: scopeId(task.id),
           description: `[Research] ${task.title}: ${task.description}`,
           assigned_role: task.assignedRole.toLowerCase(),
           status: "pending",
           priority: 1, // Research tasks are high priority — they block planning
+          goalId: octx.currentGoalId || undefined,
           prerequisites: new Map<string, boolean>(),
           dependants: [],
           context: {

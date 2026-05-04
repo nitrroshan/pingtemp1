@@ -43,8 +43,9 @@ export class CrdtGoalStore {
   async saveGoal(goalId: string, title: string, userMessage: string): Promise<void> {
     try {
       const doc = await this.space.openDoc("goal");
-      const map = doc.getMap("goal");
+      const map = doc.getMap("meta");
 
+      map.set("type", "goal");
       map.set("id", goalId);
       map.set("title", title);
       map.set("teamId", this.teamId);
@@ -86,7 +87,7 @@ export class CrdtGoalStore {
   async updateStatus(status: GoalStatus, planId?: string): Promise<void> {
     try {
       const doc = await this.space.openDoc("goal");
-      const map = doc.getMap("goal");
+      const map = doc.getMap("meta");
       map.set("status", status);
       if (planId) {
         map.set("planId", planId);
@@ -109,7 +110,7 @@ export class CrdtGoalStore {
       if (!hasGoal) return null;
 
       const doc = await this.space.openDoc("goal");
-      const map = doc.getMap("goal");
+      const map = doc.getMap("meta");
       const data = map.toJSON();
 
       if (!data.id) return null;
@@ -130,7 +131,7 @@ export class CrdtGoalStore {
         const hasGoal = await space.hasDoc("goal");
         if (!hasGoal) continue;
         const doc = await space.openDoc("goal");
-        const map = doc.getMap("goal");
+        const map = doc.getMap("meta");
         const data = map.toJSON();
         if (data.id) goals.push(data as GoalData);
       } catch {

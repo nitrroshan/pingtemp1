@@ -21,6 +21,11 @@ export function createGetContextTool(context: OrchestratorContext) {
 
         let filtered = manifests;
 
+        // Filter by current goal — planner only sees its own goal's outputs
+        if (context.currentGoalId) {
+          filtered = filtered.filter((m) => m.goalId === context.currentGoalId);
+        }
+
         // Filter by taskId
         if (taskId) {
           filtered = filtered.filter((m) => m.taskId === taskId);

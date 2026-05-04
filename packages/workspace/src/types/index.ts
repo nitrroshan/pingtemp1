@@ -262,6 +262,8 @@ export interface WorkspaceInitOptions {
   localPath?: string;
   /** Sparse checkout — only clone these directories (saves time/space for large repos) */
   sparse?: string[];
+  /** Auth token for private repo access (injected into HTTPS clone URL as oauth2:TOKEN@) */
+  authToken?: string;
 }
 
 /**

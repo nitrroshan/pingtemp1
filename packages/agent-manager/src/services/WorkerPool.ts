@@ -28,11 +28,11 @@ dotenv.config();
 const logger = rootLogger.child({ module: "WorkerPool" });
 
 export interface WorkerCallbacks {
-  onStream?: (data: { taskId: string; agentId: string; part: any }) => void;
+  onStream?: (data: { taskId: string; agentId: string; part: any; goalId?: string }) => void;
   onEvent?: (data: { taskId: string; event: any }) => void;
   onDone?: (data: { taskId: string; role: string; output: any }) => void;
   onError?: (data: { taskId: string; error: string }) => void;
-  onAgentComplete?: (data: { taskId: string; role: string; summary: string; deliverables: string[]; nextSteps: string[]; timestamp: number }) => void;
+  onAgentComplete?: (data: { taskId: string; role: string; summary: string; deliverables: string[]; nextSteps: string[]; producedDocs?: Array<{ uri: string; name: string; description?: string }>; decisions?: Array<{ decision: string; rationale?: string }>; timestamp: number }) => void;
   onStatusUpdate?: (data: { taskId: string; role: string; status: string; summary: string; progress?: number; timestamp: number }) => void;
   /** Fired when an agent creates a task via request_task tool */
   onTaskCreated?: (data: { taskId: string; createdBy: string; targetRole: string; relationship: string; parentTaskId: string }) => void;
@@ -40,6 +40,8 @@ export interface WorkerCallbacks {
   onBounce?: (data: { taskId: string; role: string; reason: string; suggestedRole?: string; timestamp: number }) => void;
   /** Fired when an agent mentions roles in a discussion — triggers priority collab worker spawn */
   onMentionedRoles?: (data: { roles: string[]; sourceTaskId: string; docName: string; sourceRole?: string; postContent?: string }) => void;
+  /** Channel B — coarse-grained task-level updates for ChatAgent + Frontend sidebar */
+  onTaskUpdate?: (update: import("../types/TaskUpdate.js").TaskUpdate) => void;
 }
 
 /**
@@ -79,9 +81,24 @@ export class WorkerPool {
   private taskStore: { getAll(): any[]; get(id: string): any; create(t: any): void; remove(id: string): boolean; updateStatus(id: string, s: string): void } | null = null;
   private dagResolver: { rebuild(source: any): void; validateDependencies?(taskId: string, deps: string[]): string | null } | null = null;
   private teamRoles: string[] = [];
-  private crdtTaskSync: { persistTask(t: any): Promise<void>; syncStatus(id: string, s: string, o?: any): Promise<void>; updateIndex(tasks: any[]): Promise<void> } | null = null;
-  private currentPlanId: string | null = null;
+  private crdtTaskSync: {
+    persistTask(t: any): Promise<void>;
+    syncStatus(id: string, s: string, o?: any): Promise<void>;
+    updateIndex(tasks: any[]): Promise<void>;
+    updateAgentStatus(role: string, status: 'busy' | 'idle', taskId?: string): Promise<void>;
+    initCollabDocs?(taskId: string, config: any): Promise<void>;
+    readonly space: any;
+  } | null = null;
   private currentGoalId: string | null = null;
+  private taskPersistence: any = null;
+
+  /** Resolver for auth token (e.g., GitHub OAuth) — set by AgentManager from user session */
+  private authTokenResolver: (() => Promise<string | null>) | null = null;
+
+  /** Set the auth token resolver (called by AgentManager with user session info) */
+  setAuthTokenResolver(resolver: () => Promise<string | null>): void {
+    this.authTokenResolver = resolver;
+  }
 
   // ===========================================================================
   // Definition Management
@@ -122,15 +139,15 @@ export class WorkerPool {
     dagResolver: any;
     teamRoles: string[];
     crdtTaskSync?: any;
-    planId?: string | null;
     goalId?: string | null;
+    taskPersistence?: any;
   }): void {
     this.taskStore = services.taskStore;
     this.dagResolver = services.dagResolver;
     this.teamRoles = services.teamRoles;
     this.crdtTaskSync = services.crdtTaskSync || null;
-    this.currentPlanId = services.planId || null;
     this.currentGoalId = services.goalId || null;
+    this.taskPersistence = services.taskPersistence || null;
   }
 
   /**
@@ -210,18 +227,31 @@ export class WorkerPool {
     let taskId: string;
     let roleKey: string;
     let finalMessage: string;
+    let taskGoalId: string | undefined;
+    let taskRepoUrl: string | undefined;
+    let taskRepoBranch: string | undefined;
 
     if (typeof taskIdOrTask === "string") {
       // Chat mode: simple params
       taskId = taskIdOrTask;
       roleKey = role!.toLowerCase();
       finalMessage = message!;
+      // Try to get goalId from TaskStore
+      const storedTask = this.taskStore?.get(taskId);
+      taskGoalId = storedTask?.goalId;
+      taskRepoUrl = storedTask?.context?.repoUrl;
+      taskRepoBranch = storedTask?.context?.repoBranch;
     } else {
       // Queue mode: TaskWithContext
       const task = taskIdOrTask;
       taskId = task.id;
       roleKey = task.assigned_role.toLowerCase();
       finalMessage = this.buildMessageWithContext(task);
+      // Read from TaskStore (authoritative source — has full context including repoUrl)
+      const storedTask = this.taskStore?.get(task.id);
+      taskGoalId = storedTask?.goalId || (task as any).goalId;
+      taskRepoUrl = storedTask?.context?.repoUrl;
+      taskRepoBranch = storedTask?.context?.repoBranch;
       logger.debug(
         `Queue mode: ${taskId} with ${task.context.previousOutputs.length} previous outputs`,
       );
@@ -258,6 +288,11 @@ export class WorkerPool {
       await agent.initialize();
 
       // Assemble task-lifecycle tools (report_status, complete_task, request_task, bounce_task)
+      // Resolve goalId from the task itself, not the global scalar
+      // Per-task identity — read from TaskStore, not pool-level scalars
+      const perTaskData = this.taskStore?.get(taskId);
+      const taskPlanId = perTaskData?.planId || perTaskData?.context?.planId || null;
+
       const { tools: lifecycleTools } = assembleLifecycleTools({
         taskId,
         roleKey,
@@ -267,18 +302,30 @@ export class WorkerPool {
           dagResolver: this.dagResolver,
           teamRoles: this.teamRoles || [],
           crdtTaskSync: this.crdtTaskSync,
-          planId: this.currentPlanId || null,
-          goalId: this.currentGoalId || null,
+          planId: taskPlanId || null,
+          goalId: taskGoalId || null,
+          taskPersistence: this.taskPersistence,
+          teamId: this.teamId || undefined,
         },
       });
       const additionalTools: any[] = [...lifecycleTools];
 
       // ── Plugin-based tool assembly ──────────────────────────────────────
       if (this.pluginRegistry) {
+        // Resolve auth token for workspace push (e.g., GitHub OAuth)
+        let authToken: string | undefined;
+        if (taskRepoUrl && this.authTokenResolver) {
+          try { authToken = (await this.authTokenResolver()) ?? undefined; } catch { /* best effort */ }
+        }
+
         const toolContext: ToolContext = {
           consumer: "worker",
           role: roleKey,
           taskId,
+          goalId: taskGoalId || undefined,
+          repoUrl: taskRepoUrl,
+          repoBranch: taskRepoBranch,
+          authToken,
         };
 
         // Prepare plugins (e.g. create workspace branch) before resolving tools
@@ -358,10 +405,23 @@ export class WorkerPool {
     }
 
     try {
+      // CRDT: mark agent as busy
+      if (this.crdtTaskSync) {
+        this.crdtTaskSync.updateAgentStatus(roleKey, 'busy', taskId).catch(() => {});
+      }
+
       const input: AgentInput = {
         message: finalMessage,
         threadId: taskId, // Use taskId as thread for conversation continuity
       };
+
+      // Channel B: emit "started"
+      const role = this.workerRoles.get(taskId) || roleKey;
+      this.callbacks.onTaskUpdate?.({ type: "started", taskId, role, ts: Date.now() });
+
+      let stepCount = 0;
+      let totalTokens = 0;
+      const PROGRESS_INTERVAL = 3; // Emit progress every N steps
 
       for await (const event of agent.execute(input)) {
         // Forward stream_part events directly on onStream callback
@@ -370,7 +430,38 @@ export class WorkerPool {
             taskId,
             agentId: roleKey,
             part: event.part,
+            goalId: taskGoalId,
           });
+
+          // Channel B: synthesize from stream_part subtypes
+          const part = event.part;
+          if (part?.type === "finish-step") {
+            stepCount++;
+            totalTokens += part.usage?.totalTokens || 0;
+            // Emit progress every N steps
+            if (stepCount % PROGRESS_INTERVAL === 0) {
+              this.callbacks.onTaskUpdate?.({
+                type: "progress", taskId, role,
+                note: `Step ${stepCount}`,
+                stepIdx: stepCount,
+                tokensSoFar: totalTokens,
+                ts: Date.now(),
+              });
+            }
+          } else if (part?.type === "tool-output-available") {
+            // Check if this is a milestone tool
+            const toolName = part.toolName || "";
+            const { MILESTONE_TOOLS } = await import("../types/TaskUpdate.js");
+            if (MILESTONE_TOOLS.has(toolName)) {
+              this.callbacks.onTaskUpdate?.({
+                type: "tool_milestone", taskId, role,
+                tool: toolName,
+                summary: typeof part.output === "string" ? part.output.slice(0, 200) : JSON.stringify(part.output).slice(0, 200),
+                ts: Date.now(),
+              });
+            }
+          }
+
           continue; // Don't emit stream_parts on onEvent (legacy channel)
         }
 
@@ -384,24 +475,59 @@ export class WorkerPool {
           const role = this.workerRoles.get(taskId) || "worker";
           this.callbacks.onDone?.({ taskId, role, output });
 
-
+          // Channel B: emit "completed"
+          this.callbacks.onTaskUpdate?.({
+            type: "completed", taskId, role,
+            summary: typeof output === "string" ? output.slice(0, 500) : "Task completed",
+            ts: Date.now(),
+          });
         }
 
         if (event.type === "error") {
           this.callbacks.onError?.({ taskId, error: event.error });
+
+          // Channel B: emit "failed"
+          this.callbacks.onTaskUpdate?.({
+            type: "failed", taskId, role,
+            error: event.error || "Unknown error",
+            ts: Date.now(),
+          });
         }
       }
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
       this.callbacks.onError?.({ taskId, error: msg });
 
+      // Channel B: emit "failed" on exception
+      const role = this.workerRoles.get(taskId) || roleKey;
+      this.callbacks.onTaskUpdate?.({
+        type: "failed", taskId, role,
+        error: msg,
+        ts: Date.now(),
+      });
+
       throw error;
+    } finally {
+      // CRDT: mark agent as idle
+      if (this.crdtTaskSync) {
+        this.crdtTaskSync.updateAgentStatus(roleKey, 'idle', taskId).catch(() => {});
+      }
     }
 
     return output;
   }
 
   // ===========================================================================
+  /**
+   * Get the full ModelMessage[] from a worker agent (for context persistence).
+   * Returns null if worker not found or already disposed.
+   */
+  getAgentMessages(taskId: string): any[] | null {
+    const agent = this.workers.get(taskId);
+    if (!agent) return null;
+    return agent.getMessages();
+  }
+
   // Cleanup
   // ===========================================================================
 
@@ -439,6 +565,23 @@ export class WorkerPool {
     this.taskStore = null;
     this.dagResolver = null;
     this.crdtTaskSync = null;
+  }
+
+  /**
+   * Dispose workers for a specific goal's tasks only (Phase 4).
+   * Other goals' workers are preserved.
+   */
+  async disposeByGoal(goalId: string): Promise<void> {
+    const toDispose: string[] = [];
+    for (const [taskId, worker] of this.workers) {
+      // Check if this worker's task belongs to the given goal
+      const task = this.taskStore?.get(taskId);
+      if (task?.goalId === goalId) {
+        toDispose.push(taskId);
+      }
+    }
+    await Promise.all(toDispose.map((id) => this.dispose(id)));
+    logger.info(`Disposed ${toDispose.length} workers for goal ${goalId}`);
   }
 
   // ===========================================================================
@@ -492,30 +635,40 @@ export class WorkerPool {
   // ===========================================================================
 
   /**
-   * Build message with context from dependency outputs and orchestrator conversation
-   * Injects previous task outputs and orchestrator context into the message for the agent
+   * Build message with DocumentRef-based context from dependencies.
+   * Agents read actual content via collab read / workspace_read_file — no raw summaries injected.
    */
   private buildMessageWithContext(task: TaskWithContext): string {
     let msg = task.description;
+    const ctx = task.context as any;
 
-    if (task.context.previousOutputs.length > 0) {
-      msg += "\n\n## Context from previous tasks:\n";
-      for (const prev of task.context.previousOutputs) {
-        msg += `\n### Task ${prev.taskId}:\n`;
-        msg += JSON.stringify(prev.output, null, 2) + "\n";
+    // Input Documents (DocumentRefs from upstream producedDocs)
+    const inputDocs = Array.isArray(ctx.inputDocs) ? ctx.inputDocs : [];
+    if (inputDocs.length > 0) {
+      msg += `\n\n## Input Documents`;
+      msg += `\nThese documents were produced by upstream tasks. Read them for context:`;
+      for (const doc of inputDocs) {
+        const scheme = doc.uri?.startsWith("crdt:") ? "collab read" : doc.uri?.startsWith("workspace:") ? "workspace_read_file" : "fetch";
+        const path = doc.uri?.replace(/^(crdt:|workspace:)/, "") || doc.uri;
+        msg += `\n- **${doc.name}**: \`${scheme} ${path}\`${doc.description ? ` — ${doc.description}` : ""}`;
       }
     }
 
+    // Upstream Decisions
+    const decisions = Array.isArray(ctx.upstreamDecisions) ? ctx.upstreamDecisions : [];
+    if (decisions.length > 0) {
+      msg += `\n\n## Upstream Decisions`;
+      for (const d of decisions) {
+        msg += `\n- ${d}`;
+      }
+    }
+
+    // Workspace artifacts (file paths)
     if (task.context.artifacts.length > 0) {
-      msg += `\n\n## Deliverables from Upstream Tasks`;
-      msg += `\nThese are references to work produced by completed tasks you depend on.`;
-      msg += `\n\n**How to access:**`;
-      msg += `\n- **File paths** (e.g. \`src/schema.ts\`): Use \`workspace_read_file\` — files are already merged into your workspace`;
-      msg += `\n- **CRDT docs** (e.g. \`task-1/task\`): Use \`collab read\` to retrieve structured data`;
-      msg += `\n- **Directories**: Use \`workspace_list_files\` to explore and discover related files`;
-      msg += `\n- **Search**: Use \`workspace_grep\` to search file contents, \`workspace_glob\` to find files by pattern`;
-      msg += `\n\nAlways read deliverables before starting work — don't rely solely on summaries.`;
-      msg += `\n\n${task.context.artifacts.join("\n")}`;
+      msg += `\n\n## Workspace Files`;
+      msg += `\nFiles from upstream tasks (already merged to your workspace):`;
+      msg += `\n${task.context.artifacts.join("\n")}`;
+      msg += `\nUse \`workspace_list_files\` to see all available files.`;
     }
 
     return msg;

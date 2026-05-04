@@ -1,7 +1,7 @@
 # Ping — Master Feature List
 
-**Last Updated:** April 22, 2026  
-**Total Features:** 35 (18 existing + 17 new)  
+**Last Updated:** April 26, 2026  
+**Total Features:** 41 (18 existing + 23 new)  
 **Master Architecture:** [MASTER-ARCHITECTURE.md](MASTER-ARCHITECTURE.md) — unified reference with diagrams for how all features connect
 
 ---
@@ -33,9 +33,10 @@
 | A6 | **Task Orchestration Redesign** | 🆕 New | [task-orchestration](task-orchestration/) | Research & redesign task lifecycle: DAG-based deps, parallel execution, retry, replan, context passing. |
 | A7 | **External Agent Invocation** | 🆕 New | [external-agent-invocation](external-agent-invocation/) | Worker agents can call external agents (via MCP, HTTP, A2A protocol). Research best interop method. |
 | A8 | **Git-Based Task Context** | 🆕 New | [git-task-context](git-task-context/) | Preserve agent work as git commits. Branch-per-task. New sessions can pull branches. Branches persist until project completes. |
-| A9 | **Approval System** | 🆕 New | [approval-system](approval-system/) | Structured approval for plans, tools, artifacts. Leverages Mastra's `requireApproval` + `suspend()`. Depends on A1. Auto-approve rules per team. Audit trail. |
+| A9 | **Approval System** | 🆕 New | [approval-system](approval-system/) | Structured approval for plans, tools, artifacts. Leverages Mastra's `requireApproval` + `suspend()`. Depends on A1. Auto-approve rules per team. Audit trail. **Artifact trust model:** per-file provenance tags (🤖 Agent / 👤 Reviewed / 🔒 Approved) from ChatAgent review, child teams, external agents, auto-rules. Smart accept actions in UI. |
 | A10 | **Persistent Agents & Three-Layer Hierarchy** | 🆕 New | [persistent-agents](persistent-agents/) | Three-layer agent hierarchy: persistent Planner (team leader) → persistent Chat Agents (role employees) → transient Task Sub-Agents (workers). Always-on chat, parallel plans, AI SDK sub-agents. Extends A5. |
-| A11 | **Parallel Plans** | 🔬 Research | [parallel-plans](parallel-plans/) | Multiple plans running concurrently within a team. GoalContext abstraction, per-plan workspace isolation, parallel management with serialized or parallel execution. Depends on A8, A10. |
+| A11 | **Parallel Plans** | ✅ Approved (3 versions) | [parallel-plans](parallel-plans/) | v1.0: GoalContext + serial queue (Phase 4). v2.0: workspace isolation + per-task clone (Phase 5). v3.0: full parallel execution (Phase 6). Depends on Chat Agent Layer, A8. See [cross-feature roadmap](parallel-plans/feature_architecture.md#cross-feature-dependency-map). |
+| A12 | **GoalManager Extraction** | 📋 Planned | [goal-manager](goal-manager/) | Extract goal lifecycle from OrchestratorService into GoalManager class. GoalContext Map, per-goal planner/ChatAgent lifecycle, execution mutex, CRDT proxy per goal, restart recovery. Prerequisite for A11 Parallel Plans v1.0. SRP refactor — OrchestratorService keeps dispatch/comms (~900 LOC), GoalManager owns lifecycle (~400 LOC). |
 
 ### B. Platform Architecture (Packaging & Deployment)
 
@@ -54,6 +55,7 @@
 | C1 | **LLM Response Grading** | 📋 Planned | [llm-response-grading](llm-response-grading/) | Mastra evals: LLM-as-judge, rule-based scoring, user feedback. Per-agent quality monitoring. |
 | C2 | **Skills System** | 🔬 Research | [skills-system](skills-system/) | Portable agent capabilities: SKILL.md definitions, progressive disclosure, role templates. |
 | C3 | **Skills Integration** | 🆕 New | [skills-integration](skills-integration/) | Wire skills into agent runtime: skill discovery, loading, execution. Skills as MCP tools or AI SDK tools. |
+| C4 | **Post-Task Learning Extraction** | ⚠️ Needs Rethinking | [post-task-learning](post-task-learning/) | **DO NOT IMPLEMENT** — architecture not reviewed. Concept: ChatAgent reviews completed/failed task outputs, extracts learnings, routes to L2 CRDT. Needs rethinking on: review model (per-task vs per-goal), what triggers extraction, cost/value tradeoff. Depends on Chat Agent Layer (Phase 1), A8 Git Task Context (Phase 3). |
 
 ### D. Memory & Search
 
@@ -82,6 +84,9 @@
 | F2 | **MCP Server Integration** | 🆕 New | [mcp-integration](mcp-integration/) | Integrate at least one real MCP server (Docker MCP, filesystem MCP, or Brave Search). Prove the pipeline works end-to-end. |
 | F3 | **OpenClaw Integration** | 🔬 Research | [openclaw-integration](openclaw-integration/) | External agent via OpenClaw Gateway (WhatsApp, Telegram, Discord channels). |
 | F4 | **Plan Viewer** | 📋 Planned | [plan-viewer](plan-viewer/) | Full-screen plan management UI. Two-panel master-detail: plan list + task detail with List/Board views, agents bar, task slide-over. Route: `/plans`. |
+| F5 | **Frontend State Refactor (Zustand)** | 📋 Planned | [frontend-state-refactor](frontend-state-refactor/) | Migrate 4 custom hooks → 5 Zustand stores. Eliminate prop drilling (Sidebar 23→5 props). Fix concurrent stream corruption, task state duplication, stale-plan-on-team-switch. App.tsx 1099→350 lines. ~1474 lines deleted. |
+| F6 | **API Improvements** | 📋 Planned | [api-improvements](api-improvements/) | Fix 5 backend API gaps: batch team+agents endpoint, split monolithic restore into goal-scoped endpoints, persist streamParts on messages, implement cancelTask/modifyTask, include agentId in stream events. |
+| F7 | **Goal-Scoped Sessions** | 📋 Planned | [goal-scoped-sessions](goal-scoped-sessions/) | Route Socket.IO events to goal rooms instead of team rooms. Per-goal sessionState. Enables parallel goals without stream bleed or state collision. ~95 lines. Prerequisite for A11 Parallel Plans v2.0+. |
 
 ### G. Research & Vision
 
@@ -90,6 +95,12 @@
 | G1 | **Evolving Agent** | 🔬 Research | [evolving-agent](evolving-agent/) | Agent architecture: goals, skills, tools, memory, swappable LLMs. |
 | G2 | **Agent Collaboration Docs** | 🔬 Research | [agent-collab-docs](agent-collab-docs/) | Dual-agent design (Task + Communication per worker). Validated by DPT-Agent paper. |
 | G3 | **Open-Source Research** | 🆕 New | [opensource-research](opensource-research/) | Evaluate OSS projects that simplify our stack: Mastra, AI SDK, E2B, Daytona, OpenHands, SWE-agent, Plandex, etc. |
+
+### H. Plugin Ecosystem
+
+| # | Feature | Status | Directory | Summary |
+|---|---------|--------|-----------|---------|
+| H1 | **Plugin Ecosystem** | 🆕 New | [plugin-ecosystem](plugin-ecosystem/) | `.ping-plugin/` format spec (agents, skills, planner, MCP, hooks, modes). Lazy team loading via AgentManagerRegistry. Per-task worker instantiation. Plugin planner (Option C). Offboard lifecycle. Runtime load API. |
 
 ---
 
@@ -107,7 +118,14 @@ A1 Mastra/AI SDK Migration ─────────────────�
 
 A3 Tools as MCP Servers ───────────────────────────────────────
  ├── F2 MCP Server Integration (prove pipeline)
- └── A7 External Agent Invocation (MCP interop)
+ ├── A7 External Agent Invocation (MCP interop)
+ └── H1 Plugin Ecosystem (plugin create/load/offload + ecosystem adapters)
+
+H1 Plugin Ecosystem ───────────────────────────────────────────
+ ├── depends on: A3 (IPlugin, PluginRegistry), team-registry (format, loader)
+ ├── correlates: A7 (McpBridgePlugin = ExternalAgent impl)
+ ├── correlates: A11 (templates = dehydrated plugins)
+ └── feeds: team-registry v2.0 (marketplace)
 
 A4 Worker Sandboxing ──────────────────────────────────────────
  ├── A8 Git-Based Task Context (sandboxed git ops)
@@ -122,11 +140,16 @@ D2 L2 Search & Indexing ──────────────────�
 
 E1 Orchestrator Agent + A5 Planner as Agent ───────────────────
  ├── A6 Task Orchestration Redesign (better task lifecycle)
- ├── A10 Persistent Agents (extends A5, needs 3B Event Refactor)
- └── A11 Parallel Plans (needs A8 workspace isolation + A10 persistent agents)
+ ├── Chat Agent Layer (A10 L2, no blockers — Phase 1 in parallel-plans roadmap)
+ │    ├── Conversation Persistence (Phase 2)
+ │    ├── A8 Git Task Context (Phase 3)
+ │    └── A11 Parallel Plans v1.0→v2.0→v3.0 (Phases 4-6)
+ └── A10 Persistent Agents (vision doc — implemented via Chat Agent Layer + Parallel Plans)
 ```
 
 ## Execution Phases
+
+> **Note:** Phases 0-3 (below) are the original roadmap. Phases 1-6 in the [Parallel Plans cross-feature roadmap](parallel-plans/feature_architecture.md#cross-feature-dependency-map) are the current active plan for new features.
 
 ### Phase 0 — Finish In-Progress (ongoing)
 > Complete stalled work. No new features.
@@ -136,48 +159,50 @@ E1 Orchestrator Agent + A5 Planner as Agent ────────────
 - B5 Bun Monorepo — finish Phase 4 cleanup
 - D1 Memory System — L2 collaboration stabilization
 
-### Phase 1 — Foundation (Weeks 1-4)
+### Phase 1 — Foundation (Weeks 1-4) ✅ Done
 > Swap the engine. Two parallel tracks.
 
 **Track A: AI SDK Migration**
-- **A1** Mastra/AI SDK Migration
-- **A2** Agentic Streaming
+- **A1** Mastra/AI SDK Migration ✅
+- **A2** Agentic Streaming ✅
 - **A3** Tools as MCP Servers (start defining)
 
 **Track B: Infrastructure (parallel)**
 - **D2** L2 Search & Indexing
 - **B3** Dev/Prod Environment Setup
-- **B4** Seed Data System
+- **B4** Seed Data System ✅
 
-### Phase 2 — Platform Shape (Weeks 4-8)
+### Phase 2 — Platform Shape (Weeks 4-8) ✅ Done
 > Package things properly. Prove e2e pipeline.
 
 - **B1** Team Package Extraction
 - **B2** CLI App Revamp (consumes AgentManager package)
-- **A5** Planner as Agent
+- **A5** Planner as Agent ✅
 - **F2** MCP Integration (one real MCP server end-to-end)
-- **C3** Skills Integration
+- **C3** Skills Integration ✅
 - **E5** Team Service + **E6** Teams Integration
 
-### Phase 3 — Hardening (Weeks 8-12)
+### Phase 3 — Hardening (Weeks 8-12) ✅ Done
 > Isolation, quality, context preservation.
 
 - **A4** Worker Sandboxing
 - **A8** Git-Based Task Context
 - **C1** LLM Response Grading
 - **D3** L2 as Deployed Service
-- **A6** Task Orchestration Redesign (research + implement)
+- **A6** Task Orchestration Redesign ✅
 - **A7** External Agent Invocation (research + prototype)
 
-### Phase 4 — Polish & Ecosystem (Weeks 12+)
-> Integration, research features, frontend.
+### Phase 4+ — Parallel Plans Roadmap (Active)
+> See [cross-feature roadmap](parallel-plans/feature_architecture.md#cross-feature-dependency-map) for the current phased plan.
 
-- **A11** Parallel Plans (GoalContext + workspace-per-plan)
-- **F1** Frontend Orchestrator Integration (complete Step 1.3)
-- **C2** Skills System (full design + community model)
-- **G3** Open-Source Research (ongoing)
-- **G1/G2** Vision features as capacity allows
-- **F3** OpenClaw Integration (if prioritized)
+| Phase | Feature | Effort | FF Flag |
+|-------|---------|--------|---------|
+| 1 | Chat Agent Layer (A10 L2) | 2-3 weeks | `ENABLE_CHAT_AGENTS` |
+| 2 | Conversation Persistence | 1 week | `ENABLE_CONV_PERSISTENCE` |
+| 3 | Git Task Context (A8) | 1-2 weeks | `GIT_MODEL=dual` |
+| 4 | **A11** Parallel Plans v1.0 | 2 weeks | `FF_PARALLEL_PLANS` |
+| 5 | **A11** Parallel Plans v2.0 | 2 weeks | `FF_WORKSPACE_ISOLATION` |
+| 6 | **A11** Parallel Plans v3.0 — Full Parallel | 2 weeks | `FF_PARALLEL_EXECUTION` |
 
 ---
 

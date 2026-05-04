@@ -59,7 +59,9 @@ export class RoleTaskQueue {
    * @param task - Task with context to queue
    */
   queueTask(task: TaskWithContext): void {
+    // Key by goalId:role for per-goal queue isolation
     const role = task.assigned_role.toLowerCase();
+    const queueKey = task.goalId ? `${task.goalId}:${role}` : role;
 
     // Validate
     if (this.tasks.has(task.id)) {
@@ -67,8 +69,8 @@ export class RoleTaskQueue {
     }
 
     // Ensure queue exists for role
-    if (!this.queues.has(role)) {
-      this.queues.set(role, new PriorityQueue<TaskWithContext>());
+    if (!this.queues.has(queueKey)) {
+      this.queues.set(queueKey, new PriorityQueue<TaskWithContext>());
     }
 
     // Update task status
@@ -77,7 +79,7 @@ export class RoleTaskQueue {
 
     // Add to structures
     this.tasks.set(task.id, task);
-    this.queues.get(role)!.push(task, task.priority);
+    this.queues.get(queueKey)!.push(task, task.priority);
 
     // Update metrics
     this.metrics.tasksQueued++;
@@ -90,9 +92,9 @@ export class RoleTaskQueue {
   }
 
   /**
-   * Poll and remove the highest priority task for a role
-   * @param role - Role to poll tasks for
-   * @returns Task or undefined if none available
+   * @deprecated Use goal-scoped task dispatch via DispatchManager instead.
+   * Poll and remove the highest priority task for a role.
+   * NOTE: With goal-keyed queues, this only finds role-only keyed tasks.
    */
   poll(role: string): TaskWithContext | undefined {
     const normalizedRole = role.toLowerCase();
@@ -113,9 +115,9 @@ export class RoleTaskQueue {
   }
 
   /**
-   * Peek at the highest priority task for a role without removing
-   * @param role - Role to peek tasks for
-   * @returns Task or undefined if none available
+   * @deprecated Use goal-scoped task dispatch via DispatchManager instead.
+   * Peek at the highest priority task for a role without removing.
+   * NOTE: With goal-keyed queues, this only finds role-only keyed tasks.
    */
   peek(role: string): TaskWithContext | undefined {
     const normalizedRole = role.toLowerCase();

@@ -12,7 +12,6 @@ import { z } from "zod";
 import { tool } from "@langchain/core/tools";
 import type { OrchestratorContext } from "../types.js";
 import type { DependencyResolver } from "../DependencyResolver.js";
-import { toGoalId } from "../../plugin/utils.js";
 import { PromptLoader } from "../PromptLoader.js";
 
 // ─── Schema ───────────────────────────────────────────────────────────────────
@@ -27,6 +26,13 @@ const TaskContextSchema = z.object({
 export const SubmitPlanSchema = z.object({
   planId: z.string().describe("Unique identifier for this plan"),
   goal: z.string().describe("The user's goal this plan addresses"),
+  repoUrl: z.string()
+    .refine(
+      url => /^https:\/\/(github\.com|gitlab\.com|bitbucket\.org|dev\.azure\.com)\//.test(url),
+      "Only HTTPS URLs from GitHub, GitLab, Bitbucket, or Azure DevOps are allowed",
+    )
+    .describe("Git repo URL (HTTPS). The workspace for all tasks in this plan. Use the repo URL provided in the goal context."),
+  repoBranch: z.string().default("main").describe("Base branch to clone from (default: main)"),
   tasks: z.array(z.object({
     id: z.string().describe("Unique task ID (e.g., task-1, task-2)"),
     title: z.string().describe("Short task title"),
@@ -77,13 +83,14 @@ export function createSubmitPlanTool(ctx: SubmitPlanContext) {
           return `Error: Invalid plan DAG — ${dagError}. Please fix dependencies and resubmit.`;
         }
 
-        // Store plan as pending, then auto-approve to create tasks immediately.
-        // In planner mode, the user has already been consulted via conversation.
-        // No separate approval step needed.
-        octx.setPendingPlan(plan as any);
+        // Store plan as pending on the correct goal context.
+        // goalId is always set — planner was created with it via createPlanner(goalId)
+        const goalId = octx.currentGoalId;
+        if (!goalId) {
+          return "Error: No goalId set — this is a bug. The planner should always have a goalId.";
+        }
 
-        // Derive goalId
-        const goalId = toGoalId(plan.goal || plan.planId);
+        octx.setPendingPlan(plan as any, goalId);
 
         // Save plan
         if (octx.planStore) {
@@ -94,14 +101,14 @@ export function createSubmitPlanTool(ctx: SubmitPlanContext) {
         octx.callbacks.onPlanProposed?.({
           plan,
           teamId: octx.teamId,
+          goalId,
           timestamp: new Date().toISOString(),
         });
 
-        // Auto-approve: the planner has already discussed the plan with the user.
-        // This creates tasks in TaskStore and starts execution.
-        octx.setState("executing");
+        // Set to awaiting_approval — user must review and approve
+        octx.setState("awaiting_approval");
 
-        return `Plan submitted and approved with ${plan.tasks.length} task(s). Tasks are now being dispatched to workers.`;
+        return `Plan submitted with ${plan.tasks.length} task(s). Awaiting user approval. The user will review your plan document and approve or request changes.`;
       } catch (error) {
         const errorMessage = error instanceof Error ? error.message : String(error);
         return `Error submitting plan: ${errorMessage}`;

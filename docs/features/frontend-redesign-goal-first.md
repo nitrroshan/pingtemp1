@@ -89,7 +89,7 @@ Researched 7 leading products to validate design decisions and find gaps.
 |---|---|---|---|---|
 | 1 | **No elapsed time per task** | Codex shows time; Cursor shows "worked for 14m" | Add elapsed time to sidebar task rows (computed from Channel B `started` → `completed` timestamps) | Trivial |
 | 2 | **No mode indicator on agents** | Cursor's autonomy slider visible in UI | Show mode icon next to agent in sidebar: 🟢 auto, 🟡 review, ⚪ manual. Click to cycle. | Trivial |
-| 3 | **No files-changed summary** | Codex shows inline diffs; Devin shows PR diffs | On task completion, show compact "N files changed" in task detail Overview tab | Small |
+| 3 | **No files-changed summary** | Codex shows inline diffs; Devin shows PR diffs | `▶ Changes` collapsible at bottom of task Overview — expands to show file list with per-file Diff/File toggle. Syntax highlighted, line numbers, copy button. API: `GET /tasks/:id/changes`. Phase 15. | Medium |
 | 4 | **Channel B events as chat bubbles** | Linear uses compact timeline entries, not full messages | Render Channel B `TaskUpdate` events as **timeline entries** (icon + one-liner + timestamp) not chat bubbles. Saves vertical space. | Small |
 | 5 | **No task-level action buttons** | Codex: "review / request changes / open PR" per task | Add action buttons in task detail panel on completion: Review, Retry, Pause | Small |
 | 6 | **No progress indicator on task row** | Codex shows spinner + step count | Add thin progress bar or percentage on sidebar task row (from Channel B `progress.pct`) | Trivial |
@@ -334,13 +334,11 @@ When user clicks a task in the sidebar, it opens in the **Detail Panel** (right 
 │        │                             │ Blocks:      │
 │        │                             │  T-3, T-4    │
 │        │                             │              │
-│        │                             │ Files: 3     │
-│        │                             │  src/auth.ts │
-│        │                             │  src/db.ts   │
-│        │                             │  tests/...   │
-│        │                             │              │
 │        │                             │ [Review]     │
 │        │                             │ [Retry]      │
+│        │                             │──────────────│
+│        │                             │▶ Changes     │
+│        │                             │ (3 files +157)│
 └────────┴─────────────────────────────┴──────────────┘
 ```
 
@@ -348,8 +346,8 @@ When user clicks a task in the sidebar, it opens in the **Detail Panel** (right 
 - No new route — stays on `/teams/{id}/chat`
 - Same detail panel can show Events, Agents, or Task detail depending on what's selected
 - **Elapsed time** shown for in-progress and completed tasks
-- **Files changed** summary shown on completion (from worker's `complete_task` deliverables)
-- **Action buttons** at bottom: Review (opens diff), Retry (resets to ready), Pause (cancels worker, keeps status)
+- **`▶ Changes` collapsible** pinned at bottom — click expands to show file list with Diff/File toggle per file. Replaces panel content when expanded. `[← Back]` returns to overview.
+- **Action buttons** above the collapsible: Review (opens diff), Retry (resets to ready), Pause (cancels worker, keeps status)
 
 ### Step 4: Viewing a Discussion (Click discussion task)
 
@@ -1375,13 +1373,11 @@ Full-width main area. Hamburger → opens sidebar drawer.
 │ Depends on: (none)       │
 │ Blocks: T-3, T-4         │
 │                          │
-│ Files changed: 3         │
-│  src/auth/register.ts    │
-│  src/auth/login.ts       │
-│  tests/auth.test.ts      │
-│                          │
 │ [Review]  [Retry]        │
 │                          │
+│──────────────────────────│
+│ ▶ Changes                │
+│  (3 files, +157 lines)   │
 └──────────────────────────┘
 ```
 
@@ -1407,4 +1403,280 @@ Click a plan → expands its task list. This is why tasks are plan-scoped in the
 
 ## Implementation Order
 
-_(To be created as a separate `feature_implementation_planning.md` when ready to start.)_
+### Phase 0 — Chat Agent Frontend (Minimal, No Redesign)
+
+> **Status:** Ready to implement  
+> **Depends on:** Backend Chat Agent Steps 1+2 ✅ (already built)  
+> **Scope:** Make Chat Agents accessible in the CURRENT frontend with minimal changes. No sidebar redesign, no new routes, no new components.
+
+**Why Phase 0?** The full frontend redesign (Phases 1-4 below) is a multi-week effort. But the backend Chat Agent is ready NOW. Phase 0 wires the existing frontend to talk to Chat Agents with the smallest possible change set — so we can validate the feature before committing to the full redesign.
+
+#### Current State (Ground Truth from Code Audit)
+
+```
+User clicks agent in sidebar
+  → ChatArea.handleSubmit()
+  → if (!agent.parentId) → sendToManager("manager")     // orchestrator
+  → if (agent.parentId)  → sendToWorker(role, content)   // worker
+  
+Response arrives on socket "stream" channel
+  → useOrchestration routes by agentId
+  → findAgentByRole(agentId) → resolves to MongoDB agent ID
+  → processStreamPart(resolvedId, part)
+  → chatHistories[resolvedId] updated
+```
+
+**Problem:** Clicking an agent always goes through `sendToWorker(role)` which routes to `handleWorkerMessage` on the backend — creating a transient worker, not using the persistent ChatAgent.
+
+#### Design: What Changes
+
+**Principle:** Reuse everything. No new components, no new routes, no sidebar changes. Just change the message routing.
+
+```
+BEFORE:                              AFTER (with FF_ENABLE_CHAT_AGENTS):
+────────                             ─────────────────────────────────────
+Click agent → sendToWorker(role)     Click agent → sendToChatAgent(role)
+Backend: handleWorkerMessage()       Backend: handleChatAgentMessage()
+  → spawns transient AiSdkAgent        → uses persistent ChatAgent
+  → fresh context each time             → persistent conversation
+  → dies after response                  → stays alive
+```
+
+**Visual change: NONE.** The UI looks identical. The user clicks an agent, types a message, sees a streamed response. The only difference is the response comes from a persistent ChatAgent with task knowledge instead of a transient worker.
+
+#### File Changes (5 files, ~40 lines total)
+
+**1. `AgentServiceV2.ts` — add `sendToChatAgent()` method**
+
+```typescript
+// NEW method — sends to persistent ChatAgent instead of transient worker
+sendToChatAgent(role: string, content: string): void {
+  if (!this.isReady()) throw new Error("Not connected");
+  this.socket!.emit("message", {
+    teamId: this.teamId,
+    agentId: `chat-${role}`,          // ← "chat-" prefix routes to ChatAgent
+    sessionId: this.sessionId,
+    content,
+  });
+}
+```
+
+**2. `ChatArea.tsx` — route sub-agent messages through ChatAgent**
+
+```typescript
+// BEFORE (line ~153):
+if (isOrchestrator) {
+  agentServiceV2.sendToManager(userMsg.content);
+} else {
+  agentServiceV2.sendToWorker(agent.role.toLowerCase(), userMsg.content, activeTask?.id);
+}
+
+// AFTER:
+if (isOrchestrator) {
+  agentServiceV2.sendToManager(userMsg.content);
+} else if (FEATURES.chatAgentChat) {
+  agentServiceV2.sendToChatAgent(agent.role.toLowerCase(), userMsg.content);
+} else {
+  agentServiceV2.sendToWorker(agent.role.toLowerCase(), userMsg.content, activeTask?.id);
+}
+```
+
+**3. `useOrchestration.ts` — handle `chat-` prefixed agentId in stream responses**
+
+```typescript
+// In onStream callback, add handling for chat-* agentId:
+if (streamAgentId.startsWith("chat-")) {
+  // ChatAgent response — map back to the role's MongoDB agent ID
+  const role = streamAgentId.replace("chat-", "");
+  const resolved = findAgentByRole(role, teamIdRef.current);
+  if (resolved) {
+    onStreamPart(resolved.id, part);
+    return;
+  }
+}
+// ... existing isOrchestrator / findAgentByRole logic continues
+```
+
+**4. `lib/features.ts` — NEW file, frontend feature flags**
+
+```typescript
+export const FEATURES = {
+  chatAgentChat: import.meta.env.VITE_ENABLE_CHAT_AGENT_CHAT === 'true',
+};
+```
+
+**5. `.env` or `.env.local` — enable the flag**
+
+```
+VITE_ENABLE_CHAT_AGENT_CHAT=true
+```
+
+#### What This Achieves
+
+| Before (worker path) | After (ChatAgent path) |
+|---|---|
+| "What tasks do you have?" → empty response (worker has no context) | "What tasks do you have?" → lists tasks with status (ChatAgent has `get_my_tasks` tool) |
+| Every message creates a new agent | Same agent persists across messages |
+| No memory of previous conversations | Multi-turn conversation maintained |
+| No task awareness | Full task awareness via read-only tools |
+
+#### What This Does NOT Do (Deferred to Full Redesign)
+
+- No mode indicators (🟢/🟡/⚪) in sidebar — Phase 1
+- No `ask_user` inline chips — Phase 2
+- No review queue — Phase 3
+- No sidebar redesign — Phase 1
+
+#### Click Task → Show Worker Stream (Phase 0 Addition)
+
+Tasks are already rendered in the sidebar via `PlanTaskList`. Clicking a task currently opens the DetailPanel. We add: **clicking an in-progress task switches the main area to show that worker's live stream**.
+
+```
+TASKS (existing sidebar)           MAIN AREA (what changes)
+──────────────────────              ─────────────────────────
+✅ T-1  Set up schema  BE  1m      
+▶ T-2   API contract  BE  3m  ←── Click → shows worker's live stream for T-2
+⏳ T-3  Build auth     BE          
+⏳ T-4  Login form     FE         Click → shows task detail (description, deps)
+⏳ T-5  Write tests    QA         Click → shows task detail
+```
+
+| Task State | Main Area Shows | Source |
+|---|---|---|
+| `in_progress` | Worker's live stream (StreamMessage, ToolCard — same components) | `stream` socket events filtered by taskId |
+| `completed` | Worker's saved output (loaded from chat history) | Persisted messages from `IChatService` |
+| `pending` / `ready` | Task detail card (description, role, deps) | Static from task data |
+| `failed` | Error + last output | Persisted messages |
+
+**How it works:** The `stream` socket event already carries `agentId` (role) and `taskId`. When a task is selected in the sidebar, the main area filters `chatHistories` by `taskId` to show only that task's messages. For live streams, `processStreamPart` routes by `taskId` when `selectedTaskId` is set.
+
+#### Agent Row — Active Worker Count Badge
+
+Agent rows in the AGENTS section show an active worker count instead of expandable threads:
+
+```
+AGENTS
+🟢 backend  (2)    auto       ← "(2)" = 2 workers running. No expansion needed.
+🟡 frontend (1)    review     ← Click agent → ChatAgent R1 Chat
+⚪ qa              manual     ← No badge when idle
+```
+
+The count comes from `tasks.filter(t => t.assignedRole === role && t.status === 'in_progress').length`. No backend change needed.
+
+#### Click Agent → R1 Chat + Running Workers Panel
+
+Clicking an agent row opens the ChatAgent R1 Chat in the main area. When that role has active workers, a **collapsible running workers panel** appears at the top of the chat:
+
+```
+┌─────────────────────────────────────────────────────┐
+│ 🟢 backend-dev · 2 active workers            auto  │
+├─────────────────────────────────────────────────────┤
+│ RUNNING WORKERS                              [hide] │
+│ ┌─────────────────────────────────────────────────┐ │
+│ │ ▶ T-2  API contract      3m    ━━━━━━░░░  [→]  │ │
+│ │ ▶ T-3  Build auth         1m    ━━░░░░░░░  [→]  │ │
+│ └─────────────────────────────────────────────────┘ │
+├─────────────────────────────────────────────────────┤
+│                                                     │
+│  🤖 backend-dev                                     │
+│  I've completed 2 tasks so far. T-2 is in progress  │
+│  with 3 endpoints defined. T-3 just started.        │
+│                                                     │
+│  👤 You                              02:20 AM       │
+│  What auth library are you using?                   │
+│                                                     │
+│  🤖 backend-dev                                     │
+│  Passport.js with bcrypt for password hashing.      │
+│                                                     │
+│  ┌───────────────────────────────────────────────┐  │
+│  │ [Chat with backend-dev...]                [▶] │  │
+│  └───────────────────────────────────────────────┘  │
+└─────────────────────────────────────────────────────┘
+```
+
+**Running Workers Panel spec:**
+- **Position:** Pinned between header and chat messages. Scrollable chat below.
+- **Shows ONLY active (`in_progress`) workers.** Completed/failed/pending workers are NOT shown here — see them by clicking the task in the sidebar.
+- **Sort order:** Last started first (newest at top). Worker that just started appears at the top.
+- **Each row:** Status icon + task title + elapsed time + progress bar + `[→]` jump button
+- **`[→]` button:** Switches main area to that task's worker stream
+- **Three states:**
+
+  ```
+  State 1: Collapsed (32px)         State 2: Compact (≤3 rows)       State 3: Full view (overlay)
+  ──────────────────────             ──────────────────────            ──────────────────────
+  ▶ 7 active [expand]               ACTIVE (7)      [full] [hide]    ┌──────────────────────┐
+                                     ▶ T-9  Queue  0m ░░░░░  [→]     │ ACTIVE WORKERS (7)   │
+                                     ▶ T-8  Cache  4m ━━░░░  [→]     │                      │
+                                     ▶ T-7  API    0m ░░░░░  [→]     │ ▶ T-9  Queue  0m ░░ │
+                                     ╌╌ 4 more ╌╌╌╌╌╌╌╌╌╌╌          │ ▶ T-8  Cache  4m ━━ │
+                                                                      │ ▶ T-7  API    0m ░░ │
+                                                                      │ ▶ T-6  Docs   2m ━░ │
+                                                                      │ ▶ T-5  Tests  0m ░░ │
+                                                                      │ ▶ T-3  Auth   1m ━░ │
+                                                                      │ ▶ T-2  API    3m ━━ │
+                                                                      │           [close ✕]  │
+                                                                      └──────────────────────┘
+  ```
+
+  - **Collapsed → Compact:** Click "expand" or header
+  - **Compact → Full view:** Click `[full]` or "N more" — slide-down overlay, 50% viewport max, scrollable
+  - **Compact → Collapsed:** Click `[hide]`
+
+- **Visibility rules:**
+  - **0 active workers → panel not rendered at all** (no empty state, no "0 active" message)
+  - **1-3 active workers → compact by default** (no scroll needed)
+  - **4+ active workers → compact with "N more" hint**
+  - **Worker completes → row disappears from panel** (user sees it by clicking the task in sidebar)
+  - **New worker starts → row appears at top** (most recent first)
+
+- **Where to see non-active workers:**
+  - Click **completed task** in sidebar TASKS section → main area shows saved worker output
+  - Click **failed task** → shows error + last output
+  - Click **pending task** → shows task detail (no worker view — never started)
+
+- **Data source:** `tasks.filter(t => t.assignedRole === role && t.status === 'in_progress').sort((a, b) => (b.startedAt || 0) - (a.startedAt || 0))` — no backend change.
+- **User preference:** Last used state (collapsed/compact) persisted in localStorage.
+
+#### Sidebar Layout — Flat, No Nesting (Future-Ready for Goals)
+
+```
+┌────────────────────────────────┐
+│ GOALS (Phase 4+)               │  ← future: parallel plans v1.0
+│ 🟢 Build REST API       3/5   │
+│ ⏳ Setup CI Pipeline    0/4   │
+├────────────────────────────────┤
+│ TASKS (current plan)           │  ← existing PlanTaskList
+│ ✅ T-1  Schema      BE  1m    │  ← click → saved output
+│ ▶ T-2   API         BE  3m   │  ← click → live worker stream  
+│ ⏳ T-3  Auth        BE        │  ← click → task detail
+├────────────────────────────────┤
+│ AGENTS                         │
+│ 🟢 backend  (2)    auto       │  ← click → ChatAgent R1 Chat
+│ 🟡 frontend (1)    review     │
+│ ⚪ qa              manual     │
+│ Planner                        │  ← click → planner chat
+├────────────────────────────────┤
+│ ← Back to goals               │
+└────────────────────────────────┘
+```
+
+**Why flat, no nesting:**
+- Tasks stay in TASKS section (not duplicated under agents)
+- Agents show badge count only (not expandable worker threads)
+- GOALS section reserved for parallel plans (Phase 4+) — just a list, click to switch
+- 3 sections max: Goals + Tasks + Agents. Clean, no clutter.
+
+#### Rollback
+
+`VITE_ENABLE_CHAT_AGENT_CHAT=false` → messages route through `sendToWorker()` as before. Zero visual change.
+
+---
+
+### Full Redesign Phases (After Phase 0)
+
+| Phase | What | Effort | Depends On |
+|---|---|---|---|
+| **1** | Sidebar redesign (GOALS + TASKS + AGENTS flat sections, mode indicators, worker count badges) | 1 week | Phase 0 |
+| **2** | ask_user inline chips + toast notifications + Channel B timeline entries | 1 week | Phase 1 + Backend Step 3 |
+| **3** | Review queue (review mode UI, approve/reject actions) | 3 days | Phase 2 + Backend Step 4 |

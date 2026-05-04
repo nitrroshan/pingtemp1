@@ -29,6 +29,8 @@ export interface StoredTask {
   prerequisites: Record<string, boolean>;
   output?: any;
   context?: any;
+  goalId?: string;
+  planId?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -75,6 +77,8 @@ export class FileTaskStore implements ITaskStore {
         ? Object.fromEntries(task.prerequisites)
         : {},
       context: task.context,
+      goalId: task.goalId,
+      planId: task.planId,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     };

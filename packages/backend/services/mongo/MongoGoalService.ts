@@ -15,11 +15,14 @@ export class MongoGoalService implements IGoalService {
     const GoalModel = await this.getModel();
     const doc = await GoalModel.create({
       teamId: goal.teamId,
-      sessionId: goal.sessionId,
+      userId: goal.userId,
       goal: goal.goal,
+      goalId: goal.goalId ?? null,
       status: goal.status ?? "pending",
       planId: goal.planId ?? null,
       result: goal.result ?? null,
+      repoUrl: goal.repoUrl ?? null,
+      repoBranch: goal.repoBranch ?? null,
     });
     return this.toGoal(doc);
   }
@@ -36,7 +39,11 @@ export class MongoGoalService implements IGoalService {
 
   async updateGoal(goalId: string, updates: Partial<Goal>): Promise<Goal | null> {
     const GoalModel = await this.getModel();
-    const doc = await GoalModel.findByIdAndUpdate(goalId, updates, { new: true }).lean();
+    // Try goalId field first (v3.0 goal-scoped), fall back to _id (legacy)
+    let doc = await GoalModel.findOneAndUpdate({ goalId }, updates, { new: true }).lean();
+    if (!doc) {
+      doc = await GoalModel.findByIdAndUpdate(goalId, updates, { new: true }).lean();
+    }
     return doc ? this.toGoal(doc) : null;
   }
 
@@ -44,11 +51,14 @@ export class MongoGoalService implements IGoalService {
     return {
       id: doc._id.toString(),
       teamId: doc.teamId,
-      sessionId: doc.sessionId,
+      userId: doc.userId,
       goal: doc.goal,
+      goalId: doc.goalId ?? undefined,
       status: doc.status,
       planId: doc.planId ?? undefined,
       result: doc.result ?? undefined,
+      repoUrl: doc.repoUrl ?? undefined,
+      repoBranch: doc.repoBranch ?? undefined,
       createdAt: doc.createdAt?.toISOString?.() ?? new Date().toISOString(),
       updatedAt: doc.updatedAt?.toISOString?.() ?? new Date().toISOString(),
     };

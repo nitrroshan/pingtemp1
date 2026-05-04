@@ -58,21 +58,25 @@ graph TB
 | Layer | What | Lifecycle | Tools | Persistence |
 |-------|------|-----------|-------|-------------|
 | **L1: Planner** | Strategy, planning, monitoring | Persistent (one per team) | submit_plan, ask_user, research_domain, get_status, update_task, replan | Conversation in MongoDB |
-| **L2: Chat Agent** | Task tracking, domain chat, two modes | Persistent (one per role) | **Write mode:** like now — direct execution with all tools. **Read mode:** read-only workspace, needs workers for changes | Conversation in MongoDB + Memory (CRDT) |
-| **L3: Worker** | Execute task, write code/content | Transient (one per task) | Crush: view/write/edit/bash/LSP + Ping MCP. External: own tools + Ping MCP | Activity in Memory (CRDT) |
+| **L2: Chat Agent** | Task tracking, domain chat, two modes | Persistent (one per role) | **Write mode:** like now — direct execution with all tools. **Read mode:** read-only workspace, needs workers for changes | Conversation in MongoDB |
+| **L3: Worker** | Execute task, write code/content | Transient (one per task) | Crush: view/write/edit/bash/LSP + Ping MCP. External: own tools + Ping MCP | Outputs in workspace |
+
+> **Unified Agent Model:** All three layers use the same `AiSdkAgent` class. The only difference is configuration: `mode: "session"` (Planner, ChatAgent) vs `mode: "task"` (Worker). No separate facade classes needed.
 
 ### Storage Model
 
-**One git repo** (workspace) + **CRDT for persistent memory** + **ephemeral scratchpad per task**:
+**One git repo** (workspace) + **team-level CRDT for shared memory** + **ephemeral scratchpad per task**:
 
 | Storage | What | Technology | Lifetime | Who Accesses |
 |---------|------|-----------|----------|-------------|
 | **Workspace Repo** (git) | Shared deliverables — code, docs, artifacts | Git (branch per task) | Permanent (merged to main) | Chat Agent: read-only. Worker: read+write on task branch. |
-| **Agent Workspace** (clone) | Worker's working copy — where it writes code, creates files | Git clone of workspace repo on task branch | **Survives task** — commits are the deliverables, merged or kept for review | **Planner: can provision for research sub-agents.** Worker: read+write. |
-| **Scratchpad** | Rough thinking, temp data, throwaway notes | `.scratch/` in clone (gitignored) or in-memory map | **Dies with task** — not committed, not merged | **Planner: available for research tasks.** Worker: read+write. |
-| **Memory** (CRDT) | Per-role persistent knowledge — identity, preferences, learnings | CRDT (same infra as L2 collab) | Permanent | Chat Agent: read+write. Worker: read+write. |
-| **Team Knowledge** (CRDT) | Team-wide knowledge — expertise, patterns, lessons | CRDT (L2 collab) | Permanent | Chat Agent: read+write. Worker: read+write. |
-| **Conversations** (MongoDB) | Chat history per agent per user | MongoDB | Permanent | Planner: read+write. Chat Agent: read+write. |
+| **Agent Workspace** (clone) | Worker's working copy — where it writes code, creates files | Git clone of workspace repo on task branch | **Survives task** — commits are the deliverables, merged or kept for review | Worker: read+write. |
+| **Scratchpad** | Rough thinking, temp data, throwaway notes | `.scratch/` in clone (gitignored) or in-memory map | **Dies with task** — not committed, not merged | Worker: read+write. |
+| **Team Memory** (CRDT) | Team-wide shared knowledge — decisions, guidelines, patterns, learnings | CRDT (Y.js → MongoDB/file) | Permanent | Planner: read+write. Chat Agent: read+write. Worker: read-only (injected via ChatAgent). |
+| **Conversations** (MongoDB) | Chat history per agent per user | MongoDB/JSONL | Permanent | Planner: read+write. Chat Agent: read+write. |
+
+> **Why one Team Memory instead of per-role Memory + Team Knowledge?**
+> CRDT was designed for collaboration — making it per-agent creates unnecessary isolation. One shared CRDT doc per team means all agents see the same decisions, guidelines, and patterns. ChatAgents and Planner write; Workers read (context injected by their parent ChatAgent to prevent bloat).
 
 **Workspace clone vs Scratchpad — they're NOT the same:**
 ```
@@ -86,18 +90,24 @@ workspaces/{teamId}-clones/task-{taskId}/     ← Agent Workspace (git-tracked)
     └── draft-v1.ts                            ← throwaway prototype
 ```
 
-**Scratchpad → Memory promotion:** If an agent finds something worth keeping during a task, it promotes from scratchpad to Memory (CRDT). Everything left in scratchpad is discarded when the task ends.
+**Scratchpad → Team Memory promotion:** If a worker discovers something worth keeping during a task, it reports it via `complete_task` output. The ChatAgent (background, after task) reviews outputs and decides what to promote to Team Memory. Workers don't write to Team Memory directly — the ChatAgent is the quality filter.
 
 ```
 During task:
-  Worker scribbles: scratch("trying batch API...")        ← scratchpad (ephemeral)
-  Worker discovers: scratch("batch API is 10x faster!")    ← scratchpad (ephemeral)
-  Worker promotes:  memory_write("lessons", "batch-api")   ← Memory CRDT (persists)
-  Worker shares:    collab_write("lessons-api", ...)        ← Team Knowledge (persists)
+  Worker scribbles: scratch("trying batch API...")         ← scratchpad (ephemeral)
+  Worker discovers: scratch("batch API is 10x faster!")     ← scratchpad (ephemeral)
+  Worker completes: complete_task({ output: "Used batch API, 10x faster" })
 
-Task ends:
+After task (background, ChatAgent reviews):
+  ChatAgent reads output summary
+  ChatAgent decides: "batch API insight is team-valuable"
+  ChatAgent writes: team_memory_write("lessons", "batch-api-faster") ← Team Memory (persists)
+  ChatAgent discards: implementation details (no bloat)
+
+Task cleanup:
   Scratchpad discarded (clone deleted)
-  Memory CRDT persists → available for next task
+  Team Memory persists → available to all agents in all future tasks
+```
   Team Knowledge persists → available for all agents
 ```
 
@@ -682,19 +692,24 @@ graph TB
 
 ### Feature Dependency Table
 
-| Feature | Depends On | Feeds Into | Status |
-|---------|-----------|------------|--------|
-| **A5: Planner-as-Agent** | — | A6, A10 | ✅ Done |
+> **Note:** Phase numbers below align with the [Parallel Plans cross-feature roadmap](parallel-plans/feature_architecture.md#cross-feature-dependency-map).
+
+| Feature | Depends On | Feeds Into | Phase |
+|---------|-----------|------------|-------|
+| **A5: Planner-as-Agent** | — | A6 | ✅ Done |
 | **A6: Task Orchestration** | A5 | A8, WA | ✅ Done |
-| **A8: Git Task Context** | A6 | A3, A10 | Phase 4 |
-| **Conversation Persistence** | — | A10 | Phase 4 |
-| **A3: Tools as MCP** | A8 | A11 | Phase 5 |
-| **A11: Ping MCP Server** | A3 | A10, WA | Phase 5 |
-| **A10: Persistent Agents** | A11, Conv.Pers. | A7, B3, WA | Phase 6 |
-| **A7: External Agent Invocation** | A10 | B3, WA | Phase 6 |
-| **A4: Worker Sandboxing** | — | A10 (optional) | Phase 6 |
-| **B3: Team Stacking** | A7 | WA | Phase 6 |
-| **Worker Architecture** | A10, A7, A11 | — | Consolidation |
+| **Chat Agent Layer (A10 L2)** | A5, A6 | Conv.Pers., A8, A11 | Phase 1 |
+| **Conversation Persistence** | Chat Agent Layer | A10 | Phase 2 |
+| **A8: Git Task Context** | Chat Agent Layer, A6 | A11 | Phase 3 |
+| **A11: Parallel Plans v1.0** | Chat Agent Layer, A8 | v2.0 | Phase 4 |
+| **A11: Parallel Plans v2.0** | v1.0, A8 | v3.0 | Phase 5 |
+| **A11: Parallel Plans v3.0** | v2.0 | WA | Phase 6 |
+| **A3: Tools as MCP** | A8 | Ping MCP, A7 | Phase 5+ |
+| **Ping MCP Server** | A3 | A7, WA | Phase 5+ |
+| **A7: External Agent Invocation** | A3, A10 | B3, WA | Phase 6+ |
+| **A4: Worker Sandboxing** | — | A10 (optional) | Phase 6+ |
+| **B3: Team Stacking** | A7 | WA | Phase 6+ |
+| **Worker Architecture** | A10, A7 | — | Consolidation |
 
 ---
 
@@ -735,15 +750,18 @@ AgentManager (per team)
 
 ### Migration Path
 
+> **Note:** Revised April 2026 to align with [Parallel Plans roadmap](parallel-plans/feature_architecture.md#cross-feature-dependency-map). Chat Agent Layer moved to Phase 1 (no blockers, unlocks everything).
+
 | Phase | What Changes | Risk |
 |-------|-------------|------|
-| **Phase 4** | Add git workspace isolation + conversation persistence | Low — additive |
-| **Phase 5** | Extract tools into packages + deploy MCP servers | Medium — refactor |
-| **Phase 6a** | Add ChatAgentPool alongside WorkerPool | Low — additive |
-| **Phase 6b** | Route tasks through Chat Agents instead of direct dispatch | Medium — rewiring |
-| **Phase 6c** | Crush as default worker via MCP | Medium — new integration |
-| **Phase 6d** | External agent connections via same MCP | Low — same protocol |
-| **Phase 6e** | Planner becomes persistent + parallel goals | High — state model change |
+| **Phase 1** | Chat Agent Layer (persistent L2 per role, 5 incremental steps) | Low — additive, feature-gated |
+| **Phase 2** | Conversation persistence (per-agent JSONL/MongoDB storage) | Low — additive |
+| **Phase 3** | Git workspace isolation + memory tools split (A8) | Low — additive |
+| **Phase 4** | Parallel Plans v1.0 (GoalContext Map, serial execution queue) | Medium — OrchestratorService refactor |
+| **Phase 5** | Parallel Plans v2.0 (per-task clone, worktree optimization) | Low — additive |
+| **Phase 6** | Parallel Plans v3.0 (remove execution mutex → full parallel) | Medium — state model change |
+| **Phase 5+** | Extract tools into MCP packages + deploy Ping MCP server | Medium — refactor |
+| **Phase 6+** | External agent connections via MCP + team stacking | Medium — new integration |
 
 ---
 

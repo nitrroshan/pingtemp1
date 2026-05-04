@@ -22,6 +22,7 @@ See [feature_architecture.md](../frontend-redesign-goal-first.md) for the full d
 | **9** | **Task row enhancements** | ✅ Done | Low | Channel B (optional) |
 | **10** | **Task detail actions** | ✅ Done | Low | Retry/Pause endpoints |
 | **11** | **All Docs overlay** | 📋 Planned | Medium | Doc metadata API |
+| **15** | **Task Changes collapsible** | 📋 Planned | Medium | A8 Git Task Context |
 | **12** | **ChatAgent sidebar (R1 chat)** | 📋 Planned | Medium | `ENABLE_CHAT_AGENTS` |
 | **13** | **Channel B routing + task threads** | 📋 Planned | High | `ENABLE_TASK_THREADS` |
 | **14** | **ask_user + review queue** | 📋 Planned | High | `ENABLE_CHAT_AGENT_DISPATCH` |
@@ -80,7 +81,7 @@ See [feature_architecture.md](../frontend-redesign-goal-first.md) for the full d
 
 **Deferred to v2.0:**
 - **Docs sub-tab** — needs `GET /api/collab/:teamId/docs?taskId=` (doc metadata API) so the panel can list CRDT docs scoped to a task. Tracked under Phase 11.
-- **Output / files-changed** in Overview — needs Channel B `TaskUpdate.completed` payload.
+- **Output / files-changed** in Overview — tracked as Phase 15 (Task Changes collapsible). Needs A8 Git Task Context backend.
 
 ### Phase 9 — Task row enhancements (sidebar) ✅
 **Shipped:** `TaskTimeLabel`, `TaskProgressBar`, `ModeIndicator` built and wired into `Sidebar/PlanTaskList.tsx` and the agent rows. v1.1 uses `createdAt` + `status` for elapsed time and indeterminate progress; click-to-cycle on `ModeIndicator` is rendered but no-op until backend supports mode changes.
@@ -194,6 +195,8 @@ Socket.IO 'stream' → useChat (existing, unchanged)
 **Backend requires:** `ENABLE_CHAT_AGENT_DISPATCH` (backend Step 4)
 **Risk:** High — new interaction pattern, notification routing.
 
+> **Note:** Phase 15 (Task Changes collapsible) is also planned for v2.0. See below.
+
 **Files:**
 - NEW `components/ChatArea/AskUserChip.tsx` — inline chip in task thread for worker questions:
   ```
@@ -217,6 +220,91 @@ Socket.IO 'stream' → useChat (existing, unchanged)
 - When viewing different thread: sidebar badge (❓) + toast notification
 - Review mode: pending actions appear with Approve/Edit/Reject at top of R1 Chat
 
+### Phase 15 — Task Changes collapsible (workspace artifacts)
+**Gate:** `FF_ENABLE_GIT_TASK_CONTEXT=true`
+**Backend requires:** A8 Git Task Context (Phase 3 of Parallel Plans roadmap) — workspace branch-per-task + artifacts API
+**Risk:** Medium — new API, new components, syntax highlighting dependency.
+
+**Problem:** Task Overview shows metadata (status, role, deps) and task output (text), but not the actual files the agent produced. Users can't see what was built without leaving Ping.
+
+**Design:** A single **`▶ Changes`** collapsible pinned to the bottom of the Task Overview tab. When expanded, it replaces the panel content above with a file list. Each file has a `[Diff]` / `[File]` toggle.
+
+```
+Task Overview (default):
+  Title, status, role, deps, output
+  ──────────────────
+  ▶ Changes (3 files, +157 lines)
+
+Changes expanded (replaces content above):
+  📄 src/auth/middleware.ts  (+45)
+     [Diff ✓]  [File]
+  ┌─────────────────────────────┐
+  │ + import { verify }         │
+  │ +   from 'jsonwebtoken';    │
+  │ + export function auth(     │
+  │     ── 37 more ── [Show all]│
+  └─────────────────────────────┘
+  📄 src/auth/types.ts  (+23)
+  [▶ Expand]
+  ──────────────────
+  ▼ Changes (3 files, +157 lines)  [← Back]
+```
+
+**Behavior:**
+- `▶ Changes` pinned to bottom of DetailPanel, always visible when task has workspace data
+- Click → panel content swaps to file list (overview hides); `[← Back]` returns to overview
+- Per-file `[Diff]` / `[File]` toggle: Diff shows changes vs main (green/red lines), File shows full content with syntax highlighting
+- Files truncated at ~20 lines with `[Show all]` expand
+- Copy button per file block
+- Line numbers in File view
+- Only shows for tasks with workspace branch data (completed or in-progress with commits)
+
+**Files:**
+- NEW `components/DetailPanel/TaskChanges.tsx` — Changes collapsible trigger + file list container
+- NEW `components/DetailPanel/FileRow.tsx` — file icon + path + line count + expand toggle
+- NEW `components/DetailPanel/FileContentBlock.tsx` — syntax-highlighted code viewer (Diff or File mode)
+- EDIT `components/DetailPanel/DetailPanel.tsx` — add `TaskChanges` at bottom of Overview, manage `changesExpanded` state
+- NEW dependency: `highlight.js` for syntax coloring
+
+**API:**
+- `GET /api/v2/teams/:teamId/tasks/:taskId/changes` — returns per-file diff + full content + review status:
+  ```ts
+  interface TaskChangesResponse {
+    taskId: string;
+    branch: string;
+    files: Array<{
+      path: string;
+      linesAdded: number;
+      linesRemoved: number;
+      diff: string;      // unified diff format
+      content: string;   // full file content
+      language: string;  // detected from extension
+      reviewTag: 'agent' | 'reviewed' | 'approved';  // trust provenance
+      reviewSource?: string;  // 'chat_agent' | 'child_team_human' | 'external_agent_human' | 'auto_rule' | 'self'
+      reviewedBy?: string;
+    }>;
+    summary: {
+      needsReview: number;   // count of 'agent' tagged files
+      reviewed: number;      // count of 'reviewed' tagged files
+      approved: number;      // count of 'approved' tagged files
+    };
+  }
+  ```
+
+**Trust tags per file (see [approval-system architecture](../approval-system/feature_architecture.md#artifact-trust--provenance-model)):**
+- 🤖 `Agent` — raw LLM output, needs human review
+- 👤 `Reviewed` — ChatAgent quality-checked, auto-rule matched, or external agent human reviewed
+- 🔒 `Approved` — formally approved by child team human or domain expert
+- Smart accept actions: `[Accept reviewed ✓]` skips pre-reviewed files, `[Review remaining ↗]` shows only unreviewed
+
+**Done when:**
+- Task Overview shows `▶ Changes (N files, +M lines)` at bottom for tasks with workspace data
+- Click expands file list with diff view by default
+- Toggle per file between Diff and File view
+- Syntax highlighting works for common languages (ts, js, py, md, json, css, html)
+- `[← Back]` returns to task overview
+- No changes visible for tasks without workspace data (pending, no branch)
+
 ---
 
 ## Out of Scope (all versions)
@@ -236,7 +324,7 @@ Socket.IO 'stream' → useChat (existing, unchanged)
 |---|---|---|---|
 | **v1.0** (current) | 1-3, 5 (partial), 7 | None | None |
 | **v1.1** (next) | 4, 6, 8, 9, 10, 11 | Doc metadata API for Phase 11 | None (all frontend-only) |
-| **v2.0** (ChatAgent) | 12, 13, 14 | ChatAgent backend Steps 1-4 | `VITE_ENABLE_CHAT_AGENT_CHAT`, `VITE_ENABLE_TASK_THREADS` |
+| **v2.0** (ChatAgent) | 12, 13, 14, 15 | ChatAgent backend Steps 1-4, A8 Git Task Context | `VITE_ENABLE_CHAT_AGENT_CHAT`, `VITE_ENABLE_TASK_THREADS`, `FF_ENABLE_GIT_TASK_CONTEXT` |
 
 **v1.0 → v1.1:** Pure frontend. Ship any phase independently. Each leaves app working.
 **v1.1 → v2.0:** Requires backend ChatAgent feature flags. Frontend gates ensure zero change when flags are off.
@@ -278,3 +366,4 @@ After each phase: `bun run dev:frontend`, smoke test:
 | — | ChatAgent sidebar + R1 Chat | 12 | 📋 Planned |
 | — | Channel B routing + task threads | 13 | 📋 Planned |
 | — | ask_user + review queue | 14 | 📋 Planned |
+| — | Task Changes collapsible (workspace artifacts) | 15 | 📋 Planned |

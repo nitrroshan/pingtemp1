@@ -64,11 +64,11 @@ if ($devYaml -notmatch "backend:" -and $devYaml -notmatch "frontend:") {
     Pass "Dev compose is MongoDB-only (no app containers)"
 } else { Fail "Dev compose should only have MongoDB" }
 
-# ── 4. Collaboration Dockerfile ─────────────────────────────
+# ── 4. Collab-Service Dockerfile ─────────────────────────────
 
-Section "Collaboration Dockerfile"
+Section "Collab-Service Dockerfile"
 
-$collabDockerfile = "packages/collaboration/Dockerfile"
+$collabDockerfile = "packages/collab-service/Dockerfile"
 if (Test-Path $collabDockerfile) { Pass "Dockerfile exists" } else { Fail "Dockerfile missing"; return }
 
 $df = Get-Content $collabDockerfile -Raw
@@ -78,11 +78,11 @@ if ($df -match "EXPOSE 1234") { Pass "Exposes port 1234" } else { Fail "Port 123
 if ($df -match "oven/bun") { Pass "Uses bun base image" } else { Fail "Not using bun base image" }
 if ($df -match "mkdir.*collab") { Pass "Creates collab data directory" } else { Fail "Collab data directory not created" }
 
-# ── 5. Standalone collab server entry point ─────────────────
+# ── 5. Standalone collab-service entry point ─────────────────
 
-Section "Standalone collaboration server"
+Section "Standalone collab-service server"
 
-$standaloneFile = "packages/collaboration/src/standalone.ts"
+$standaloneFile = "packages/collab-service/src/standalone.ts"
 if (Test-Path $standaloneFile) { Pass "standalone.ts exists" } else { Fail "standalone.ts missing"; return }
 
 $standalone = Get-Content $standaloneFile -Raw

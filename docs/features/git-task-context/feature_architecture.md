@@ -3,36 +3,32 @@
 **Status:** New  
 **Date:** March 30, 2026 (Updated April 12, 2026)  
 **ID:** A8  
-**Depends on:** Worker Architecture (3-layer model)  
+**Phase:** 3 in the [Parallel Plans roadmap](../parallel-plans/feature_architecture.md#cross-feature-dependency-map)  
+**Depends on:** Chat Agent Layer (Phase 1), Worker Architecture (3-layer model)  
+**Unlocks:** Parallel Plans v1.0 (Phase 4), workspace isolation (Phase 5)  
 **See also:** [MASTER-ARCHITECTURE.md](../MASTER-ARCHITECTURE.md) — Repo Access Model section
 
 ---
 
 ## Overview
 
-Two git repositories per team: one for **Workspace** (shared deliverables — code, documents, artifacts) and one for **Memory** (per-role personal desk — identity, scratchpad, experiments, activity log). Team-wide knowledge goes to **L2** (CRDT docs via `collab` tool).
+One git repo per team for **Workspace** (shared deliverables — code, documents, artifacts). Team-wide persistent knowledge stored in **Team Memory** (single CRDT doc per team). Ephemeral scratchpad per task.
 
 ### Mapping to Three-Layer Model
 
-| Layer | Workspace Repo (git) | Memory (CRDT) | L2 Team Knowledge (CRDT) |
+| Layer | Workspace Repo (git) | Team Memory (CRDT) | Conversation |
 |---|---|---|---|
-| **L1 Planner** | No access | No access | Read (context) |
-| **L2 Chat Agent** | **Read-only** (browse, search, answer questions) | **Read + Write** (notes, identity, check history) | Read + Write |
-| **L3 Worker** | **Read + Write** (on task branch) | **Read + Write** (activity, scratch) | Read + Write |
+| **L1 Planner** | No access | Read (context for planning) | Persisted (MongoDB/JSONL) |
+| **L2 Chat Agent** | **Read-only** (browse, search, answer questions) | **Read + Write** (decisions, guidelines, learnings) | Persisted (MongoDB/JSONL) |
+| **L3 Worker** | **Read + Write** (on task branch) | **Read-only** (injected by ChatAgent at task start) | In-memory only |
 
-**Why memory moved from git to CRDT:** The original design used a per-role git repo for memory. This creates merge conflicts when Chat Agent and Worker(s) both write simultaneously. Memory is personal notes — no need for git's merge workflow. CRDT (same infrastructure as L2 collab) gives real-time sync with zero conflicts.
+**Simplified memory model (April 2026 revision):** The original design had per-role CRDT memory + separate Team Knowledge CRDT. This was overcomplicated — CRDT was designed for collaboration, so one shared doc per team is natural. Per-agent needs (conversation history) are handled by conversation persistence (MongoDB/JSONL), not CRDT.
 
-**CRDT namespace layout:**
+**CRDT namespace layout (simplified):**
 ```
 collab/
-├── team/{docName}                     ← Team knowledge (existing L2)
-│   "expertise-pricing", "lessons-api", "style-guide"
-│
-└── memory/{roleId}/                   ← Per-role persistent memory
-    ├── identity                       ← role, capabilities, tools (seeded on creation)
-    ├── lessons                        ← things worth remembering across tasks
-    ├── preferences                    ← personal approach, tool tips, style
-    └── activity/{taskId}              ← per-task activity log (kept for history)
+└── team/{docName}                     ← Team Memory (single shared CRDT)
+    "decisions", "guidelines", "patterns", "lessons", "expertise"
 ```
 
 **Scratchpad (ephemeral, NOT in CRDT):**
@@ -43,15 +39,17 @@ workspace-clone/task-{taskId}/.scratch/   ← or in-memory map
 └── data/                                 ← temp files, test outputs
 
 Lifetime: dies when task completes and clone is deleted.
-Agent promotes valuable findings → Memory CRDT or Team Knowledge.
+ChatAgent reviews worker outputs post-task → promotes learnings to Team Memory.
 ```
 
-**Three tiers of agent memory:**
+**Storage model (final):**
 
-| Tier | Lifetime | Storage | Promote to | Example |
-|------|----------|---------|-----------|--------|
-| **Scratchpad** | Dies with task | Temp files in clone or in-memory | Memory or Team | "trying approach X...", "API returns 429 at 50/min" |
-| **Memory** | Persists across tasks | CRDT (`memory/{roleId}/...`) | Team Knowledge | "batch API is 10x faster", "prefer pandas for data" |
+| Storage | What | Technology | Lifetime | Who Writes |
+|---------|------|------------|----------|------------|
+| **Team Memory** | Decisions, guidelines, patterns, learnings | CRDT (one Y.js doc per team, namespaced by role) | Permanent | Planner + ChatAgents |
+| **Conversation** | Chat history per agent per session | MongoDB/JSONL | Permanent | Planner + ChatAgents |
+| **Scratchpad** | Rough thinking, temp data | `.scratch/` files in task clone | Dies with task | Workers |
+| **Task Output** | Code, docs, artifacts | Git workspace (branch per task) | Permanent (merged) | Workers |
 | **Team Knowledge** | Persists across roles | CRDT (`team/{docName}`) | — | "Competitor X uses freemium", "API rate limit is 100/min" |
 
 **Worker identification:** Workers are scoped by `roleId + taskId`. Multiple workers for the same role write to different task-scoped CRDT documents — `memory/{roleId}/activity/{taskId}` — no conflicts ever.

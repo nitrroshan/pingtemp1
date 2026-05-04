@@ -22,6 +22,12 @@ export interface FeatureFlags {
   enableCollabEditor: boolean;
   /** Enable workspace git push */
   enableGitPush: boolean;
+  /** Enable Chat Agent Layer (L2 persistent per-role agents) */
+  enableChatAgents: boolean;
+  /** Comma-separated roles to enable Chat Agents for (empty = all roles) */
+  chatAgentRoles: string;
+  /** Enable conversation persistence — session restore on reload, agent context on restart */
+  enableConversationPersistence: boolean;
 }
 
 /** Default flags — used in development */
@@ -33,6 +39,9 @@ export const DEV_DEFAULTS: FeatureFlags = {
   enableKnowledgeBase: true,
   enableCollabEditor: true,
   enableGitPush: false,
+  enableChatAgents: false,
+  chatAgentRoles: "",
+  enableConversationPersistence: true,
 };
 
 /** Production defaults — conservative, experimental features off */
@@ -44,6 +53,9 @@ export const PROD_DEFAULTS: FeatureFlags = {
   enableKnowledgeBase: true,
   enableCollabEditor: false,
   enableGitPush: false,
+  enableChatAgents: false,
+  chatAgentRoles: "",
+  enableConversationPersistence: false,
 };
 
 /** Flags safe to expose to the frontend via API */
@@ -68,4 +80,18 @@ export const FF_ENV_MAP: Record<string, keyof FeatureFlags> = {
   FF_ENABLE_KNOWLEDGE_BASE: "enableKnowledgeBase",
   FF_ENABLE_COLLAB_EDITOR: "enableCollabEditor",
   FF_ENABLE_GIT_PUSH: "enableGitPush",
+  FF_ENABLE_CHAT_AGENTS: "enableChatAgents",
+  FF_CHAT_AGENT_ROLES: "chatAgentRoles",
+  FF_ENABLE_CONVERSATION_PERSISTENCE: "enableConversationPersistence",
 };
+
+/**
+ * Check if Chat Agent is enabled for a specific role.
+ * When chatAgentRoles is empty, all roles are enabled (if enableChatAgents is true).
+ */
+export function isChatAgentEnabledForRole(flags: FeatureFlags, role: string): boolean {
+  if (!flags.enableChatAgents) return false;
+  if (!flags.chatAgentRoles) return true;
+  const allowedRoles = flags.chatAgentRoles.split(",").map(r => r.trim().toLowerCase()).filter(Boolean);
+  return allowedRoles.length === 0 || allowedRoles.includes(role.toLowerCase());
+}

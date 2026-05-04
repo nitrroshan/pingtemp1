@@ -14,6 +14,7 @@
 import { io, Socket } from "socket.io-client";
 import { logger } from "../utils/logger";
 import { API_BASE_URL } from "../constants";
+import type { ServerToClientEvents, ClientToServerEvents } from "../types/socketEvents";
 
 // ============================================================================
 // Types
@@ -23,6 +24,7 @@ export interface AgentMessage {
   sessionId: string;
   agentId: string;
   taskId?: string;
+  goalId?: string;
   content: string;
   isStreaming?: boolean;
   timestamp: number;
@@ -50,6 +52,7 @@ export interface Task {
   status: string;
   priority?: number;
   dependencies?: string[];
+  goalId?: string;
 }
 
 export interface TaskUpdate {
@@ -126,7 +129,7 @@ export interface TaskInfo {
 // ============================================================================
 
 export class AgentServiceV2 {
-  private socket: Socket | null = null;
+  private socket: Socket<ServerToClientEvents, ClientToServerEvents> | null = null;
   private teamId: string | null = null;
   private sessionId: string = "default";
   private userId: string;
@@ -143,14 +146,85 @@ export class AgentServiceV2 {
   // Discussion notification callbacks (v2.0)
   private discussionActivityCallbacks: Set<(data: any) => void> = new Set();
   private discussionMentionCallbacks: Set<(data: any) => void> = new Set();
+  private taskUpdateCallbacks: Set<(data: any) => void> = new Set();
+  private goalStateCallbacks: Set<(data: any) => void> = new Set();
+  private goalCreatedCallbacks: Set<(data: { goalId: string }) => void> = new Set();
+  /** Track current goal subscription for auto-resubscribe on reconnect */
+  private subscribedGoal: { teamId: string; goalId: string } | null = null;
 
   constructor(baseUrl: string = API_BASE_URL) {
     this.baseUrl = baseUrl;
     this.userId = `user-${Math.random().toString(36).substring(7)}`;
   }
 
+  /**
+   * Set the authenticated user ID from better-auth session.
+   * Called by App.tsx after successful auth. Replaces the random default.
+   */
+  setUserId(userId: string): void {
+    this.userId = userId;
+  }
+
   getBaseUrl(): string {
     return this.baseUrl;
+  }
+
+  /** Global HTTP error callback — set by App.tsx to surface errors as toasts */
+  private httpErrorCallback: ((message: string, status: number) => void) | null = null;
+
+  /** Register a callback for HTTP errors (401, 5xx, network failures) */
+  onHttpError(callback: (message: string, status: number) => void): () => void {
+    this.httpErrorCallback = callback;
+    return () => { this.httpErrorCallback = null; };
+  }
+
+  /**
+   * Fetch with auth credentials + global error handling.
+   * - 401 → emits error callback, returns response (caller decides redirect)
+   * - 5xx → single retry with 500ms delay
+   * - Network errors → logged and re-thrown
+   */
+  private async authFetch(url: string, init?: RequestInit): Promise<Response> {
+    const attempt = async (): Promise<Response> => {
+      return fetch(url, { ...init, credentials: "include" });
+    };
+
+    let response: Response;
+    try {
+      response = await attempt();
+    } catch (err) {
+      // Network error — no response at all
+      const message = err instanceof Error ? err.message : 'Network error';
+      logger.error(`[AgentServiceV2] authFetch network error: ${message}`);
+      this.httpErrorCallback?.(`Network error: ${message}`, 0);
+      throw err;
+    }
+
+    // 401 Unauthorized — session expired
+    if (response.status === 401) {
+      logger.warn('[AgentServiceV2] 401 Unauthorized — session may have expired');
+      this.httpErrorCallback?.('Session expired. Please sign in again.', 401);
+      return response;
+    }
+
+    // 5xx Server error — single retry with delay
+    if (response.status >= 500) {
+      logger.warn(`[AgentServiceV2] ${response.status} from ${url} — retrying in 500ms`);
+      await new Promise(r => setTimeout(r, 500));
+      try {
+        response = await attempt();
+      } catch (retryErr) {
+        const message = retryErr instanceof Error ? retryErr.message : 'Network error on retry';
+        logger.error(`[AgentServiceV2] Retry failed: ${message}`);
+        this.httpErrorCallback?.(`Server error (retry failed): ${message}`, 0);
+        throw retryErr;
+      }
+      if (response.status >= 500) {
+        this.httpErrorCallback?.(`Server error: ${response.status} ${response.statusText}`, response.status);
+      }
+    }
+
+    return response;
   }
 
   // ============================================================================
@@ -180,7 +254,7 @@ export class AgentServiceV2 {
       // Connect to V2 path
       this.socket = io(this.baseUrl, {
         path: "/socket.io/v2",
-        transports: ["polling"],
+        transports: ["websocket", "polling"],
         reconnection: true,
         reconnectionAttempts: 3,
         reconnectionDelay: 2000,
@@ -201,10 +275,16 @@ export class AgentServiceV2 {
         this.clientId = data.clientId;
         logger.info(`[AgentServiceV2] Registered: ${data.clientId}`);
 
+        // Re-subscribe to goal room on reconnect (rooms are lost on disconnect)
+        if (this.subscribedGoal) {
+          this.socket!.emit("subscribeToGoal", this.subscribedGoal);
+          logger.info(`[AgentServiceV2] Re-subscribed to goal room: ${this.subscribedGoal.teamId}:${this.subscribedGoal.goalId}`);
+        }
+
         // Request current state after registration to restore UI on refresh
         setTimeout(() => {
           logger.info("[AgentServiceV2] Requesting initial state...");
-          this.getState();
+          this.getState(this.subscribedGoal?.goalId);
         }, 100);
 
         resolve();
@@ -280,6 +360,21 @@ export class AgentServiceV2 {
     this.socket.on("discussion:mention", (data: any) => {
       this.discussionMentionCallbacks.forEach((cb) => cb(data));
     });
+
+    // Channel B: task_update events (task lifecycle updates for sidebar + logs)
+    this.socket.on("task_update", (data: any) => {
+      this.taskUpdateCallbacks.forEach((cb) => cb(data));
+    });
+
+    // Phase 4: goal:stateChange events (plan list updates)
+    this.socket.on("goal:stateChange", (data: any) => {
+      this.goalStateCallbacks.forEach((cb) => cb(data));
+    });
+
+    // Server-generated goalId — returned after first message to a new goal
+    this.socket.on("goal:created", (data: any) => {
+      this.goalCreatedCallbacks.forEach((cb) => cb(data));
+    });
   }
 
   disconnect() {
@@ -307,19 +402,89 @@ export class AgentServiceV2 {
     return !!(this.socket && this.clientId && this.teamId);
   }
 
-  sendToManager(content: string): void {
+  sendToManager(content: string, goalId?: string | null, repoUrl?: string, repoBranch?: string): void {
     if (!this.isReady()) {
       logger.error("[AgentServiceV2] Cannot send: socket =", !!this.socket, "clientId =", this.clientId, "teamId =", this.teamId);
       throw new Error("Not connected or no team selected");
     }
+    const socket = this.socket!;
+    const teamId = this.teamId!;
 
     logger.info("[AgentServiceV2] sendToManager:", content.substring(0, 50));
-    this.socket!.emit("message", {
-      teamId: this.teamId,
+    socket.emit("message", {
+      teamId,
       agentId: "manager",
       sessionId: this.sessionId,
       content,
+      goalId: goalId ?? undefined,
+      repoUrl,
+      repoBranch,
     });
+  }
+
+  /**
+   * Send goal to orchestrator and wait for server-generated goalId.
+   * Uses nonce correlation (Discord Pattern 2) to match the response
+   * to this specific request — safe for concurrent submissions.
+   */
+  sendToManagerAsync(
+    content: string,
+    repoUrl?: string,
+    repoBranch?: string,
+    timeout = 10000,
+  ): Promise<{ goalId: string }> {
+    return new Promise((resolve, reject) => {
+      if (!this.isReady()) {
+        return reject(new Error("Not connected or no team selected"));
+      }
+      const socket = this.socket!;
+      const teamId = this.teamId!;
+
+      const nonce = crypto.randomUUID();
+
+      const timer = setTimeout(() => {
+        unsub();
+        reject(new Error("Timeout waiting for server goalId"));
+      }, timeout);
+
+      const unsub = this.onGoalCreated((data: any) => {
+        // Only resolve for our nonce (ignore other clients' goal:created events)
+        if (data.nonce && data.nonce !== nonce) return;
+        clearTimeout(timer);
+        unsub();
+        resolve({ goalId: data.goalId });
+      });
+
+      logger.info("[AgentServiceV2] sendToManagerAsync:", content.substring(0, 50));
+      socket.emit("message", {
+        teamId,
+        agentId: "manager",
+        sessionId: this.sessionId,
+        content,
+        nonce,
+        // No goalId — server generates it
+        repoUrl,
+        repoBranch,
+      });
+    });
+  }
+
+  /** Phase 4.5: Subscribe to a goal-scoped Socket.IO room for stream isolation. */
+  subscribeToGoal(teamId: string, goalId: string): void {
+    if (!this.socket) return;
+    this.subscribedGoal = { teamId, goalId };
+    this.socket.emit("subscribeToGoal", { teamId, goalId });
+    logger.info(`[AgentServiceV2] Subscribed to goal room: team:${teamId}:goal:${goalId}`);
+  }
+
+  /** Unsubscribe from a goal-scoped Socket.IO room (leaves the room server-side). */
+  unsubscribeFromGoal(teamId: string, goalId: string): void {
+    if (!this.socket) return;
+    if (this.subscribedGoal?.teamId === teamId && this.subscribedGoal?.goalId === goalId) {
+      this.subscribedGoal = null;
+    }
+    this.socket.emit("unsubscribeFromGoal", { teamId, goalId });
+    logger.info(`[AgentServiceV2] Unsubscribed from goal room: team:${teamId}:goal:${goalId}`);
   }
 
   /**
@@ -330,18 +495,49 @@ export class AgentServiceV2 {
       logger.error("[AgentServiceV2] Cannot send: socket =", !!this.socket, "clientId =", this.clientId, "teamId =", this.teamId);
       throw new Error("Not connected or no team selected");
     }
+    const socket = this.socket!;
+    const teamId = this.teamId!;
 
     logger.info("[AgentServiceV2] sendToWorker:", {
-      teamId: this.teamId,
+      teamId,
       agentId,
       taskId,
       contentPreview: content?.substring(0, 50),
     });
 
-    this.socket.emit("message", {
-      teamId: this.teamId,
+    socket.emit("message", {
+      teamId,
       agentId,
       taskId,
+      content,
+    });
+  }
+
+  /**
+   * Send message to a persistent ChatAgent (L2) for a role.
+   * Uses "chat-{role}" agentId convention — backend routes to ChatAgent.
+   */
+  sendToChatAgent(role: string, content: string, goalId?: string): void {
+    if (!this.isReady()) {
+      logger.error("[AgentServiceV2] Cannot send: socket =", !!this.socket, "clientId =", this.clientId, "teamId =", this.teamId);
+      throw new Error("Not connected or no team selected");
+    }
+    const socket = this.socket!;
+    const teamId = this.teamId!;
+
+    const agentId = `chat-${role}`;
+    logger.info("[AgentServiceV2] sendToChatAgent:", {
+      teamId,
+      agentId,
+      goalId,
+      contentPreview: content?.substring(0, 50),
+    });
+
+    socket.emit("message", {
+      teamId,
+      agentId,
+      sessionId: this.sessionId,
+      goalId: goalId || null,
       content,
     });
   }
@@ -353,29 +549,36 @@ export class AgentServiceV2 {
   /**
    * Approve the current plan
    */
-  approvePlan(): void {
-    this.emitAction("approve-plan");
+  approvePlan(goalId?: string): void {
+    this.emitAction("approve-plan", goalId ? { goalId } : undefined);
+  }
+
+  /**
+   * Reject the current plan with optional feedback for the planner
+   */
+  rejectPlan(goalId?: string, feedback?: string): void {
+    this.emitAction("reject-plan", { goalId, feedback } as any);
   }
 
   /**
    * Start a task (enables user chat with worker)
    */
-  startTask(taskId: string): void {
-    this.emitAction("start-task", { taskId });
+  startTask(taskId: string, goalId?: string): void {
+    this.emitAction("start-task", { taskId, goalId });
   }
 
   /**
    * Complete a task with optional output
    */
-  completeTask(taskId: string, output?: any): void {
-    this.emitAction("complete-task", { taskId, output });
+  completeTask(taskId: string, output?: any, goalId?: string): void {
+    this.emitAction("complete-task", { taskId, output, goalId });
   }
 
   /**
    * Cancel a task
    */
-  cancelTask(taskId: string): void {
-    this.emitAction("cancel-task", { taskId });
+  cancelTask(taskId: string, goalId?: string): void {
+    this.emitAction("cancel-task", { taskId, goalId });
   }
 
   /**
@@ -383,10 +586,10 @@ export class AgentServiceV2 {
    * @param enabled - true/false to set, omit to just query current state
    * Response comes via state event with autoExecute field
    */
-  autoExecute(enabled?: boolean): void {
+  autoExecute(enabled?: boolean, goalId?: string): void {
     this.emitAction(
       "auto-execute",
-      enabled !== undefined ? { enabled } : undefined,
+      enabled !== undefined ? { enabled, ...(goalId ? { goalId } : {}) } : (goalId ? { goalId } : undefined),
     );
   }
 
@@ -394,27 +597,30 @@ export class AgentServiceV2 {
    * Request current state from server (tasks, plan, session state)
    * Called automatically on connect, can also be called to refresh
    */
-  getState(): void {
-    this.emitAction("get-state");
+  getState(goalId?: string): void {
+    this.emitAction("get-state", goalId ? { goalId } : undefined);
   }
 
   private emitAction(
     type:
       | "approve-plan"
+      | "reject-plan"
       | "start-task"
       | "complete-task"
       | "cancel-task"
       | "auto-execute"
       | "get-state",
-    data?: { taskId?: string; output?: any; enabled?: boolean },
+    data?: { taskId?: string; output?: any; enabled?: boolean; goalId?: string; feedback?: string },
   ): void {
     if (!this.isReady()) {
       logger.warn("[AgentServiceV2] emitAction skipped (not ready):", type);
       return;
     }
+    const socket = this.socket!;
+    const teamId = this.teamId!;
 
-    this.socket!.emit("action", {
-      teamId: this.teamId,
+    socket.emit("action", {
+      teamId,
       type,
       sessionId: this.sessionId,
       ...data,
@@ -495,6 +701,37 @@ export class AgentServiceV2 {
     return () => this.discussionMentionCallbacks.delete(callback);
   }
 
+  /**
+   * Subscribe to any custom socket event.
+   * Returns an unsubscribe function.
+   */
+  on(event: string, callback: (data: any) => void): () => void {
+    if (!this.socket) return () => {};
+    (this.socket as any).on(event, callback);
+    return () => { (this.socket as any)?.off(event, callback); };
+  }
+
+  /**
+   * Subscribe to Channel B task_update events.
+   */
+  onTaskUpdate(callback: (data: any) => void): () => void {
+    this.taskUpdateCallbacks.add(callback);
+    return () => this.taskUpdateCallbacks.delete(callback);
+  }
+
+  /**
+   * Subscribe to goal:stateChange events (Phase 4 — Parallel Plans).
+   */
+  onGoalStateChange(callback: (data: any) => void): () => void {
+    this.goalStateCallbacks.add(callback);
+    return () => { this.goalStateCallbacks.delete(callback); };
+  }
+
+  onGoalCreated(callback: (data: { goalId: string }) => void): () => void {
+    this.goalCreatedCallbacks.add(callback);
+    return () => { this.goalCreatedCallbacks.delete(callback); };
+  }
+
   // ============================================================================
   // Getters
   // ============================================================================
@@ -520,6 +757,71 @@ export class AgentServiceV2 {
   }
 
   // ============================================================================
+  // HTTP Methods - Session Restore
+  // ============================================================================
+
+  /**
+   * Restore session from server — returns per-agent conversations + worker messages + plan/tasks.
+   * Called on page load to replace localStorage as source of truth.
+   */
+  async restoreSession(teamId: string, goalId?: string): Promise<{
+    conversations: Record<string, Array<{ id: string; role: string; content: string; streamParts?: string; timestamp: string }>>;
+    workerMessages: Array<{ id: string; role: string; content: string; agentId: string; taskId?: string; streamParts?: string; timestamp: string }>;
+    goals: any[];
+    plan: any;
+    tasks: any[];
+    orchestratorState: string | null;
+    activeGoalId?: string | null;
+    allGoalSummaries?: any[];
+  } | null> {
+    try {
+      const url = goalId
+        ? `${this.baseUrl}/api/v2/sessions/${teamId}/restore?goalId=${encodeURIComponent(goalId)}`
+        : `${this.baseUrl}/api/v2/sessions/${teamId}/restore`;
+      const response = await this.authFetch(url);
+      if (!response.ok) {
+        logger.warn(`[AgentServiceV2] restoreSession failed: ${response.status} ${response.statusText}`);
+        return null;
+      }
+      return response.json();
+    } catch (err) {
+      logger.error('[AgentServiceV2] restoreSession error:', err);
+      return null;
+    }
+  }
+
+  /**
+   * v4.0: Goal-scoped session snapshot — DB-primary with live overlay.
+   * Replaces restoreSession for goal-specific fetches.
+   */
+  async getGoalSession(goalId: string, teamId: string): Promise<{
+    goalId: string;
+    title: string;
+    status: string;
+    tasks: any[];
+    messages: any[];
+    pendingPlan: any;
+    sessionState: string | null;
+    autoExecute: boolean;
+    allGoalSummaries: any[];
+    repoUrl?: string;
+    repoBranch?: string;
+  } | null> {
+    try {
+      const url = `${this.baseUrl}/api/v2/goals/${encodeURIComponent(goalId)}/session?teamId=${encodeURIComponent(teamId)}`;
+      const response = await this.authFetch(url);
+      if (!response.ok) {
+        logger.warn(`[AgentServiceV2] getGoalSession failed: ${response.status}`);
+        return null;
+      }
+      return response.json();
+    } catch (err) {
+      logger.error('[AgentServiceV2] getGoalSession error:', err);
+      return null;
+    }
+  }
+
+  // ============================================================================
   // HTTP Methods - Teams CRUD
   // ============================================================================
 
@@ -535,7 +837,7 @@ export class AgentServiceV2 {
     const body: Record<string, string | undefined> = { name, goal, description };
     if (pluginName) body.pluginName = pluginName;
 
-    const response = await fetch(`${this.baseUrl}/api/v2/teams`, {
+    const response = await this.authFetch(`${this.baseUrl}/api/v2/teams`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
@@ -553,7 +855,7 @@ export class AgentServiceV2 {
    * List available plugins from the registry
    */
   async getPlugins(): Promise<{ plugins: Array<{ name: string; description: string; version: string; tags?: string[] }>; count: number }> {
-    const response = await fetch(`${this.baseUrl}/api/registry/plugins`);
+    const response = await this.authFetch(`${this.baseUrl}/api/registry/plugins`);
     if (!response.ok) return { plugins: [], count: 0 };
     return response.json();
   }
@@ -562,7 +864,7 @@ export class AgentServiceV2 {
    * List all teams
    */
   async getTeams(): Promise<{ teams: TeamResponse[]; count: number }> {
-    const response = await fetch(`${this.baseUrl}/api/v2/teams`);
+    const response = await this.authFetch(`${this.baseUrl}/api/v2/teams`);
 
     if (!response.ok) {
       throw new Error("Failed to fetch teams");
@@ -575,7 +877,7 @@ export class AgentServiceV2 {
    * Get team by ID
    */
   async getTeam(teamId: string): Promise<{ team: TeamResponse }> {
-    const response = await fetch(`${this.baseUrl}/api/v2/teams/${teamId}`);
+    const response = await this.authFetch(`${this.baseUrl}/api/v2/teams/${teamId}`);
 
     if (!response.ok) {
       throw new Error("Failed to fetch team");
@@ -588,7 +890,7 @@ export class AgentServiceV2 {
    * Delete a team
    */
   async deleteTeam(teamId: string): Promise<{ deleted: boolean }> {
-    const response = await fetch(`${this.baseUrl}/api/v2/teams/${teamId}`, {
+    const response = await this.authFetch(`${this.baseUrl}/api/v2/teams/${teamId}`, {
       method: "DELETE",
     });
 
@@ -605,7 +907,7 @@ export class AgentServiceV2 {
   async getAgents(
     teamId: string,
   ): Promise<{ agents: AgentInfo[]; count: number }> {
-    const response = await fetch(
+    const response = await this.authFetch(
       `${this.baseUrl}/api/v2/teams/${teamId}/agents`,
     );
 
@@ -622,7 +924,7 @@ export class AgentServiceV2 {
   async getTeamSkills(
     teamId: string,
   ): Promise<{ skills: Array<{ id: string; name: string; description: string }>; count: number }> {
-    const response = await fetch(
+    const response = await this.authFetch(
       `${this.baseUrl}/api/v2/teams/${teamId}/skills`,
     );
 
@@ -641,7 +943,7 @@ export class AgentServiceV2 {
    * Get session state for a team
    */
   async getSession(teamId: string): Promise<{ session: SessionInfo }> {
-    const response = await fetch(`${this.baseUrl}/api/v2/sessions/${teamId}`);
+    const response = await this.authFetch(`${this.baseUrl}/api/v2/sessions/${teamId}`);
 
     if (!response.ok) {
       throw new Error("Failed to fetch session");
@@ -656,7 +958,7 @@ export class AgentServiceV2 {
   async getTasks(
     teamId: string,
   ): Promise<{ tasks: TaskInfo[]; count: number }> {
-    const response = await fetch(
+    const response = await this.authFetch(
       `${this.baseUrl}/api/v2/sessions/${teamId}/tasks`,
     );
 
@@ -678,9 +980,8 @@ export class AgentServiceV2 {
     if (options?.limit) params.set("limit", String(options.limit));
     if (options?.before) params.set("before", options.before);
 
-    const response = await fetch(
+    const response = await this.authFetch(
       `${this.baseUrl}/api/v2/teams/${teamId}/messages?${params}`,
-      { credentials: "include" },
     );
 
     if (!response.ok) {
@@ -688,6 +989,31 @@ export class AgentServiceV2 {
     }
 
     return response.json();
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // Document Pane — CRDT + workspace file browsing
+  // ═══════════════════════════════════════════════════════════════════════
+
+  async listCrdtDocs(teamId: string): Promise<string[]> {
+    const response = await this.authFetch(`${this.baseUrl}/api/collab/${teamId}/docs`);
+    if (!response.ok) return [];
+    const data = await response.json();
+    return data.docs || [];
+  }
+
+  async listWorkspaceFiles(teamId: string, goalId: string): Promise<Array<{ path: string; name: string; type: string; size?: number; taskId?: string; taskTitle?: string }>> {
+    const response = await this.authFetch(`${this.baseUrl}/api/v2/workspaces/${teamId}/goals/${goalId}/files`);
+    if (!response.ok) return [];
+    const data = await response.json();
+    return data.files || [];
+  }
+
+  async readWorkspaceFile(teamId: string, goalId: string, path: string, taskId: string): Promise<string> {
+    const response = await this.authFetch(`${this.baseUrl}/api/v2/workspaces/${teamId}/goals/${goalId}/file/${encodeURIComponent(path)}?taskId=${encodeURIComponent(taskId)}`);
+    if (!response.ok) throw new Error("Failed to read file");
+    const data = await response.json();
+    return data.content;
   }
 }
 

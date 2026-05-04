@@ -55,6 +55,7 @@ export function createPlannerTools(ctx: PlannerToolsContext) {
     tasks: octx.taskProvider,
     dagResolver: ctx.dagResolver,
     availableRoles: octx.teamRoles,
+    currentGoalId: octx.currentGoalId!,
     onMutation: ctx.onMutation,
   };
 

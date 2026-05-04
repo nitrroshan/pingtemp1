@@ -19,6 +19,22 @@ services:
       retries: 5
       start_period: 10s
 
+  # Standalone CRDT collaboration server (opt-in via --profile collab-external)
+  collab:
+    build:
+      context: .
+      dockerfile: packages/collab-service/Dockerfile
+    ports:
+      - "${COLLAB_PORT:-1234}:1234"
+    environment:
+      - COLLAB_PORT=1234
+      - COLLAB_STORAGE_DIR=/data/collab
+    volumes:
+      - ping-collab-data:/data/collab
+    profiles: ["collab-external"]
+
 volumes:
   ping-mongo-data:
     name: ping-mongo-data
+  ping-collab-data:
+    name: ping-collab-data

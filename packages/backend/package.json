@@ -26,8 +26,10 @@
     "deepagents": "^1.3.0",
     "dotenv": "^16.5.0",
     "express": "^5.1.0",
+    "express-rate-limit": "^8.4.1",
     "fast-glob": "^3.3.3",
     "fastmcp": "^3.25.4",
+    "helmet": "^8.1.0",
     "langchain": "^1.1.1",
     "minisearch": "^7.2.0",
     "mongoose": "^9.0.2",
@@ -59,7 +61,10 @@
     "copy:agents": "echo 'Agent YAMLs now in @ping/agent-manager'",
     "seed": "bun run scripts/seeds/index.ts",
     "seed:admin": "bun run scripts/seeds/admin.seed.ts",
-    "db:reset": "bun run scripts/seeds/reset.ts"
+    "db:reset": "bun run scripts/seeds/reset.ts",
+    "clean:collab": "bun run scripts/clean-collab.ts",
+    "clean:workspaces": "bun run scripts/clean-workspaces.ts",
+    "clean:all": "bun run scripts/clean-collab.ts && bun run scripts/clean-workspaces.ts"
   },
   "author": "",
   "license": "ISC",

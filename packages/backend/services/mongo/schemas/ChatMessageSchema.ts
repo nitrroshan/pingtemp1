@@ -13,12 +13,14 @@ export interface IChatMessage extends Document {
   _id: Types.ObjectId;
   teamId: string;
   agentId: string;
-  sessionId: string;
+  userId: string;
   goalId?: string;
   taskId?: string;
   role: "user" | "assistant" | "system";
   content: string;
   streamParts?: string;
+  agentLayer?: "planner" | "chat-agent" | "worker";
+  contextMessages?: string;
   timestamp: Date;
 }
 
@@ -26,12 +28,14 @@ const chatMessageSchema = new Schema<IChatMessage>(
   {
     teamId: { type: String, required: true },
     agentId: { type: String, required: true },
-    sessionId: { type: String, required: true },
+    userId: { type: String, required: true },
     goalId: { type: String, default: null },
     taskId: { type: String, default: null },
     role: { type: String, enum: ["user", "assistant", "system"], required: true },
     content: { type: String, required: true },
     streamParts: { type: String, default: null },
+    agentLayer: { type: String, enum: ["planner", "chat-agent", "worker", null], default: null },
+    contextMessages: { type: String, default: null },
     timestamp: { type: Date, default: Date.now },
   },
   { timestamps: false },

@@ -122,6 +122,11 @@ export class AgentManagerRegistry {
     // Create AgentManager
     const manager = new AgentManager();
 
+    // v3.0: Inject task persistence service from ServiceRegistry
+    if (this.services?.tasks) {
+      manager.setTaskPersistence(this.services.tasks);
+    }
+
     // Compute workspace/collab paths
     const workspaceDir = process.env.WORKSPACE_BASE_DIR || "./data/workspaces";
     const teamRepoPath = `${workspaceDir}/${teamId}`;
@@ -196,6 +201,58 @@ export class AgentManagerRegistry {
       Object.fromEntries(teamRoles.map((r) => [r.role, r.id])),
       teamRoles,
     );
+
+    // Enable Chat Agents if feature flag is on
+    if (config.featureFlags.enableChatAgents) {
+      const allowedRoles = config.featureFlags.chatAgentRoles
+        ? config.featureFlags.chatAgentRoles.split(",").map((r: string) => r.trim().toLowerCase()).filter(Boolean)
+        : [];
+      const rolesToEnable = allowedRoles.length > 0
+        ? teamRoles.map(r => r.role).filter(r => allowedRoles.includes(r.toLowerCase()))
+        : teamRoles.map(r => r.role);
+      if (rolesToEnable.length > 0) {
+        // Build loadConversation callback if persistence is enabled
+        const loadConversation = config.featureFlags.enableConversationPersistence && this.services
+          ? async (tId: string, agentId: string) => {
+              const messages = await this.services!.chat.getAgentMessages(tId, agentId, { limit: 30 });
+              if (!messages.length) return [];
+
+              // Prefer full-fidelity contextMessages (v1.1) — latest snapshot has full conversation
+              const latest = messages[messages.length - 1];
+              if (latest?.contextMessages) {
+                try {
+                  return JSON.parse(latest.contextMessages);
+                } catch {
+                  // Fall through to simplified format
+                }
+              }
+
+              // Fallback: simplified { role, content } format (v1.0)
+              return messages.map(m => ({
+                role: m.role,
+                content: m.content,
+              }));
+            }
+          : undefined;
+        const saveConversation = config.featureFlags.enableConversationPersistence && this.services
+          ? async (tId: string, agentId: string, goalId: string, messages: any[]) => {
+              const ownerId = await this.services!.teamRegistry?.getOwner(tId) ?? "system";
+              await this.services!.chat.addMessage({
+                teamId: tId,
+                agentId,
+                userId: ownerId,
+                goalId,
+                role: "assistant",
+                agentLayer: "planner",
+                content: `[planner conversation snapshot: ${messages.length} messages]`,
+                contextMessages: JSON.stringify(messages),
+                timestamp: new Date(),
+              });
+            }
+          : undefined;
+        manager.enableChatAgents(rolesToEnable, loadConversation, saveConversation);
+      }
+    }
 
     // Cache it
     this.managers.set(teamId, manager);

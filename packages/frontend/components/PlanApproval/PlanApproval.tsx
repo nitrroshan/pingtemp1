@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { ClipboardList, CheckCircle, GitBranch, ArrowUp, ArrowDown, GripVertical } from 'lucide-react';
+import { ClipboardList, CheckCircle, GitBranch, ArrowUp, ArrowDown, GripVertical, RotateCcw, Send } from 'lucide-react';
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter,
 } from '../ui/dialog';
@@ -11,12 +11,15 @@ import type { Task as BackendTask } from '../../services/AgentServiceV2';
 interface PlanApprovalProps {
   plan: BackendTask[];
   onApprove: (tasks?: BackendTask[]) => void;
+  onReject?: (feedback: string) => void;
   onDismiss?: () => void;
 }
 
-const PlanApproval: React.FC<PlanApprovalProps> = ({ plan: initialPlan, onApprove, onDismiss }) => {
+const PlanApproval: React.FC<PlanApprovalProps> = ({ plan: initialPlan, onApprove, onReject, onDismiss }) => {
   const [tasks, setTasks] = useState<BackendTask[]>(initialPlan);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [showFeedback, setShowFeedback] = useState(false);
+  const [feedback, setFeedback] = useState('');
 
   const moveTask = (index: number, direction: 'up' | 'down') => {
     const newTasks = [...tasks];
@@ -135,23 +138,61 @@ const PlanApproval: React.FC<PlanApprovalProps> = ({ plan: initialPlan, onApprov
         </div>
 
         {/* Footer */}
-        <DialogFooter className="px-5 py-3 border-t border-border shrink-0 flex flex-row items-center justify-between">
-          <span className="text-xs text-muted-foreground">Click task to view deps · arrows to reorder</span>
-          <div className="flex items-center gap-2">
-            {onDismiss && (
-              <Button variant="ghost" size="sm" onClick={onDismiss}>
-                Review Later
-              </Button>
-            )}
-            <Button
-              size="sm"
-              onClick={() => onApprove(tasks)}
-              className="gap-1.5"
-            >
-              <CheckCircle size={14} />
-              Approve & Execute
-            </Button>
-          </div>
+        <DialogFooter className="px-5 py-3 border-t border-border shrink-0 flex flex-col gap-2">
+          {showFeedback ? (
+            <div className="flex flex-col gap-2 w-full">
+              <textarea
+                className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm resize-none focus:outline-none focus:ring-1 focus:ring-primary"
+                rows={3}
+                placeholder="What changes would you like? e.g., 'Use REST instead of GraphQL' or 'Add a testing task'"
+                value={feedback}
+                onChange={(e) => setFeedback(e.target.value)}
+                autoFocus
+              />
+              <div className="flex items-center justify-between">
+                <Button variant="ghost" size="sm" onClick={() => { setShowFeedback(false); setFeedback(''); }}>
+                  Cancel
+                </Button>
+                <Button
+                  size="sm"
+                  variant="destructive"
+                  disabled={!feedback.trim()}
+                  onClick={() => onReject?.(feedback.trim())}
+                  className="gap-1.5"
+                >
+                  <Send size={14} />
+                  Send & Replan
+                </Button>
+              </div>
+            </div>
+          ) : (
+            <>
+              <div className="flex flex-row items-center justify-between w-full">
+                <span className="text-xs text-muted-foreground">Click task to view deps · arrows to reorder</span>
+                <div className="flex items-center gap-2">
+                  {onReject && (
+                    <Button variant="outline" size="sm" onClick={() => setShowFeedback(true)} className="gap-1.5">
+                      <RotateCcw size={14} />
+                      Request Changes
+                    </Button>
+                  )}
+                  {onDismiss && (
+                    <Button variant="ghost" size="sm" onClick={onDismiss}>
+                      Review Later
+                    </Button>
+                  )}
+                  <Button
+                    size="sm"
+                    onClick={() => onApprove(tasks)}
+                    className="gap-1.5"
+                  >
+                    <CheckCircle size={14} />
+                    Approve & Execute
+                  </Button>
+                </div>
+              </div>
+            </>
+          )}
         </DialogFooter>
       </DialogContent>
     </Dialog>

@@ -29,7 +29,7 @@ const logger = rootLogger.child({ module: "CrdtTaskSync" });
 
 export type TaskStatus = "ready" | "pending" | "in_progress" | "completed" | "failed";
 
-/** Shape of task data stored in CRDT Y.Map("task") */
+/** Shape of task data stored in CRDT Y.Map("meta") */
 export interface CrdtTaskData {
   id: string;
   title: string;
@@ -92,17 +92,18 @@ export class CrdtTaskSync {
     const docName = `${task.id}/task`;
     try {
       const doc = await this._space.openDoc(docName);
-      const map = doc.getMap("task");
+      const map = doc.getMap("meta");
 
       const ctx = (task.context || {}) as Record<string, any>;
 
+      map.set("type", "task");
       map.set("id", task.id);
       map.set("title", ctx.title || task.description.split(":")[0]?.trim() || task.id);
       map.set("assignedRole", task.assigned_role);
       map.set("status", task.status);
       map.set("priority", task.priority || 3);
       map.set("complexity", ctx.complexity || "medium");
-      map.set("type", ctx.type || "work");
+      map.set("taskType", ctx.type || "work");
       map.set("dependencies", Array.from(task.prerequisites.keys()));
       map.set("createdBy", ctx.createdBy || "planner");
       map.set("parentTask", ctx.parentTask || null);
@@ -123,6 +124,38 @@ export class CrdtTaskSync {
         createdBy: ctx.createdBy || "planner",
       });
 
+      // Write task as rich readable BlockNote content to Y.XmlFragment("content")
+      try {
+        const { ServerBlockNoteEditor } = await import("@blocknote/server-util");
+        const editor = ServerBlockNoteEditor.create();
+        const title = ctx.title || task.description.split(":")[0]?.trim() || task.id;
+        const deps = Array.from(task.prerequisites.keys());
+        const taskMd = [
+          `## ${title}`,
+          "",
+          `**Role:** ${task.assigned_role} | **Priority:** P${task.priority || 3} | **Type:** ${ctx.type || "work"}`,
+          "",
+          "### Description",
+          "",
+          task.description,
+          "",
+          ctx.expectedOutput ? `### Expected Output\n\n${ctx.expectedOutput}\n` : "",
+          deps.length ? `### Dependencies\n\n${deps.map(d => `- ${d}`).join("\n")}\n` : "",
+          ctx.notes ? `### Context & Notes\n\n${ctx.notes}\n` : "",
+          ctx.files?.length ? `### Related Files\n\n${ctx.files.map((f: string) => `- \`${f}\``).join("\n")}\n` : "",
+          ctx.artifacts?.length ? `### Artifacts\n\n${ctx.artifacts.map((a: string) => `- ${a}`).join("\n")}\n` : "",
+          "### Status",
+          "",
+          `Current: **${task.status}** | Created: ${new Date().toISOString().split("T")[0]}`,
+        ].filter(Boolean).join("\n");
+
+        const blocks = await editor.tryParseMarkdownToBlocks(taskMd);
+        const fragment = doc.getXmlFragment("content");
+        editor.blocksToYXmlFragment(blocks, fragment);
+      } catch (err) {
+        logger.debug(`Failed to write task description to XmlFragment: ${err}`);
+      }
+
       logger.debug(`Persisted task ${task.id} to CRDT at ${docName}`);
     } catch (err) {
       logger.error(`Failed to persist task ${task.id}: ${err}`);
@@ -137,13 +170,16 @@ export class CrdtTaskSync {
     const docName = `${taskId}/task`;
     try {
       const doc = await this._space.openDoc(docName);
-      const map = doc.getMap("task");
+      const map = doc.getMap("meta");
       map.set("status", newStatus);
       if (newStatus === "completed") {
         map.set("completedAt", new Date().toISOString());
         if (output != null) {
           map.set("output", output);
         }
+        // Note: The agent writes the real completion report to {taskId}/report
+        // via collab write-block BEFORE calling complete_task.
+        // We don't generate a system report here — the agent's report IS the report.
       }
       logger.debug(`Synced status ${taskId} → ${newStatus}`);
     } catch (err) {
@@ -165,11 +201,12 @@ export class CrdtTaskSync {
   async persistPlan(plan: any, goalId: string): Promise<void> {
     try {
       const doc = await this._space.openDoc("plan");
-      const map = doc.getMap("plan");
+      const map = doc.getMap("meta");
+      map.set("type", "plan");
       map.set("planId", plan.planId);
       map.set("goalId", goalId);
       map.set("goal", plan.goal);
-      map.set("status", "executing");
+      map.set("status", "pending");
       map.set("version", plan.version || 1);
       map.set("taskCount", plan.tasks?.length || 0);
       map.set("createdAt", new Date().toISOString());
@@ -184,21 +221,18 @@ export class CrdtTaskSync {
       }));
       map.set("tasks", taskSummary);
 
-      // Plan body with strategy notes (if present)
-      const body = [
-        `# ${plan.goal}`,
-        "",
-        "## Tasks",
-        ...(plan.tasks || []).map((t: any) =>
-          `- **${t.id}** — ${t.title} (${t.assignedRole}, P${t.priority})${t.dependencies?.length ? ` — depends on ${t.dependencies.join(", ")}` : ""}`
-        ),
-      ].join("\n");
-      map.set("body", body);
-
       doc.setMeta({
         description: `Plan: ${plan.goal} (${plan.tasks?.length || 0} tasks)`,
         createdBy: "planner",
       });
+
+      // Content is written by the planner LLM via collab write-block BEFORE submit_plan.
+      // No system-generated fallback — if the planner didn't write content, the user
+      // sees an empty doc and uses "Request Changes" to force a rewrite.
+      const fragment = doc.getXmlFragment("content");
+      if (fragment.length === 0) {
+        logger.warn(`Plan ${plan.planId}: planner did not write plan document content — user will see empty doc`);
+      }
 
       logger.debug(`Persisted plan ${plan.planId} to CRDT`);
     } catch (err) {
@@ -217,7 +251,7 @@ export class CrdtTaskSync {
   async syncPlanStatus(status: string): Promise<void> {
     try {
       const doc = await this._space.openDoc("plan");
-      const map = doc.getMap("plan");
+      const map = doc.getMap("meta");
       map.set("status", status);
       map.set("updatedAt", new Date().toISOString());
       logger.debug(`Synced plan status to "${status}" in CRDT`);
@@ -238,7 +272,8 @@ export class CrdtTaskSync {
   async updateIndex(tasks: TaskLike[]): Promise<void> {
     try {
       const doc = await this._space.openDoc("_index");
-      const map = doc.getMap("_index");
+      const map = doc.getMap("meta");
+      map.set("type", "index");
 
       // Group by role
       const byRole: Record<string, string[]> = {};
@@ -261,6 +296,25 @@ export class CrdtTaskSync {
       map.set("updatedAt", new Date().toISOString());
     } catch (err) {
       logger.debug(`Index update failed (non-critical): ${err}`);
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // AGENT STATUS — Track which agents are busy/idle
+  // ─────────────────────────────────────────────────────────────────────────
+
+  /**
+   * Update agent status in CRDT. Called before/after task execution.
+   * Readable via `collab read agent-statuses`.
+   */
+  async updateAgentStatus(role: string, status: 'busy' | 'idle', taskId?: string): Promise<void> {
+    try {
+      const doc = await this._space.openDoc('agent-statuses');
+      const map = doc.getMap('meta');
+      map.set('type', 'agent-statuses');
+      map.set(role, { status, task: taskId || null, since: Date.now() });
+    } catch (err) {
+      logger.debug(`Agent status update failed (non-critical): ${err}`);
     }
   }
 
@@ -291,7 +345,7 @@ export class CrdtTaskSync {
       for (const docName of taskDocNames) {
         try {
           const doc = await this._space.openDoc(docName);
-          const map = doc.getMap("task");
+          const map = doc.getMap("meta");
           const data = map.toJSON() as CrdtTaskData;
 
           if (!data.id) {

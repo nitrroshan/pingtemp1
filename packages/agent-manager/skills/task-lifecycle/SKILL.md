@@ -54,10 +54,26 @@ Call this when your deliverables are ready. **Never just stop — always call co
          db/migrations/001-004. Schema uses foreign keys with CASCADE deletes."
 ```
 
-**Before calling complete_task:**
+**Before calling complete_task — Completion Protocol:**
 1. Commit all workspace changes: `workspace_commit`
-2. Share key deliverables to the team: `collab({ action: "write-block", docName: "shared-outputs", key: "Your Role — Task Output", value: "...content..." })`
-3. Then call `complete_task` with detailed summary
+2. Write your completion report to a dedicated report doc:
+   ```
+   collab({ action: "write-block", docName: "{your-task-id}/report", 
+     value: "## What Was Done\n...\n\n## Key Decisions\n...\n\n## Files Produced\n...\n\n## Notes for Downstream\n..." })
+   ```
+   Write this as a real report — explain what you built, why you made certain choices, what downstream agents need to know. This is NOT a summary — it's the full record of your work.
+3. Record any key decisions:
+   ```
+   collab({ action: "record-decision", docName: "{your-task-id}/report",
+     key: "decision-name", value: { decision: "...", rationale: "..." } })
+   ```
+4. THEN call `complete_task` with:
+   - `summary`: Short description of what was accomplished
+   - `deliverables`: File paths of produced artifacts
+   - `producedDocs`: `[{ uri: "crdt:{your-task-id}/report", name: "completion-report" }]` + any other docs you wrote
+   - `decisions`: Key decisions made during this task
+
+**Why write a report doc:** Downstream agents will read your report via `collab read-block {taskId}/report`. If you only put content in `summary`, they get a one-line string. Your report doc is the full handoff — like writing documentation for the next developer.
 
 ### request_task — Create work for another role
 

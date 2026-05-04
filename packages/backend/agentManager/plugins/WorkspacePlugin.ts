@@ -137,7 +137,26 @@ export class WorkspacePlugin implements IPlugin {
     // Ensure workspace exists — createWorkspace returns existing if already created
     const existing = this.l1.getWorkspace(context.taskId);
     if (!existing) {
-      await this.l1.createWorkspace(context.role, context.taskId);
+      await this.l1.createWorkspace(context.role, context.taskId, {
+        goalId: context.goalId,
+        repoUrl: context.repoUrl,
+        repoBranch: context.repoBranch,
+        authToken: context.authToken,
+      });
+    }
+
+    // Ensure remote is configured (works for both shared and isolated modes)
+    console.log(`[WorkspacePlugin] prepareForTask: taskId=${context.taskId}, repoUrl=${context.repoUrl || 'NONE'}, authToken=${context.authToken ? 'SET' : 'NONE'}`);
+    if (context.repoUrl) {
+      try {
+        const gitManager = this.l1.manager.getGitManager();
+        const authUrl = context.authToken && context.repoUrl.startsWith("https://")
+          ? context.repoUrl.replace("https://", `https://oauth2:${context.authToken}@`)
+          : context.repoUrl;
+        await gitManager.addRemote("origin", authUrl);
+      } catch {
+        // addRemote handles duplicates — if origin exists it updates the URL
+      }
     }
   }
 
@@ -169,8 +188,31 @@ export class WorkspacePlugin implements IPlugin {
       }
     }
 
+    const isIsolated = workspace.basePath !== this.l1.workspacesRoot;
+
     // Merge task branch to main and cleanup
-    return this.l1.manager.mergeAndCleanup(taskId);
+    // For worktree workspaces: WorktreeMerger handles merge + worktree removal + push main
+    // For shared workspaces: SharedMerger handles in-place merge
+    const mergeResult = this.l1.manager.mergeAndCleanup(taskId);
+
+    // Push main to remote after merge — only for SHARED mode
+    // (WorktreeMerger already pushes main from the primary clone)
+    if (!isIsolated) {
+      mergeResult.then(async (result) => {
+        if (!result.success) return;
+        try {
+          const remotes = await this.l1.manager.getGitManager().getRemotes();
+          if (remotes.length > 0) {
+            await this.l1.manager.getGitManager().push();
+            console.log(`[WorkspacePlugin] Pushed main to remote after task ${taskId}`);
+          }
+        } catch (err: any) {
+          console.warn(`[WorkspacePlugin] Push to remote failed after task ${taskId}: ${err.message}`);
+        }
+      });
+    }
+
+    return mergeResult;
   }
 
   /** Cleanup failed workspace */

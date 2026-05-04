@@ -73,7 +73,7 @@ export function createBounceTaskTool(ctx: BounceTaskContext) {
 
       // Update task status back to failed (allows retry as ready)
       try {
-        ctx.taskStore.updateStatus(ctx.taskId, "failed");
+        await ctx.taskStore.updateStatus(ctx.taskId, "failed");
       } catch {
         // May already be in a terminal state
       }

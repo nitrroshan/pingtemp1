@@ -25,6 +25,10 @@ function resolveSecret(): string {
   if (process.env.BETTER_AUTH_SECRET) {
     return process.env.BETTER_AUTH_SECRET;
   }
+  // In production, require an explicit secret — never use a deterministic fallback
+  if (process.env.NODE_ENV === "production") {
+    throw new Error("[Auth] BETTER_AUTH_SECRET is required in production. Set it in your environment.");
+  }
   const devSecret = crypto.createHash("sha256").update(`ping-dev-${baseURL}`).digest("hex");
   console.warn("[Auth] BETTER_AUTH_SECRET not set - using dev fallback. Set it in production.");
   return devSecret;
@@ -51,7 +55,9 @@ async function resolveDatabase(): Promise<any> {
 
   // Local mode: bun:sqlite (native Bun SQLite, no external deps)
   const { Database } = await import("bun:sqlite");
+  const fs = await import("fs");
   const dataDir = process.env.DATA_DIR || "./data";
+  fs.mkdirSync(dataDir, { recursive: true });
   const dbPath = path.join(dataDir, "auth.db");
   const db = new Database(dbPath, { create: true });
   db.exec("PRAGMA journal_mode = WAL");
@@ -129,6 +135,13 @@ async function createAuth() {
     database,
     emailAndPassword: {
       enabled: true,
+    },
+    socialProviders: {
+      github: {
+        clientId: process.env.GITHUB_CLIENT_ID!,
+        clientSecret: process.env.GITHUB_CLIENT_SECRET!,
+        scope: ["repo", "read:user", "user:email"],
+      },
     },
     session: {
       expiresIn: 60 * 60 * 24 * 7, // 7 days

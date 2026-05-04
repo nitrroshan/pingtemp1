@@ -65,12 +65,29 @@ export class GitBranchManager {
   /** Mutex to serialize git operations (prevents index.lock conflicts) */
   private mutex = new GitMutex();
 
-  constructor(repoPath: string, mainBranch: string = "main") {
+  constructor(repoPath: string, mainBranch: string = "main", options?: { skipAutoInit?: boolean }) {
     this.repoPath = repoPath;
     this.mainBranch = mainBranch;
     // Ensure directory exists before creating simpleGit instance
-    // (simpleGit throws if baseDir doesn't exist)
     fs.mkdirSync(repoPath, { recursive: true });
+
+    // CRITICAL: Ensure this directory has its own .git BEFORE any operations.
+    // Without this, simple-git walks up to the PROJECT's .git and
+    // any checkout/branch operation switches the developer's working branch.
+    // Skip when cloning — clone creates its own .git.
+    const gitDir = path.join(repoPath, ".git");
+    if (!options?.skipAutoInit && !fs.existsSync(gitDir)) {
+      try {
+        require("child_process").execSync(`git init -b ${mainBranch}`, {
+          cwd: repoPath,
+          stdio: "pipe",
+        });
+        logger.info(`Auto-initialized isolated git repo at: ${repoPath}`);
+      } catch (err) {
+        logger.error(`Failed to auto-init git at ${repoPath}: ${err}`);
+      }
+    }
+
     this.git = simpleGit(repoPath);
     logger.debug(`GitBranchManager initialized at: ${repoPath}`);
   }
@@ -105,30 +122,63 @@ export class GitBranchManager {
     const exists = await this.directoryExists(gitDir);
 
     if (exists) {
-      // Validate existing repo
+      // Validate existing repo — ensure it's OUR repo, not a parent's
       try {
+        const topLevel = await this.git.revparse(["--show-toplevel"]);
+        const resolvedRepo = path.resolve(this.repoPath);
+        const resolvedTop = path.resolve(topLevel.trim());
+        if (resolvedTop !== resolvedRepo) {
+          // simple-git found a parent .git — we need our own
+          logger.warn(
+            `Git repo at ${resolvedTop} is a parent of ${resolvedRepo} — initializing local repo`,
+          );
+          await this.git.init(["-b", this.mainBranch]);
+          await this.seedInitialCommit();
+          return;
+        }
         await this.git.status();
         logger.info(`Connected to existing repo at: ${this.repoPath}`);
       } catch (err) {
         throw new Error(`Invalid git repository at ${this.repoPath}: ${err}`);
       }
     } else {
+      // No .git here — but check if simple-git would walk up to a parent repo
+      try {
+        const topLevel = await this.git.revparse(["--show-toplevel"]);
+        const resolvedRepo = path.resolve(this.repoPath);
+        const resolvedTop = path.resolve(topLevel.trim());
+        if (resolvedTop !== resolvedRepo) {
+          logger.warn(
+            `No local .git but parent repo found at ${resolvedTop} — initializing isolated repo at ${resolvedRepo}`,
+          );
+        }
+      } catch {
+        // No parent repo either — clean init
+      }
+
       // Create new repo
       await this.git.init(["-b", this.mainBranch]);
       logger.info(
         `Created new repo at: ${this.repoPath} (branch: ${this.mainBranch})`,
       );
 
-      // Create initial commit so branches can be created
-      const readmePath = path.join(this.repoPath, "README.md");
+      await this.seedInitialCommit();
+    }
+  }
+
+  /** Create initial commit with README + .gitignore so branches/worktrees can be created */
+  async seedInitialCommit(): Promise<void> {
+    const readmePath = path.join(this.repoPath, "README.md");
+    if (!fs.existsSync(readmePath)) {
       await fs.promises.writeFile(
         readmePath,
-        "# Agent Workspace\n\nInitialized by MemoryCoordinator\n",
+        "# Agent Workspace\n\nInitialized by WorkspaceManager\n",
         "utf-8",
       );
+    }
 
-      // Seed .gitignore on main so task branches don't conflict over it
-      const gitignorePath = path.join(this.repoPath, ".gitignore");
+    const gitignorePath = path.join(this.repoPath, ".gitignore");
+    if (!fs.existsSync(gitignorePath)) {
       await fs.promises.writeFile(
         gitignorePath,
         [
@@ -142,13 +192,13 @@ export class GitBranchManager {
         ].join("\n"),
         "utf-8",
       );
-
-      await this.git.add(["README.md", ".gitignore"]);
-      await this.git.commit("Initial commit", {
-        "--author": "WorkspaceManager <workspace@system.local>",
-      });
-      logger.info("Initial commit created");
     }
+
+    await this.git.add(["README.md", ".gitignore"]);
+    await this.git.commit("Initial commit", {
+      "--author": "WorkspaceManager <workspace@system.local>",
+    });
+    logger.info("Initial commit created");
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -664,6 +714,7 @@ export class GitBranchManager {
     options?: {
       branch?: string;
       sparse?: string[];
+      env?: Record<string, string>;
     },
   ): Promise<void> {
     const args: string[] = [];
@@ -680,8 +731,29 @@ export class GitBranchManager {
     args.push("--single-branch");
 
     // Clone using a temporary git instance (not tied to any repo)
-    const tmpGit = simpleGit();
-    await tmpGit.clone(repoUrl, targetDir, args);
+    let tmpGit = simpleGit();
+    if (options?.env) {
+      tmpGit = tmpGit.env(options.env);
+    }
+    try {
+      await tmpGit.clone(repoUrl, targetDir, args);
+    } catch (err: any) {
+      // Empty repos have no branches — retry without --branch and --single-branch
+      if (err.message?.includes("not found in upstream") || err.message?.includes("empty repository")) {
+        logger.info(`Branch not found — cloning without branch filter (empty repo?)`);
+        const fallbackArgs = args.filter(a => a !== "--single-branch" && a !== "--branch" && a !== (options?.branch || ""));
+        // Remove --branch and its value
+        const cleanArgs: string[] = [];
+        for (let i = 0; i < args.length; i++) {
+          if (args[i] === "--branch") { i++; continue; } // skip --branch and next arg
+          if (args[i] === "--single-branch") continue;
+          cleanArgs.push(args[i]);
+        }
+        await tmpGit.clone(repoUrl, targetDir, cleanArgs);
+      } else {
+        throw err;
+      }
+    }
 
     // Point this manager at the cloned repo
     this.git = simpleGit(targetDir);
@@ -742,6 +814,11 @@ export class GitBranchManager {
     } finally {
       this.mutex.release();
     }
+  }
+
+  /** List configured remotes. */
+  async getRemotes(): Promise<Array<{ name: string; refs: { fetch: string; push: string } }>> {
+    return this.git.getRemotes(true);
   }
 
   /**

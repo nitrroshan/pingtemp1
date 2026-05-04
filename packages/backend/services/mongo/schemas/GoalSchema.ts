@@ -7,11 +7,14 @@ import mongoose, { Schema, Document, Types } from "mongoose";
 export interface IGoal extends Document {
   _id: Types.ObjectId;
   teamId: string;
-  sessionId: string;
+  userId: string;
   goal: string;
+  goalId?: string;
   status: "pending" | "planning" | "executing" | "completed" | "failed";
   planId?: string;
   result?: string;
+  repoUrl?: string;
+  repoBranch?: string;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -19,8 +22,9 @@ export interface IGoal extends Document {
 const goalSchema = new Schema<IGoal>(
   {
     teamId: { type: String, required: true, index: true },
-    sessionId: { type: String, required: true },
+    userId: { type: String, required: true },
     goal: { type: String, required: true },
+    goalId: { type: String, default: null },
     status: {
       type: String,
       enum: ["pending", "planning", "executing", "completed", "failed"],
@@ -28,6 +32,8 @@ const goalSchema = new Schema<IGoal>(
     },
     planId: { type: String, default: null },
     result: { type: String, default: null },
+    repoUrl: { type: String, default: null },
+    repoBranch: { type: String, default: null },
   },
   { timestamps: true },
 );

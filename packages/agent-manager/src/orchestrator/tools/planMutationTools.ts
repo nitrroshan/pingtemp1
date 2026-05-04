@@ -55,6 +55,7 @@ export const AddTasksSchema = z.object({
     dependencies: z.array(z.string()).default([]).describe("Task IDs this depends on"),
     expectedOutput: z.string().describe("What this task should produce"),
     context: TaskContextSchema,
+    onDependencyFail: z.enum(["skip", "replan", "fail"]).optional().describe("Strategy when a dependency fails"),
   })).min(1).describe("Tasks to add to the active plan"),
 });
 
@@ -83,9 +84,11 @@ export const ReplanSchema = z.object({
     assignedRole: z.string(),
     priority: z.number().min(1).max(5).default(3),
     complexity: z.enum(["low", "medium", "high"]).default("medium"),
+    type: z.string().optional().describe("Task type hint (e.g. 'feature', 'bugfix')"),
     dependencies: z.array(z.string()).default([]),
     expectedOutput: z.string(),
     context: TaskContextSchema,
+    onDependencyFail: z.enum(["skip", "replan", "fail"]).optional().describe("Strategy when a dependency fails"),
   })).min(1).describe("New tasks to replace remaining pending tasks"),
 });
 
@@ -95,6 +98,12 @@ export interface PlanMutationContext {
   tasks: ITaskProvider;
   dagResolver: DependencyResolver;
   availableRoles: string[];
+  /** Goal ID — all tasks created by mutation tools inherit this */
+  currentGoalId: string;
+  /** Team ID — for persistence scoping */
+  teamId?: string;
+  /** v3.0: Database persistence (optional) */
+  taskPersistence?: { saveTasks(goalId: string, teamId: string, tasks: any[]): Promise<void>; updateTaskStatus(taskId: string, goalId: string, status: string, output?: unknown): Promise<void>; clearTasksByGoal(goalId: string): Promise<void> } | null;
   /** Callback to emit Socket.IO mutation events */
   onMutation?: (event: { type: string; data: any }) => void;
 }
@@ -138,11 +147,13 @@ interface RawTaskInput {
  * Shared by `add_tasks` and `replan` — single implementation (DRY).
  * Returns the list of normalized task IDs.
  */
-function normalizeAndAddTasks(
+async function normalizeAndAddTasks(
   ctx: PlanMutationContext,
   rawTasks: RawTaskInput[],
-): string[] {
-  const allExisting = ctx.tasks.getAllTasks();
+): Promise<string[]> {
+  const allExisting = ctx.currentGoalId ? ctx.tasks.getByGoal(ctx.currentGoalId) : ctx.tasks.getAllTasks();
+  const goalPrefix = ctx.currentGoalId ? ctx.currentGoalId.slice(0, 8) : '';
+  const scopeId = (id: string) => goalPrefix && !id.startsWith(goalPrefix) ? `${goalPrefix}-${id}` : id;
   const assignedIds = new Set(allExisting.map(t => t.id));
 
   let maxId = Math.max(0, ...allExisting.map(t => {
@@ -154,17 +165,17 @@ function normalizeAndAddTasks(
   // Track ALL assigned IDs to prevent collisions between kept and generated IDs
   const idMap = new Map<string, string>();
   for (const task of rawTasks) {
-    if (/^task-\d+$/.test(task.id) && !assignedIds.has(task.id)) {
-      idMap.set(task.id, task.id);
-      assignedIds.add(task.id);
+    if (/^task-\d+$/.test(task.id) && !assignedIds.has(scopeId(task.id))) {
+      idMap.set(task.id, scopeId(task.id));
+      assignedIds.add(scopeId(task.id));
       // Keep maxId ahead of any kept ID
       const num = parseInt(task.id.match(/^task-(\d+)/)![1]!, 10);
       if (num > maxId) maxId = num;
     } else {
       maxId++;
-      while (assignedIds.has(`task-${maxId}`)) maxId++; // skip collisions
-      idMap.set(task.id, `task-${maxId}`);
-      assignedIds.add(`task-${maxId}`);
+      while (assignedIds.has(scopeId(`task-${maxId}`))) maxId++; // skip collisions
+      idMap.set(task.id, scopeId(`task-${maxId}`));
+      assignedIds.add(scopeId(`task-${maxId}`));
     }
   }
 
@@ -173,11 +184,12 @@ function normalizeAndAddTasks(
     const normalizedId = idMap.get(task.id) || task.id;
     const normalizedDeps = task.dependencies.map(d => idMap.get(d) || d);
 
-    ctx.tasks.addTask({
+    await ctx.tasks.addTask({
       id: normalizedId,
       title: task.title,
       description: `${task.title}: ${task.description}`,
       assigned_role: task.assignedRole.toLowerCase(),
+      goalId: ctx.currentGoalId,
       status: "pending",
       priority: task.priority,
       type: (task.type as any) || "work",
@@ -197,7 +209,10 @@ function normalizeAndAddTasks(
     });
   }
 
-  ctx.dagResolver.rebuild(ctx.tasks);
+  ctx.currentGoalId ? ctx.dagResolver.rebuildForGoal(ctx.tasks, ctx.currentGoalId) : ctx.dagResolver.rebuild(ctx.tasks);
+
+  // TaskStore write-through handles MongoDB persistence — no separate call needed
+
   return rawTasks.map(t => idMap.get(t.id) || t.id);
 }
 
@@ -233,16 +248,17 @@ export function createUpdateTaskTool(ctx: PlanMutationContext) {
           const met = depTask?.status === "completed";
           return [d, met] as [string, boolean];
         }));
-        ctx.dagResolver.rebuild(ctx.tasks);
+        ctx.currentGoalId ? ctx.dagResolver.rebuildForGoal(ctx.tasks, ctx.currentGoalId) : ctx.dagResolver.rebuild(ctx.tasks);
 
         // Re-evaluate readiness: if all deps met, mark task ready via ITaskProvider
         const allMet = !task.prerequisites.size || Array.from(task.prerequisites.values()).every(v => v);
         if (allMet && (task.status === "pending" || task.status === "failed")) {
-          ctx.tasks.markReady(input.taskId);
+          await ctx.tasks.markReady(input.taskId);
         }
       }
 
       ctx.onMutation?.({ type: "plan:task_updated", data: { taskId: input.taskId, patch: input.patch } });
+
       return `Task '${input.taskId}' updated successfully`;
     },
     {
@@ -263,7 +279,7 @@ export function createAddTasksTool(ctx: PlanMutationContext) {
       }
 
       // Validate no duplicate IDs
-      const existingIds = new Set(ctx.tasks.getAllTasks().map((t) => t.id));
+      const existingIds = new Set((ctx.currentGoalId ? ctx.tasks.getByGoal(ctx.currentGoalId) : ctx.tasks.getAllTasks()).map((t) => t.id));
       for (const task of input.tasks) {
         if (existingIds.has(task.id)) return `Error: Task ID '${task.id}' already exists`;
       }
@@ -272,7 +288,7 @@ export function createAddTasksTool(ctx: PlanMutationContext) {
       const dagErr = ctx.dagResolver.validateNewTasks(input.tasks, ctx.tasks);
       if (dagErr) return `Error: ${dagErr}`;
 
-      const normalizedIds = normalizeAndAddTasks(ctx, input.tasks);
+      const normalizedIds = await normalizeAndAddTasks(ctx, input.tasks);
       ctx.onMutation?.({ type: "plan:tasks_added", data: { tasks: normalizedIds } });
       return `Added ${input.tasks.length} task(s): ${normalizedIds.join(", ")}`;
     },
@@ -294,7 +310,7 @@ export function createRemoveTaskTool(ctx: PlanMutationContext) {
 
       if (input.cascadeOrphans) {
         // Find tasks that depend ONLY on this task
-        const allTasks = ctx.tasks.getAllTasks();
+        const allTasks = ctx.currentGoalId ? ctx.tasks.getByGoal(ctx.currentGoalId) : ctx.tasks.getAllTasks();
         for (const task of allTasks) {
           if (task.prerequisites && task.id !== input.taskId) {
             const deps = Array.from(task.prerequisites.keys());
@@ -311,7 +327,8 @@ export function createRemoveTaskTool(ctx: PlanMutationContext) {
         ctx.tasks.removeTask(id);
       }
 
-      ctx.dagResolver.rebuild(ctx.tasks);
+      ctx.currentGoalId ? ctx.dagResolver.rebuildForGoal(ctx.tasks, ctx.currentGoalId) : ctx.dagResolver.rebuild(ctx.tasks);
+
       ctx.onMutation?.({ type: "plan:task_removed", data: { taskIds: removed } });
       return `Removed ${removed.length} task(s): ${removed.join(", ")}`;
     },
@@ -333,6 +350,7 @@ export function createReprioritizeTool(ctx: PlanMutationContext) {
       task.priority = input.priority;
 
       ctx.onMutation?.({ type: "plan:task_reprioritized", data: { taskId: input.taskId, priority: input.priority } });
+
       return `Task '${input.taskId}' priority set to ${input.priority}`;
     },
     {
@@ -359,11 +377,12 @@ export function createReassignTaskTool(ctx: PlanMutationContext) {
       // R9-3 FIX: Reset failed status so task can be re-dispatched
       let statusReset = false;
       if (task.status === "failed") {
-        task.status = "ready";
+        await ctx.tasks.updateTaskStatus(task.id, "ready");
         statusReset = true;
       }
 
       ctx.onMutation?.({ type: "plan:task_reassigned", data: { taskId: input.taskId, oldRole, newRole: input.newRole, reason: input.reason, statusReset } });
+
       return statusReset
         ? `Task '${input.taskId}' reassigned from '${oldRole}' to '${input.newRole}' and status reset to ready for re-dispatch.`
         : `Task '${input.taskId}' reassigned from '${oldRole}' to '${input.newRole}'`;
@@ -386,16 +405,19 @@ export function createReplanTool(ctx: PlanMutationContext) {
       }
 
       // Discard pending/ready tasks (mark as discarded, don't delete — audit trail)
-      const allTasks = ctx.tasks.getAllTasks();
+      const allTasks = ctx.currentGoalId ? ctx.tasks.getByGoal(ctx.currentGoalId) : ctx.tasks.getAllTasks();
       const discarded: string[] = [];
       for (const task of allTasks) {
         if (task.status === "pending" || task.status === "ready") {
-          task.status = "discarded";
+          await ctx.tasks.updateTaskStatus(task.id, "discarded");
           discarded.push(task.id);
         }
       }
 
-      const normalizedNewIds = normalizeAndAddTasks(ctx, input.newTasks);
+      const normalizedNewIds = await normalizeAndAddTasks(ctx, input.newTasks);
+
+      // TaskStore write-through handles discarded status persistence
+
       ctx.onMutation?.({ type: "plan:replanned", data: { reason: input.reason, discarded, newTasks: normalizedNewIds } });
       return `Replan complete. Discarded ${discarded.length} task(s), added ${input.newTasks.length} new task(s). Reason: ${input.reason}`;
     },

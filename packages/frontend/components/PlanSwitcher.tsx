@@ -14,10 +14,10 @@ import type { PlanSummary } from './GoalScreen/PlanList';
 
 interface PlanSwitcherProps {
   plans: PlanSummary[];
-  activePlanId: string | null;
+  activeGoalId: string | null;
   planName?: string;
   sessionState?: string | null;
-  onSelectPlan: (planId: string) => void;
+  onSelectGoal: (goalId: string) => void;
   onNewGoal: () => void;
 }
 
@@ -30,10 +30,10 @@ const STATUS_ICON: Record<string, string> = {
 
 export const PlanSwitcher: React.FC<PlanSwitcherProps> = ({
   plans,
-  activePlanId,
+  activeGoalId,
   planName,
   sessionState,
-  onSelectPlan,
+  onSelectGoal,
   onNewGoal,
 }) => {
   const [isOpen, setIsOpen] = useState(false);
@@ -60,7 +60,7 @@ export const PlanSwitcher: React.FC<PlanSwitcherProps> = ({
   const activePlans = filtered.filter(p => p.status === 'active');
   const recentPlans = filtered.filter(p => p.status !== 'active');
 
-  if (!activePlanId) return null;
+  if (!activeGoalId) return null;
 
   return (
     <div className="relative" ref={popoverRef}>
@@ -98,7 +98,7 @@ export const PlanSwitcher: React.FC<PlanSwitcherProps> = ({
               <>
                 <div className="px-2 py-1 text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">Active</div>
                 {activePlans.map(plan => (
-                  <PlanRow key={plan.planId} plan={plan} isActive={plan.planId === activePlanId} onClick={() => { onSelectPlan(plan.planId); setIsOpen(false); }} />
+                  <PlanRow key={plan.goalId} plan={plan} isActive={plan.goalId === activeGoalId} onClick={() => { onSelectGoal(plan.goalId); setIsOpen(false); }} />
                 ))}
               </>
             )}
@@ -106,7 +106,7 @@ export const PlanSwitcher: React.FC<PlanSwitcherProps> = ({
               <>
                 <div className="px-2 py-1 mt-1 text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">Recent</div>
                 {recentPlans.map(plan => (
-                  <PlanRow key={plan.planId} plan={plan} isActive={plan.planId === activePlanId} onClick={() => { onSelectPlan(plan.planId); setIsOpen(false); }} />
+                  <PlanRow key={plan.goalId} plan={plan} isActive={plan.goalId === activeGoalId} onClick={() => { onSelectGoal(plan.goalId); setIsOpen(false); }} />
                 ))}
               </>
             )}

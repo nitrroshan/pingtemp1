@@ -32,6 +32,8 @@ function Show-Menu {
     Write-Host "  [21] Dev Cloud (MongoDB + build + seed + start)" -ForegroundColor Green
     Write-Host "  [22] Seed Admin User" -ForegroundColor Green
     Write-Host "  [23] Reset MongoDB (drop data)" -ForegroundColor Red
+    Write-Host "  [24] Clean Local Data (workspaces + collab)" -ForegroundColor Red
+    Write-Host "  [25] Start Collab Service" -ForegroundColor Green
     Write-Host ""
     Write-Host "  [0] Exit" -ForegroundColor DarkGray
     Write-Host ""
@@ -276,6 +278,40 @@ while ($true) {
             } else {
                 Write-Host "  Cancelled" -ForegroundColor DarkGray
             }
+        }
+        "24" {
+            Write-Host ""
+            Write-Host "  === Clean Local Data ===" -ForegroundColor Red
+            $confirm = Read-Host "  Delete all workspaces + collab docs? Agent code will be lost! [y/N]"
+            if ($confirm -eq "y") {
+                Set-Location $root
+                # Clean workspaces (git repos, agent code, artifacts)
+                $wsDir = "$root\packages\backend\data\workspaces"
+                if (Test-Path $wsDir) {
+                    Remove-Item $wsDir -Recurse -Force
+                    Write-Host "  Deleted workspaces" -ForegroundColor Yellow
+                }
+                # Clean collab docs (CRDT .bin files)
+                $collabDir = "$root\packages\backend\data\collab"
+                if (Test-Path $collabDir) {
+                    Remove-Item $collabDir -Recurse -Force
+                    Write-Host "  Deleted collab docs" -ForegroundColor Yellow
+                }
+                # Also clean dist/data if it exists (stale from old builds)
+                $distDataDir = "$root\packages\backend\dist\data"
+                if (Test-Path $distDataDir) {
+                    Remove-Item $distDataDir -Recurse -Force
+                    Write-Host "  Deleted dist/data" -ForegroundColor Yellow
+                }
+                Write-Host "  Done! All local data cleaned." -ForegroundColor Green
+            } else {
+                Write-Host "  Cancelled" -ForegroundColor DarkGray
+            }
+        }
+        "25" {
+            Write-Host ""
+            Write-Host "  === Start Collab Service ===" -ForegroundColor Green
+            Start-Service "Collab Service" "$root\packages\collab-service" "bun run start" "Ping - Collab"
         }
         "0"  { Write-Host "  Bye!" -ForegroundColor DarkGray; break }
         default { Write-Host "  Invalid option" -ForegroundColor Red }

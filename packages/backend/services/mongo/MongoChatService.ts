@@ -20,12 +20,14 @@ export class MongoChatService implements IChatService {
     const doc = await ChatMessageModel.create({
       teamId: msg.teamId,
       agentId: msg.agentId,
-      sessionId: msg.sessionId,
+      userId: msg.userId,
       goalId: msg.goalId ?? undefined,
       taskId: msg.taskId ?? undefined,
       role: msg.role,
       content: msg.content,
       streamParts: msg.streamParts ?? undefined,
+      agentLayer: msg.agentLayer ?? undefined,
+      contextMessages: msg.contextMessages ?? undefined,
     });
     return this.toMessage(doc);
   }
@@ -44,20 +46,24 @@ export class MongoChatService implements IChatService {
     return docs.reverse().map((d) => this.toMessage(d));
   }
 
-  async getAgentMessages(teamId: string, agentId: string, options?: { limit?: number }): Promise<ChatMessage[]> {
+  async getAgentMessages(teamId: string, agentId: string, options?: { limit?: number; userId?: string }): Promise<ChatMessage[]> {
     const ChatMessageModel = await this.getModel();
     const limit = Math.min(options?.limit ?? 50, 200);
-    const docs = await ChatMessageModel.find({ teamId, agentId })
+    const query: any = { teamId, agentId };
+    if (options?.userId) query.userId = options.userId;
+    const docs = await ChatMessageModel.find(query)
       .sort({ timestamp: -1 })
       .limit(limit)
       .lean();
     return docs.reverse().map((d) => this.toMessage(d));
   }
 
-  async getGoalMessages(teamId: string, goalId: string, options?: { limit?: number }): Promise<ChatMessage[]> {
+  async getGoalMessages(teamId: string, goalId: string, options?: { limit?: number; userId?: string }): Promise<ChatMessage[]> {
     const ChatMessageModel = await this.getModel();
     const limit = Math.min(options?.limit ?? 50, 200);
-    const docs = await ChatMessageModel.find({ teamId, goalId })
+    const query: any = { teamId, goalId };
+    if (options?.userId) query.userId = options.userId;
+    const docs = await ChatMessageModel.find(query)
       .sort({ timestamp: -1 })
       .limit(limit)
       .lean();
@@ -69,13 +75,46 @@ export class MongoChatService implements IChatService {
       id: doc._id.toString(),
       teamId: doc.teamId,
       agentId: doc.agentId,
-      sessionId: doc.sessionId,
-      goalId: doc.goalId ?? undefined,
-      taskId: doc.taskId ?? undefined,
+      userId: doc.userId,
+      goalId: doc.goalId,
+      taskId: doc.taskId || undefined,
       role: doc.role,
       content: doc.content,
       streamParts: doc.streamParts ?? undefined,
+      agentLayer: doc.agentLayer ?? undefined,
+      contextMessages: doc.contextMessages ?? undefined,
       timestamp: doc.timestamp?.toISOString?.() ?? new Date().toISOString(),
+    };
+  }
+
+  async getSessionMessages(teamId: string, options?: {
+    sessionLimit?: number;
+    workerLimit?: number;
+    userId?: string;
+  }): Promise<{ session: ChatMessage[]; worker: ChatMessage[] }> {
+    const ChatMessageModel = await this.getModel();
+    const sessionLimit = Math.min(options?.sessionLimit ?? 100, 500);
+    const workerLimit = Math.min(options?.workerLimit ?? 50, 200);
+
+    // userId filter: when provided, only load messages from this user + assistant responses
+    const userFilter = options?.userId
+      ? { $or: [{ userId: options.userId }, { role: "assistant" }] }
+      : {};
+
+    const [sessionDocs, workerDocs] = await Promise.all([
+      ChatMessageModel.find({ teamId, agentLayer: { $in: ["planner", "chat-agent"] }, ...userFilter })
+        .sort({ timestamp: -1 })
+        .limit(sessionLimit)
+        .lean(),
+      ChatMessageModel.find({ teamId, $or: [{ agentLayer: "worker" }, { agentLayer: null }, { agentLayer: { $exists: false } }], ...userFilter })
+        .sort({ timestamp: -1 })
+        .limit(workerLimit)
+        .lean(),
+    ]);
+
+    return {
+      session: sessionDocs.reverse().map(d => this.toMessage(d)),
+      worker: workerDocs.reverse().map(d => this.toMessage(d)),
     };
   }
 }

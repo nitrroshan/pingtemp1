@@ -1,6 +1,7 @@
 # Parallel Plans Architecture
 
-> **Status:** Research / Design  
+> **Status:** Approved — Versioned Implementation  
+> **Decision:** Option C → Option A via 3 incremental versions  
 > **Related:** [persistent-agents](../persistent-agents/feature_architecture.md), [frontend-redesign-goal-first](../frontend-redesign-goal-first.md), [MASTER-ARCHITECTURE](../MASTER-ARCHITECTURE.md)
 
 ## Problem Statement
@@ -194,14 +195,121 @@ Team (AgentManager)
 
 ## Recommendation
 
-**Option C (Hybrid)** because:
+**All three options, as incremental versions:**
 
-1. **Delivers immediate value** — users can plan ahead while tasks execute
-2. **Avoids workspace conflicts** — the hardest unsolved problem
-3. **Natural upgrade path** — removing the execution lock gives Option A when workspace isolation (Phase 4) is ready
-4. **Reasonable effort** — 1-2 weeks vs 2-3 weeks for full parallel
+| Version | Option | What | Effort | Cumulative |
+|---------|--------|------|--------|------------|
+| **v1.0** | C (Hybrid) | GoalContext Map in GoalManager, serial execution mutex, per-goal ChatAgents, frontend goal switcher | 8 days | 8 days |
+| **v2.0** | — (Workspace) | Per-task clone, worktree optimization, repoUrl in plans, push-to-remote | 11 days | 19 days |
+| **v3.0** | A (Full Parallel) | Remove execution mutex, per-goal dispatch tracking, per-goal planners, cross-goal awareness | 14 days | 33 days |
 
-**Decision Required:** Please choose Option A, B, or C.
+Each version is independently deployable behind feature flags:
+- `FF_PARALLEL_PLANS` — enables v1.0 (GoalContext, serial queue)
+- `FF_WORKSPACE_ISOLATION` — enables v2.0 (per-task clone)
+- `FF_PARALLEL_EXECUTION` — enables v3.0 (concurrent goals)
+
+See versioned implementation plans:
+- [v1.0 Plan](v1.0/feature_implementation_planning.md) — GoalContext + serial execution
+- [v2.0 Plan](v2.0/feature_implementation_planning.md) — workspace isolation
+- [v3.0 Plan](v3.0/feature_implementation_planning.md) — full parallel execution
+
+**Decision:** Approved. Build v1.0 → v2.0 → v3.0 in sequence.
+
+---
+
+## Cross-Feature Dependency Map
+
+Parallel Plans doesn't exist in isolation. Several features must be coordinated:
+
+```
+PHASE 0 — Quick Wins (no dependencies, do anytime)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  Plugin Taxonomy refactor ── clean IPlugin, scope field
+  Task type prep ── add goalId/planId as top-level fields
+
+PHASE 1 — Chat Agent Layer (2-3 weeks)     ← THE KEY BLOCKER
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  No blockers. Unlocks everything else.
+  Steps: ChatAgent class → read-only chat → Channel B task updates
+       → ChatAgent dispatch → create_agent_task tool
+  Feature: chat-agent-layer/
+
+PHASE 2 — Conversation Persistence (1 week)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  Depends on: Phase 1 (ChatAgent owns conversations)
+  Per-agent conversation storage (JSONL/MongoDB)
+  Session restore on reconnect
+  Feature: conversation-persistence/
+
+PHASE 3 — Git Task Context (1-2 weeks) ✅
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  Depends on: Phase 1 (ChatAgent), workspace-lifecycle ✅
+  Workspace repo branch-per-task, goalId/planId on Task type
+  Feature: git-task-context/
+
+PHASE 3.5 — GoalManager Extraction (2-3 days)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  Depends on: Phase 3
+  Extract goal lifecycle from OrchestratorService into GoalManager (SRP)
+  Single-goal refactor — same behavior, cleaner code
+  Prerequisite for Phase 4 (GoalManager gains Map)
+  Feature: goal-manager/
+
+PHASE 4 — Parallel Plans v1.0 (2 weeks)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  Depends on: Phase 3.5 (GoalManager), Phase 3 (goalId on tasks)
+  GoalContext Map, per-goal planner + ChatAgents, serial execution, goal sidebar
+  Feature: parallel-plans/v1.0/
+
+PHASE 5 — Parallel Plans v2.0 (2 weeks)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  Depends on: Phase 4, Phase 3 (workspace isolation)
+  Per-task clone, worktree optimization, repoUrl
+  Feature: parallel-plans/v2.0/
+
+PHASE 6 — Parallel Plans v3.0 (2 weeks)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  Depends on: Phase 5 (workspace isolation eliminates conflicts)
+  Remove execution mutex → FULL PARALLEL EXECUTION
+  Feature: parallel-plans/v3.0/
+```
+
+### Feature × Phase Matrix
+
+| Feature | Phase | Depends On | Effort | FF Flag |
+|---------|-------|------------|--------|---------|
+| Plugin Taxonomy | 0 | nothing | 1 week | — |
+| Chat Agent Layer | 1 | nothing | 2-3 weeks | `ENABLE_CHAT_AGENTS` |
+| Conversation Persistence | 2 | Phase 1 | 1 week | `ENABLE_CONV_PERSISTENCE` |
+| Git Task Context | 3 | Phase 1, workspace-lifecycle ✅ | 1-2 weeks | `GIT_MODEL=dual` |
+| Parallel Plans v1.0 | 4 | Phases 1, 3 | 2 weeks | `FF_PARALLEL_PLANS` |
+| Parallel Plans v2.0 | 5 | Phase 4 | 2 weeks | `FF_WORKSPACE_ISOLATION` |
+| Parallel Plans v3.0 | 6 | Phase 5 | 2 weeks | `FF_PARALLEL_EXECUTION` |
+
+**Total to full parallel execution: ~10-13 weeks**
+
+### What Runs In Parallel (Development Phases)
+
+```
+Week 1-2:  Plugin Taxonomy ────────┐
+Week 1-3:  Chat Agent Layer ───────┤ (independent, parallel dev)
+                                   │
+Week 3-4:  Conversation Persistence ← needs Chat Agents
+Week 3-5:  Git Task Context ──────── needs Chat Agents
+                                   │
+Week 5-7:  Parallel Plans v1.0 ───── needs Git Task Context
+Week 7-9:  Parallel Plans v2.0 ───── needs v1.0
+Week 9-11: Parallel Plans v3.0 ───── needs v2.0 → FULL PARALLEL
+```
+
+### What NOT to Build Until Parallel Plans v3.0 Ships
+
+| Feature | Why Defer |
+|---------|-----------|
+| External Agent Invocation (A7) | Needs Tools-as-MCP (A3). IWorker interface is ready — implement McpWorker when connecting external agents |
+| Tools as MCP (A3) | Large refactor, no user-facing value yet |
+| Worker Sandboxing | Security nice-to-have, not blocking parallel plans |
+| Team Stacking (B3) | Needs A7 + parallel plans. Build after v3.0 |
 
 ---
 
@@ -209,13 +317,13 @@ Team (AgentManager)
 
 Regardless of which option is chosen, **full parallel execution** is blocked by a fundamental constraint: all agents in a team share one Git workspace. Two goals writing to the same files causes conflicts.
 
-### Resolution paths (from MASTER-ARCHITECTURE.md)
+### Resolution paths
 
-| Phase | Solution | Description |
-|-------|----------|-------------|
-| Phase 3 (current) | Parallel plan *management* only | Create, review, approve multiple plans. Execute one at a time. |
-| Phase 4 (Git Task Context) | Per-goal workspace isolation | Each goal gets its own git worktree or repo clone. Enables parallel execution. |
-| Phase 6 (Worker Sandboxing) | Per-agent filesystem isolation | Each sub-agent gets its own container. Complete conflict elimination. |
+| Roadmap Phase | Solution | Description |
+|---------------|----------|-------------|
+| Phase 4 (Parallel Plans v1.0) | Parallel plan *management* only | Create, review, approve multiple plans. Execute one at a time. |
+| Phase 5 (Parallel Plans v2.0) | Per-goal workspace isolation | Each goal gets its own git worktree or repo clone. Enables parallel execution. |
+| Phase 6+ (Worker Sandboxing) | Per-agent filesystem isolation | Each sub-agent gets its own container. Complete conflict elimination. |
 
 ---
 

@@ -13,14 +13,18 @@
 import path from "path";
 import { resolve, join } from "path";
 import { getConfig } from "../config/index.js";
-import type { IChatService, IGoalService } from "./contracts/index.js";
+import type { IChatService, IGoalService, ITeamRegistryService } from "./contracts/index.js";
+import type { ITaskPersistence } from "@ping/agent-manager/src/orchestrator/contracts/index.js";
 import { PluginTeamService } from "./PluginTeamService.js";
 
 export interface ServiceRegistry {
   teams: PluginTeamService;
   chat: IChatService;
   goals: IGoalService;
+  tasks: ITaskPersistence;
+  teamRegistry: ITeamRegistryService;
   mode: "local" | "cloud";
+  db?: any;
 }
 
 /**
@@ -44,12 +48,18 @@ export async function createServiceRegistry(dataDir: string = "./data"): Promise
   // Chat + Goals: MongoDB in cloud mode, SQLite in local mode
   let chatService: IChatService;
   let goalService: IGoalService;
+  let teamRegistryService: ITeamRegistryService;
+  let taskService: ITaskPersistence;
 
   if (config.mode === "cloud" && config.mongodbUri) {
     const { MongoChatService } = await import("./mongo/MongoChatService.js");
     const { MongoGoalService } = await import("./mongo/MongoGoalService.js");
+    const { MongoTeamRegistryService } = await import("./mongo/MongoTeamRegistryService.js");
+    const { MongoTaskService } = await import("./mongo/MongoTaskService.js");
     chatService = new MongoChatService();
     goalService = new MongoGoalService();
+    teamRegistryService = new MongoTeamRegistryService();
+    taskService = new MongoTaskService();
   } else {
     const { Database } = await import("bun:sqlite");
     const fs = await import("fs");
@@ -65,14 +75,21 @@ export async function createServiceRegistry(dataDir: string = "./data"): Promise
 
     const { SqliteChatService } = await import("./sqlite/index.js");
     const { SqliteGoalService } = await import("./sqlite/index.js");
+    const { SqliteTeamRegistryService } = await import("./sqlite/SqliteTeamRegistryService.js");
     chatService = new SqliteChatService(db);
     goalService = new SqliteGoalService(db);
+    teamRegistryService = new SqliteTeamRegistryService(db);
+    // v3.1: Real SQLite task persistence for local dev
+    const { SqliteTaskService } = await import("./sqlite/SqliteTaskService.js");
+    taskService = new SqliteTaskService(db);
   }
 
   return {
     teams: teamService,
     chat: chatService,
     goals: goalService,
+    tasks: taskService,
+    teamRegistry: teamRegistryService,
     mode: config.mongodbUri ? "cloud" : "local",
   };
 }

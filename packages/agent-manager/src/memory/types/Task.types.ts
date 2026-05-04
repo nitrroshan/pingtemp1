@@ -1,3 +1,5 @@
+import type { DocumentRef } from "./DocumentRef.js";
+
 /**
  * Task status type
  * Represents the lifecycle states of a task in the memory manager
@@ -73,6 +75,16 @@ export interface Task {
   dependants: string[];
 
   // ═══════════════════════════════════════════════════════════════════════════
+  // Orchestration Context (v3.0 — Git Task Context, Phase 3)
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  /** Goal ID this task belongs to — links tasks to a specific user goal */
+  goalId?: string;
+
+  /** Plan ID this task is part of — links tasks to a specific plan version */
+  planId?: string;
+
+  // ═══════════════════════════════════════════════════════════════════════════
   // Workspace Layer Fields (v1.1)
   // ═══════════════════════════════════════════════════════════════════════════
 
@@ -97,4 +109,17 @@ export interface Task {
 
   /** Array of knowledge reference IDs used by this task */
   knowledgeRefs?: string[];
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // Document-First Context Fields (v4.0 — CRDT-First Architecture)
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  /** Documents this task should read as input (populated from upstream completions) */
+  inputDocs?: DocumentRef[];
+
+  /** Documents this task produced (set at completion time via complete_task) */
+  producedDocs?: DocumentRef[];
+
+  /** Key decisions made during this task (set at completion time) */
+  decisions?: Array<{ decision: string; rationale?: string }>;
 }

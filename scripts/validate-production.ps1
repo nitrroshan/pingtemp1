@@ -65,6 +65,7 @@ Push-Location $repoRoot
 $BE         = "packages/backend"
 $FE         = "packages/frontend"
 $COLLAB     = "packages/collaboration"
+$COLLAB_SVC = "packages/collab-service"
 $AM         = "packages/agent-manager"
 $CONFIG     = "$BE/config"
 $ENV_EX     = "$BE/.env.example"
@@ -110,15 +111,15 @@ if (ShouldRun 0 1) {
     FileNotContains $COMPOSE_D "backend:"               "Dev: no backend container (run locally)"
     FileNotContains $COMPOSE_D "frontend:"              "Dev: no frontend container (run locally)"
 
-    # Collaboration Dockerfile + standalone entry point
-    FileExists      "$COLLAB/Dockerfile"                    "Collaboration Dockerfile"
-    FileContains    "$COLLAB/Dockerfile" "standalone\.ts"    "Collab Dockerfile: CMD uses standalone.ts"
-    FileContains    "$COLLAB/Dockerfile" "EXPOSE 1234"       "Collab Dockerfile: exposes port 1234"
-    FileContains    "$COLLAB/Dockerfile" "oven/bun"          "Collab Dockerfile: uses bun image"
-    FileExists      "$COLLAB/src/standalone.ts"              "Standalone collab entry point"
-    FileContains    "$COLLAB/src/standalone.ts" "CollabServer"  "standalone.ts: imports CollabServer"
-    FileContains    "$COLLAB/src/standalone.ts" "SIGTERM"       "standalone.ts: handles SIGTERM"
-    FileContains    "$COLLAB/src/standalone.ts" "SIGINT"        "standalone.ts: handles SIGINT"
+    # Collab-service Dockerfile + standalone entry point
+    FileExists      "$COLLAB_SVC/Dockerfile"                    "Collab-service Dockerfile"
+    FileContains    "$COLLAB_SVC/Dockerfile" "standalone\.ts"    "Collab Dockerfile: CMD uses standalone.ts"
+    FileContains    "$COLLAB_SVC/Dockerfile" "EXPOSE 1234"       "Collab Dockerfile: exposes port 1234"
+    FileContains    "$COLLAB_SVC/Dockerfile" "oven/bun"          "Collab Dockerfile: uses bun image"
+    FileExists      "$COLLAB_SVC/src/standalone.ts"              "Standalone collab-service entry point"
+    FileContains    "$COLLAB_SVC/src/standalone.ts" "CollabServer"  "standalone.ts: imports CollabServer"
+    FileContains    "$COLLAB_SVC/src/standalone.ts" "SIGTERM"       "standalone.ts: handles SIGTERM"
+    FileContains    "$COLLAB_SVC/src/standalone.ts" "SIGINT"        "standalone.ts: handles SIGINT"
 
     # Config system
     FileContains    "$CONFIG/index.ts"      "collabMode"        "AppConfig: collabMode field"

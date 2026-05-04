@@ -16,15 +16,15 @@
 export interface NotificationQueueConfig {
   /** Debounce interval in ms. Default: 100 */
   debounceMs?: number;
-  /** Called with batched message when queue flushes */
-  onFlush: (batchedMessage: string) => void;
+  /** Called with batched message when queue flushes for a specific goal */
+  onFlush: (goalId: string, batchedMessage: string) => void;
 }
 
 export class NotificationQueue {
-  private pending: string[] = [];
-  private timer: ReturnType<typeof setTimeout> | null = null;
+  private pending: Map<string, string[]> = new Map();
+  private timers: Map<string, ReturnType<typeof setTimeout>> = new Map();
   private debounceMs: number;
-  private onFlush: (batchedMessage: string) => void;
+  private onFlush: (goalId: string, batchedMessage: string) => void;
 
   constructor(config: NotificationQueueConfig) {
     this.debounceMs = config.debounceMs ?? 100;
@@ -32,55 +32,65 @@ export class NotificationQueue {
   }
 
   /**
-   * Push a message into the queue. Starts debounce timer.
-   * Multiple pushes within debounceMs are batched into one flush.
+   * Push a message for a specific goal. Starts per-goal debounce timer.
    */
-  push(message: string): void {
-    this.pending.push(message);
-    if (!this.timer) {
-      this.timer = setTimeout(() => this.flush(), this.debounceMs);
+  push(goalId: string, message: string): void {
+    let bucket = this.pending.get(goalId);
+    if (!bucket) {
+      bucket = [];
+      this.pending.set(goalId, bucket);
+    }
+    bucket.push(message);
+    if (!this.timers.has(goalId)) {
+      this.timers.set(goalId, setTimeout(() => this.flushGoal(goalId), this.debounceMs));
     }
   }
 
   /**
-   * Push an urgent message. Flushes immediately (no debounce).
-   * Use for: worker died, plan blocked, execution complete.
+   * Push an urgent message. Flushes that goal immediately (no debounce).
    */
-  pushUrgent(message: string): void {
-    this.pending.push(message);
-    this.flush();
+  pushUrgent(goalId: string, message: string): void {
+    let bucket = this.pending.get(goalId);
+    if (!bucket) {
+      bucket = [];
+      this.pending.set(goalId, bucket);
+    }
+    bucket.push(message);
+    this.flushGoal(goalId);
   }
 
   /**
-   * Flush all pending messages as a single batched string.
+   * Flush pending messages for a specific goal.
    */
-  private flush(): void {
-    if (this.timer) {
-      clearTimeout(this.timer);
-      this.timer = null;
+  private flushGoal(goalId: string): void {
+    const timer = this.timers.get(goalId);
+    if (timer) {
+      clearTimeout(timer);
+      this.timers.delete(goalId);
     }
 
-    if (this.pending.length === 0) return;
+    const bucket = this.pending.get(goalId);
+    if (!bucket || bucket.length === 0) return;
+    this.pending.delete(goalId);
 
-    const batch = this.pending.splice(0);
-    const message = batch.length === 1
-      ? batch[0]!
-      : `${batch.length} events since last check:\n${batch.join("\n")}`;
+    const message = bucket.length === 1
+      ? bucket[0]!
+      : `${bucket.length} events since last check:\n${bucket.join("\n")}`;
 
-    this.onFlush(message);
+    this.onFlush(goalId, message);
   }
 
-  /** Number of pending messages. */
+  /** Number of pending messages across all goals. */
   get size(): number {
-    return this.pending.length;
+    let total = 0;
+    for (const bucket of this.pending.values()) total += bucket.length;
+    return total;
   }
 
-  /** Cancel pending flush and clear queue. */
+  /** Cancel all pending flushes and clear queue. */
   dispose(): void {
-    if (this.timer) {
-      clearTimeout(this.timer);
-      this.timer = null;
-    }
-    this.pending = [];
+    for (const timer of this.timers.values()) clearTimeout(timer);
+    this.timers.clear();
+    this.pending.clear();
   }
 }

@@ -1,15 +1,16 @@
 /**
  * PlanList — shows recent plans for the active team.
  *
- * v1.0: reads from localStorage (no backend goals endpoint yet).
+ * v1.0: reads from sessionStorage (no backend goals endpoint yet).
  * v2.0: will use GET /api/v2/teams/{id}/goals when that endpoint ships.
  */
 
 import React, { useMemo } from 'react';
 import { FileText, ChevronRight } from 'lucide-react';
+import { useGoalSessionStore } from '../../stores/goalSessionStore';
 
 export type PlanSummary = {
-  planId: string;
+  goalId: string;
   goal: string;
   createdAt: number;
   status: 'active' | 'completed' | 'paused' | 'unknown';
@@ -19,8 +20,8 @@ export type PlanSummary = {
 
 type PlanListProps = {
   teamId: string | null;
-  activePlanId: string | null;
-  onSelectPlan: (planId: string) => void;
+  activeGoalId: string | null;
+  onSelectGoal: (goalId: string) => void;
 };
 
 const STATUS_ICON: Record<string, string> = {
@@ -30,32 +31,21 @@ const STATUS_ICON: Record<string, string> = {
   unknown: '⏳',
 };
 
-function getStoredPlans(teamId: string): PlanSummary[] {
-  try {
-    const raw = localStorage.getItem(`ping:plans:${teamId}`);
-    return raw ? JSON.parse(raw) : [];
-  } catch {
-    return [];
-  }
-}
+export const PlanList: React.FC<PlanListProps> = ({ teamId, activeGoalId, onSelectGoal }) => {
+  const storePlans = useGoalSessionStore(s => s.plans);
 
-export function savePlan(teamId: string, plan: PlanSummary) {
-  const plans = getStoredPlans(teamId);
-  const existing = plans.findIndex(p => p.planId === plan.planId);
-  if (existing >= 0) {
-    plans[existing] = plan;
-  } else {
-    plans.unshift(plan);
-  }
-  // Keep max 20 plans
-  localStorage.setItem(`ping:plans:${teamId}`, JSON.stringify(plans.slice(0, 20)));
-}
-
-export const PlanList: React.FC<PlanListProps> = ({ teamId, activePlanId, onSelectPlan }) => {
   const plans = useMemo(() => {
     if (!teamId) return [];
-    return getStoredPlans(teamId);
-  }, [teamId]);
+    // Map from types.ts PlanSummary (title, state) to PlanList PlanSummary (goal, status)
+    return storePlans.map(p => ({
+      goalId: p.goalId,
+      goal: p.title,
+      createdAt: p.createdAt,
+      status: (p.state === 'done' ? 'completed' : p.state === 'executing' ? 'active' : 'unknown') as PlanSummary['status'],
+      taskCount: p.taskCount,
+      completedCount: p.completedCount,
+    }));
+  }, [teamId, storePlans]);
 
   if (!teamId || plans.length === 0) {
     return null;
@@ -69,10 +59,10 @@ export const PlanList: React.FC<PlanListProps> = ({ teamId, activePlanId, onSele
       <div className="space-y-1.5">
         {plans.map(plan => (
           <button
-            key={plan.planId}
-            onClick={() => onSelectPlan(plan.planId)}
+            key={plan.goalId}
+            onClick={() => onSelectGoal(plan.goalId)}
             className={`w-full text-left px-3 py-2.5 rounded-lg border transition-colors cursor-pointer group flex items-center gap-3 ${
-              plan.planId === activePlanId
+              plan.goalId === activeGoalId
                 ? 'border-primary/40 bg-primary/5'
                 : 'border-border hover:bg-accent/50 hover:border-border/80'
             }`}

@@ -8,171 +8,44 @@
 import { tool } from "@langchain/core/tools";
 import { z } from "zod";
 import * as Y from "yjs";
-import crypto from "crypto";
 import type { StructuredToolInterface } from "@langchain/core/tools";
 import type { IL2CollaborationPlugin } from "../../types/plugins.js";
 import type { CollaborationSpace } from "../collaboration/CollaborationSpace.js";
 import type { CollabDocument } from "../collaboration/CollabDocument.js";
+import { ServerBlockNoteEditor } from "@blocknote/server-util";
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// BlockNote Y.XmlFragment helpers — lets agents write rich text blocks
+// BlockNote Server Editor — singleton for markdown ↔ Y.XmlFragment conversion
 // ═══════════════════════════════════════════════════════════════════════════════
 
-function generateBlockId(): string {
-  return crypto.randomUUID().slice(0, 8);
+let _serverEditor: ServerBlockNoteEditor | null = null;
+function getServerEditor(): ServerBlockNoteEditor {
+  if (!_serverEditor) {
+    _serverEditor = ServerBlockNoteEditor.create();
+  }
+  return _serverEditor;
 }
 
 /**
- * Insert a paragraph block into a BlockNote Y.XmlFragment.
- * Creates the exact XML structure BlockNote expects.
+ * Convert markdown text to BlockNote blocks and write to Y.XmlFragment.
+ * Replaces the old insertParagraph/insertHeading/markdownToBlocks helpers.
  */
-function insertParagraph(
-  fragment: Y.XmlFragment,
-  text: string,
-  attrs?: { textColor?: string; backgroundColor?: string },
-): void {
-  // Find or create the root blockGroup
-  let blockGroup: Y.XmlElement;
-  if (fragment.length > 0) {
-    blockGroup = fragment.get(0) as Y.XmlElement;
-  } else {
-    blockGroup = new Y.XmlElement("blockGroup");
-    fragment.insert(0, [blockGroup]);
-  }
-
-  const blockContainer = new Y.XmlElement("blockContainer");
-  blockContainer.setAttribute("id", generateBlockId());
-  blockContainer.setAttribute("textColor", attrs?.textColor || "default");
-  blockContainer.setAttribute(
-    "backgroundColor",
-    attrs?.backgroundColor || "default",
-  );
-  blockContainer.setAttribute("textAlignment", "left");
-
-  const paragraph = new Y.XmlElement("paragraph");
-  const xmlText = new Y.XmlText(text);
-  paragraph.insert(0, [xmlText]);
-  blockContainer.insert(0, [paragraph]);
-
-  blockGroup.insert(blockGroup.length, [blockContainer]);
+async function markdownToXmlFragment(fragment: Y.XmlFragment, markdown: string): Promise<number> {
+  const editor = getServerEditor();
+  const blocks = await editor.tryParseMarkdownToBlocks(markdown);
+  editor.blocksToYXmlFragment(blocks, fragment);
+  return blocks.length;
 }
 
 /**
- * Insert a heading block into a BlockNote Y.XmlFragment.
+ * Read Y.XmlFragment content as markdown text.
+ * Replaces the old xmlFragmentToText helper.
  */
-function insertHeading(
-  fragment: Y.XmlFragment,
-  text: string,
-  level: number = 2,
-): void {
-  let blockGroup: Y.XmlElement;
-  if (fragment.length > 0) {
-    blockGroup = fragment.get(0) as Y.XmlElement;
-  } else {
-    blockGroup = new Y.XmlElement("blockGroup");
-    fragment.insert(0, [blockGroup]);
-  }
-
-  const blockContainer = new Y.XmlElement("blockContainer");
-  blockContainer.setAttribute("id", generateBlockId());
-  blockContainer.setAttribute("textColor", "default");
-  blockContainer.setAttribute("backgroundColor", "default");
-  blockContainer.setAttribute("textAlignment", "left");
-
-  const heading = new Y.XmlElement("heading");
-  heading.setAttribute("level", String(level));
-  const xmlText = new Y.XmlText(text);
-  heading.insert(0, [xmlText]);
-  blockContainer.insert(0, [heading]);
-
-  blockGroup.insert(blockGroup.length, [blockContainer]);
-}
-
-/**
- * Extract plain text from a BlockNote Y.XmlFragment.
- * Reads headings, paragraphs, and other block types back as readable text.
- */
-function xmlFragmentToText(fragment: Y.XmlFragment): string {
-  const lines: string[] = [];
-
-  function extractText(node: any): string {
-    if (node instanceof Y.XmlText) {
-      return node.toString();
-    }
-    if (node instanceof Y.XmlElement || node instanceof Y.XmlFragment) {
-      let text = "";
-      for (let i = 0; i < node.length; i++) {
-        text += extractText(node.get(i));
-      }
-      return text;
-    }
-    return "";
-  }
-
-  function walkBlocks(node: any): void {
-    if (!(node instanceof Y.XmlElement) && !(node instanceof Y.XmlFragment))
-      return;
-
-    const nodeName = node instanceof Y.XmlElement ? node.nodeName : "";
-
-    if (nodeName === "heading") {
-      const level = parseInt(
-        (node as Y.XmlElement).getAttribute("level") || "2",
-      );
-      const prefix = "#".repeat(level);
-      lines.push(`${prefix} ${extractText(node)}`);
-    } else if (nodeName === "paragraph") {
-      const text = extractText(node);
-      if (text) lines.push(text);
-    } else if (nodeName === "bulletListItem") {
-      lines.push(`- ${extractText(node)}`);
-    } else if (nodeName === "numberedListItem") {
-      lines.push(`1. ${extractText(node)}`);
-    } else if (
-      nodeName === "blockContainer" ||
-      nodeName === "blockGroup" ||
-      nodeName === ""
-    ) {
-      // Recurse into containers
-      for (let i = 0; i < node.length; i++) {
-        walkBlocks(node.get(i));
-      }
-    } else {
-      // Unknown block type — extract raw text
-      const text = extractText(node);
-      if (text) lines.push(text);
-    }
-  }
-
-  walkBlocks(fragment);
-  return lines.join("\n");
-}
-
-/**
- * Convert markdown-like text to BlockNote blocks.
- * Supports: # headings, ## subheadings, plain paragraphs, --- dividers, - bullets
- */
-function markdownToBlocks(fragment: Y.XmlFragment, text: string): number {
-  const lines = text.split("\n").filter((l) => l.trim());
-  let count = 0;
-  for (const line of lines) {
-    const trimmed = line.trim();
-    if (trimmed.startsWith("### ")) {
-      insertHeading(fragment, trimmed.slice(4), 3);
-    } else if (trimmed.startsWith("## ")) {
-      insertHeading(fragment, trimmed.slice(3), 2);
-    } else if (trimmed.startsWith("# ")) {
-      insertHeading(fragment, trimmed.slice(2), 1);
-    } else if (trimmed.startsWith("- ") || trimmed.startsWith("* ")) {
-      insertParagraph(fragment, "• " + trimmed.slice(2));
-    } else if (trimmed === "---" || trimmed === "***") {
-      // Skip dividers
-    } else {
-      insertParagraph(fragment, trimmed);
-    }
-    count++;
-  }
-  return count;
+async function xmlFragmentToMarkdown(fragment: Y.XmlFragment): Promise<string> {
+  const editor = getServerEditor();
+  const blocks = editor.yXmlFragmentToBlocks(fragment);
+  if (blocks.length === 0) return "";
+  return await editor.blocksToMarkdownLossy(blocks);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -226,67 +99,26 @@ async function ensureMeta(
 }
 
 /**
- * R5-2 + R6-1 FIX: Resolve the correct Y.Map name for a CRDT doc.
- *
- * System docs (task, plan, goal) store data in a Y.Map named by type ("task", "plan", "goal"),
- * NOT by the full docName ("task-5/task"). Custom agent docs use docName as the Y.Map name.
- *
- * This function introspects the doc's shared types to find the correct data map.
+ * All system and agent docs now use Y.Map("meta") as the standard data map.
+ * Custom agent docs also use "meta" — the "type" field inside distinguishes doc types.
  */
-const KNOWN_MAP_NAMES = ["task", "plan", "goal", "_index", "config", "cursors", "decisions", "discussion"];
-
-function resolveDataMap(doc: CollabDocument, docName: string): { mapName: string; map: Y.Map<any> } {
-  // Check ydoc.share directly — more reliable than toJSON() which may miss empty-but-registered maps
-  for (const name of KNOWN_MAP_NAMES) {
-    if (doc.ydoc.share.has(name)) {
-      const shared = doc.ydoc.share.get(name);
-      if (shared instanceof Y.Map) {
-        return { mapName: name, map: shared as Y.Map<any> };
-      }
-    }
-  }
-
-  // Also try toJSON for docs where share types aren't registered yet
-  const json = doc.toJSON();
-  for (const name of KNOWN_MAP_NAMES) {
-    if (json[name] !== undefined && name !== "default") {
-      return { mapName: name, map: doc.getMap(name) };
-    }
-  }
-
-  // Fallback: use docName as map name (custom agent docs)
-  return { mapName: docName, map: doc.getMap(docName) };
+function getDocMap(doc: CollabDocument): Y.Map<any> {
+  return doc.getMap("meta");
 }
 
 /**
- * R5-2 FIX: Extract clean data from a CRDT doc for full reads.
- * Strips the "default" meta map and returns only the data map.
+ * Extract clean data from a CRDT doc for full reads.
+ * Returns the "meta" map contents directly.
  */
-function extractDocData(doc: CollabDocument, docName: string): any {
+function extractDocData(doc: CollabDocument): any {
+  const meta = doc.getMap("meta").toJSON();
+  if (meta && Object.keys(meta).length > 0) return meta;
+
+  // Fallback for legacy docs that haven't been migrated yet
   const json = doc.toJSON();
-
-  // Try known map names first
-  for (const name of KNOWN_MAP_NAMES) {
-    if (json[name] !== undefined && typeof json[name] === "object") {
-      const data = json[name];
-      if (Object.keys(data).length > 0) return data;
-    }
-  }
-
-  // Try docName as map name
-  if (json[docName] !== undefined) {
-    const data = json[docName];
-    if (typeof data === "object" && "_meta" in data) {
-      const { _meta, ...rest } = data;
-      return rest;
-    }
-    return data;
-  }
-
-  // Return everything except "default"
   const { default: _default, ...rest } = json;
   const keys = Object.keys(rest);
-  if (keys.length === 1 && keys[0]) return rest[keys[0]];
+  if (keys.length === 1 && keys[0]) return rest[keys[0]!];
   if (keys.length > 1) return rest;
   return json;
 }
@@ -372,7 +204,7 @@ export function createCollabTool(
           for (const docPath of taskDocs) {
             try {
               const doc = await space.openDoc(docPath);
-              const map = doc.getMap("task");
+              const map = doc.getMap("meta");
               const data = map.toJSON();
               const taskId = docPath.replace("/task", "");
               summaries.push(`  ${data.id || taskId} [${data.status || "?"}] — ${data.title || "untitled"} (${data.assignedRole || "?"})`);
@@ -392,7 +224,7 @@ export function createCollabTool(
         if (docName === "goal") {
           try {
             const doc = await space.openDoc("goal");
-            const map = doc.getMap("goal");
+            const map = doc.getMap("meta");
             const data = map.toJSON();
             if (!data.id) return "No goal document found.";
             return [
@@ -475,7 +307,7 @@ export function createCollabTool(
           for (const docPath of taskDocs) {
             try {
               const doc = await space.openDoc(docPath);
-              const data = doc.getMap("task").toJSON();
+              const data = doc.getMap("meta").toJSON();
               items.push(`  - ${data.id} [${data.status}] — ${data.title} (${data.assignedRole})`);
             } catch {
               items.push(`  - ${docPath} (unreadable)`);
@@ -534,8 +366,7 @@ export function createCollabTool(
 
         // CRDT doc — list keys with value previews (filter out _meta)
         const doc = await space.openDoc(docName);
-        // R5-2 + R6-1 FIX: Resolve correct Y.Map name instead of using docName
-        const { map } = resolveDataMap(doc, docName);
+        const map = getDocMap(doc);
         const keys = Array.from(map.keys()).filter(
           (k: string) => k !== "_meta",
         );
@@ -615,11 +446,9 @@ export function createCollabTool(
         const doc = await space.openDoc(docName);
         if (key) {
           if (key === "_meta") return JSON.stringify(doc.getMeta(), null, 2);
-          // R5-2 FIX: Resolve correct Y.Map name instead of using docName
-          const { mapName, map } = resolveDataMap(doc, docName);
-          // R7-1 FIX: If key matches the map name (e.g., key="task" on a task doc),
-          // the agent wants the full data, not a literal key called "task"
-          if (key === mapName) {
+          const map = getDocMap(doc);
+          // R7-1 FIX: If key is "meta" or matches old type names, return full data
+          if (key === "meta" || key === "task" || key === "plan" || key === "goal") {
             return JSON.stringify(map.toJSON(), null, 2);
           }
           const val = map.get(key);
@@ -627,8 +456,8 @@ export function createCollabTool(
             ? JSON.stringify(val, null, 2)
             : `Key "${key}" not found in "${docName}".`;
         }
-        // Full doc read — R5-2 FIX: extract clean data from doc
-        const data = extractDocData(doc, docName);
+        // Full doc read
+        const data = extractDocData(doc);
         return JSON.stringify(data, null, 2);
       }
 
@@ -645,7 +474,12 @@ export function createCollabTool(
 
         const doc = await space.openDoc(docName);
         const parsed = typeof value === "string" ? JSON.parse(value) : value;
-        doc.getMap(docName).set(key, parsed);
+        const map = doc.getMap("meta");
+        // Set type on first write if not already set
+        if (!map.get("type")) {
+          map.set("type", "custom");
+        }
+        map.set(key, parsed);
 
         // Auto-populate _meta on first write
         await ensureMeta(doc, agentRole, description);
@@ -668,13 +502,13 @@ export function createCollabTool(
         const text =
           typeof value === "string" ? value : JSON.stringify(value, null, 2);
 
-        // If key is provided, add it as a heading first
-        if (key) {
-          insertHeading(fragment, `${key} (by ${agentRole})`, 2);
-        }
+        // Build markdown with optional heading
+        const markdown = key
+          ? `## ${key} (by ${agentRole})\n\n${text}`
+          : text;
 
-        // Convert text to BlockNote blocks
-        const blockCount = markdownToBlocks(fragment, text);
+        // Convert markdown → BlockNote blocks → Y.XmlFragment
+        const blockCount = await markdownToXmlFragment(fragment, markdown);
 
         // Auto-populate _meta
         await ensureMeta(doc, agentRole, description);
@@ -687,7 +521,7 @@ export function createCollabTool(
 
         const doc = await space.openDoc(docName);
         const fragment = doc.getXmlFragment("content");
-        const text = xmlFragmentToText(fragment);
+        const text = await xmlFragmentToMarkdown(fragment);
 
         if (!text.trim()) {
           return `Document "${docName}" editor is empty — no rich text content yet.`;
@@ -899,7 +733,47 @@ export function createCollabTool(
         return `Unknown discuss operation "${op}". Use key = "post" | "read" | "decide".`;
       }
 
-      return `Unknown action "${action}". Use: discover, list, read, read-block, write, write-block, discuss.`;
+      // === RECORD-DECISION: Store a key decision on a task/goal CRDT doc ===
+      if (action === "record-decision") {
+        if (!docName || !key || !value)
+          return "docName, key (decision name), and value (decision text or { decision, rationale?, agreedBy? }) required.";
+
+        const doc = await space.openDoc(docName);
+        const decisions = doc.getMap("decisions");
+        const parsed = typeof value === "string" ? { decision: value } : value;
+
+        decisions.set(key, {
+          decision: parsed.decision || String(value),
+          rationale: parsed.rationale || undefined,
+          agreedBy: parsed.agreedBy || [agentRole],
+          recordedBy: agentRole,
+          timestamp: new Date().toISOString(),
+        });
+
+        return `Decision "${key}" recorded on "${docName}": ${parsed.decision || value}`;
+      }
+
+      // === GET-DECISIONS: Read all decisions from a task/goal CRDT doc ===
+      if (action === "get-decisions") {
+        if (!docName) return "Provide docName to read decisions from.";
+
+        const doc = await space.openDoc(docName);
+        const decisions = doc.getMap("decisions");
+        const data = decisions.toJSON();
+        const keys = Object.keys(data);
+
+        if (keys.length === 0) {
+          return `No decisions recorded on "${docName}" yet. Use record-decision to add one.`;
+        }
+
+        const lines = keys.map(k => {
+          const d = data[k];
+          return `- **${k}**: ${d.decision} (by ${d.recordedBy}, ${d.timestamp})${d.rationale ? ` — ${d.rationale}` : ""}`;
+        });
+        return [`Decisions on "${docName}" (${keys.length}):`, ...lines].join("\n");
+      }
+
+      return `Unknown action "${action}". Use: discover, list, read, read-block, write, write-block, discuss, record-decision, get-decisions.`;
     },
     {
       name: "collab",
@@ -920,6 +794,8 @@ export function createCollabTool(
         '               post: push a message block { content, type?, mentions? }',
         '               read: get new blocks since your last read (cursor-based)',
         '               decide: record a decision { key, decision, agreedBy? }',
+        "  record-decision — store a key decision on any CRDT doc (key = decision name, value = { decision, rationale?, agreedBy? })",
+        "  get-decisions   — read all decisions from a CRDT doc",
       ].join("\n"),
       schema: z.object({
         action: z
@@ -931,9 +807,11 @@ export function createCollabTool(
             "write",
             "write-block",
             "discuss",
+            "record-decision",
+            "get-decisions",
           ])
           .describe(
-            "discover | list | read | read-block | write | write-block | discuss",
+            "discover | list | read | read-block | write | write-block | discuss | record-decision | get-decisions",
           ),
         docName: z
           .string()

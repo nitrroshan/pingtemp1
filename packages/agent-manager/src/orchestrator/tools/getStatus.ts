@@ -18,8 +18,10 @@ export function createGetStatusTool(context: OrchestratorContext) {
   return tool(
     async (): Promise<TaskStatusSummary> => {
       try {
-        // Get all tasks from provider
-        const allTasks = context.taskProvider.getAllTasks();
+        // Get tasks scoped to current goal
+        const allTasks = context.currentGoalId
+          ? context.taskProvider.getByGoal(context.currentGoalId)
+          : context.taskProvider.getAllTasks();
 
         // Count by status
         const counts = {

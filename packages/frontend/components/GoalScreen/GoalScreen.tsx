@@ -10,18 +10,18 @@ import { Send, Sparkles, ChevronDown } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import { Button } from '../ui/button';
 import { PlanList } from './PlanList';
+import { RepoPicker } from './RepoPicker';
 import type { Agent } from '../../types';
 
 type GoalScreenProps = {
   teams: Agent[];
   activeTeamId: string | null;
-  activePlanId: string | null;
+  activeGoalId: string | null;
   onSelectTeam: (teamId: string) => void;
-  onSubmitGoal: (teamId: string, goal: string) => void;
-  onSelectPlan: (planId: string) => void;
+  onSubmitGoal: (teamId: string, goal: string, repoUrl?: string, repoBranch?: string) => Promise<void> | void;
+  onSelectGoal: (goalId: string) => void;
   onNavigateToTeams: () => void;
   onSignOut: () => void;
-  sessionState?: string | null;
 };
 
 const EXAMPLES = [
@@ -33,21 +33,22 @@ const EXAMPLES = [
 export const GoalScreen: React.FC<GoalScreenProps> = ({
   teams,
   activeTeamId,
-  activePlanId,
+  activeGoalId,
   onSelectTeam,
   onSubmitGoal,
-  onSelectPlan,
+  onSelectGoal,
   onNavigateToTeams,
   onSignOut,
-  sessionState,
 }) => {
   const [goal, setGoal] = useState('');
+  const [repoUrl, setRepoUrl] = useState('');
+  const [repoBranch, setRepoBranch] = useState('main');
   const [isTeamDropdownOpen, setIsTeamDropdownOpen] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
 
   const selectedTeam = teams.find(t => t.id === activeTeamId);
-  const isSubmitting = sessionState === 'planning' || sessionState === 'executing';
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
   // Auto-resize textarea
   const adjustHeight = useCallback(() => {
@@ -71,12 +72,17 @@ export const GoalScreen: React.FC<GoalScreenProps> = ({
     return () => document.removeEventListener('mousedown', handler);
   }, [isTeamDropdownOpen]);
 
-  const handleSubmit = (e?: React.FormEvent) => {
+  const handleSubmit = async (e?: React.FormEvent) => {
     e?.preventDefault();
     const trimmed = goal.trim();
-    if (!trimmed || !activeTeamId || isSubmitting) return;
-    onSubmitGoal(activeTeamId, trimmed);
-    setGoal('');
+    if (!trimmed || !activeTeamId || !repoUrl.trim() || !repoBranch.trim() || isSubmitting) return;
+    setIsSubmitting(true);
+    try {
+      await onSubmitGoal(activeTeamId, trimmed, repoUrl.trim(), repoBranch.trim());
+      setGoal('');
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -87,7 +93,7 @@ export const GoalScreen: React.FC<GoalScreenProps> = ({
   };
 
   return (
-    <div className="flex flex-col h-full bg-background">
+    <div className="flex flex-col h-full flex-1 min-w-0 bg-background">
       {/* Top bar — minimal */}
       <div className="flex items-center justify-between px-6 py-3 border-b border-border/50">
         <div className="flex items-center gap-2">
@@ -135,9 +141,14 @@ export const GoalScreen: React.FC<GoalScreenProps> = ({
             </p>
           </div>
 
-          {/* Goal input */}
-          <form onSubmit={handleSubmit} className="space-y-3">
-            <div className="relative">
+          {/* Chat box — textarea + team selector + submit inside */}
+          <form onSubmit={handleSubmit}>
+            <div className={cn(
+              'rounded-xl border bg-card',
+              'focus-within:ring-2 focus-within:ring-primary/40 transition-all',
+              isSubmitting && 'opacity-60',
+            )}>
+              {/* Textarea */}
               <textarea
                 ref={textareaRef}
                 value={goal}
@@ -147,77 +158,92 @@ export const GoalScreen: React.FC<GoalScreenProps> = ({
                 disabled={isSubmitting}
                 rows={3}
                 className={cn(
-                  'w-full px-4 py-3 rounded-xl border bg-card text-foreground text-sm resize-none',
-                  'placeholder:text-muted-foreground/60 focus:outline-none focus:ring-2 focus:ring-primary/40',
-                  'transition-colors min-h-[80px]',
-                  isSubmitting && 'opacity-60 cursor-not-allowed',
+                  'w-full px-4 pt-3 pb-2 bg-transparent text-foreground text-sm resize-none',
+                  'placeholder:text-muted-foreground/60 focus:outline-none',
+                  'min-h-[80px]',
+                  isSubmitting && 'cursor-not-allowed',
                 )}
               />
+
+              {/* Bottom bar — team + submit only */}
+              <div className="flex items-center gap-2 px-3 pb-3">
+                {/* Team selector pill */}
+                <div className="relative" ref={dropdownRef}>
+                  <button
+                    type="button"
+                    onClick={() => setIsTeamDropdownOpen(v => !v)}
+                    className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs border border-border/50 bg-background/50 text-muted-foreground hover:text-foreground hover:bg-accent/50 transition-colors cursor-pointer"
+                  >
+                    <span>{selectedTeam ? selectedTeam.name : 'Select team'}</span>
+                    <ChevronDown size={12} />
+                  </button>
+
+                  {isTeamDropdownOpen && teams.length > 0 && (
+                    <div className="absolute left-0 bottom-full mb-1 w-48 bg-popover border border-border rounded-lg shadow-xl z-[9999] py-1 max-h-48 overflow-auto">
+                      {teams.map(team => (
+                        <button
+                          key={team.id}
+                          type="button"
+                          onClick={() => {
+                            onSelectTeam(team.id);
+                            setIsTeamDropdownOpen(false);
+                          }}
+                          className={cn(
+                            'w-full text-left px-3 py-2 text-sm transition-colors cursor-pointer',
+                            team.id === activeTeamId
+                              ? 'bg-primary/10 text-primary'
+                              : 'text-popover-foreground hover:bg-accent',
+                          )}
+                        >
+                          {team.name}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                {/* Spacer */}
+                <div className="flex-1" />
+
+                {/* Submit button */}
+                <Button
+                  type="submit"
+                  size="sm"
+                  disabled={!goal.trim() || !activeTeamId || !repoUrl.trim() || !repoBranch.trim() || isSubmitting}
+                  className="shrink-0 gap-1.5 h-7 px-3 text-xs"
+                >
+                  {isSubmitting ? (
+                    <>
+                      <Sparkles size={12} className="animate-pulse" />
+                      Planning…
+                    </>
+                  ) : (
+                    <>
+                      <Send size={12} />
+                      Start
+                    </>
+                  )}
+                </Button>
+              </div>
             </div>
 
-            {/* Team selector + submit */}
-            <div className="flex items-center gap-3">
-              {/* Team dropdown */}
-              <div className="relative flex-1" ref={dropdownRef}>
-                <button
-                  type="button"
-                  onClick={() => setIsTeamDropdownOpen(v => !v)}
-                  className="w-full flex items-center justify-between px-3 py-2 rounded-lg border border-border bg-card text-sm text-foreground hover:bg-accent/50 transition-colors cursor-pointer"
-                >
-                  <span className={selectedTeam ? 'text-foreground' : 'text-muted-foreground'}>
-                    {selectedTeam ? `Team: ${selectedTeam.name}` : 'Select a team…'}
-                  </span>
-                  <ChevronDown size={14} className="text-muted-foreground" />
-                </button>
-
-                {isTeamDropdownOpen && teams.length > 0 && (
-                  <div className="absolute left-0 top-full mt-1 w-full bg-popover border border-border rounded-lg shadow-xl z-50 py-1 max-h-48 overflow-auto">
-                    {teams.map(team => (
-                      <button
-                        key={team.id}
-                        type="button"
-                        onClick={() => {
-                          onSelectTeam(team.id);
-                          setIsTeamDropdownOpen(false);
-                        }}
-                        className={cn(
-                          'w-full text-left px-3 py-2 text-sm transition-colors cursor-pointer',
-                          team.id === activeTeamId
-                            ? 'bg-primary/10 text-primary'
-                            : 'text-popover-foreground hover:bg-accent',
-                        )}
-                      >
-                        {team.name}
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </div>
-
-              {/* Submit */}
-              <Button
-                type="submit"
-                disabled={!goal.trim() || !activeTeamId || isSubmitting}
-                className="shrink-0 gap-2"
-              >
-                {isSubmitting ? (
-                  <>
-                    <Sparkles size={14} className="animate-pulse" />
-                    Planning…
-                  </>
-                ) : (
-                  <>
-                    <Send size={14} />
-                    Start
-                  </>
-                )}
-              </Button>
+            {/* Repo + Branch — outside the chat box */}
+            <div className="flex items-center gap-2 mt-3">
+              <RepoPicker
+                value={repoUrl}
+                branch={repoBranch}
+                onChange={(url, branch) => {
+                  setRepoUrl(url);
+                  setRepoBranch(branch);
+                }}
+                style={{ flex: 1 }}
+              />
             </div>
           </form>
 
-          {/* Example goals */}
+          {/* Example goals — below repo, only when textarea is empty */}
           {!goal && (
-            <div className="flex flex-wrap gap-2 mt-4">
+            <div className="flex flex-wrap gap-2 mt-3">
               {EXAMPLES.map(ex => (
                 <button
                   key={ex}
@@ -233,8 +259,8 @@ export const GoalScreen: React.FC<GoalScreenProps> = ({
           {/* Recent plans */}
           <PlanList
             teamId={activeTeamId}
-            activePlanId={activePlanId}
-            onSelectPlan={onSelectPlan}
+            activeGoalId={activeGoalId}
+            onSelectGoal={onSelectGoal}
           />
         </div>
       </div>
