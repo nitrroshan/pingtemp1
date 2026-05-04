@@ -97,6 +97,10 @@ export class SqliteTaskService implements ITaskPersistence {
     this.db.run(`DELETE FROM tasks WHERE goalId = ?`, [goalId]);
   }
 
+  async clearStaleTasks(goalId: string, currentPlanId: string): Promise<void> {
+    this.db.run(`DELETE FROM tasks WHERE goalId = ? AND planId != ?`, [goalId, currentPlanId]);
+  }
+
   private toTaskData(row: any): TaskData {
     return {
       taskId: row.taskId,

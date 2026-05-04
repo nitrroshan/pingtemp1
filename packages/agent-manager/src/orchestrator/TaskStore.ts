@@ -57,6 +57,8 @@ export interface TaskStorePersistence {
   }>): Promise<void>;
   updateTaskStatus(taskId: string, goalId: string, status: string, output?: unknown): Promise<void>;
   clearTasksByGoal(goalId: string): Promise<void>;
+  clearStaleTasks?(goalId: string, currentPlanId: string): Promise<void>;
+  getTasksByGoal?(goalId: string): Promise<Array<{ taskId: string; goalId: string; title?: string; description: string; assignedRole: string; status: string }>>;
 }
 
 export class TaskStore implements ITaskProvider {
@@ -84,6 +86,11 @@ export class TaskStore implements ITaskProvider {
     this.persistence = persistence;
     this.teamId = teamId;
     log.info(`TaskStore persistence enabled (teamId: ${teamId})`);
+  }
+
+  /** Get the persistence adapter (for cross-plan reference queries). */
+  getPersistence(): TaskStorePersistence | null {
+    return this.persistence;
   }
 
   /**
@@ -255,6 +262,28 @@ export class TaskStore implements ITaskProvider {
       this.remove(task.id);
     }
     log.info(`Cleared ${toRemove.length} tasks for goal ${goalId}`);
+  }
+
+  /** Clear in-memory Map for a goal WITHOUT touching MongoDB. Used before atomic upsert. */
+  clearMapByGoal(goalId: string): void {
+    const toRemove = this.getByGoal(goalId);
+    for (const task of toRemove) {
+      this.remove(task.id);
+    }
+    log.debug(`Cleared ${toRemove.length} tasks from in-memory Map for goal ${goalId}`);
+  }
+
+  /** Delete stale tasks (from previous plans) in MongoDB, then remove from Map. */
+  async clearStaleByGoal(goalId: string, currentPlanId: string): Promise<void> {
+    if (this.persistence?.clearStaleTasks) {
+      await this.persistence.clearStaleTasks(goalId, currentPlanId);
+    }
+    // Remove stale tasks from in-memory Map
+    for (const task of this.getByGoal(goalId)) {
+      if (task.planId && task.planId !== currentPlanId) {
+        this.remove(task.id);
+      }
+    }
   }
 
   // ═══════════════════════════════════════════════════════════════════

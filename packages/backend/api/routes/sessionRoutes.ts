@@ -23,10 +23,14 @@ export function createSessionRoutes(services?: ServiceRegistry): Router {
       let goals: any[] = [];
 
       if (services) {
+        // Extract userId from auth (if available) for user-scoped restore
+        const userId = (req as any).userId as string | undefined;
+
         const [sessionResult, goalsResult] = await Promise.all([
           services.chat.getSessionMessages(teamId, {
             sessionLimit: 100,
             workerLimit: 50,
+            userId,
           }),
           services.goals.getGoals(teamId, { limit: 10 }),
         ]);

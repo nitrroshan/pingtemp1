@@ -21,7 +21,10 @@ export interface TaskContextInput {
   role: string;
   teamRoles: string[];
   crdtRefs?: Record<string, any>;
+  /** @deprecated Use taskPersistence instead */
   planStore?: any;
+  /** Task persistence for cross-plan reference resolution (replaces PlanStore) */
+  taskPersistence?: { getTasksByGoal?(goalId: string): Promise<any[]> } | null;
 }
 
 export interface EnrichedTaskResult {
@@ -38,7 +41,7 @@ export class TaskContextBuilder {
    * Pure function — no side effects, no state mutation.
    */
   static async enrich(input: TaskContextInput): Promise<EnrichedTaskResult> {
-    const { task, role, teamRoles, crdtRefs, planStore } = input;
+    const { task, role, teamRoles, crdtRefs, planStore, taskPersistence } = input;
     const taskCtx = (typeof task.context === "object" ? task.context : {}) as Record<string, any>;
 
     const previousOutputs: any[] = []; // kept for backward compat in return type
@@ -94,32 +97,50 @@ export class TaskContextBuilder {
     // ── Cross-plan reference resolution ─────────────────────────────
     const references = Array.isArray(taskCtx.references) ? taskCtx.references : [];
     const unresolvedRefs: string[] = [];
-    if (references.length > 0 && planStore) {
+    if (references.length > 0 && (taskPersistence || planStore)) {
       const resolvedRefs: Array<{ uri: string; name: string; description: string }> = [];
       for (const ref of references) {
         try {
-          const [refPlanOrGoal, refTaskId] = ref.split("/");
+          const [refGoalOrPlan, refTaskId] = ref.split("/");
           if (!refTaskId) {
             unresolvedRefs.push(`${ref} (invalid format)`);
             continue;
           }
-          const allPlans = await planStore.listAllPlans();
-          const matchPlan = allPlans.find((p: any) => p.planId === refPlanOrGoal || p.goalId === refPlanOrGoal);
-          if (matchPlan) {
-            const stored = await planStore.loadPlan(matchPlan.planId, matchPlan.goalId);
-            const refTask = stored?.plan?.tasks?.find((t: any) => t.id === refTaskId);
+
+          // Try MongoDB task lookup first (preferred — no PlanStore dependency)
+          let resolved = false;
+          if (taskPersistence?.getTasksByGoal) {
+            const goalTasks = await taskPersistence.getTasksByGoal(refGoalOrPlan);
+            const refTask = goalTasks.find((t: any) => t.taskId === refTaskId || t.taskId?.endsWith(`-${refTaskId}`));
             if (refTask) {
               resolvedRefs.push({
-                uri: `crdt:${refTaskId}/task`,
+                uri: `crdt:${refTask.taskId}/task`,
                 name: `${ref} (${refTask.assignedRole || "unknown"})`,
                 description: refTask.title || refTask.description?.slice(0, 100) || "Prior task output",
               });
-            } else {
-              unresolvedRefs.push(`${ref} (task not found in plan)`);
+              resolved = true;
             }
-          } else {
-            unresolvedRefs.push(`${ref} (plan/goal not found)`);
           }
+
+          // Fallback to PlanStore if MongoDB didn't find it (backward compat)
+          if (!resolved && planStore) {
+            const allPlans = await planStore.listAllPlans();
+            const matchPlan = allPlans.find((p: any) => p.planId === refGoalOrPlan || p.goalId === refGoalOrPlan);
+            if (matchPlan) {
+              const stored = await planStore.loadPlan(matchPlan.planId, matchPlan.goalId);
+              const refTask = stored?.plan?.tasks?.find((t: any) => t.id === refTaskId);
+              if (refTask) {
+                resolvedRefs.push({
+                  uri: `crdt:${refTaskId}/task`,
+                  name: `${ref} (${refTask.assignedRole || "unknown"})`,
+                  description: refTask.title || refTask.description?.slice(0, 100) || "Prior task output",
+                });
+                resolved = true;
+              }
+            }
+          }
+
+          if (!resolved) unresolvedRefs.push(`${ref} (not found)`);
         } catch (err) {
           unresolvedRefs.push(`${ref} (error: ${err})`);
         }

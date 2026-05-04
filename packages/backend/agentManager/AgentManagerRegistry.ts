@@ -234,7 +234,23 @@ export class AgentManagerRegistry {
               }));
             }
           : undefined;
-        manager.enableChatAgents(rolesToEnable, loadConversation);
+        const saveConversation = config.featureFlags.enableConversationPersistence && this.services
+          ? async (tId: string, agentId: string, goalId: string, messages: any[]) => {
+              const ownerId = await this.services!.teamRegistry?.getOwner(tId) ?? "system";
+              await this.services!.chat.addMessage({
+                teamId: tId,
+                agentId,
+                userId: ownerId,
+                goalId,
+                role: "assistant",
+                agentLayer: "planner",
+                content: `[planner conversation snapshot: ${messages.length} messages]`,
+                contextMessages: JSON.stringify(messages),
+                timestamp: new Date(),
+              });
+            }
+          : undefined;
+        manager.enableChatAgents(rolesToEnable, loadConversation, saveConversation);
       }
     }
 

@@ -1,7 +1,7 @@
 # Conversation Persistence — Architecture
 
-**Status:** v1.0 implemented, v1.1 planned  
-**Date:** April 12, 2026 (revised April 25, 2026)  
+**Status:** v1.2 implemented (planner + chat agent restore), v2.0 planned (auth identity threading)
+**Date:** April 12, 2026 (revised May 4, 2026)  
 **Phase:** 2 in the [Parallel Plans roadmap](../parallel-plans/feature_architecture.md#cross-feature-dependency-map)  
 **Depends on:** Chat Agent Layer (Phase 1) ✅
 
@@ -23,22 +23,25 @@ With the three-layer model (Planner → ChatAgent → Worker), there are **two f
 | Type | Who | Lifetime | Persistence | User interacts? |
 |---|---|---|---|---|
 | **Session Chat** | Planner, ChatAgent | Long-lived, multi-turn | **Must persist** (survive restarts) | Yes — user chats with them |
-| **Task Stream** | Worker | Short-lived, single-task | **Captured as output** (OutputManifest) | No — user watches, doesn't chat |
+| **Task Stream** | Worker | Short-lived, single-task | **Persisted to chat storage** for UI session restore | No — user watches, doesn't chat |
 
-Workers don't have "conversations" — they execute tasks and stream results. The stream is captured as task output, not as a conversation to resume.
+Workers don't have LLM "conversations" — they execute tasks and stream results. However, worker stream messages ARE persisted to chat storage (`agentLayer: "worker"`) for frontend session restore. This allows users to see worker activity when reconnecting or switching goals. Worker messages are NOT restored into the LLM context (no `contextMessages` field) — they are display-only.
 
 ### What Gets Persisted Where
 
 ```
-Planner conversation      → Conversation store (MongoDB/JSONL)
-  "Build a REST API" → plan → approve → "all tasks done"
+Planner conversation      → Conversation store (MongoDB)
+  Full LLM context saved via contextMessages (v1.2)
+  Restored on planner creation for goal continuity
   
-ChatAgent conversation    → Conversation store (MongoDB/JSONL)  
-  "What did you build?" → "I created 3 endpoints..." → "Can you add pagination?"
+ChatAgent conversation    → Conversation store (MongoDB)
+  Full LLM context saved via contextMessages (v1.1)
+  Restored on ChatAgent init via loadMessages()
 
-Worker task stream         → Task output (OutputManifest + workspace files)
-  [tool: write_file] → [tool: commit] → [complete_task: "API endpoints created"]
-  NOT a conversation — captured as artifacts, not chat history
+Worker task stream         → Conversation store (MongoDB) + Task output (workspace files)
+  Stream text + tool cards saved with agentLayer: "worker" for UI display
+  contextMessages field NOT set — workers are NOT restored to LLM context
+  Workers are re-dispatched fresh on restart (in_progress → ready)
 ```
 
 ---
@@ -95,8 +98,12 @@ Worker:     NO conversation — task output only
 | Message persistence in SocketServerV2 | ✅ Built (v1.0) | User + assistant messages saved with full accumulator pattern |
 | ChatAgent response persistence | ✅ Fixed (v1.0) | Was saving stub, now saves actual text + tool calls |
 | `AiSdkAgent.loadMessages()` | ✅ Built (v1.0) | Accepts simplified `{ role, content }[]` — **no tool calls** |
+| `AiSdkAgent.setMessages()` | ✅ Built (v1.2) | Full ModelMessage[] restore for planner conversation |
 | Frontend `restoreFromServer()` | ✅ Built (v1.0) | Single API call on team select |
 | `FF_ENABLE_CONVERSATION_PERSISTENCE` | ✅ Built (v1.0) | Dev: true, Prod: false |
+| Planner save: `saveConversationFn` | ✅ Built (v1.2) | GoalManager saves planner messages after each turn via `chat.addMessage()` with `contextMessages` |
+| Planner restore: `loadConversationFn` | ✅ Built (v1.2) | GoalManager loads prior planner messages on planner creation via `chat.getAgentMessages()` |
+| Wiring: Registry → AgentManager → OrchestratorService → GoalManager | ✅ Built (v1.2) | Full callback chain, `userId` from `teamRegistry.getOwner()` |
 
 ## What's Missing (v2.0)
 
@@ -122,8 +129,8 @@ Worker:     NO conversation — task output only
 |---|---|---|
 | **v1.0** | `agentLayer` tagging, session restore, simplified context injection, ChatAgent response fix | ✅ Complete |
 | **v1.1** | Full-fidelity ModelMessage[] storage — tool calls/results preserved in DB, restored to LLM context | ✅ Complete |
+| **v1.2** | Planner conversation save/restore — `saveConversationFn`/`loadConversationFn` wired end-to-end, `AiSdkAgent.setMessages()` for full restore | ✅ Complete |
 | **v2.0** | Session identity threading (auth → socket → HTTP → services), goal lifecycle, user-scoped conversations | [Planned](v2.0/feature_implementation_planning.md) |
-| **v2.0** | `Conversation` entity, `Message.parts[]`, user isolation, goal-scoped planner conversations | Future |
 
 ---
 

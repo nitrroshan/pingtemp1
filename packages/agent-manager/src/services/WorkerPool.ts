@@ -32,7 +32,7 @@ export interface WorkerCallbacks {
   onEvent?: (data: { taskId: string; event: any }) => void;
   onDone?: (data: { taskId: string; role: string; output: any }) => void;
   onError?: (data: { taskId: string; error: string }) => void;
-  onAgentComplete?: (data: { taskId: string; role: string; summary: string; deliverables: string[]; nextSteps: string[]; producedDocs?: Array<{ uri: string; name: string; description?: string }>; decisions?: string[]; timestamp: number }) => void;
+  onAgentComplete?: (data: { taskId: string; role: string; summary: string; deliverables: string[]; nextSteps: string[]; producedDocs?: Array<{ uri: string; name: string; description?: string }>; decisions?: Array<{ decision: string; rationale?: string }>; timestamp: number }) => void;
   onStatusUpdate?: (data: { taskId: string; role: string; status: string; summary: string; progress?: number; timestamp: number }) => void;
   /** Fired when an agent creates a task via request_task tool */
   onTaskCreated?: (data: { taskId: string; createdBy: string; targetRole: string; relationship: string; parentTaskId: string }) => void;

@@ -46,20 +46,24 @@ export class MongoChatService implements IChatService {
     return docs.reverse().map((d) => this.toMessage(d));
   }
 
-  async getAgentMessages(teamId: string, agentId: string, options?: { limit?: number }): Promise<ChatMessage[]> {
+  async getAgentMessages(teamId: string, agentId: string, options?: { limit?: number; userId?: string }): Promise<ChatMessage[]> {
     const ChatMessageModel = await this.getModel();
     const limit = Math.min(options?.limit ?? 50, 200);
-    const docs = await ChatMessageModel.find({ teamId, agentId })
+    const query: any = { teamId, agentId };
+    if (options?.userId) query.userId = options.userId;
+    const docs = await ChatMessageModel.find(query)
       .sort({ timestamp: -1 })
       .limit(limit)
       .lean();
     return docs.reverse().map((d) => this.toMessage(d));
   }
 
-  async getGoalMessages(teamId: string, goalId: string, options?: { limit?: number }): Promise<ChatMessage[]> {
+  async getGoalMessages(teamId: string, goalId: string, options?: { limit?: number; userId?: string }): Promise<ChatMessage[]> {
     const ChatMessageModel = await this.getModel();
     const limit = Math.min(options?.limit ?? 50, 200);
-    const docs = await ChatMessageModel.find({ teamId, goalId })
+    const query: any = { teamId, goalId };
+    if (options?.userId) query.userId = options.userId;
+    const docs = await ChatMessageModel.find(query)
       .sort({ timestamp: -1 })
       .limit(limit)
       .lean();
@@ -86,17 +90,23 @@ export class MongoChatService implements IChatService {
   async getSessionMessages(teamId: string, options?: {
     sessionLimit?: number;
     workerLimit?: number;
+    userId?: string;
   }): Promise<{ session: ChatMessage[]; worker: ChatMessage[] }> {
     const ChatMessageModel = await this.getModel();
     const sessionLimit = Math.min(options?.sessionLimit ?? 100, 500);
     const workerLimit = Math.min(options?.workerLimit ?? 50, 200);
 
+    // userId filter: when provided, only load messages from this user + assistant responses
+    const userFilter = options?.userId
+      ? { $or: [{ userId: options.userId }, { role: "assistant" }] }
+      : {};
+
     const [sessionDocs, workerDocs] = await Promise.all([
-      ChatMessageModel.find({ teamId, agentLayer: { $in: ["planner", "chat-agent"] } })
+      ChatMessageModel.find({ teamId, agentLayer: { $in: ["planner", "chat-agent"] }, ...userFilter })
         .sort({ timestamp: -1 })
         .limit(sessionLimit)
         .lean(),
-      ChatMessageModel.find({ teamId, $or: [{ agentLayer: "worker" }, { agentLayer: null }, { agentLayer: { $exists: false } }] })
+      ChatMessageModel.find({ teamId, $or: [{ agentLayer: "worker" }, { agentLayer: null }, { agentLayer: { $exists: false } }], ...userFilter })
         .sort({ timestamp: -1 })
         .limit(workerLimit)
         .lean(),

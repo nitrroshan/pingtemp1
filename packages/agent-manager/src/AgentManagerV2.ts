@@ -86,6 +86,8 @@ export class AgentManager {
   private chatAgentsEnabled = false;
   /** Optional callback to load prior conversation from storage (injected by AgentManagerRegistry) */
   private loadConversationFn: ((teamId: string, agentId: string) => Promise<Array<{ role: "user" | "assistant" | "system"; content: string }>>) | null = null;
+  /** Optional callback to save conversation to storage after each planner turn */
+  private saveConversationFn: ((teamId: string, agentId: string, goalId: string, messages: any[]) => Promise<void>) | null = null;
 
   constructor() {
     this.workerPool = new WorkerPool();
@@ -423,6 +425,8 @@ export class AgentManager {
       chatAgentsEnabled: this.chatAgentsEnabled,
       taskPersistence: this.taskPersistence,
       eventBus,
+      loadConversationFn: this.loadConversationFn,
+      saveConversationFn: this.saveConversationFn,
       callbacks: {
         onStream: (data) => this.streamCallbacks?.onStream?.(data),
         onEvent: (data) => this.streamCallbacks?.onEvent?.(data),
@@ -494,6 +498,7 @@ export class AgentManager {
   enableChatAgents(
     roles: string[],
     loadConversation?: (teamId: string, agentId: string) => Promise<Array<{ role: "user" | "assistant" | "system"; content: string }>>,
+    saveConversation?: (teamId: string, agentId: string, goalId: string, messages: any[]) => Promise<void>,
   ): void {
     if (!this.taskStoreInstance) {
       logger.warn("Cannot enable chat agents — TaskStore not initialized");
@@ -501,6 +506,7 @@ export class AgentManager {
     }
     this.chatAgentsEnabled = true;
     this.loadConversationFn = loadConversation ?? null;
+    this.saveConversationFn = saveConversation ?? null;
 
     // Propagate flag to GoalManager (it captured false at construction time)
     this.orchestrator?.setChatAgentsEnabled(true);

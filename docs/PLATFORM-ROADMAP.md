@@ -40,10 +40,11 @@
 - ✅ `record-decision` / `get-decisions` collab tool actions
 
 ### What's Still Broken / Missing
-- Plan approval is non-atomic — crash between clear and create loses all tasks
+- Plan approval is non-atomic — crash between clear and create loses all tasks (rollback added but crash window remains)
 - Hocuspocus currently uses local filesystem persistence — must switch to S3 for production
-- Planner conversation history lost on restart (in-memory only)
-- contextMessages saved to MongoDB but never restored
+- ✅ ~~Planner conversation history lost on restart~~ — save/restore wired via `saveConversationFn`/`loadConversationFn` (v1.2)
+- ✅ ~~contextMessages saved to MongoDB but never restored~~ — planner restores via `AiSdkAgent.setMessages()`, chat agents via `loadMessages()`
+- Conversation restore is not user-scoped — all users on same team share planner/chat history (v2.0)
 
 ---
 
@@ -155,7 +156,7 @@ Server restarts
 |------------|-----------|-------------|
 | **`tasks`** | taskId, goalId, teamId, status, assignedRole, dependencies[], producedDocs: DocumentRef[], output | Queryable (find all failed tasks), indexed, DAG recovery on restart |
 | **`goals`** | goalId, userId (Phase 6), teamId, status, currentPlanId, repoUrl, repoBranch, autoExecute | Dashboard queries, lifecycle tracking, config recovery |
-| **`messages`** | goalId, role, content, type, timestamp | Chat history + **planner conversation history** (currently lost on restart — fix in Phase 1) |
+| **`messages`** | goalId, role, content, type, timestamp | Chat history + **planner conversation history** (save/restore wired in v1.2) |
 | **`user` / `session` / `account`** | (better-auth managed) | Auth, identity |
 | **`teamMemberships`** (Phase 6) | teamId, userId, role | Authorization, team member lookups |
 | **`userQuotas`** (Phase 6) | userId, maxGoals, maxWorkers, tokenBudget | Resource limits per user |

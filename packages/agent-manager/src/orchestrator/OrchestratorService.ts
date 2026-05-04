@@ -24,7 +24,7 @@ import type {
   OrchestratorState,
   OrchestratorCallbacks,
 } from "./types.js";
-import { GoalManager } from "./GoalManager.js";
+import { GoalManager, type GoalManagerConfig } from "./GoalManager.js";
 import { TaskContextBuilder } from "./TaskContextBuilder.js";
 import { DispatchManager } from "./DispatchManager.js";
 
@@ -83,6 +83,9 @@ export interface OrchestratorServiceConfig {
   taskPersistence?: import("./contracts/ITaskPersistence.js").ITaskPersistence | null;
   /** Domain event bus for CRDT projection + notifications */
   eventBus?: import("./events/GoalEventBus.js").GoalEventBus;
+  /** Planner conversation persistence callbacks */
+  loadConversationFn?: GoalManagerConfig["loadConversationFn"];
+  saveConversationFn?: GoalManagerConfig["saveConversationFn"];
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -167,6 +170,8 @@ export class OrchestratorService {
       chatAgentsEnabled: config.chatAgentsEnabled,
       taskPersistence: config.taskPersistence || null,
       eventBus: config.eventBus,
+      loadConversationFn: config.loadConversationFn,
+      saveConversationFn: config.saveConversationFn,
       callbacks: {
         onDispatchTask: (taskId, role) => this.handleReadyTask(taskId, role),
         onNotifyPlanner: (goalId, msg) => this.notifyPlanner(goalId, msg),
@@ -588,6 +593,7 @@ export class OrchestratorService {
       // ─── Delegate context enrichment to TaskContextBuilder ───────────
       const { enrichedDescription, previousOutputs, artifacts } = await TaskContextBuilder.enrich({
         task, role, teamRoles: this.teamRoles, crdtRefs, planStore: this.planStore,
+        taskPersistence: this.taskStore.getPersistence?.() ?? null,
       });
 
       await this.workerPool.runTask({

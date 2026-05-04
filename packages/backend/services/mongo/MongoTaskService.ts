@@ -64,6 +64,14 @@ export class MongoTaskService implements ITaskPersistence {
     logger.info(`Cleared ${result.deletedCount} tasks for goal ${goalId}`);
   }
 
+  async clearStaleTasks(goalId: string, currentPlanId: string): Promise<void> {
+    const TaskModel = await this.getModel();
+    const result = await TaskModel.deleteMany({ goalId, planId: { $ne: currentPlanId } });
+    if (result.deletedCount > 0) {
+      logger.info(`Cleared ${result.deletedCount} stale tasks for goal ${goalId} (kept planId=${currentPlanId})`);
+    }
+  }
+
   private toTaskData(doc: any): TaskData {
     return {
       taskId: doc.taskId,

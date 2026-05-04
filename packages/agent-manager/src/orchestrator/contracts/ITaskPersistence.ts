@@ -31,4 +31,6 @@ export interface ITaskPersistence {
   getTasksByTeam(teamId: string): Promise<TaskData[]>;
   /** Delete all tasks for a goal (replan) */
   clearTasksByGoal(goalId: string): Promise<void>;
+  /** Delete tasks from previous plans, keeping only current planId (atomic approval) */
+  clearStaleTasks(goalId: string, currentPlanId: string): Promise<void>;
 }

@@ -224,7 +224,7 @@ export interface IGoalManager {
     taskId: string; role: string; summary: string;
     deliverables?: string[]; nextSteps?: string[];
     producedDocs?: Array<{ uri: string; name: string; description?: string }>;
-    decisions?: string[];
+    decisions?: Array<{ decision: string; rationale?: string }>;
     timestamp: number;
   }): Promise<void>;
 

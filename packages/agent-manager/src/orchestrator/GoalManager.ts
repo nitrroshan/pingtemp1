@@ -49,6 +49,8 @@ export interface GoalManagerConfig {
   chatAgentsEnabled: boolean;
   /** Optional callback to load prior conversation from storage */
   loadConversationFn?: ((teamId: string, agentId: string) => Promise<Array<{ role: "user" | "assistant" | "system"; content: string }>>) | null;
+  /** Optional callback to save conversation to storage after each turn */
+  saveConversationFn?: ((teamId: string, agentId: string, goalId: string, messages: any[]) => Promise<void>) | null;
   /** Database persistence for tasks (v3.0 — optional, graceful degradation) */
   taskPersistence?: import("./contracts/ITaskPersistence.js").ITaskPersistence | null;
   /** Domain event bus for CRDT projection + notifications */
@@ -81,6 +83,9 @@ export class GoalManager implements IGoalManager {
   private taskPersistence: import("./contracts/ITaskPersistence.js").ITaskPersistence | null = null;
   /** Domain event bus — publishes events after MongoDB writes for CRDT projection + notifications */
   private eventBus?: GoalEventBus;
+  /** Conversation restore/save callbacks for planner session persistence */
+  private loadConversationFn: GoalManagerConfig["loadConversationFn"];
+  private saveConversationFn: GoalManagerConfig["saveConversationFn"];
 
   // Goal state — Map<goalId, GoalContext> for multi-goal support (Phase 4)
   private goals = new Map<string, GoalContext>();
@@ -104,6 +109,8 @@ export class GoalManager implements IGoalManager {
     this.chatAgentsEnabled = config.chatAgentsEnabled;
     this.taskPersistence = config.taskPersistence || null;
     this.eventBus = config.eventBus;
+    this.loadConversationFn = config.loadConversationFn;
+    this.saveConversationFn = config.saveConversationFn;
     log.info(`GoalManager created for team ${config.teamId}`);
   }
 
@@ -208,6 +215,22 @@ export class GoalManager implements IGoalManager {
     if (!goal.planner) {
       goal.planner = await this.createPlannerFn(goalId);
       log.info(`Created planner for goal ${goalId}`);
+
+      // Restore planner conversation from database if available
+      if (this.loadConversationFn) {
+        try {
+          const prior = await this.loadConversationFn(this.teamId, `planner:${goalId}`);
+          if (prior.length > 0) {
+            const agent = goal.planner.getAgent();
+            if (typeof (agent as any).setMessages === "function") {
+              (agent as any).setMessages(prior);
+              log.info(`Restored ${prior.length} planner messages for goal ${goalId}`);
+            }
+          }
+        } catch (err) {
+          log.warn(`Failed to restore planner conversation for goal ${goalId}: ${err}`);
+        }
+      }
     }
     const agent = goal.planner.getAgent();
     const sessionId = `team-${this.teamId}:goal-${goalId}`;
@@ -220,6 +243,18 @@ export class GoalManager implements IGoalManager {
             agentId: "planner",
             part: event.part,
           });
+        }
+      }
+
+      // Save planner messages after each turn for session restore
+      if (this.saveConversationFn) {
+        try {
+          const messages = typeof (agent as any).getMessages === "function" ? (agent as any).getMessages() : null;
+          if (messages) {
+            await this.saveConversationFn(this.teamId, `planner:${goalId}`, goalId, messages);
+          }
+        } catch (err) {
+          log.warn(`Failed to save planner conversation for goal ${goalId}: ${err}`);
         }
       }
     } catch (err) {
@@ -380,13 +415,9 @@ export class GoalManager implements IGoalManager {
       if (!goalId) {
         return { success: false, error: "GoalContext has no goalId — client must provide it" };
       }
-      goal.pendingPlan = null;
 
-      // Clear previous state for THIS goal only (preserve other goals)
-      await this.workerPool.disposeByGoal(goalId);
-      await this.taskStore.clearByGoal(goalId);
-
-      // Build dependants map (using goal-scoped task IDs to avoid collision across goals)
+      // ── Phase 1: Build new tasks in memory (no side effects yet) ──
+      // If anything fails here, the old plan + tasks are still intact.
       const goalPrefix = goalId.slice(0, 8);
       const scopeId = (id: string) => id.startsWith(goalPrefix) ? id : `${goalPrefix}-${id}`;
 
@@ -399,13 +430,12 @@ export class GoalManager implements IGoalManager {
         }
       }
 
-      // Add tasks to TaskStore (single writer)
-      let tasksQueued = 0;
+      const newTasks: Array<any> = [];
       for (const task of planToApprove.tasks) {
         const taskContext = (task as any).context || {};
         const taskType = (task as any).type || taskContext.type || "work";
         const scopedId = scopeId(task.id);
-        await this.taskStore.create({
+        newTasks.push({
           id: scopedId,
           title: task.title,
           description: `${task.title}: ${task.description}`,
@@ -433,13 +463,32 @@ export class GoalManager implements IGoalManager {
             relatedTasks: taskContext.relatedTasks || [],
             references: (task as any).references || [],
             type: taskType,
-            // repoUrl from GoalContext (set directly by frontend — no LLM dependency)
             repoUrl: goal.repoUrl,
             repoBranch: goal.repoBranch,
           },
         });
+      }
+
+      // ── Phase 2: Atomic commit — upsert new tasks, then delete stale ──
+      // Pattern: write new tasks first (MongoDB upsert handles ID collisions),
+      // then delete old-plan tasks. If crash happens between these steps,
+      // MongoDB has both old and new tasks — no data loss. Stale cleanup
+      // can run on restart.
+      goal.pendingPlan = null;
+      await this.workerPool.disposeByGoal(goalId);
+
+      // Clear in-memory Map (NOT MongoDB) so create() doesn't throw on duplicates
+      this.taskStore.clearMapByGoal(goalId);
+
+      // Upsert all new tasks to MongoDB + Map
+      let tasksQueued = 0;
+      for (const task of newTasks) {
+        await this.taskStore.create(task);
         tasksQueued++;
       }
+
+      // Delete stale tasks from previous plans (MongoDB + Map)
+      await this.taskStore.clearStaleByGoal(goalId, planId);
 
       // Rebuild DAG for this goal
       this.dagResolver.rebuildForGoal(this.taskStore, goalId);
@@ -766,7 +815,7 @@ export class GoalManager implements IGoalManager {
     taskId: string; role: string; summary: string;
     deliverables?: string[]; nextSteps?: string[];
     producedDocs?: Array<{ uri: string; name: string; description?: string }>;
-    decisions?: string[];
+    decisions?: Array<{ decision: string; rationale?: string }>;
     timestamp: number;
   }): Promise<void> {
     log.info(`[GoalManager] Worker done: ${data.taskId}`);

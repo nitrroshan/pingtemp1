@@ -92,6 +92,11 @@ export class AiSdkAgent extends BaseAgent {
     return [...this.messages];
   }
 
+  /** Replace the conversation messages (used for session restore from database). */
+  setMessages(messages: ModelMessage[]): void {
+    this.messages = [...messages];
+  }
+
   /** Get current message count (for diagnostics) */
   getMessageCount(): number {
     return this.messages.length;
