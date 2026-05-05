@@ -9,12 +9,14 @@
   "knowledgeRefs": [],
   "dependencyTasks": [],
   "createdAt": "2026-05-05T18:57:58.037Z",
-  "lastCommitAt": "2026-05-05T18:57:58.037Z",
+  "lastCommitAt": "2026-05-05T19:02:04.267Z",
   "status": "active",
   "retryCount": 0,
   "activityStats": {
-    "totalEntries": 0,
+    "totalEntries": 1,
     "toolCalls": 0,
-    "errors": 0
+    "errors": 0,
+    "firstActivity": "2026-05-05T19:02:04.267Z",
+    "lastActivity": "2026-05-05T19:02:04.267Z"
   }
 }
