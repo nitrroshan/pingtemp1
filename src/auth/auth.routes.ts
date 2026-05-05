@@ -9,4 +9,8 @@ router.post('/register', registerUser);
 // Login user endpoint
 router.post('/login', loginUser);
 
+// Logout user endpoint
+import { logoutUser } from './logout.controller';
+router.post('/logout', logoutUser);
+
 export default router;
