@@ -502,9 +502,24 @@ export class GoalManager implements IGoalManager {
       // Enable per-goal ChatAgents (direct — no callback roundtrip)
       this.enableChatAgentsForGoal(goalId, this.teamRoles);
 
-      // ─── CRDT Persistence ───
+      // ── Verify plan document has content (planner must write via collab write-block) ──
       if (this.crdtTaskSyncProxy?.resolveForGoal) {
         this.crdtTaskSyncProxy.resolveForGoal(goalId);
+        const crdtSync = this.crdtTaskSyncProxy.get();
+        if (crdtSync) {
+          try {
+            const hasContent = await crdtSync.isPlanDocWritten?.();
+            if (hasContent === false) {
+              return {
+                success: false,
+                error: "Plan document is empty — the planner must write a plan document before approval. Please reject and request the planner to write the plan.",
+              };
+            }
+          } catch (err) {
+            // CRDT check failed — allow approval to proceed (best-effort check)
+            log.warn(`[approvePlan] CRDT plan doc check failed: ${err}`);
+          }
+        }
       }
 
       // Publish domain event — CRDT projection + notifications handled by subscribers

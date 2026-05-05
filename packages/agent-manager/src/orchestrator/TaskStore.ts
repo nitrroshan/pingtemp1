@@ -132,10 +132,10 @@ export class TaskStore implements ITaskProvider {
   // CRUD
   // ═══════════════════════════════════════════════════════════════════
 
-  /** Add a task. Persists to MongoDB FIRST, then updates Map. Queues if ready. */
+  /** Add a task. Persists to DB FIRST, then updates Map. Queues if ready. */
   async create(task: Task): Promise<void> {
     if (!task.goalId) {
-      log.error(`Task '${task.id}' created without goalId — this is a data integrity bug. Caller must set goalId.`);
+      throw new Error(`Task '${task.id}' created without goalId — caller must set goalId before calling TaskStore.create()`);
     }
     if (this.tasks.has(task.id)) {
       throw new Error(`Task '${task.id}' already exists`);

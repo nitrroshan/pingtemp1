@@ -66,7 +66,7 @@ export interface GoalSummary {
 }
 
 export interface OrchestratorCallbacks {
-  onStream?: (data: { taskId: string; agentId: string; part: any; goalId?: string }) => void;
+  onStream?: (data: { taskId: string; agentId: string; part: any; goalId: string }) => void;
   onEvent?: (data: { taskId: string; event: any }) => void;
   onDone?: (data: { taskId: string; role: string; output: any }) => void;
   onError?: (data: { taskId: string; error: string }) => void;

@@ -71,20 +71,21 @@ export class SocketMessageHandler {
       const isOrchestratorMsg = agentId === "manager" || agentId === "orchestrator";
       if (this.services && !isOrchestratorMsg) {
         if (!clientGoalId) {
-          logger.warn(`[SocketMessageHandler] User message missing goalId — agentId=${agentId}, teamId=${teamId}. Message will be persisted without goal scope.`);
+          logger.warn(`[SocketMessageHandler] Skipping user message persistence — no goalId. agentId=${agentId}, teamId=${teamId}`);
+        } else {
+          const layer = agentId.startsWith("chat-") ? "chat-agent" as const : "worker" as const;
+          this.services.chat.addMessage({
+            teamId,
+            userId: connection.userId,
+            role: "user",
+            agentId,
+            taskId: taskId || undefined,
+            goalId: clientGoalId,
+            content,
+            agentLayer: layer,
+            timestamp: new Date().toISOString(),
+          }).catch((err) => logger.warn("[SocketMessageHandler] Failed to save user message:", err));
         }
-        const layer = agentId.startsWith("chat-") ? "chat-agent" as const : "worker" as const;
-        this.services.chat.addMessage({
-          teamId,
-          userId: connection.userId,
-          role: "user",
-          agentId,
-          taskId: taskId || undefined,
-          goalId: clientGoalId || undefined,
-          content,
-          agentLayer: layer,
-          timestamp: new Date().toISOString(),
-        }).catch((err) => logger.warn("[SocketMessageHandler] Failed to save user message:", err));
       }
 
       const joined = await this.joinTeamRoom(socket, teamId);
@@ -142,13 +143,14 @@ export class SocketMessageHandler {
     // MUST be awaited — fire-and-forget causes race where tasks insert before goal row commits
     if (this.services) {
       try {
-        // Ensure team is registered in database (just-in-time registration).
-        // In hybrid mode, PG FK constraints require agent_teams row to exist before goals.
-        // This is idempotent — skips if already registered.
-        if (this.services.teamRegistry && this.services.mode === "hybrid") {
-          const team = await this.services.teams.getTeam(teamId);
-          if (team) {
-            await this.services.teamRegistry.register(teamId, socket.data.userId || "system", team.pluginName ?? team.name);
+        // In hybrid mode, verify team is registered in PG before creating goals.
+        // Teams must be installed via POST /api/v2/teams (or seed:teams in dev).
+        if (this.services.mode === "hybrid" && this.services.teamRegistry) {
+          const owner = await this.services.teamRegistry.getOwner(teamId);
+          if (!owner) {
+            logger.error(`[SocketMessageHandler] Team ${teamId} not installed in PostgreSQL — cannot create goal. Install via POST /api/v2/teams first.`);
+            emitError(socket, { error: "Team not installed. Please install the team before sending messages." });
+            return;
           }
         }
 

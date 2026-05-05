@@ -28,7 +28,7 @@ dotenv.config();
 const logger = rootLogger.child({ module: "WorkerPool" });
 
 export interface WorkerCallbacks {
-  onStream?: (data: { taskId: string; agentId: string; part: any; goalId?: string }) => void;
+  onStream?: (data: { taskId: string; agentId: string; part: any; goalId: string }) => void;
   onEvent?: (data: { taskId: string; event: any }) => void;
   onDone?: (data: { taskId: string; role: string; output: any }) => void;
   onError?: (data: { taskId: string; error: string }) => void;
@@ -79,6 +79,11 @@ export class WorkerPool {
 
   /** Shared services for agent-initiated task tools (injected by AgentManager) */
   private taskStore: { getAll(): any[]; get(id: string): any; create(t: any): void; remove(id: string): boolean; updateStatus(id: string, s: string): void } | null = null;
+
+  /** Get the goalId for a task from the TaskStore (used by OrchestratorService for collab workers) */
+  getTaskGoalId(taskId: string): string | undefined {
+    return this.taskStore?.get(taskId)?.goalId;
+  }
   private dagResolver: { rebuild(source: any): void; validateDependencies?(taskId: string, deps: string[]): string | null } | null = null;
   private teamRoles: string[] = [];
   private crdtTaskSync: {
@@ -207,8 +212,9 @@ export class WorkerPool {
    * @param taskId - Unique task identifier
    * @param role - Role to use for this task
    * @param message - Message to send to the agent
+   * @param goalId - Goal scope (required for persistence)
    */
-  async runTask(taskId: string, role: string, message: string): Promise<any>;
+  async runTask(taskId: string, role: string, message: string, goalId?: string): Promise<any>;
 
   /**
    * Overload 2: Queue mode - TaskWithContext (includes dependency context)
@@ -223,6 +229,7 @@ export class WorkerPool {
     taskIdOrTask: string | TaskWithContext,
     role?: string,
     message?: string,
+    explicitGoalId?: string,
   ): Promise<any> {
     let taskId: string;
     let roleKey: string;
@@ -236,11 +243,14 @@ export class WorkerPool {
       taskId = taskIdOrTask;
       roleKey = role!.toLowerCase();
       finalMessage = message!;
-      // Try to get goalId from TaskStore
+      // Use explicit goalId first, then fall back to TaskStore lookup
       const storedTask = this.taskStore?.get(taskId);
-      taskGoalId = storedTask?.goalId;
+      taskGoalId = explicitGoalId || storedTask?.goalId;
       taskRepoUrl = storedTask?.context?.repoUrl;
       taskRepoBranch = storedTask?.context?.repoBranch;
+      if (!taskGoalId) {
+        logger.warn(`[WorkerPool] runTask chat-mode: no goalId for ${taskId} — stream messages will not be persisted`);
+      }
     } else {
       // Queue mode: TaskWithContext
       const task = taskIdOrTask;
@@ -425,7 +435,7 @@ export class WorkerPool {
 
       for await (const event of agent.execute(input)) {
         // Forward stream_part events directly on onStream callback
-        if (event.type === "stream_part") {
+        if (event.type === "stream_part" && taskGoalId) {
           this.callbacks.onStream?.({
             taskId,
             agentId: roleKey,

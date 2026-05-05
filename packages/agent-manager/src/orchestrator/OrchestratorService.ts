@@ -266,7 +266,7 @@ export class OrchestratorService {
         }
       },
       // Step 3+4: Priority mention routing — spawn collab workers immediately
-      onMentionedRoles: (data) => this.spawnCollabWorkers(data.roles, data.docName, data.sourceRole, data.postContent),
+      onMentionedRoles: (data) => this.spawnCollabWorkers(data.roles, data.docName, data.sourceRole, data.postContent, data.sourceTaskId),
       // Channel B: forward task updates to ChatAgent + Socket.IO
       onTaskUpdate: (update) => this.callbacks.onWorkerTaskUpdate?.(update),
     });
@@ -490,7 +490,7 @@ export class OrchestratorService {
    * Single implementation — called from both initialize() and approvePlan() callbacks.
    */
   private spawnCollabWorkers(
-    roles: string[], docName: string, sourceRole?: string, postContent?: string,
+    roles: string[], docName: string, sourceRole?: string, postContent?: string, sourceTaskId?: string,
   ): void {
     // Fix 1: Validate mentions against team roles
     const validRoles = roles.filter(r => this.teamRoles.some(tr => tr.toLowerCase() === r.toLowerCase()));
@@ -525,7 +525,12 @@ export class OrchestratorService {
         `Keep it brief — this is alignment, not implementation.`,
       ].join("\n");
 
-      this.workerPool.runTask(collabWorkerId, role, collabMessage)
+      // Resolve goalId from the source task so collab worker streams are goal-scoped
+      const collabGoalId = sourceTaskId
+        ? this.workerPool.getTaskGoalId(sourceTaskId)
+        : undefined;
+
+      this.workerPool.runTask(collabWorkerId, role, collabMessage, collabGoalId)
         .catch((err) => log.error(`Collab worker ${collabWorkerId} error: ${err}`))
         .finally(() => { this.workerPool.dispose(collabWorkerId).catch(() => {}); });
     }

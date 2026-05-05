@@ -66,6 +66,10 @@ async function main() {
       await agentManagerRegistry.flushAll();
       await api.stop();
       if (config.mongodbUri) await disconnectDB();
+      if (config.mode === "hybrid") {
+        const { closeDb } = await import("./db/connection.js");
+        await closeDb();
+      }
       process.exit(0);
     });
 
@@ -74,6 +78,10 @@ async function main() {
       await agentManagerRegistry.flushAll();
       await api.stop();
       if (config.mongodbUri) await disconnectDB();
+      if (config.mode === "hybrid") {
+        const { closeDb } = await import("./db/connection.js");
+        await closeDb();
+      }
       process.exit(0);
     });
   } catch (error) {

@@ -80,16 +80,17 @@ ServiceRegistry (packages/backend/services/ServiceRegistry.ts)
 | **CRDT documents** | Hocuspocus | Y.js binary state, managed by collab-service persistence |
 | **Auth (users, sessions)** | PostgreSQL | better-auth has Drizzle adapter — share the same PG connection |
 
-### Target Architecture
+### Hybrid Architecture (Current Implementation)
 
 ```
 ServiceRegistry
 ├── mode: "cloud" | "local" | "hybrid"
 │
-├── teams: PgTeamService              ← PostgreSQL (replaces PluginTeamService for DB ops + teamRegistry)
-├── chat: MongoChatService            ← MongoDB (stays)
-├── goals: PgGoalService              ← PostgreSQL
-├── tasks: PgTaskService              ← PostgreSQL
+├── teams: PluginTeamService           ← NO DATABASE — reads plugin folders (unchanged in all modes)
+├── teamRegistry: PgTeamService        ← PostgreSQL — ownership, access control, FK anchor for goals/tasks
+├── chat: MongoChatService             ← MongoDB (stays — document-shaped, append-heavy)
+├── goals: PgGoalService               ← PostgreSQL
+├── tasks: PgTaskService               ← PostgreSQL
 │
 ├── Auth: better-auth
 │   └── adapter: drizzle (PostgreSQL)  ← shares same PG connection
@@ -97,6 +98,8 @@ ServiceRegistry
 └── CRDT: Hocuspocus
     └── S3 blob storage (production)
 ```
+
+**Note:** `PluginTeamService` remains the source of truth for team discovery (derived from plugin folders). `PgTeamService` provides ownership/membership and the FK target (`agent_teams`) that goals and tasks reference.
 
 ### What Changes
 

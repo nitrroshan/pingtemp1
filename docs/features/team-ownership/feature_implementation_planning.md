@@ -144,15 +144,15 @@ User goals — the top-level work unit.
 
 | Old (Mongo/SQLite) | New (PG) | Change |
 |---------------------|----------|--------|
-| `_id` (ObjectId) | — | **Dropped** — never used by business logic |
-| `goalId` (slug) | `id` | **Promoted to PK** |
-| `teamId` | `agent_team_id` | Renamed — FK to agent_teams |
+| `_id` (ObjectId) | `id` (uuid) | **DB-generated UUID PK** — stable for FKs, never exposed to business logic |
+| `goalId` (slug) | `goal_id` (text) | **Unique-indexed column** — business identifier, used for all lookups |
+| `teamId` | `agent_team_id` | Renamed — FK to agent_teams (references UUID PK) |
 | `userId` | `created_by` | Renamed — clearer intent |
 | `goal` | `title` | Renamed — `goal` confusing as column name |
 | `status` (string) | `status` (enum) | Typed as PG enum |
 | — | `approved_by` | **New** — tracks plan approver |
 
-**PgGoalService.addGoal():** `id = goal.goalId || uuidv4()` — caller's business ID becomes the PK.
+**PgGoalService.addGoal():** DB generates UUID PK (`gen_random_uuid()`). Business `goal_id` stored as a separate unique-indexed column. Service resolves `teamId` → UUID via `resolveTeamUuid()` for the FK.
 
 ---
 

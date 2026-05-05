@@ -107,30 +107,30 @@ export class SocketEventBroadcaster {
               : null;
 
             if (!streamGoalId) {
-              logger.warn(`[SocketEventBroadcaster] Stream message missing goalId — agentId=${acc.agentId}, taskId=${taskId}. Message will be persisted without goal scope.`);
-            }
+              logger.warn(`[SocketEventBroadcaster] Skipping stream message persistence — no goalId. agentId=${acc.agentId}, taskId=${taskId}`);
+            } else {
+              const msgPayload = {
+                teamId,
+                userId: await this.services.teamRegistry?.getOwner(teamId) ?? "system",
+                role: "assistant" as const,
+                agentId: acc.agentId || "unknown",
+                taskId: taskId || undefined,
+                goalId: streamGoalId,
+                content: acc.text || " ",
+                streamParts: (acc.text.trim() || acc.parts.length > 0) ? JSON.stringify(toRenderedParts(acc.text, acc.parts)) : undefined,
+                agentLayer: (acc.agentId === "planner" || acc.agentId === "manager" || acc.agentId === "orchestrator") ? "planner" as const : "worker" as const,
+                contextMessages: contextMessages || undefined,
+                timestamp: new Date().toISOString(),
+              };
 
-            const msgPayload = {
-              teamId,
-              userId: await this.services.teamRegistry?.getOwner(teamId) ?? "system",
-              role: "assistant" as const,
-              agentId: acc.agentId || "unknown",
-              taskId: taskId || undefined,
-              goalId: streamGoalId || undefined,
-              content: acc.text || " ",
-              streamParts: (acc.text.trim() || acc.parts.length > 0) ? JSON.stringify(toRenderedParts(acc.text, acc.parts)) : undefined,
-              agentLayer: (acc.agentId === "planner" || acc.agentId === "manager" || acc.agentId === "orchestrator") ? "planner" as const : "worker" as const,
-              contextMessages: contextMessages || undefined,
-              timestamp: new Date().toISOString(),
-            };
-
-            try {
-              await this.services.chat.addMessage(msgPayload);
-            } catch (err) {
-              logger.warn({ err, taskId, agentId: acc.agentId }, "[SocketEventBroadcaster] Failed to save message — retrying once");
-              setTimeout(() => {
-                this.services?.chat.addMessage(msgPayload).catch(() => {});
-              }, 500);
+              try {
+                await this.services.chat.addMessage(msgPayload);
+              } catch (err) {
+                logger.warn({ err, taskId, agentId: acc.agentId }, "[SocketEventBroadcaster] Failed to save message — retrying once");
+                setTimeout(() => {
+                  this.services?.chat.addMessage(msgPayload).catch(() => {});
+                }, 500);
+              }
             }
           }
           messageAccumulator.delete(accKey);

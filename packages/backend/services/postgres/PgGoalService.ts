@@ -96,14 +96,23 @@ export class PgGoalService implements IGoalService {
     if (updates.repoUrl !== undefined) setValues.repoUrl = updates.repoUrl;
     if (updates.repoBranch !== undefined) setValues.repoBranch = updates.repoBranch;
 
-    // Lookup by business goal_id (unique indexed)
+    // Lookup by business goal_id, JOIN to resolve teamId
     const rows = await this.db
       .update(goals)
       .set(setValues)
       .where(eq(goals.goalId, goalId))
       .returning();
 
-    return rows.length > 0 ? this.toGoal(rows[0]) : null;
+    if (rows.length === 0) return null;
+
+    // Resolve teamId from the FK
+    const teamRows = await this.db
+      .select({ teamId: agentTeams.teamId })
+      .from(agentTeams)
+      .where(eq(agentTeams.id, rows[0].agentTeamId))
+      .limit(1);
+
+    return this.toGoal(rows[0], teamRows[0]?.teamId);
   }
 
   /** Resolve business teamId (SHA-256 hash) to DB UUID */

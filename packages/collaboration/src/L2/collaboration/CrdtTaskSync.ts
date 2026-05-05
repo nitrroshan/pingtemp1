@@ -241,6 +241,25 @@ export class CrdtTaskSync {
   }
 
   // ─────────────────────────────────────────────────────────────────────────
+  // PLAN DOC CHECK — Verify the planner wrote content before approval
+  // ─────────────────────────────────────────────────────────────────────────
+
+  /**
+   * Check if the plan CRDT document has content written by the planner.
+   * Returns true if the content XmlFragment has blocks, false if empty.
+   */
+  async isPlanDocWritten(): Promise<boolean> {
+    try {
+      const doc = await this._space.openDoc("plan");
+      const fragment = doc.getXmlFragment("content");
+      return fragment.length > 0;
+    } catch (err) {
+      logger.warn(`Failed to check plan doc content: ${err}`);
+      return true; // On error, don't block approval
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
   // SYNC PLAN STATUS — Update plan status in CRDT (BUG-1 fix)
   // ─────────────────────────────────────────────────────────────────────────
 
