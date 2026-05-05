@@ -1,90 +1,202 @@
 # Platform Roadmap — Phased Delivery Plan
 
-**Date:** May 3, 2026
+**Date:** May 4, 2026
 **Purpose:** Unified plan for all major features, ordered by dependency and impact.
 
 ---
 
-## Current State (What Exists Today)
+## Current State (Audited May 4, 2026)
 
 | Area | Status | Details |
 |------|--------|---------|
-| **MongoDB** | ✅ Working | Chat, goals, tasks persisted. Persistence awaited (throws on failure). Unique index: `{teamId, goalId, taskId}`. |
+| **MongoDB** | ✅ Working | Chat, goals, tasks persisted. Write-through TaskStore. Unique index: `{teamId, goalId, taskId}`. |
 | **Auth** | ✅ Working | better-auth (email+password, GitHub OAuth). Socket.IO + HTTP middleware. |
 | **Workspace** | ✅ Working | Per-task git worktrees. Per-goal clone. Branch isolation. |
-| **Frontend** | ✅ Working | GoalScreen, PlanList, multi-goal switching, goalSessionStore. |
-| **CRDT** | ✅ Restored | CRDT writes via event-driven projection (GoalEventBus → CrdtProjectionHandler). Standardized `Y.Map("meta")`. Agent status tracking. `collab read` works. |
-| **Goal isolation** | ✅ Working | Parallel goals supported. Goal-scoped tasks, notifications, DAG. Per-goal concurrency fairness is Phase 3 optimization. |
+| **Frontend** | ✅ Working | GoalScreen, PlanList, multi-goal switching, goalSessionStore, Document Pane (MVP). |
+| **CRDT** | ✅ Working | Event-driven projection (GoalEventBus → CrdtProjectionHandler). `Y.Map("meta")` standard. Plan docs written at proposal time. |
+| **Plan approval** | ✅ Working | `awaiting_approval` state. PlanApproval dialog + Document Pane approve/reject. Request Changes with feedback. |
+| **Completion protocol** | ✅ Enforced | Agents must write `{taskId}/report` to CRDT before `complete_task`. Tool-level enforcement. |
+| **Document Pane** | ✅ MVP | DocumentList, CrdtDocViewer, WorkspaceFileViewer. Auto-open on approval. `Cmd+D` shortcut. |
+| **Conversation persistence** | ✅ v1.2 | Planner + ChatAgent save/restore wired end-to-end. User-scoped session restore (B-008). |
+| **Goal isolation** | ✅ Working | Parallel goals. Goal-scoped tasks, notifications, DAG. |
+| **Database** | ⚠️ Transitional | MongoDB (cloud) + SQLite (local). Hybrid PostgreSQL + MongoDB planned. |
 | **Redis** | ❌ None | Zero deps. All state in-memory. Single-server only. |
-| **Team membership** | ❌ Owner-only | No multi-member teams. `canAccess()` checks owner only. |
-| **Process isolation** | ❌ None | All workers in same Node.js process. No BullMQ, no worker_threads. |
-| **Resource quotas** | ❌ None | No per-user limits. One user can monopolize everything. |
+| **Team membership** | ❌ Owner-only | No multi-member teams. No organizations. |
+| **Process isolation** | ❌ None | All workers in same Node.js process. |
 
-### What's Fixed (this branch)
-- ✅ CRDT writes restored via GoalEventBus + CrdtProjectionHandler (event-driven, not direct calls)
-- ✅ MongoDB unique index fixed: `{teamId, goalId, taskId}`
-- ✅ DB writes awaited and throw on failure (persist-then-publish contract)
-- ✅ Goal DB status persisted via SocketEventBroadcaster.onGoalStatusChange
-- ✅ GoalSchema has repoUrl/repoBranch fields
-- ✅ CrdtTaskSync page-type discriminator bug fixed (`type` vs `taskType`)
-- ✅ CRDT fallback recovery removed (MongoDB-only recovery)
-- ✅ TaskStore write-through: all writes await MongoDB BEFORE updating Map cache
-- ✅ MongoTaskService errors propagate (no swallowing)
-- ✅ SQLite unique key fixed: `{teamId, goalId, taskId}`
-- ✅ Dependency cascade routes through `updateStatus()` (persists to MongoDB)
-- ✅ planMutationTools duplicate persistence removed — TaskStore is single writer
-- ✅ request_task duplicate persistence removed — TaskStore is single writer
-- ✅ DocumentRef-based context: agents read via `collab read` URIs, no raw text summaries
-- ✅ `complete_task` upgraded with `producedDocs` + `decisions`
-- ✅ BlockNote server-side: `write-block`/`read-block` use `ServerBlockNoteEditor`
-- ✅ `record-decision` / `get-decisions` collab tool actions
+### What Was Shipped (this branch — `user/nitrroshan/fixplans`)
 
-### What's Still Broken / Missing
-- Plan approval is non-atomic — crash between clear and create loses all tasks (rollback added but crash window remains)
-- Hocuspocus currently uses local filesystem persistence — must switch to S3 for production
-- ✅ ~~Planner conversation history lost on restart~~ — save/restore wired via `saveConversationFn`/`loadConversationFn` (v1.2)
-- ✅ ~~contextMessages saved to MongoDB but never restored~~ — planner restores via `AiSdkAgent.setMessages()`, chat agents via `loadMessages()`
-- Conversation restore is not user-scoped — all users on same team share planner/chat history (v2.0)
+**PR1-4: CRDT-First Architecture**
+- CRDT writes restored via GoalEventBus + CrdtProjectionHandler
+- MongoDB safety: unique index, async persist, GoalSchema
+- `Y.Map("meta")` standardized across all docs
+- TaskStore write-through: MongoDB BEFORE Map cache
+- DocumentRef context pipeline: `inputDocs`, `producedDocs`, `decisions` on Task type
+- BlockNote server-side: `write-block`/`read-block` via ServerBlockNoteEditor
+- `record-decision` / `get-decisions` collab tool actions
+- `complete_task` enforces CRDT report doc (exact URI match)
+- Plan proposed → CRDT projection at submit time (not just approval)
+- Planner has collab tools (was missing L2 tools)
+
+**Plan Approval Flow**
+- `awaiting_approval` state (no auto-approve)
+- PlanApproval dialog with Approve + Request Changes
+- `reject-plan` socket action routes feedback to planner
+- Document Pane auto-opens with plan doc on `awaiting_approval`
+- Planner prompt updated: `submit_plan` → awaiting_approval (stale `request_approval` removed)
+
+**Document Pane**
+- DocumentPane container with list/editor/file viewer routing
+- DocumentList: CRDT docs grouped by type (plan/tasks/reports/workspace)
+- CrdtDocViewer: lazy-loaded BlockNote/Hocuspocus
+- WorkspaceFileViewer: monospace code viewer
+- Backend workspace file endpoints
+- "View Documents" button in DetailPanel
+- `Cmd+D` keyboard shortcut
+- Approve/reject footer when viewing plan doc
+
+**Persistence & Safety**
+- Atomic approval: upsert new tasks, delete stale by planId (no crash data loss)
+- Planner conversation save/restore (v1.2): wired end-to-end with userId + agentLayer
+- User-scoped session restore: userId filter on IChatService queries
+- DispatchManager async-aware error handling
+- requestTaskTool rollback through TaskStore (single writer)
+- PlanStore removed from hot path (MongoDB taskPersistence for cross-plan refs, PlanStore fallback only)
+- decisions type unified: `{decision, rationale?}` across all surfaces
+
+### What's Still Open
+
+| Issue | Priority | Notes |
+|-------|----------|-------|
+| Hocuspocus filesystem persistence | P1 | Must switch to S3 for production |
+| Document Pane polish | P1 | Resize, metadata header, read-only, report visibility, syntax highlighting |
+| PlanStore full removal | P2 | Now fallback-only, blocked by cross-plan ref migration |
+| Team ownership model | P1 | Organizations → agent teams hierarchy. See [team-ownership](features/team-ownership/feature_architecture.md) |
+| Hybrid database (PostgreSQL + MongoDB) | P1 | See [team-ownership](features/team-ownership/feature_architecture.md) for migration plan |
 
 ---
 
-## Deployment Modes
+## Deployment
 
-### Cloud App (Primary)
-- MongoDB for persistence
-- Hocuspocus as a separate hosted service (`@ping/collab-service`) — deployed at its own URL (e.g. `wss://collab.ping.dev`), persists CRDT docs to S3-compatible object storage
-- better-auth with MongoDB adapter
-- Future: Redis + BullMQ for scaling
+### Production Stack (PMF Phase — $5-20/month)
 
-> **Hocuspocus is NOT embedded in the backend.** It runs as its own hosted service at a separate URL — `packages/collab-service/src/standalone.ts`. The backend connects via `RemoteCollabClient` (WebSocket) using the `COLLAB_URL` environment variable (e.g. `wss://collab.ping.dev`). CRDT docs persist to **S3-compatible object storage** (AWS S3, MinIO, R2, etc.) via the `HocuspocusBlobStorageAdapter` — not local filesystem. This ensures docs survive service restarts and enables horizontal scaling of the collab service.
+| Service | Provider | Free Tier | Est. Cost | Purpose |
+|---------|----------|-----------|-----------|---------|
+| **PostgreSQL** | Neon | 0.5 GB, 100 CU-hrs, scale-to-zero | $0-15/mo | Teams, goals, tasks, members (relational data) |
+| **MongoDB** | Atlas M0 | 512 MB free forever | $0 | Chat messages, index snapshots (document data) |
+| **S3 Storage** | Cloudflare R2 | 10 GB + 10M reads, zero egress | $0 | CRDT document blobs (Hocuspocus persistence) |
+| **Backend** | Railway | $5 Hobby credit, per-second billing | $5-20/mo | API server + collab-service |
+| **Frontend** | Vercel | Free Hobby plan | $0 | Vite/React static build, CDN, auto-deploy |
 
-### Desktop App (Electron Shell)
-- **NOT a separate mode** — desktop is just an Electron wrapper that loads the cloud web app
-- No local storage, no SQLite, no offline mode
-- User must be connected to the cloud backend
-- Same as opening the web app in a browser, but with native window controls + system tray
-- Desktop package exists at `@ping/desktop` — thin shell only
+**Why this stack:**
+- **Neon**: Serverless PG, scales to zero when idle. Built-in better-auth support via Neon Auth. Drizzle-native.
+- **Atlas M0**: Already in use. Chat messages fit in free 512 MB. Document-shaped data stays in MongoDB.
+- **R2**: Zero egress fees — critical for read-heavy CRDT docs. S3-compatible (`@aws-sdk/client-s3`).
+- **Railway**: Git push deploy, usage-based billing by the second. Built-in PG/Redis templates if needed.
+- **Vercel**: Free for static sites. Automatic CI/CD from Git.
 
-**Feature docs:**
-- [local-first-desktop](features/local-first-desktop/feature_architecture.md) — original desktop architecture (for reference)
-- [dev-prod-setup](features/dev-prod-setup/) — environment configuration
+### Local Development
 
-## Architecture Principle: CRDT for Artifacts, MongoDB for Tracking
+```yaml
+# docker-compose.dev.yml
+services:
+  postgres:
+    image: postgres:16-alpine
+    ports: ["5432:5432"]
+    environment:
+      POSTGRES_DB: ping
+      POSTGRES_USER: ping
+      POSTGRES_PASSWORD: ping
+    volumes: ["pg_data:/var/lib/postgresql/data"]
 
-### Two Layers, Two Purposes
+  minio:
+    image: minio/minio
+    ports: ["9000:9000", "9001:9001"]
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    command: server /data --console-address ":9001"
+    volumes: ["minio_data:/data"]
+
+  mongo:
+    image: mongo:7
+    ports: ["27017:27017"]
+    volumes: ["mongo_data:/data/db"]
+
+volumes:
+  pg_data:
+  minio_data:
+  mongo_data:
+```
+
+```bash
+# .env (local dev)
+DATABASE_URL=postgresql://ping:ping@localhost:5432/ping
+MONGODB_URI=mongodb://localhost:27017/ping
+S3_ENDPOINT=http://localhost:9000
+S3_BUCKET=ping-crdt
+S3_ACCESS_KEY=minioadmin
+S3_SECRET_KEY=minioadmin
+COLLAB_PORT=1234
+PING_MODE=hybrid
+
+# .env (production)
+DATABASE_URL=postgresql://...@ep-xxx.neon.tech/ping?sslmode=require
+MONGODB_URI=mongodb+srv://...@cluster0.mongodb.net/ping
+S3_ENDPOINT=https://xxx.r2.cloudflarestorage.com
+S3_BUCKET=ping-crdt
+S3_ACCESS_KEY=xxx
+S3_SECRET_KEY=xxx
+COLLAB_URL=wss://collab-service.up.railway.app
+PING_MODE=hybrid
+```
+
+### Architecture
 
 ```
-CRDT (Hocuspocus)                    MongoDB
-= Collaborative artifacts            = Operational data
-= What agents READ and WRITE         = What the system TRACKS
-= Documents, knowledge, context      = Status, metrics, recovery
-= Real-time, multi-writer            = Durable, queryable
+┌─────────────┐    ┌─────────────────┐    ┌──────────────┐
+│   Vercel     │    │    Railway       │    │  Railway      │
+│   Frontend   │───▶│    Backend API   │───▶│  Collab Svc   │
+│   (React)    │    │    (Express)     │    │  (Hocuspocus) │
+└─────────────┘    └────────┬────────┘    └──────┬───────┘
+                            │                     │
+                   ┌────────┴────────┐    ┌──────┴───────┐
+                   │                 │    │              │
+              ┌────▼────┐   ┌───────▼──┐ │  ┌───────────▼┐
+              │  Neon    │   │ Atlas M0 │ │  │ R2 Storage  │
+              │  (PG)    │   │ (Mongo)  │ │  │ (CRDT blobs)│
+              │ relational│   │ documents│ │  │ S3-compat   │
+              └──────────┘   └──────────┘ │  └────────────┘
+                                          │
+                              Teams, goals,│  Chat messages,
+                              tasks, auth  │  index snapshots
 ```
 
-**CRDT is NOT replacing MongoDB.** They serve completely different purposes:
+### Desktop App
+- Electron wrapper loading the cloud web app — no local storage
+- Package: `@ping/desktop`
+- Same as browser, with native window controls + system tray
 
-| | CRDT | MongoDB |
-|---|---|---|
+**Feature docs:** [dev-prod-setup](features/dev-prod-setup/), [team-ownership](features/team-ownership/feature_architecture.md)
+
+## Architecture Principle: Three Storage Layers
+
+```
+PostgreSQL (Neon)              MongoDB (Atlas)              CRDT (Hocuspocus + R2)
+= Relational data              = Document data               = Collaborative artifacts
+= Teams, goals, tasks          = Chat messages                = Plan docs, reports
+= Members, auth                = Index snapshots              = Agent workspace
+= FK constraints               = Append-heavy, JSON blobs     = Real-time, multi-writer
+```
+
+**Each database for its strength:**
+
+| | PostgreSQL | MongoDB | CRDT |
+|---|---|---|---|
+| **Purpose** | Relational tracking — who owns what, task lifecycle | Content storage — chat history, LLM context | Collaborative docs — agents and users edit together |
+| **What lives here** | organizations, teams, members, goals, tasks, agent definitions, auth | chat messages, stream parts, contextMessages, index snapshots | plan docs, task descriptions, completion reports, team memory |
+| **Schema** | Strict — Drizzle ORM, FK constraints, enums, cascading deletes | Flexible — variable JSON blobs, no joins | Standard page pattern — `Y.Map("meta")` + `Y.XmlFragment("content")` |
+| **Survives restart?** | Yes (managed PG) | Yes (managed Atlas) | Yes (R2 blob storage) |
 | **Purpose** | Shared working documents — agents and users collaborate on content | Operational tracking — status, metrics, queries, recovery |
 | **What lives here** | Plan documents, task context, research findings, completion reports, team knowledge, agent notes, discussion threads | Task status, goal lifecycle, chat history, user accounts, metrics, audit log |
 | **Who reads** | Agents (via `collab read`), frontend (via Hocuspocus provider) | Backend (queries, restore), frontend (API calls for history/search) |
@@ -150,17 +262,26 @@ Server restarts
 
 **Exceptions:** Discussion threads (Y.Array, append-only), registries (_pages, _identities), scratchpad/team-memory (flat Y.Map, no content).
 
-### What Stays in MongoDB (Tracking — operational data)
+### What Goes Where (After Phase 2 Migration)
 
-| Collection | Key Fields | Why MongoDB |
-|------------|-----------|-------------|
-| **`tasks`** | taskId, goalId, teamId, status, assignedRole, dependencies[], producedDocs: DocumentRef[], output | Queryable (find all failed tasks), indexed, DAG recovery on restart |
-| **`goals`** | goalId, userId (Phase 6), teamId, status, currentPlanId, repoUrl, repoBranch, autoExecute | Dashboard queries, lifecycle tracking, config recovery |
-| **`messages`** | goalId, role, content, type, timestamp | Chat history + **planner conversation history** (save/restore wired in v1.2) |
-| **`user` / `session` / `account`** | (better-auth managed) | Auth, identity |
-| **`teamMemberships`** (Phase 6) | teamId, userId, role | Authorization, team member lookups |
-| **`userQuotas`** (Phase 6) | userId, maxGoals, maxWorkers, tokenBudget | Resource limits per user |
-| **`metrics`** (future) | goalId, taskId, tokensUsed, cost, duration | Token usage, cost tracking, audit trail |
+**PostgreSQL (Neon)** — relational data with FK constraints:
+
+| Table | Key Fields | Why PG |
+|-------|-----------|--------|
+| **`organizations`** | id, name, plan | Root entity, FK cascade to teams |
+| **`org_members`** | orgId → orgs, userId → users, role | Join table, role enums |
+| **`agent_teams`** | id, orgId → orgs, pluginName | FK to org, cascade delete |
+| **`goals`** | id, agentTeamId → teams, createdBy, approvedBy, status | FK chain, status enums |
+| **`tasks`** | id, goalId → goals, assignedRole, output (JSONB) | FK cascade, dependencies array |
+| **`agent_definitions`** | id, agentTeamId → teams, role, capabilities (JSONB) | Team-scoped, config as JSONB |
+| **auth tables** | users, sessions, accounts (better-auth Drizzle adapter) | Shares same PG connection |
+
+**MongoDB (Atlas M0)** — document data:
+
+| Collection | Key Fields | Why Mongo |
+|------------|-----------|-----------|
+| **`chatmessages`** | goalId, agentId, userId, content, streamParts, contextMessages | Variable JSON blobs, append-heavy, no joins |
+| **`indexsnapshots`** | branchId, searchIndex (Buffer), symbols[] | Binary data, no relations |
 
 > **`output.summary` is kept for backward compatibility.** Task output in MongoDB stores both `summary` (short text) and `producedDocs: DocumentRef[]` (URIs pointing to CRDT completion reports and workspace files). Rich content lives in the CRDT report doc. Downstream agents receive `inputDocs` (DocumentRef URIs) and read content via `collab read` — not raw summary strings. Summary is used as a fallback description when no `producedDocs` are specified.
 
@@ -205,76 +326,64 @@ These eliminations are **planned**, not yet implemented. The current runtime sti
 
 ## Phases — Implementation Plans
 
-Each phase has concrete steps grounded in the actual codebase (audited May 3, 2026).
+Each phase has concrete steps grounded in the actual codebase (audited May 4, 2026).
 
 ---
 
-### Phase 1: CRDT-First + Document-Based Planning
-**Priority:** P0 | **Effort:** 3-4 weeks | **Dependencies:** None
+### Phase 1: CRDT-First + Document-Based Planning ✅ COMPLETE
+**Priority:** P0 | **Status:** Shipped on `user/nitrroshan/fixplans` branch
 
-**Problem:** CRDT writes deleted. MongoDB index broken. Plans are JSON, not documents. No user review before execution. No BlockNote integration. `complete_task` captures only strings.
+**What was delivered:**
+- PR1: DB safety (unique index, async persist, GoalSchema)
+- PR2: CRDT standardize (meta maps, event-driven projection, agent status)
+- PR3: DocumentRef + BlockNote + collab tools
+- PR4: Plan approval, completion protocol, reject/replan, CRDT plan docs
+- Document Pane MVP: list, CRDT viewer, workspace files, approve/reject footer
+- Atomic approval: upsert new → delete stale by planId
+- Planner conversation save/restore (v1.2)
+- User-scoped session restore
+- Completion protocol enforcement (exact report URI)
+- decisions type unified: `{decision, rationale?}`
+- PlanStore removed from hot path (MongoDB for cross-plan refs)
 
-**4 PRs, merged sequentially.** Each independently testable and deployable.
+**Feature docs:** [crdt-first-architecture](features/crdt-first-architecture/), [document-pane](features/document-pane/), [conversation-persistence](features/conversation-persistence/)
 
-**Feature docs:**
-- [crdt-first-architecture](features/crdt-first-architecture/feature_architecture.md) — page pattern, BlockNote, CRDT restore
-- [plan-session](features/plan-session/feature_architecture.md) — document-first planning, wireframes, Document Pane
-- [task-context-and-crdt](features/task-context-and-crdt/feature_architecture.md) — DocumentRef vision (13 flows audited)
-- [implementation plan](features/crdt-first-architecture/v1.0/feature_implementation_planning.md) — 4 PRs with code-level steps
-
-#### PR 1: DB Safety + Dispatch Fixes (2 days)
-
-| Step | File(s) | What |
-|------|---------|------|
-| 1.1 | `TaskSchema.ts` + `MongoTaskService.ts` | Fix unique index: `{ teamId, taskId }` → `{ teamId, goalId, taskId }` |
-| 1.2 | `GoalManager.ts` L107-126 | Make 3 persist methods async + awaited |
-| 1.3 | `GoalSchema.ts` + `MongoGoalService.ts` | Add repoUrl/repoBranch. Write goal status to DB. |
-| 1.4 | `OrchestratorService.ts` | Fix dispatch signature compile errors |
-
-#### PR 2: CRDT Standardize + Restore (3 days)
-
-| Step | File(s) | What |
-|------|---------|------|
-| 2.1 | `CrdtTaskSync.ts` | Standardize Y.Map names to `"meta"` (keep class, don't rewrite) |
-| 2.2 | `CrdtGoalStore.ts` | Same — `"goal"` → `"meta"` |
-| 2.3 | `collab tool index.ts` | Delete `resolveDataMap()` + `KNOWN_MAP_NAMES`. Always `getMap("meta")`. |
-| 2.4 | `GoalManager.ts` | Fill all 7 blank-line gaps (restore CRDT writes) |
-| 2.5 | `CrdtTaskSync.ts` | Add `updateAgentStatus()` (FIX-1) |
-| 2.6 | 6 files | Add `ICrdtTaskSync` interface, replace `any` (FIX-2) |
-
-#### PR 3: DocumentRef + BlockNote Integration (1 week)
-
-| Step | File(s) | What |
-|------|---------|------|
-| 3.1 | `collaboration/package.json` | Install `@blocknote/server-util` + `@blocknote/core` |
-| 3.2 | `collab tool index.ts` | Rewrite write-block/read-block with ServerBlockNoteEditor |
-| 3.3 | `CrdtTaskSync.ts` persistTask() | Move body → Y.XmlFragment("content") via BlockNote |
-| 3.4 | `agent-manager/memory/types/` | Add DocumentRef, ExpectedDoc, TaskRisk types |
-| 3.5 | `completeTaskTool.ts` | Add producedDocs, decisions, risksEncountered |
-| 3.6 | `OrchestratorService.ts` + `TaskStore.ts` | Capture producedDocs → enrich dependant inputDocs |
-| 3.7 | `OrchestratorService.ts` dispatchTask() | Inject inputDocs + expectedOutputDocs in agent prompt |
-| 3.8 | `WorkerPool.ts` | Fix double-context in buildMessageWithContext |
-| 3.9 | `collab tool index.ts` | Add record-decision / get-decisions actions |
-
-#### PR 4: Document-First Plan Session (2 weeks)
-
-| Step | File(s) | What |
-|------|---------|------|
-| 4.1 | `submitPlan.ts` | Planner writes CRDT document (not JSON). Status: "draft". No auto-approve. |
-| 4.2 | `GoalManager.ts` | `deriveTasks()` reads plan-doc from CRDT → extracts task array |
-| 4.3 | `GoalManager.ts` | Delete PlanStore dependency |
-| 4.4 | Frontend: new `DocumentPane` | Resizable right pane: file list → BlockNote editor |
-| 4.5 | Frontend: `DetailPanel` | "📄 View Documents" button |
-| 4.6 | Frontend: `PlanTaskList` | "📋 Plan Document" sidebar entry |
-| 4.7 | Frontend: Hocuspocus + BlockNote | Connect to plan-doc Y.XmlFragment |
-| 4.8 | Frontend: approval flow | Approve/Replan buttons in Document Pane. Auto-open on awaiting_approval. |
-
-**After Phase 1:** Document-first architecture. Plans in CRDT. User reviews in BlockNote. DocumentRef between tasks. MongoDB safe. PlanStore gone.
+**Remaining polish (P1/P2):** Document Pane resize, metadata header, read-only system docs, syntax highlighting, auto-refresh. See [TASK-BACKLOG.md](features/TASK-BACKLOG.md).
 
 ---
 
-### Phase 2: CRDT Team Workspace (Agent Memory)
-**Priority:** P1 | **Effort:** 2 weeks | **Dependencies:** Phase 1
+### Phase 2: Hybrid Database + Team Ownership ← NEXT
+**Priority:** P1 | **Effort:** ~6.5 days | **Dependencies:** Phase 1 ✅
+
+**Problem:** Relational data (teams, goals, tasks, memberships) in MongoDB/SQLite. No ownership hierarchy. No organizations.
+
+**Architecture:** [team-ownership](features/team-ownership/feature_architecture.md) — hybrid PostgreSQL + MongoDB, two-tier org→agent team model
+
+**Two-tier model:**
+```
+organizations (human teams)
+  ├── org_members (userId, role: owner/admin/member/viewer)
+  └── agent_teams (pluginName, agents)
+       └── goals (createdBy, approvedBy)
+            └── tasks (goalId FK, cascade delete)
+```
+
+| Step | What | Effort |
+|------|------|--------|
+| 2.1 | Add PostgreSQL + Drizzle ORM, schema definitions | 1 day |
+| 2.2 | PgGoalService, PgTaskService, PgTeamService implementations | 2 days |
+| 2.3 | Migration script: MongoDB → PostgreSQL | 1 day |
+| 2.4 | org_members + access control middleware | 2 days |
+| 2.5 | Cleanup: remove Mongo/SQLite for migrated collections | 0.5 day |
+
+**Database split:** PostgreSQL for relational (teams, goals, tasks, members). MongoDB stays for chat messages + index snapshots.
+
+**After Phase 2:** Organizations → agent teams → goals → tasks with FK constraints + cascading deletes. Multi-member teams with roles. Hybrid PostgreSQL + MongoDB.
+
+---
+
+### Phase 3: CRDT Team Workspace (Agent Memory)
+**Priority:** P1 | **Effort:** 2 weeks | **Dependencies:** Phase 1 ✅
 
 **Problem:** No personal space per agent. No team-level knowledge persistence across goals. Knowledge dies when goal ends.
 
@@ -291,51 +400,28 @@ Each phase has concrete steps grounded in the actual codebase (audited May 3, 20
 | 2.7 | `collaboration/src/L2/tools/` | `personal_notes` agent tool | write/read/delete/list actions (~50 lines) |
 | 2.8 | `GoalManager.ts` / goal completion | Goal archival → extract learnings to team memory | LLM extracts decisions/lessons → writes to `{teamId}/team/decisions` |
 
-**After Phase 2:** Agents have personal rooms + shared team memory. Knowledge persists across goals. Room-level access control.
+**After Phase 3:** Agents have personal rooms + shared team memory. Knowledge persists across goals. Room-level access control.
 
 ---
 
-### Phase 3: Parallel Goals (MongoDB State + Concurrency)
-**Priority:** P1 | **Effort:** 3 weeks | **Dependencies:** Phase 1
+### Phase 4: Parallel Goals (State + Concurrency)
+**Priority:** P1 | **Effort:** 3 weeks | **Dependencies:** Phase 2
 
 **Problem:** Single goal at a time per team. All state in-memory. Goals lost on restart.
 
 **Feature docs:** [parallel-goals](features/parallel-goals/feature_architecture.md), [goal-isolation](features/goal-isolation/), [workspace-isolation](features/workspace-isolation/)
 
-| Step | File(s) | What | Code Change |
-|------|---------|------|-------------|
-| 3.1 | `GoalManager.ts` | Move GoalContext Map to MongoDB | Replace `Map<goalId, GoalContext>` → `MongoGoalService.get/set/list` |
-| 3.2 | `TaskStore.ts` | Move task state to MongoDB | Replace in-memory Map → `MongoTaskService.get/set/update` per operation |
-| 3.3 | `GoalManager.ts` | Remove execution mutex | Delete `FF_PARALLEL_PLANS` gate. Allow multiple goals executing. |
-| 3.4 | `WorkerPool.ts` | Per-goal concurrency budget | `goalBudget: Map<goalId, { max, current }>` — check before dispatch |
-| 3.5 | `OrchestratorService.ts` | Planner cross-goal awareness | Inject other active goals into planner system prompt |
-| 3.6 | `GoalManager.ts` | Workspace isolation per goal | Each goal gets own repo clone/branch. `repoPath` scoped by goalId. |
-| 3.7 | Frontend | Goal dashboard | List all goals across teams, status, progress bars |
-| 3.8 | `HttpServer` / routes | Goal CRUD endpoints | `/api/goals` — list, get, create, cancel |
+| Step | What |
+|------|------|
+| 4.1 | Move GoalContext to PostgreSQL (Phase 2 already migrated goals/tasks) |
+| 4.2 | Remove execution mutex — allow multiple goals executing |
+| 4.3 | Per-goal concurrency budget in WorkerPool |
+| 4.4 | Planner cross-goal awareness (inject active goals into prompt) |
+| 4.5 | Workspace isolation per goal (own repo clone/branch) |
+| 4.6 | Frontend goal dashboard |
+| 4.7 | Goal CRUD endpoints |
 
-**After Phase 3:** Users run 3-5 goals simultaneously. State persisted in MongoDB. Survives restarts.
-
----
-
-### Phase 4: Multi-User (Auth + Team Membership + Quotas)
-**Priority:** P2 | **Effort:** 3-4 weeks | **Dependencies:** Phase 3
-
-**Problem:** No userId on goals. No shared teams. No resource quotas.
-
-**Feature docs:** [multi-user](features/multi-user/feature_architecture.md), [auth-security](features/auth-security/), [cost-tracking](features/cost-tracking/)
-
-| Step | File(s) | What | Code Change |
-|------|---------|------|-------------|
-| 4.1 | `GoalContext` type + MongoDB schema | Add `userId` field | Every goal has an owner |
-| 4.2 | MongoDB | `teamMemberships` collection | `{ teamId, userId, role: owner/admin/member/viewer }` |
-| 4.3 | `HttpServer` middleware | Authorization middleware | Check TeamMembership before goal CRUD, stream subscribe |
-| 4.4 | `SocketServerV2` | Goal room authorization | `subscribeToGoal` → check userId owns goal or is team admin |
-| 4.5 | `collab-service/rooms/` | Per-user CRDT room prefix | `{userId}/{teamId}/agent:{role}` for personal rooms |
-| 4.6 | MongoDB | `userQuotas` collection | `{ userId, maxGoals, maxWorkers, tokenBudget }` |
-| 4.7 | `GoalManager.ts` | Quota check before goal creation | Reject if user at limit |
-| 4.8 | Frontend | User dashboard | All goals across teams. Team management UI. |
-
-**After Phase 4:** Multi-tenant. Users own goals. Teams have members. Resource quotas.
+**After Phase 4:** Users run 3-5 goals simultaneously. State in PostgreSQL. Survives restarts.
 
 ---
 
@@ -344,37 +430,36 @@ Each phase has concrete steps grounded in the actual codebase (audited May 3, 20
 
 **Problem:** All workers in same Node.js process. No crash isolation. Single server.
 
-**Feature docs:** [process-isolation](features/process-isolation/feature_architecture.md), [parallel-goals](features/parallel-goals/feature_architecture.md) (BullMQ section), [redis-infrastructure](features/redis-infrastructure/)
+**Feature docs:** [process-isolation](features/process-isolation/feature_architecture.md), [redis-infrastructure](features/redis-infrastructure/)
 
-| Step | File(s) | What | Code Change |
-|------|---------|------|-------------|
-| 5.1 | New package or infra | Redis infrastructure | `ioredis` + `@socket.io/redis-adapter` + pub/sub |
-| 5.2 | `WorkerPool.ts` refactor | BullMQ task dispatch | Tasks → Redis queue. Workers pull from queue. |
-| 5.3 | New: `worker-process.ts` | Stateless worker process | Pulls BullMQ job → creates AiSdkAgent → executes → writes results to MongoDB |
-| 5.4 | `SocketServerV2.ts` | Redis pub/sub for streaming | Worker publishes stream_part to Redis → web server forwards to Socket.IO |
-| 5.5 | BullMQ | Stalled job detection + auto-retry | Worker dies → job becomes stalled → BullMQ auto-retries |
-| 5.6 | Deployment | Multi-server config | N web servers + M worker processes + Redis + MongoDB + Hocuspocus |
+| Step | What |
+|------|------|
+| 5.1 | Redis infrastructure (ioredis + socket.io adapter + pub/sub) |
+| 5.2 | BullMQ task dispatch — tasks → Redis queue |
+| 5.3 | Stateless worker process — pulls from queue, executes, writes results |
+| 5.4 | Redis pub/sub for streaming (worker → web server → Socket.IO) |
+| 5.5 | Stalled job detection + auto-retry |
+| 5.6 | Multi-server deployment config |
 
 **After Phase 5:** Production-ready. Horizontal scaling. Crash isolation. Workers on separate machines.
 
 ---
 
 ### Phase 6: CRDT Intelligence (Search + Symbols + Consolidation)
-**Priority:** P3 | **Effort:** 3-4 weeks | **Dependencies:** Phase 2
+**Priority:** P3 | **Effort:** 3-4 weeks | **Dependencies:** Phase 3
 
 **Problem:** No search across CRDT docs. No navigation. Memory bloats after many goals.
 
-**Feature docs:** [crdt-search](features/crdt-search/feature_architecture.md), [crdt-symbol-index](features/crdt-symbol-index/feature_architecture.md), [crdt-consolidation](features/crdt-consolidation/feature_architecture.md), [CRDT-FEATURE-LIST](features/CRDT-FEATURE-LIST.md) Features 3-6
+**Feature docs:** [crdt-search](features/crdt-search/feature_architecture.md), [crdt-symbol-index](features/crdt-symbol-index/feature_architecture.md), [CRDT-FEATURE-LIST](features/CRDT-FEATURE-LIST.md) Features 3-6
 
-| Step | File(s) | What | Code Change |
-|------|---------|------|-------------|
-| 6.1 | `collab-service/extensions/` | Orama search extension | `CrdtSearchExtension.ts` — onChange → debounce → extract text → index (~200 lines) |
-| 6.2 | `collaboration/src/L2/tools/` | `l2_search` agent tool | search/grep/glob/query actions (~80 lines) |
-| 6.3 | `collaboration/src/L2/registry/` | PageRegistry (`_pages`) | Auto-populate Y.Map("pages") on page create/update (~60 lines) |
-| 6.4 | `collaboration/src/L2/registry/` | IdentityRegistry (`_identities`) | Aggregated symbol table from page symbols (~80 lines) |
-| 6.5 | `collaboration/src/L2/tools/` | `l2_navigate` agent tool | definition/references/impact/outline actions (~80 lines) |
-| 6.6 | `collaboration/src/L2/memory/` | MemoryConsolidation | Dedup/merge/supersede on `remember()` (~150 lines) |
-| 6.7 | `collab-service/extensions/` | Versioning extension | jsondiffpatch snapshots, whatsnew action (~100 lines) |
+| Step | What |
+|------|------|
+| 6.1 | Orama search extension (onChange → index text) |
+| 6.2 | `l2_search` agent tool |
+| 6.3 | PageRegistry (`_pages`) + IdentityRegistry (`_identities`) |
+| 6.4 | `l2_navigate` agent tool (definition/references/impact) |
+| 6.5 | MemoryConsolidation (dedup/merge on remember) |
+| 6.6 | Versioning extension (jsondiffpatch snapshots) |
 
 **After Phase 6:** CRDT is a searchable knowledge base. Entity navigation. Memory doesn't bloat.
 
@@ -383,23 +468,24 @@ Each phase has concrete steps grounded in the actual codebase (audited May 3, 20
 ## Dependency Graph
 
 ```
-Phase 1: CRDT-First + Document Planning     ← START HERE (3-4 weeks)
-  │       (DB safety + page pattern + DocumentRef + BlockNote + plan session)
+Phase 1: CRDT-First + Document Planning     ✅ COMPLETE
   │
-  ├── Phase 2: Team Workspace (Memory)       (parallel with 3)
+  ├── Phase 2: Hybrid DB + Team Ownership    ← NEXT (~6.5 days)
   │     │
-  │     └── Phase 6: CRDT Intelligence
+  │     ├── Phase 3: CRDT Team Workspace     (parallel with 4)
+  │     │     │
+  │     │     └── Phase 6: CRDT Intelligence
+  │     │
+  │     └── Phase 4: Parallel Goals          (parallel with 3)
+  │           │
+  │           └── Phase 5: Process Isolation
   │
-  └── Phase 3: Parallel Goals (MongoDB)      (parallel with 2)
-        │
-        └── Phase 4: Multi-User
-              │
-              └── Phase 5: Process Isolation
+  └── (Document Pane polish — see TASK-BACKLOG.md)
 ```
 
-**Critical path to production:** 1 → 3 → 4 → 5
+**Critical path to production:** 1 ✅ → 2 → 4 → 5
 
-**Intelligence track:** 1 → 2 → 6 (can run in parallel with critical path)
+**Intelligence track:** 1 ✅ → 3 → 6 (can run in parallel with critical path)
 
 ---
 
@@ -407,10 +493,11 @@ Phase 1: CRDT-First + Document Planning     ← START HERE (3-4 weeks)
 
 | Milestone | Phases | Timeline | What It Enables |
 |-----------|--------|----------|------------------|
-| **Alpha** | 1 | Week 4 | Document-first planning. BlockNote plan review. CRDT context works. DocumentRef. |
-| **Beta** | 1 + 3 + 4 | Week 12 | Multi-user, parallel goals |
-| **Production** | 1-5 | Week 18 | Horizontal scaling, crash isolation |
-| **Intelligence** | 2 + 6 | Anytime | Cross-goal memory, semantic search |
+| **Alpha** | 1 ✅ | Done | Document-first planning. CRDT context. DocumentRef. Document Pane. |
+| **Foundation** | 2 | +1 week | PostgreSQL + MongoDB hybrid. Organizations. Team membership. |
+| **Beta** | 2 + 4 | +4 weeks | Multi-user, parallel goals, persistent state |
+| **Production** | 2-5 | +10 weeks | Horizontal scaling, crash isolation |
+| **Intelligence** | 3 + 6 | Anytime | Cross-goal memory, semantic search |
 
 ---
 
@@ -418,8 +505,9 @@ Phase 1: CRDT-First + Document Planning     ← START HERE (3-4 weeks)
 
 | Phase | New Infra | New Packages |
 |-------|-----------|--------------|
-| 1 | **None** | `@blocknote/server-util`, `@blocknote/core` (in collaboration pkg) |
-| 2-4 | **None** | None (uses existing MongoDB + Hocuspocus + better-auth) |
+| 1 ✅ | **None** | `@blocknote/server-util`, `@blocknote/core` |
+| 2 | **PostgreSQL** | `drizzle-orm`, `pg` (or `@neondatabase/serverless`) |
+| 3-4 | **None** | Uses existing PostgreSQL + MongoDB + Hocuspocus |
 | 5 | **Redis** | `ioredis`, `bullmq`, `@socket.io/redis-adapter` |
 | 6 | **None** | `@orama/orama`, `jsondiffpatch` |
 
@@ -429,21 +517,20 @@ Phase 1: CRDT-First + Document Planning     ← START HERE (3-4 weeks)
 
 | Phase | Feature Docs |
 |-------|-------------|
-| 1 | [crdt-first-architecture](features/crdt-first-architecture/), [plan-session](features/plan-session/), [task-context-and-crdt](features/task-context-and-crdt/), [data-persistence](features/data-persistence/) |
-| 2 | [crdt-scoped-memory](features/crdt-scoped-memory/), [crdt-team-memory](features/crdt-team-memory/), [crdt-goal-lifecycle](features/crdt-goal-lifecycle/), [CRDT-FEATURE-LIST](features/CRDT-FEATURE-LIST.md) |
-| 3 | [parallel-goals](features/parallel-goals/), [goal-isolation](features/goal-isolation/), [workspace-isolation](features/workspace-isolation/), [task-orchestration](features/task-orchestration/) |
-| 4 | [multi-user](features/multi-user/), [auth-security](features/auth-security/), [browser-auth](features/browser-auth/), [cost-tracking](features/cost-tracking/) |
-| 5 | [process-isolation](features/process-isolation/), [redis-infrastructure](features/redis-infrastructure/), [worker-architecture](features/worker-architecture/) |
-| 6 | [crdt-search](features/crdt-search/), [crdt-symbol-index](features/crdt-symbol-index/), [crdt-consolidation](features/crdt-consolidation/), [crdt-diff-versioning](features/crdt-diff-versioning/) |
+| 1 ✅ | [crdt-first-architecture](features/crdt-first-architecture/), [document-pane](features/document-pane/), [conversation-persistence](features/conversation-persistence/), [plan-session](features/plan-session/), [task-context-and-crdt](features/task-context-and-crdt/) |
+| 2 | [team-ownership](features/team-ownership/) (hybrid DB + organizations) |
+| 3 | [crdt-scoped-memory](features/crdt-scoped-memory/), [crdt-team-memory](features/crdt-team-memory/), [CRDT-FEATURE-LIST](features/CRDT-FEATURE-LIST.md) |
+| 4 | [parallel-goals](features/parallel-goals/), [goal-isolation](features/goal-isolation/), [workspace-isolation](features/workspace-isolation/) |
+| 5 | [process-isolation](features/process-isolation/), [redis-infrastructure](features/redis-infrastructure/) |
+| 6 | [crdt-search](features/crdt-search/), [crdt-symbol-index](features/crdt-symbol-index/), [crdt-consolidation](features/crdt-consolidation/) |
 
 ## Cross-Cutting Feature Docs (Not Phase-Specific)
 
 | Feature | Doc | Relevance |
 |---------|-----|-----------|
 | [communication-layer-refactor](features/communication-layer-refactor/) | v1-v5.1 all done | Socket.IO split, typed events — foundation for all phases |
-| [inter-agent-collaboration](features/inter-agent-collaboration/) | Architected | @mention routing — future Phase 8+ |
-| [chat-agent-layer](features/chat-agent-layer/) | Implemented | Per-role ChatAgents — used in Phase 5 dashboard |
-| [planner-as-agent](features/planner-as-agent/) | Design | Planner restructure — relevant to Phase 3 |
+| [inter-agent-collaboration](features/inter-agent-collaboration/) | Architected | @mention routing — future |
+| [chat-agent-layer](features/chat-agent-layer/) | Implemented | Per-role ChatAgents |
 | [external-agent-invocation](features/external-agent-invocation/) | Architected | Team stacking, MCP — future |
-| [callback-refactoring](features/callback-refactoring/) | Research | Flatten 5-layer callback chain — deferred |
 | [FEATURE-LIST](features/FEATURE-LIST.md) | Master index | All features with status and priority |
+| [TASK-BACKLOG](features/TASK-BACKLOG.md) | Active backlog | All open tasks with priorities |

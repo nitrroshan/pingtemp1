@@ -38,10 +38,24 @@ function resolveSecret(): string {
  * Resolve the database adapter based on PING_MODE config.
  * - local mode: always SQLite (even if MONGODB_URI is in .env)
  * - cloud mode: MongoDB via mongoose connection
+ * - hybrid mode: PostgreSQL via Drizzle (shares same PG connection as app data)
  */
 async function resolveDatabase(): Promise<any> {
   const { getConfig } = await import("../config/index.js");
   const config = getConfig();
+
+  // Hybrid mode: PostgreSQL via Drizzle adapter (shares connection with app services)
+  if (config.mode === "hybrid" && config.databaseUrl) {
+    const { drizzleAdapter } = await import("better-auth/adapters/drizzle");
+    const { getDb } = await import("../db/connection.js");
+    const { user, session, account, verification } = await import("../db/schema.js");
+    const db = getDb();
+    console.info("[Auth] Using PostgreSQL (Drizzle adapter) in hybrid mode");
+    return drizzleAdapter(db, {
+      provider: "pg",
+      schema: { user, session, account, verification },
+    });
+  }
 
   if (config.mode === "cloud" && config.mongodbUri) {
     const mongoose = (await import("mongoose")).default;

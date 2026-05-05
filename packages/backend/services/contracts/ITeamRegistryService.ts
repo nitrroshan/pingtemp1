@@ -10,8 +10,10 @@ export interface ITeamRegistryService {
   register(teamId: string, ownerId: string, pluginName: string): Promise<TeamRegistration>;
   /** Get the owner of a team */
   getOwner(teamId: string): Promise<string | null>;
-  /** Check if a user can access a team (owner or member) */
+  /** Check if a user can access a team (read — any member role) */
   canAccess(userId: string, teamId: string): Promise<boolean>;
+  /** Check if a user can perform mutating actions (write — not a viewer) */
+  canMutate(userId: string, teamId: string): Promise<boolean>;
   /** Get all team IDs accessible to a user */
   getTeamsForUser(userId: string): Promise<string[]>;
 }

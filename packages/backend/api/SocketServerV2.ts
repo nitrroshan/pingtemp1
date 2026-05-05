@@ -101,6 +101,7 @@ export class SocketServerV2 {
       this.rateLimiter,
       this.broadcaster,
       this.joinTeamRoom.bind(this),
+      this.services,
     );
 
     this.setupSocketIO();

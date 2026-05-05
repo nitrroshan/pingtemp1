@@ -165,7 +165,7 @@ export function TeamsPage({ onBack, onTeamCreated }: TeamsPageProps) {
 
                   <div className="flex items-center gap-2 text-xs text-muted-foreground">
                     <Users size={11} />
-                    <span>{team.memberCount} {team.memberCount === 1 ? 'agent' : 'agents'}</span>
+                    <span>{team.agentCount} {team.agentCount === 1 ? 'agent' : 'agents'}</span>
                   </div>
                 </div>
               ))}

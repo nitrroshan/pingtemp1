@@ -34,10 +34,12 @@ async function main() {
 
     logger.info(`Ping mode: ${config.mode}`);
 
-    // Connect to database (cloud mode only)
-    if (config.mode === "cloud" && config.mongodbUri) {
-      logger.info("Cloud mode: connecting to MongoDB for chat + auth...");
+    // Connect to MongoDB (cloud + hybrid modes — hybrid uses Mongo for chat)
+    if ((config.mode === "cloud" || config.mode === "hybrid") && config.mongodbUri) {
+      logger.info(`${config.mode} mode: connecting to MongoDB for chat...`);
       await connectDB();
+    } else if (config.mode === "hybrid" && !config.mongodbUri) {
+      logger.info("Hybrid mode: no MONGODB_URI — using SQLite for chat (dev fallback)");
     } else {
       logger.info("Local mode: file-based storage (lowdb + SQLite)");
     }

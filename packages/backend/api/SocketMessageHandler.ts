@@ -70,6 +70,9 @@ export class SocketMessageHandler {
       // Save user message (defer orchestrator messages until goalId is resolved)
       const isOrchestratorMsg = agentId === "manager" || agentId === "orchestrator";
       if (this.services && !isOrchestratorMsg) {
+        if (!clientGoalId) {
+          logger.warn(`[SocketMessageHandler] User message missing goalId — agentId=${agentId}, teamId=${teamId}. Message will be persisted without goal scope.`);
+        }
         const layer = agentId.startsWith("chat-") ? "chat-agent" as const : "worker" as const;
         this.services.chat.addMessage({
           teamId,
@@ -133,6 +136,36 @@ export class SocketMessageHandler {
 
     // Generate goalId server-side BEFORE planner starts
     const resolvedGoalId = goalId || randomUUID();
+
+    // Persist goal row IMMEDIATELY so it exists before any tasks are created
+    // (tasks reference goals via FK — must exist first)
+    // MUST be awaited — fire-and-forget causes race where tasks insert before goal row commits
+    if (this.services) {
+      try {
+        // Ensure team is registered in database (just-in-time registration).
+        // In hybrid mode, PG FK constraints require agent_teams row to exist before goals.
+        // This is idempotent — skips if already registered.
+        if (this.services.teamRegistry && this.services.mode === "hybrid") {
+          const team = await this.services.teams.getTeam(teamId);
+          if (team) {
+            await this.services.teamRegistry.register(teamId, socket.data.userId || "system", team.pluginName ?? team.name);
+          }
+        }
+
+        await this.services.goals.addGoal({
+          teamId,
+          userId: socket.data.userId,
+          goal: content,
+          goalId: resolvedGoalId,
+          status: "planning",
+          repoUrl: repoUrl || undefined,
+          repoBranch: repoBranch || undefined,
+        });
+      } catch (err) {
+        // Non-fatal — goal may already exist (e.g., page refresh re-sends), or we're in local mode
+        logger.warn("[SocketMessageHandler] Failed to save goal row:", err);
+      }
+    }
 
     // Auto-join socket to goal room BEFORE calling orchestratorMessage
     const prevGoalRoom = socket.data.currentGoalRoom as string | undefined;

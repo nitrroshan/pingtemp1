@@ -1,180 +1,202 @@
-# Team & Goal Ownership Model — Feature Architecture
+# Team & Goal Ownership + Hybrid Database — Feature Architecture
 
 **Date:** May 4, 2026
-**Status:** Architecture design
-**Priority:** P1 — Foundation for multi-user access control + database strategy
-**Depends on:** Auth system (better-auth — existing), MongoDB (existing)
-**Related:** [conversation-persistence](../conversation-persistence/feature_architecture.md), [auth-security](../auth-security/)
+**Status:** In Progress (Steps 1-6 complete, tested)
+**Priority:** P1 — Foundation for multi-user access control + production database strategy
+**Roadmap phase:** Phase 2 (Hybrid Database + Team Ownership) in PLATFORM-ROADMAP.md
+**Depends on:** Auth system (better-auth — existing), ServiceRegistry pattern (existing)
+**Related:** [conversation-persistence](../conversation-persistence/feature_architecture.md), [auth-security](../auth-security/), [parallel-goals](../parallel-goals/feature_architecture.md), [multi-user](../multi-user/feature_architecture.md)
 
 ---
 
 ## Problem
 
 1. **No ownership hierarchy** — teams have no owner/members, goals have no creator/approver
-2. **Wrong database for relational data** — teams, users, memberships, and permissions are relational by nature but stored in MongoDB (document DB)
-3. **Schema inconsistency** — `teamId` duplicated on tasks/messages for query performance, but no foreign key enforcement
+2. **Wrong database for relational data** — teams, goals, tasks, memberships are relational but stored in MongoDB (cloud) or raw SQLite (local)
+3. **Three database modes already exist** — MongoDB (cloud), SQLite (local), better-auth (separate auth DB). No PostgreSQL yet.
+4. **Schema drift** — SQLite `goals` table missing `goalId`, `repoUrl`, `repoBranch` that Mongo has
 
 ---
 
-## Database Strategy: Hybrid (PostgreSQL + MongoDB)
+## Current Database Architecture (Audited May 5, 2026)
 
-Use each database for its natural strength:
+**Three modes supported:** `local` (SQLite), `cloud` (MongoDB), `hybrid` (PostgreSQL + MongoDB).
 
 ```
-PostgreSQL (relational, enforced integrity)          MongoDB (document, flexible schema)
-═══════════════════════════════════════              ═══════════════════════════════════
-users                                                chatmessages
-  id, email, name, avatar                              goalId, agentId, userId
-                                                       role, content, streamParts
-teams                                                  contextMessages, agentLayer
-  id, name, description, pluginName
-                                                     indexsnapshots
-team_members                                           branchId, searchIndex, symbols
-  teamId → teams, userId → users, role
-
-goals
-  id, teamId → teams, createdBy → users
-  title, status, repoUrl, approvedBy → users
-
-tasks
-  id, goalId → goals, assignedRole
-  title, description, status, priority
-  planId, dependencies[]
-  output (JSONB)
-
-agentregistries
-  id, teamId → teams, name, role
-  description, capabilities (JSONB)
+ServiceRegistry (packages/backend/services/ServiceRegistry.ts)
+├── mode: "cloud" | "local" | "hybrid"
+│
+├── teams: PluginTeamService          ← NO DATABASE — reads plugin folders
+├── chat: IChatService                ← MongoDB (cloud/hybrid) | SQLite (local)
+├── goals: IGoalService               ← PostgreSQL (hybrid) | MongoDB (cloud) | SQLite (local)
+├── tasks: ITaskPersistence            ← PostgreSQL (hybrid) | MongoDB (cloud) | SQLite (local)
+├── teamRegistry: ITeamRegistryService ← PostgreSQL (hybrid) | MongoDB (cloud) | SQLite (local)
+│
+└── Auth: better-auth
+    ├── hybrid: Drizzle adapter (PostgreSQL — same connection as app data)
+    ├── cloud: MongoDB adapter (same connection)
+    └── local: SQLite (data/auth.db — SEPARATE from ping.db)
 ```
 
-**Why this split:**
+### Service Interfaces (4 app + 1 auth)
 
-| Data Type | PostgreSQL | MongoDB | Reason |
-|-----------|-----------|---------|--------|
-| Users, teams, members | ✅ | | Relational: FK constraints, unique emails, role enums |
-| Goals, tasks | ✅ | | Relational: team→goal→task hierarchy, status enums, cascading deletes |
-| Chat messages | | ✅ | Document: variable schema (streamParts, contextMessages as JSON blobs), append-heavy, no joins |
-| Code index snapshots | | ✅ | Document: binary blobs, symbol arrays, no relations |
-| CRDT documents | | ✅ (Hocuspocus) | Y.js binary state, managed by Hocuspocus persistence layer |
-| Agent registries | ✅ | | Relational: team-scoped, capabilities as JSONB |
+| Interface | Methods | PG Impl (hybrid) | Mongo Impl (cloud) | SQLite Impl (local) |
+|-----------|---------|------------------|-----------|------------|
+| `IChatService` | addMessage, getMessages, getAgentMessages, getGoalMessages, getSessionMessages | — (stays in MongoDB) | `MongoChatService` | `SqliteChatService` |
+| `IGoalService` | addGoal, getGoals, updateGoal | `PgGoalService` | `MongoGoalService` | `SqliteGoalService` |
+| `ITaskPersistence` | saveTasks, updateTaskStatus, getTasksByGoal, getTasksByTeam, clearTasksByGoal, clearStaleTasks | `PgTaskService` | `MongoTaskService` | `SqliteTaskService` |
+| `ITeamRegistryService` | register, getOwner, canAccess, canMutate, getTeamsForUser | `PgTeamService` | `MongoTeamRegistryService` | `SqliteTeamRegistryService` |
+| better-auth | (internal) | Drizzle adapter | `mongodbAdapter` | `bun:sqlite` adapter |
 
-**Key principle:** Relational data (who owns what, who can do what) → PostgreSQL. Content data (messages, streams, indexes) → MongoDB. CRDT state → Hocuspocus blob storage.
+### Storage by Mode
+
+| Domain | Hybrid (production) | Cloud | Local |
+|--------|-------------------|-------|-------|
+| Chat messages | MongoDB | MongoDB | SQLite |
+| Goals | **PostgreSQL** | MongoDB | SQLite |
+| Tasks | **PostgreSQL** | MongoDB | SQLite |
+| Teams/Orgs/Members | **PostgreSQL** | MongoDB | SQLite |
+| Auth (users, sessions) | **PostgreSQL** | MongoDB | SQLite |
+| Users (auth) | `user` | `user` | `auth.db` |
+| Sessions (auth) | `session` | `session` | `auth.db` |
+| Accounts (auth) | `account` | `account` | `auth.db` |
+| Teams/Agents | NONE | NONE | Plugin folders |
 
 ---
 
-## Migration Path
+## Target: Hybrid Database Strategy
 
-### Phase 1: Add PostgreSQL for Teams/Goals/Tasks (this feature)
+### Database Assignment
 
-**No MongoDB removal yet.** Add PostgreSQL alongside MongoDB. Migrate relational collections.
+| Data | Database | Reason |
+|------|----------|--------|
+| **Users, teams, members** | PostgreSQL | Relational: FK constraints, unique emails, role enums, cascading deletes |
+| **Goals** | PostgreSQL | Relational: team→goal hierarchy, status enums, `createdBy`/`approvedBy` FK to users |
+| **Tasks** | PostgreSQL | Relational: goal→task hierarchy, dependencies, `output` as JSONB |
+| **Team registry** | PostgreSQL | Merge into `teams` table — redundant collection |
+| **Agent definitions** | PostgreSQL | Relational: team→agent, JSONB for capabilities/config |
+| **Chat messages** | MongoDB | Document: variable schema (streamParts, contextMessages as JSON blobs), append-heavy, no joins needed |
+| **Code index snapshots** | MongoDB | Document: binary blobs, symbol arrays, no relations |
+| **CRDT documents** | Hocuspocus | Y.js binary state, managed by collab-service persistence |
+| **Auth (users, sessions)** | PostgreSQL | better-auth has Drizzle adapter — share the same PG connection |
 
-```
-Step 1: Add PostgreSQL connection + Drizzle ORM
-  - packages/backend/db/schema.ts — Drizzle schema definitions
-  - packages/backend/db/connection.ts — pg pool
-  - .env: DATABASE_URL=postgresql://...
-
-Step 2: Create PostgreSQL schemas
-  - users (id, email, name, avatarUrl, createdAt)
-  - teams (id, name, description, pluginName, createdAt)
-  - team_members (teamId FK, userId FK, role, joinedAt)
-  - goals (id, teamId FK, createdBy FK, title, status, repoUrl, repoBranch, planId, approvedBy, createdAt, updatedAt)
-  - tasks (id, goalId FK, title, description, status, assignedRole, priority, planId, output JSONB, dependencies TEXT[], createdAt, updatedAt)
-  - agent_definitions (id, teamId FK, name, role, description, capabilities JSONB, systemPrompt TEXT)
-
-Step 3: New service implementations
-  - PgTeamService implements ITeamService
-  - PgGoalService implements IGoalService
-  - PgTaskService implements ITaskPersistence
-  - Wire via ServiceRegistry based on DATABASE_URL env var
-
-Step 4: Migration script
-  - Read from MongoDB collections
-  - Write to PostgreSQL tables
-  - Verify counts match
-  - Switch ServiceRegistry to use Pg implementations
-
-Step 5: Remove MongoDB for migrated collections
-  - Drop: teamregistries, goals, tasks collections
-  - Keep: chatmessages, indexsnapshots
-```
-
-### Phase 2: Ownership + Access Control (after migration)
+### Target Architecture
 
 ```
-Step 6: team_members table with roles
-  - owner: full control
-  - member: create goals, approve plans
-  - viewer: read-only
-
-Step 7: Middleware enforcement
-  - SocketActionHandler: check membership before approve/reject/start
-  - SocketMessageHandler: check membership before sendMessage
-  - HTTP routes: check ownership for team management
-
-Step 8: Frontend
-  - Team settings page: manage members
-  - Role badges in UI
-  - Disable actions for viewers
+ServiceRegistry
+├── mode: "cloud" | "local" | "hybrid"
+│
+├── teams: PgTeamService              ← PostgreSQL (replaces PluginTeamService for DB ops + teamRegistry)
+├── chat: MongoChatService            ← MongoDB (stays)
+├── goals: PgGoalService              ← PostgreSQL
+├── tasks: PgTaskService              ← PostgreSQL
+│
+├── Auth: better-auth
+│   └── adapter: drizzle (PostgreSQL)  ← shares same PG connection
+│
+└── CRDT: Hocuspocus
+    └── S3 blob storage (production)
 ```
 
-### Phase 3: Clean up MongoDB (after Phase 2 stable)
+### What Changes
 
-```
-Step 9: chatmessages stays in MongoDB (good fit)
-Step 10: indexsnapshots stays in MongoDB (good fit)
-Step 11: Remove old Mongoose schemas for migrated collections
-Step 12: Update ServiceRegistry to not initialize unused Mongo models
-```
+| Before | After |
+|--------|-------|
+| `MongoTeamRegistryService` | Merged into `PgTeamService.teams` + `team_members` tables |
+| `MongoGoalService` | `PgGoalService` with FK to teams, `createdBy`/`approvedBy` FK to users |
+| `MongoTaskService` | `PgTaskService` with FK to goals, `output` as JSONB, cascading deletes |
+| `PluginTeamService` (file-based) | Stays for reading plugin configs; PG stores runtime team data |
+| `MongoChatService` | **Stays in MongoDB** — document shape is the right fit |
+| SQLite implementations | Deprecated — PostgreSQL replaces both Mongo and SQLite for relational data |
+| `auth.db` (separate SQLite) | Drizzle adapter shares same PG connection |
 
 ---
 
-## Schema Design (PostgreSQL — Drizzle ORM)
+## PostgreSQL Schema (Drizzle ORM)
+
+### Two-Tier Team Model
+
+```
+organizations (human teams — companies/orgs)
+  ├── id, name, plan (free/pro/enterprise)
+  ├── members: org_members (userId, role: owner/admin/member)
+  │
+  └── agent_teams (work units with AI agents)
+       ├── id, orgId → organizations
+       ├── name, description, pluginName
+       ├── agents (from plugin .md files + DB overrides)
+       │
+       └── goals
+            ├── id, agentTeamId → agent_teams
+            ├── createdBy → users, approvedBy → users
+            └── tasks (id, goalId → goals, ...)
+```
+
+**Key insight:** Agent teams don't know about users — they only see goals. Human teams own agent teams and control who can submit goals.
 
 ```typescript
 // packages/backend/db/schema.ts
 
-import { pgTable, text, timestamp, integer, jsonb, pgEnum, primaryKey, uniqueIndex } from "drizzle-orm/pg-core";
+import { pgTable, text, timestamp, integer, jsonb, pgEnum, primaryKey } from "drizzle-orm/pg-core";
 
-export const teamRoleEnum = pgEnum("team_role", ["owner", "member", "viewer"]);
-export const goalStatusEnum = pgEnum("goal_status", ["pending", "planning", "researching", "awaiting_approval", "executing", "completed", "failed"]);
-export const taskStatusEnum = pgEnum("task_status", ["ready", "pending", "in_progress", "completed", "failed", "discarded"]);
+export const orgRoleEnum = pgEnum("org_role", ["owner", "admin", "member", "viewer"]);
+export const goalStatusEnum = pgEnum("goal_status", [
+  "pending", "planning", "researching", "awaiting_approval", "executing", "completed", "failed"
+]);
+export const taskStatusEnum = pgEnum("task_status", [
+  "ready", "pending", "in_progress", "completed", "failed", "discarded"
+]);
 
-export const users = pgTable("users", {
-  id: text("id").primaryKey(),              // from better-auth
-  email: text("email").notNull().unique(),
-  name: text("name"),
-  avatarUrl: text("avatar_url"),
+// ═══════════════════════════════════════════════════════════════
+// Auth tables managed by better-auth Drizzle adapter (auto-created)
+// users, sessions, accounts, verifications
+// ═══════════════════════════════════════════════════════════════
+
+// ═══════════════════════════════════════════════════════════════
+// HUMAN LAYER — organizations and membership
+// ═══════════════════════════════════════════════════════════════
+
+export const organizations = pgTable("organizations", {
+  id: text("id").primaryKey(),
+  name: text("name").notNull(),
+  plan: text("plan").default("free"),       // free | pro | enterprise
   createdAt: timestamp("created_at").defaultNow(),
 });
 
-export const teams = pgTable("teams", {
+export const orgMembers = pgTable("org_members", {
+  orgId: text("org_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+  userId: text("user_id").notNull(),        // FK to better-auth users
+  role: orgRoleEnum("role").notNull().default("member"),
+  joinedAt: timestamp("joined_at").defaultNow(),
+}, (t) => ({
+  pk: primaryKey({ columns: [t.orgId, t.userId] }),
+}));
+
+// ═══════════════════════════════════════════════════════════════
+// AGENT LAYER — agent teams, goals, tasks
+// Agent teams don't know about users — only goals
+// ═══════════════════════════════════════════════════════════════
+
+export const agentTeams = pgTable("agent_teams", {
   id: text("id").primaryKey(),
+  orgId: text("org_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
   name: text("name").notNull(),
   description: text("description"),
   pluginName: text("plugin_name").notNull(),
   createdAt: timestamp("created_at").defaultNow(),
 });
 
-export const teamMembers = pgTable("team_members", {
-  teamId: text("team_id").notNull().references(() => teams.id, { onDelete: "cascade" }),
-  userId: text("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
-  role: teamRoleEnum("role").notNull().default("member"),
-  joinedAt: timestamp("joined_at").defaultNow(),
-}, (t) => ({
-  pk: primaryKey({ columns: [t.teamId, t.userId] }),
-}));
-
 export const goals = pgTable("goals", {
-  id: text("id").primaryKey(),
-  teamId: text("team_id").notNull().references(() => teams.id, { onDelete: "cascade" }),
-  createdBy: text("created_by").notNull().references(() => users.id),
+  id: text("id").primaryKey(),              // = goalId (business identifier IS the PK)
+  agentTeamId: text("agent_team_id").notNull().references(() => agentTeams.id, { onDelete: "cascade" }),
+  createdBy: text("created_by").notNull(),   // FK to users (who submitted the goal)
   title: text("title").notNull(),
   status: goalStatusEnum("status").notNull().default("pending"),
   repoUrl: text("repo_url"),
   repoBranch: text("repo_branch"),
   planId: text("plan_id"),
-  approvedBy: text("approved_by").references(() => users.id),
+  approvedBy: text("approved_by"),           // FK to users (who approved the plan)
+  result: text("result"),
   createdAt: timestamp("created_at").defaultNow(),
   updatedAt: timestamp("updated_at").defaultNow(),
 });
@@ -188,82 +210,157 @@ export const tasks = pgTable("tasks", {
   assignedRole: text("assigned_role").notNull(),
   priority: integer("priority").default(3),
   planId: text("plan_id"),
-  output: jsonb("output"),
-  dependencies: text("dependencies").array(),
+  output: jsonb("output"),                    // { summary, deliverables }
+  dependencies: text("dependencies").array(),  // taskId[]
+  inputDocs: jsonb("input_docs"),              // DocumentRef[] — context for this task
+  producedDocs: jsonb("produced_docs"),         // DocumentRef[] — outputs from this task
   createdAt: timestamp("created_at").defaultNow(),
   updatedAt: timestamp("updated_at").defaultNow(),
-}, (t) => ({
-  goalIdx: uniqueIndex("tasks_goal_id_idx").on(t.goalId, t.id),
-}));
+});
 
 export const agentDefinitions = pgTable("agent_definitions", {
   id: text("id").primaryKey(),
-  teamId: text("team_id").notNull().references(() => teams.id, { onDelete: "cascade" }),
+  agentTeamId: text("agent_team_id").notNull().references(() => agentTeams.id, { onDelete: "cascade" }),
   name: text("name").notNull(),
   role: text("role").notNull(),
   description: text("description"),
+  goal: text("goal"),
   capabilities: jsonb("capabilities"),
   systemPrompt: text("system_prompt"),
+  config: jsonb("config"),
   createdAt: timestamp("created_at").defaultNow(),
 });
 ```
 
-### What stays in MongoDB
+### Relationship Diagram
 
-```typescript
-// chatmessages — append-heavy, variable schema, no relational needs
-interface ChatMessage {
-  teamId: string;       // denormalized for query perf (no PG join needed)
-  agentId: string;
-  userId: string;
-  goalId?: string;
-  taskId?: string;
-  role: "user" | "assistant" | "system";
-  content: string;
-  streamParts?: string;     // large JSON blob
-  contextMessages?: string; // large JSON blob
-  agentLayer?: string;
-  timestamp: Date;
-}
+```
+organizations (human teams)
+  │
+  ├──< org_members (userId, role)
+  │     └── FK → better-auth users
+  │
+  └──< agent_teams (pluginName, agents)
+        │
+        ├──< agent_definitions (role, capabilities)
+        │
+        └──< goals (createdBy → users, approvedBy → users)
+              │
+              └──< tasks (assignedRole, dependencies, output)
+```
 
-// indexsnapshots — binary blobs, no relations
-interface IndexSnapshot {
-  branchId: string;
-  searchIndex: Buffer;   // gzipped binary
-  symbols: any[];
-  fileStates: any[];
-}
+### Access Control Flow
+
+```
+User wants to approve a plan for goal G in agent team AT:
+
+1. Look up goal G → get agentTeamId
+2. Look up agent team AT → get orgId
+3. Check org_members: does userId exist for orgId with role owner/admin/member?
+4. If yes → allow. If viewer or not a member → deny.
+```
+
+**Agent teams never check users directly.** The authorization boundary is at the organization level. The agent team just executes goals — it doesn't know or care who submitted them.
+
+### What Stays in MongoDB
+
+```
+chatmessages collection (unchanged):
+  teamId, agentId, userId, goalId?, taskId?
+  role, content, streamParts?, contextMessages?, agentLayer?
+  timestamp
+
+indexsnapshots collection (unchanged):
+  branchId, searchIndex (Buffer), symbols[], fileStates[]
 ```
 
 ---
 
-## Pros/Cons of Hybrid
+## Access Control (org_members)
 
-**Pros:**
-- Foreign key enforcement prevents orphaned tasks/goals
-- Cascading deletes: delete team → all goals + tasks gone
-- Proper enum types for status fields
-- Team membership is a real join table, not embedded array
-- Chat messages stay document-shaped (right fit for MongoDB)
-- Each DB used for its strength
+Authorization is at the **organization** level. Agent teams are just execution units.
 
-**Cons:**
-- Two database connections to manage
-- Deployment complexity: need both PostgreSQL and MongoDB
-- Cross-DB queries impossible (task → its messages requires two queries)
-- More infrastructure to maintain
-
-**Mitigation:** ServiceRegistry already abstracts database access. Adding a second connection is a config change, not an architectural one.
+| Action | owner | admin | member | viewer |
+|--------|-------|-------|--------|--------|
+| Create agent team | ✅ | ✅ | ❌ | ❌ |
+| Delete agent team | ✅ | ❌ | ❌ | ❌ |
+| Submit goal | ✅ | ✅ | ✅ | ❌ |
+| Approve plan | ✅ | ✅ | ✅ | ❌ |
+| Reject/replan | ✅ | ✅ | ✅ | ❌ |
+| Start task | ✅ | ✅ | ✅ | ❌ |
+| View documents | ✅ | ✅ | ✅ | ✅ |
+| View chat | ✅ | ✅ | ✅ | ✅ |
+| Manage org settings | ✅ | ✅ | ❌ | ❌ |
+| Add/remove members | ✅ | ✅ | ❌ | ❌ |
+| Delete org | ✅ | ❌ | ❌ | ❌ |
 
 ---
 
-## What NOT to Migrate
+## Migration Path
 
-| Stay in MongoDB | Reason |
-|----------------|--------|
-| `chatmessages` | Append-heavy, variable schema, large JSON blobs, no relational needs |
-| `indexsnapshots` | Binary data, no relations |
-| Hocuspocus CRDT blobs | Managed by Hocuspocus persistence, not our schema |
+### Phase 1: Add PostgreSQL + Drizzle (1 day)
+
+```
+Step 1: bun add drizzle-orm @neondatabase/serverless (or pg)
+Step 2: packages/backend/db/schema.ts — Drizzle schema
+Step 3: packages/backend/db/connection.ts — pg pool from DATABASE_URL env
+Step 4: drizzle-kit generate + migrate
+Step 5: Wire better-auth to use Drizzle adapter (same PG)
+```
+
+### Phase 2: PostgreSQL Service Implementations (2 days)
+
+```
+Step 6: packages/backend/services/postgres/PgGoalService.ts
+Step 7: packages/backend/services/postgres/PgTaskService.ts  
+Step 8: packages/backend/services/postgres/PgTeamService.ts
+        (merges PluginTeamService read + TeamRegistryService write)
+Step 9: Update ServiceRegistry — add "hybrid" mode:
+        PostgreSQL for teams/goals/tasks, MongoDB for chat/indexes
+```
+
+### Phase 3: Data Migration Script (1 day)
+
+```
+Step 10: scripts/migrate-to-pg.ts
+  - Read teams from teamregistries → insert into PG teams
+  - Read goals from goals → insert into PG goals
+  - Read tasks from tasks → insert into PG tasks
+  - Verify counts
+  - chatmessages stays in MongoDB (no migration)
+```
+
+### Phase 4: Ownership + Access Control (2 days)
+
+```
+Step 11: team_members table with roles
+Step 12: Middleware: check membership on Socket.IO + HTTP
+Step 13: Frontend: manage members, role badges
+```
+
+### Phase 5: Cleanup (0.5 day)
+
+```
+Step 14: Remove MongoGoalService, MongoTaskService, MongoTeamRegistryService
+Step 15: Remove SqliteGoalService, SqliteTaskService, SqliteTeamRegistryService
+Step 16: Keep: MongoChatService, auth.db (or migrate auth to PG too)
+Step 17: Update config: DATABASE_URL required for production
+```
+
+---
+
+## Environment Configuration
+
+```bash
+# Current (cloud mode)
+MONGODB_URI=mongodb://localhost:27017/ping
+PING_MODE=cloud
+
+# After migration (hybrid mode)
+DATABASE_URL=postgresql://user:pass@localhost:5432/ping    # NEW
+MONGODB_URI=mongodb://localhost:27017/ping                 # Kept for chat
+PING_MODE=hybrid                                           # NEW mode
+```
 
 ---
 
@@ -271,9 +368,9 @@ interface IndexSnapshot {
 
 | Phase | What | Effort |
 |-------|------|--------|
-| 1a | PostgreSQL + Drizzle setup, schema | 1 day |
-| 1b | PgTeamService, PgGoalService, PgTaskService | 2 days |
-| 1c | Migration script + ServiceRegistry wiring | 1 day |
-| 2 | Membership, access control, middleware | 2 days |
-| 3 | MongoDB cleanup | 0.5 day |
+| 1 | PostgreSQL + Drizzle setup | 1 day |
+| 2 | 3 PG service implementations | 2 days |
+| 3 | Migration script | 1 day |
+| 4 | Ownership + access control | 2 days |
+| 5 | Cleanup | 0.5 day |
 | **Total** | | **~6.5 days** |

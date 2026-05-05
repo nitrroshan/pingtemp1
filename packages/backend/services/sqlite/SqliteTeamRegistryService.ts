@@ -51,6 +51,11 @@ export class SqliteTeamRegistryService implements ITeamRegistryService {
     return owner === userId;
   }
 
+  async canMutate(userId: string, teamId: string): Promise<boolean> {
+    // SQLite mode: owner-only for mutations (no role model)
+    return this.canAccess(userId, teamId);
+  }
+
   async getTeamsForUser(userId: string): Promise<string[]> {
     const rows = this.db.query(
       `SELECT team_id FROM team_registry WHERE owner_id = ?`,

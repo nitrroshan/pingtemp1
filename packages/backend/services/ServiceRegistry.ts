@@ -23,7 +23,7 @@ export interface ServiceRegistry {
   goals: IGoalService;
   tasks: ITaskPersistence;
   teamRegistry: ITeamRegistryService;
-  mode: "local" | "cloud";
+  mode: "local" | "cloud" | "hybrid";
   db?: any;
 }
 
@@ -45,13 +45,39 @@ export async function createServiceRegistry(dataDir: string = "./data"): Promise
   // PluginTeamService: teams derived from plugins (no database)
   const teamService = new PluginTeamService(pluginLoader);
 
-  // Chat + Goals: MongoDB in cloud mode, SQLite in local mode
+  // Chat + Goals + Tasks: depends on mode
+  // - local: SQLite
+  // - cloud: MongoDB for everything
+  // - hybrid: PostgreSQL for relational (goals, tasks, teams), MongoDB for chat
   let chatService: IChatService;
   let goalService: IGoalService;
   let teamRegistryService: ITeamRegistryService;
   let taskService: ITaskPersistence;
 
-  if (config.mode === "cloud" && config.mongodbUri) {
+  if (config.mode === "hybrid") {
+    // Hybrid mode: PostgreSQL for relational data, MongoDB for chat
+    const { PgGoalService } = await import("./postgres/PgGoalService.js");
+    const { PgTaskService } = await import("./postgres/PgTaskService.js");
+    const { PgTeamService } = await import("./postgres/PgTeamService.js");
+    goalService = new PgGoalService();
+    taskService = new PgTaskService();
+    teamRegistryService = new PgTeamService();
+
+    // Chat stays in MongoDB (document-shaped, append-heavy)
+    if (config.mongodbUri) {
+      const { MongoChatService } = await import("./mongo/MongoChatService.js");
+      chatService = new MongoChatService();
+    } else {
+      // Hybrid without MongoDB: fall back to SQLite for chat (dev convenience)
+      const { Database } = await import("bun:sqlite");
+      const fs = await import("fs");
+      if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
+      const db = new Database(path.join(dataDir, "ping.db"), { create: true });
+      db.exec("PRAGMA journal_mode=WAL");
+      const { SqliteChatService } = await import("./sqlite/index.js");
+      chatService = new SqliteChatService(db);
+    }
+  } else if (config.mode === "cloud" && config.mongodbUri) {
     const { MongoChatService } = await import("./mongo/MongoChatService.js");
     const { MongoGoalService } = await import("./mongo/MongoGoalService.js");
     const { MongoTeamRegistryService } = await import("./mongo/MongoTeamRegistryService.js");
@@ -90,6 +116,6 @@ export async function createServiceRegistry(dataDir: string = "./data"): Promise
     goals: goalService,
     tasks: taskService,
     teamRegistry: teamRegistryService,
-    mode: config.mongodbUri ? "cloud" : "local",
+    mode: config.mode === "hybrid" ? "hybrid" : (config.mongodbUri ? "cloud" : "local"),
   };
 }

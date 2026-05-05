@@ -97,7 +97,7 @@ export interface TeamResponse {
   name: string;
   goal: string;
   description?: string;
-  memberCount: number;
+  agentCount: number;
 }
 
 export interface AgentInfo {

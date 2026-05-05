@@ -201,7 +201,10 @@ export function createSessionRoutes(services?: ServiceRegistry): Router {
                 tasks.push({
                   id: lt.id, title: lt.title, description: lt.description,
                   status: lt.status, assignedRole: lt.assigned_role || lt.assignedRole,
-                  priority: lt.priority, dependencies: lt.dependencies || [],
+                  priority: lt.priority,
+                  dependencies: lt.prerequisites instanceof Map
+                    ? Array.from(lt.prerequisites.keys())
+                    : (lt as any).dependencies || [],
                   goalId: lt.goalId,
                 });
               }

@@ -42,6 +42,11 @@ export class MongoTeamRegistryService implements ITeamRegistryService {
     return owner === userId;
   }
 
+  async canMutate(userId: string, teamId: string): Promise<boolean> {
+    // Mongo mode: owner-only for mutations (no role model)
+    return this.canAccess(userId, teamId);
+  }
+
   async getTeamsForUser(userId: string): Promise<string[]> {
     const Model = getTeamRegistryModel();
     const docs = await Model.find({ ownerId: userId }).lean();

@@ -15,6 +15,7 @@ import { agentManagerRegistry } from "../agentManager/AgentManagerRegistry.js";
 import type { SocketConnection } from "./SocketConnectionManager.js";
 import type { AgentManager } from "../agentManager/AgentManagerV2.js";
 import type { SocketEventBroadcaster } from "./SocketEventBroadcaster.js";
+import type { ServiceRegistry } from "../services/ServiceRegistry.js";
 import {
   ActionPayloadSchema,
   type ActionPayload,
@@ -34,7 +35,13 @@ export class SocketActionHandler {
     private rateLimiter: TokenBucketLimiter,
     private broadcaster: SocketEventBroadcaster,
     private joinTeamRoom: (socket: Socket, teamId: string) => Promise<boolean>,
+    private services?: ServiceRegistry,
   ) {}
+
+  /** Mutating actions require canMutate check (viewers denied) */
+  private static MUTATING_ACTIONS = new Set([
+    "approve-plan", "reject-plan", "start-task", "complete-task", "cancel-task", "modify-task",
+  ]);
 
   async handleAction(
     socket: Socket,
@@ -54,6 +61,15 @@ export class SocketActionHandler {
     }
 
     try {
+      // Role check: mutating actions require canMutate (viewers denied)
+      if (SocketActionHandler.MUTATING_ACTIONS.has(type) && this.services?.teamRegistry) {
+        const canMutate = await this.services.teamRegistry.canMutate(connection.userId, teamId);
+        if (!canMutate) {
+          emitError(socket, { error: "Insufficient permissions — viewers cannot perform this action" });
+          return;
+        }
+      }
+
       const manager = await agentManagerRegistry.getForTeam(teamId);
 
       switch (type) {

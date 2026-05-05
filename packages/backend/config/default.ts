@@ -11,11 +11,14 @@ const defaultConfig: AppConfig = {
   port: 3002,
   nodeEnv: "development",
 
-  // Deployment mode: local (file-based) vs cloud (MongoDB + cloud storage)
+  // Deployment mode: local (file-based), cloud (MongoDB), hybrid (PostgreSQL + MongoDB)
   mode: "local",
 
-  // MongoDB (used for chat + auth in cloud mode)
+  // MongoDB (used for chat in cloud/hybrid mode)
   mongodbUri: "",
+
+  // PostgreSQL (used for relational data in hybrid mode)
+  databaseUrl: "",
 
   // Azure OpenAI (required — validated at startup)
   azureOpenAi: {

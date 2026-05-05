@@ -71,25 +71,25 @@ export function createAgentManagerHandlerV2(services: ServiceRegistry): express.
         goal: agentDef.goal ?? agentDef.description ?? "",
       }));
 
+      // Register team in database BEFORE responding — ensures FK targets exist
+      // for subsequent goal/task creation. Uses authenticated user as owner,
+      // falls back to "system" if no auth context (e.g., dev mode without auth).
+      const userId = (req as any).userId || "system";
+      await services.teamRegistry.register(teamId, userId, pluginName);
+
       res.status(201).json({
         team: {
           id: teamId,
           name,
           goal,
           description: description || plugin.manifest.description || "",
-          memberCount: agentRecords.length,
+          agentCount: agentRecords.length,
           plugin: pluginName,
         },
         agents: agentRecords,
         skills: plugin.skills.map((s: any) => ({ id: s.id, name: s.name, description: s.description })),
         modes: plugin.modes,
       });
-
-      // Register team ownership — track who created this team
-      const userId = (req as any).userId;
-      if (userId) {
-        await services.teamRegistry.register(teamId, userId, pluginName);
-      }
 
       logger.info(`[V2] Team loaded from plugin: ${teamId} (${pluginName}, ${agentRecords.length} agents)`);
     } catch (error: any) {
@@ -106,16 +106,16 @@ export function createAgentManagerHandlerV2(services: ServiceRegistry): express.
       const userId = (req as any).userId;
       const allTeams = await services.teams.listTeams();
 
-      // Filter: show unregistered teams (open) + teams owned by this user
-      // Hide teams registered by OTHER users
+      // Filter: show unregistered teams (open) + teams accessible to this user
+      // Hide teams registered by OTHER users. Fail-closed on auth errors.
       const filteredTeams = [];
       for (const t of allTeams) {
         try {
           const canAccess = await services.teamRegistry.canAccess(userId, t.id);
           if (canAccess) filteredTeams.push(t);
-        } catch {
-          // If registry check fails, allow access (fail-open for listing)
-          filteredTeams.push(t);
+        } catch (err) {
+          // Fail-closed: skip team on auth error (don't expose on transient failures)
+          logger.warn(`[V2] Access check failed for team ${t.id}, skipping:`, err);
         }
       }
 
@@ -127,7 +127,7 @@ export function createAgentManagerHandlerV2(services: ServiceRegistry): express.
           name: t.name,
           goal: t.description ?? "",
           description: t.description ?? "",
-          memberCount: agents.length,
+          agentCount: agents.length,
           plugin: t.pluginName ?? undefined,
         });
       }
@@ -144,11 +144,22 @@ export function createAgentManagerHandlerV2(services: ServiceRegistry): express.
   router.get("/teams/:id", async (req: Request, res: Response) => {
     try {
       const teamId = req.params.id as string;
+
+      // Access check — only members can view team details
+      const userId = (req as any).userId;
+      if (userId) {
+        const canAccess = await services.teamRegistry.canAccess(userId, teamId);
+        if (!canAccess) {
+          res.status(403).json({ error: "Not authorized to access this team" });
+          return;
+        }
+      }
+
       const team = await services.teams.getTeam(teamId);
       if (!team) { res.status(404).json({ error: "Team not found" }); return; }
       const agents = await services.teams.getTeamAgents(teamId);
       res.json({
-        team: { id: team.id, name: team.name, goal: team.description ?? "", description: team.description ?? "", memberCount: agents.length, plugin: team.pluginName ?? undefined },
+        team: { id: team.id, name: team.name, goal: team.description ?? "", description: team.description ?? "", agentCount: agents.length, plugin: team.pluginName ?? undefined },
       });
     } catch (error: any) {
       logger.error("[V2] Error getting team:", error);
@@ -167,12 +178,17 @@ export function createAgentManagerHandlerV2(services: ServiceRegistry): express.
         return;
       }
 
-      // Check ownership — only the owner can delete
+      // Check authorization — viewers cannot delete teams
       const userId = (req as any).userId;
       if (userId) {
         const canAccess = await services.teamRegistry.canAccess(userId, teamId);
         if (!canAccess) {
-          res.status(403).json({ error: "Not authorized to delete this team" });
+          res.status(403).json({ error: "Not authorized to access this team" });
+          return;
+        }
+        const canMutate = await services.teamRegistry.canMutate(userId, teamId);
+        if (!canMutate) {
+          res.status(403).json({ error: "Insufficient permissions to delete this team" });
           return;
         }
       }

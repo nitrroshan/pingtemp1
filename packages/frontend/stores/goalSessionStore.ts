@@ -244,7 +244,13 @@ export const useGoalSessionStore = create<GoalSessionState>()(devtools((set, get
           }
         }
 
-        const tasks = (session.tasks ?? []).map(mapBackendTask);
+        // Hydrate tasks: use live tasks, or pending plan tasks if in awaiting_approval with no tasks yet
+        const liveTasks = (session.tasks ?? []).map(mapBackendTask);
+        const pendingPlanTasks = session.pendingPlan
+          ? (session.pendingPlan as any[]).map(mapBackendTask)
+          : [];
+        const tasks = liveTasks.length > 0 ? liveTasks : pendingPlanTasks;
+
         set({
           chatHistories: restored,
           tasks,

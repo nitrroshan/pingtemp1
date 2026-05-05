@@ -6,6 +6,7 @@ ROOT="$(cd "$(dirname "$0")" && pwd)"
 BACKEND_PORT=3002
 FRONTEND_PORT=3000
 MONGO_PORT=27017
+POSTGRES_PORT=5432
 OLLAMA_PORT=11434
 COLLAB_PORT=1234
 
@@ -82,6 +83,43 @@ stop_mongo() {
     info "MongoDB stopped"
   else
     dim "MongoDB not running"
+  fi
+}
+
+# ─── PostgreSQL ────────────────────────────────────────────────────────
+start_postgres() {
+  require_docker || return 1
+  if docker ps --format '{{.Names}}' 2>/dev/null | grep -q '^ping-postgres$'; then
+    warn "PostgreSQL already running"
+    return
+  fi
+  warn "Starting PostgreSQL..."
+  if docker start ping-postgres 2>/dev/null; then
+    info "PostgreSQL started (existing container)"
+  else
+    docker run -d --name ping-postgres \
+      -e POSTGRES_DB=ping \
+      -e POSTGRES_USER=ping \
+      -e POSTGRES_PASSWORD=ping \
+      -p "${POSTGRES_PORT}:5432" \
+      -v ping-postgres-data:/var/lib/postgresql/data \
+      postgres:16-alpine >/dev/null
+    info "PostgreSQL started (new container)"
+    # Wait for PG to be ready
+    sleep 2
+    warn "Pushing schema..."
+    cd "$ROOT/packages/backend" && DATABASE_URL="postgresql://ping:ping@localhost:${POSTGRES_PORT}/ping" bun run db:push 2>/dev/null
+    cd "$ROOT"
+    info "PostgreSQL schema created"
+  fi
+}
+
+stop_postgres() {
+  command -v docker &>/dev/null || { dim "Docker not installed, skipping"; return; }
+  if docker stop ping-postgres 2>/dev/null; then
+    info "PostgreSQL stopped"
+  else
+    dim "PostgreSQL not running"
   fi
 }
 
@@ -186,12 +224,15 @@ do_reset_db() {
 }
 
 do_clean() {
-  printf "  ${red}This will DELETE all data (workspaces, plans, messages, auth). Continue? [y/N]${reset} "
+  printf "  ${red}This will DELETE all data and stop the backend. Continue? [y/N]${reset} "
   read -r confirm
   if [[ "$confirm" != "y" ]]; then
     dim "Cancelled"
     return
   fi
+
+  # Stop backend first — it caches team/goal data in memory
+  kill_port "Backend" $BACKEND_PORT
 
   local data_dir="$ROOT/packages/backend/data"
   if [[ -d "$data_dir" ]]; then
@@ -219,12 +260,27 @@ do_clean() {
       db.getCollectionNames().forEach(c => { if (c !== "system.version") db[c].deleteMany({}); });
     ' 2>/dev/null && info "MongoDB cleared (all collections)"
 
-    # Re-seed admin user into MongoDB (cloud mode)
-    cd "$ROOT/packages/backend" && PING_MODE=cloud bun run seed:admin 2>/dev/null && info "Admin user re-seeded (MongoDB)"
+    # Re-seed admin user into MongoDB (cloud mode) — only if NOT in hybrid mode (PG handles auth in hybrid)
+    if ! (command -v docker &>/dev/null && docker ps --format '{{.Names}}' 2>/dev/null | grep -q '^ping-postgres$'); then
+      cd "$ROOT/packages/backend" && PING_MODE=cloud bun run seed:admin 2>/dev/null && info "Admin user re-seeded (MongoDB)"
+    fi
   else
     # Re-seed admin user into SQLite (local mode)
     cd "$ROOT/packages/backend" && bun run seed:admin 2>/dev/null && info "Admin user re-seeded (SQLite)"
   fi
+
+  # Clear PostgreSQL if docker is available
+  if command -v docker &>/dev/null && docker ps --format '{{.Names}}' 2>/dev/null | grep -q '^ping-postgres$'; then
+    docker exec ping-postgres psql -U ping -d ping -c "
+      TRUNCATE organizations, org_members, agent_teams, goals, tasks, agent_definitions, \"user\", session, account, verification CASCADE;
+    " 2>/dev/null && info "PostgreSQL cleared (all tables truncated)"
+
+    # Re-seed admin + teams into PostgreSQL (hybrid mode)
+    cd "$ROOT/packages/backend"
+    PING_MODE=hybrid DATABASE_URL="postgresql://ping:ping@localhost:${POSTGRES_PORT}/ping" MONGODB_URI="mongodb://localhost:${MONGO_PORT}/ping" bun run seed:admin && info "Admin user re-seeded (PostgreSQL)"
+    PING_MODE=hybrid DATABASE_URL="postgresql://ping:ping@localhost:${POSTGRES_PORT}/ping" MONGODB_URI="mongodb://localhost:${MONGO_PORT}/ping" bun run seed:teams && info "Teams re-seeded (PostgreSQL)"
+  fi
+
   cd "$ROOT"
 
   info "Clean complete."
@@ -235,9 +291,25 @@ start_backend() {
     warn "Backend already running on :$BACKEND_PORT"
     return
   fi
-  warn "Starting backend in new terminal..."
-  new_terminal "Ping - Backend" "$ROOT/packages/backend" "PING_MODE=${1:-local} bun dist/server.js"
-  info "Backend starting on :$BACKEND_PORT"
+  local mode="${1:-local}"
+  local env_vars="PING_MODE=${mode}"
+  if [[ "$mode" == "hybrid" ]]; then
+    env_vars="PING_MODE=hybrid DATABASE_URL=postgresql://ping:ping@localhost:${POSTGRES_PORT}/ping MONGODB_URI=mongodb://localhost:${MONGO_PORT}/ping"
+    # Ensure teams are seeded in PostgreSQL before backend starts
+    warn "Ensuring teams are seeded in PostgreSQL..."
+    cd "$ROOT/packages/backend" && PING_MODE=hybrid DATABASE_URL="postgresql://ping:ping@localhost:${POSTGRES_PORT}/ping" MONGODB_URI="mongodb://localhost:${MONGO_PORT}/ping" bun run seed:admin 2>/dev/null
+    cd "$ROOT/packages/backend" && PING_MODE=hybrid DATABASE_URL="postgresql://ping:ping@localhost:${POSTGRES_PORT}/ping" MONGODB_URI="mongodb://localhost:${MONGO_PORT}/ping" bun run seed:teams
+    cd "$ROOT"
+    info "Seeds verified"
+  fi
+  # If external collab service is running, use it instead of embedded server
+  if is_running $COLLAB_PORT; then
+    env_vars="${env_vars} COLLAB_MODE=external COLLAB_URL=ws://localhost:${COLLAB_PORT}"
+    info "Using external collab service on :$COLLAB_PORT"
+  fi
+  warn "Starting backend in new terminal (mode: $mode)..."
+  new_terminal "Ping - Backend" "$ROOT/packages/backend" "${env_vars} bun dist/server.js"
+  info "Backend starting on :$BACKEND_PORT (mode: $mode)"
 }
 
 start_frontend() {
@@ -281,6 +353,11 @@ show_status() {
   else
     err  "MongoDB   localhost:$MONGO_PORT          STOPPED"
   fi
+  if command -v docker &>/dev/null && docker ps --format '{{.Names}}' 2>/dev/null | grep -q '^ping-postgres$'; then
+    info "Postgres  localhost:$POSTGRES_PORT          RUNNING"
+  else
+    err  "Postgres  localhost:$POSTGRES_PORT          STOPPED"
+  fi
   if is_running $OLLAMA_PORT; then
     local model_id
     model_id=$(grep '^MODEL_ID=' "$ROOT/packages/backend/.env" 2>/dev/null | cut -d= -f2 || echo "")
@@ -301,6 +378,7 @@ stop_all() {
   kill_port "Frontend" $FRONTEND_PORT
   stop_collab
   stop_mongo
+  stop_postgres
   stop_ollama
 }
 
@@ -312,11 +390,13 @@ show_menu() {
   printf "  ${cyan}Dev${reset}\n"
   printf "  ${green}1${reset}  Dev Local    ${dim}build + seed + start (no MongoDB)${reset}\n"
   printf "  ${green}2${reset}  Dev Cloud    ${dim}MongoDB + build + seed + start${reset}\n"
+  printf "  ${green}h${reset}  Dev Hybrid   ${dim}PostgreSQL + MongoDB + build + start${reset}\n"
   echo ""
   printf "  ${cyan}Start / Stop${reset}\n"
   printf "  ${green}3${reset}  Frontend     ${dim}Vite dev server :$FRONTEND_PORT${reset}\n"
   printf "  ${green}4${reset}  Backend      ${dim}build + start :$BACKEND_PORT${reset}\n"
-  printf "  ${green}5${reset}  MongoDB      ${dim}Docker container${reset}\n"
+  printf "  ${green}5${reset}  MongoDB      ${dim}Docker container :$MONGO_PORT${reset}\n"
+  printf "  ${green}p${reset}  PostgreSQL   ${dim}Docker container :$POSTGRES_PORT${reset}\n"
   printf "  ${green}6${reset}  Ollama       ${dim}Local LLM :$OLLAMA_PORT${reset}\n"
   printf "  ${green}10${reset} Collab       ${dim}CRDT server :$COLLAB_PORT${reset}\n"
   printf "  ${red}7${reset}  Stop All\n"
@@ -345,6 +425,8 @@ main() {
         start_ollama
         do_build
         do_seed
+        start_collab
+        sleep 1
         start_backend local
         sleep 2
         start_frontend
@@ -360,11 +442,40 @@ main() {
         sleep 2
         do_build
         do_seed
+        start_collab
+        sleep 1
         start_backend cloud
         sleep 2
         start_frontend
         echo ""
         info "Cloud dev ready! MongoDB for chat/auth, teams from plugins."
+        ;;
+      h|H)
+        echo ""
+        info "=== Dev Hybrid ==="
+        do_install
+        start_ollama
+        start_postgres
+        start_mongo
+        sleep 2
+        do_build
+        # Seed admin user (needs MongoDB for auth in cloud, PG for auth in hybrid)
+        warn "Seeding admin user..."
+        cd "$ROOT/packages/backend" && PING_MODE=hybrid DATABASE_URL="postgresql://ping:ping@localhost:${POSTGRES_PORT}/ping" MONGODB_URI="mongodb://localhost:${MONGO_PORT}/ping" bun run seed:admin
+        cd "$ROOT"
+        # Seed plugin teams in PostgreSQL (must run AFTER admin seed)
+        warn "Seeding teams in PostgreSQL..."
+        cd "$ROOT/packages/backend" && PING_MODE=hybrid DATABASE_URL="postgresql://ping:ping@localhost:${POSTGRES_PORT}/ping" MONGODB_URI="mongodb://localhost:${MONGO_PORT}/ping" bun run seed:teams
+        cd "$ROOT"
+        info "Seeds complete (admin + teams)"
+        # Start collab service (CRDT documents — plan docs, reports, BlockNote editor)
+        start_collab
+        sleep 1
+        start_backend hybrid
+        sleep 2
+        start_frontend
+        echo ""
+        info "Hybrid dev ready! PostgreSQL + MongoDB + Collab service."
         ;;
       3) start_frontend ;;
       4) do_build && start_backend local ;;
@@ -374,6 +485,7 @@ main() {
       8) do_build ;;
       9) do_seed ;;
       10) start_collab ;;
+      p|P) start_postgres ;;
       c|C) do_clean ;;
       s|S) show_status ;;
       0) dim "Bye!"; exit 0 ;;

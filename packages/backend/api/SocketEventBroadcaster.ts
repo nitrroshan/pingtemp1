@@ -106,6 +106,10 @@ export class SocketEventBroadcaster {
               ? manager.getWorkerContext(taskId)
               : null;
 
+            if (!streamGoalId) {
+              logger.warn(`[SocketEventBroadcaster] Stream message missing goalId — agentId=${acc.agentId}, taskId=${taskId}. Message will be persisted without goal scope.`);
+            }
+
             const msgPayload = {
               teamId,
               userId: await this.services.teamRegistry?.getOwner(teamId) ?? "system",
@@ -246,19 +250,10 @@ export class SocketEventBroadcaster {
         }
         logger.debug(`[SocketEventBroadcaster] Plan ${action} for goal ${gid}, broadcast to ${target}`);
 
+        // Update goal status on approval (goal row already exists — created in SocketMessageHandler)
         if (action === "approved" && this.services && gid) {
-          this.services.chat.getGoalMessages(teamId, gid!, { limit: 5 }).then(msgs => {
-            const userMsg = msgs.find(m => m.role === "user");
-            const goalText = userMsg?.content || "Plan";
-            const ownerId = userMsg?.userId || "system";
-            this.services!.goals.addGoal({
-              teamId,
-              userId: ownerId,
-              goal: goalText,
-              goalId: gid || undefined,
-              status: "executing",
-            }).catch(err => logger.warn("[SocketEventBroadcaster] Failed to save goal:", err));
-          }).catch(() => {});
+          this.services.goals.updateGoal(gid, { status: "executing" })
+            .catch(err => logger.warn("[SocketEventBroadcaster] Failed to update goal status:", err));
         }
 
         const payload: StreamPayload = {

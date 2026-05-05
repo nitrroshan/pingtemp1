@@ -57,6 +57,17 @@ async function runSeeds(): Promise<void> {
     }
 
     logger.info("[seed] Done. Teams/agents are auto-registered from plugins at startup.");
+
+    // In hybrid mode, also register plugin teams in PostgreSQL
+    const { getConfig } = await import("../../config/index.js");
+    const config = getConfig();
+    if (config.mode === "hybrid" && config.databaseUrl) {
+      logger.info("[seed] Hybrid mode: seeding plugin teams in PostgreSQL...");
+      // Import and run team seeding inline
+      const seedTeamsModule = await import("./teams.seed.js");
+      // teams.seed.ts runs as a standalone script, so we just log that it should be run
+      logger.info("[seed] Run 'bun run seed:teams' to register plugin teams in PostgreSQL.");
+    }
   } finally {
     if (process.env.MONGODB_URI) {
       await disconnectDB();
