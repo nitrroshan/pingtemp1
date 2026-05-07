@@ -224,15 +224,12 @@ do_reset_db() {
 }
 
 do_clean() {
-  printf "  ${red}This will DELETE all data and stop the backend. Continue? [y/N]${reset} "
+  printf "  ${red}This will DELETE all data (server stays running). Continue? [y/N]${reset} "
   read -r confirm
   if [[ "$confirm" != "y" ]]; then
     dim "Cancelled"
     return
   fi
-
-  # Stop backend first — it caches team/goal data in memory
-  kill_port "Backend" $BACKEND_PORT
 
   local data_dir="$ROOT/packages/backend/data"
   if [[ -d "$data_dir" ]]; then
@@ -247,11 +244,17 @@ do_clean() {
     rm -f "$data_dir/ping.db" "$data_dir/ping.db-shm" "$data_dir/ping.db-wal" 2>/dev/null && info "Local DB cleared"
     # Remove conversations
     rm -rf "$data_dir/conversations" 2>/dev/null
-    # Remove CRDT collab data
-    rm -rf "$data_dir/collab" 2>/dev/null && info "CRDT data cleared"
+    # Remove CRDT collab data (backend data dir)
+    rm -rf "$data_dir/collab" 2>/dev/null && info "CRDT data cleared (backend)"
     info "All local data cleared."
   else
     dim "No data directory found"
+  fi
+
+  # Clear collab-service CRDT storage (separate package)
+  local collab_data="$ROOT/packages/collab-service/data/collab"
+  if [[ -d "$collab_data" ]]; then
+    rm -rf "$collab_data" 2>/dev/null && info "CRDT data cleared (collab-service)"
   fi
 
   # Also clear MongoDB if docker is available

@@ -294,7 +294,7 @@ export class SocketMessageHandler {
 
               this.services.chat.addMessage({
                 teamId,
-                userId: await this.services.teamRegistry?.getOwner(teamId) ?? "system",
+                userId: socket.data.userId,
                 role: "assistant",
                 agentId,
                 goalId: resolvedGoalId,

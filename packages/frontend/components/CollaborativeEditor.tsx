@@ -10,11 +10,60 @@
  * @see feature_implementation_planning.md Phase 3
  */
 
-import { useEffect, useState, useRef } from "react";
+import { useEffect, useState, useRef, Component, type ReactNode } from "react";
 import { HocuspocusProvider } from "@hocuspocus/provider";
 import { useCreateBlockNote } from "@blocknote/react";
 import { BlockNoteView } from "@blocknote/mantine";
 import "@blocknote/mantine/style.css";
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ERROR BOUNDARY — catches ProseMirror "mismatched transaction" from StrictMode
+// ═══════════════════════════════════════════════════════════════════════════════
+
+interface EditorErrorBoundaryProps {
+  children: ReactNode;
+  onRetry: () => void;
+}
+
+interface EditorErrorBoundaryState {
+  hasError: boolean;
+  retryCount: number;
+}
+
+class EditorErrorBoundary extends Component<EditorErrorBoundaryProps, EditorErrorBoundaryState> {
+  state: EditorErrorBoundaryState = { hasError: false, retryCount: 0 };
+
+  static getDerivedStateFromError(error: Error): Partial<EditorErrorBoundaryState> | null {
+    if (error instanceof RangeError && error.message.includes("mismatched transaction")) {
+      return { hasError: true };
+    }
+    return null; // re-throw non-ProseMirror errors
+  }
+
+  componentDidCatch(error: Error) {
+    if (error instanceof RangeError && error.message.includes("mismatched transaction")) {
+      console.warn("[CollaborativeEditor] ProseMirror mismatched transaction (StrictMode race) — retrying");
+      // Auto-retry after a tick to let StrictMode settle
+      if (this.state.retryCount < 3) {
+        setTimeout(() => {
+          this.setState((s) => ({ hasError: false, retryCount: s.retryCount + 1 }));
+          this.props.onRetry();
+        }, 100);
+      }
+    }
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="flex items-center justify-center h-full text-muted-foreground text-sm">
+          Reconnecting editor...
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // TYPES
@@ -112,6 +161,7 @@ export function CollaborativeEditor({
 }: CollaborativeEditorProps) {
   const [provider, setProvider] = useState<HocuspocusProvider | null>(null);
   const [status, setStatus] = useState<"connecting" | "connected" | "error">("connecting");
+  const [editorKey, setEditorKey] = useState(0);
   const providerRef = useRef<HocuspocusProvider | null>(null);
 
   // Create provider once, destroy on unmount/docId change
@@ -125,7 +175,12 @@ export function CollaborativeEditor({
       token: token || undefined,
       onStatus: ({ status: s }) => {
         if (!cancelled && s === "connected") {
-          setStatus("connected");
+          // Defer by one microtask — lets StrictMode cleanup finish before rendering editor.
+          // This prevents the ProseMirror "mismatched transaction" from awareness updates
+          // racing with the double-mount teardown.
+          queueMicrotask(() => {
+            if (!cancelled) setStatus("connected");
+          });
         }
       },
       onDisconnect: () => {
@@ -178,7 +233,11 @@ export function CollaborativeEditor({
     );
   }
 
-  return <ConnectedEditor provider={provider} userName={userName} userColor={userColor} docName={docId} />;
+  return (
+    <EditorErrorBoundary onRetry={() => setEditorKey((k) => k + 1)}>
+      <ConnectedEditor key={editorKey} provider={provider} userName={userName} userColor={userColor} docName={docId} />
+    </EditorErrorBoundary>
+  );
 }
 
 function ConnectedEditor({ provider, userName, userColor, docName }: { provider: HocuspocusProvider; userName: string; userColor: string; docName: string }) {

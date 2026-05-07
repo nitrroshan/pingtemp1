@@ -96,27 +96,31 @@ export class CrdtTaskSync {
 
       const ctx = (task.context || {}) as Record<string, any>;
 
-      map.set("type", "task");
-      map.set("id", task.id);
-      map.set("title", ctx.title || task.description.split(":")[0]?.trim() || task.id);
-      map.set("assignedRole", task.assigned_role);
-      map.set("status", task.status);
-      map.set("priority", task.priority || 3);
-      map.set("complexity", ctx.complexity || "medium");
-      map.set("taskType", ctx.type || "work");
-      map.set("dependencies", Array.from(task.prerequisites.keys()));
-      map.set("createdBy", ctx.createdBy || "planner");
-      map.set("parentTask", ctx.parentTask || null);
-      map.set("planId", ctx.planId || null);
-      map.set("expectedOutput", ctx.expectedOutput || "");
-      map.set("onDependencyFail", ctx.onDependencyFail || "fail");
-      map.set("body", task.description);
-      map.set("output", task.output || null);
-      map.set("completedAt", null);
-      map.set("createdAt", new Date().toISOString());
-      if (ctx.references) {
-        map.set("references", ctx.references);
-      }
+      // Batch all map.set() calls in a single Y.transact() to avoid flooding
+      // connected clients with 15+ separate micro-updates
+      doc.transact(() => {
+        map.set("type", "task");
+        map.set("id", task.id);
+        map.set("title", ctx.title || task.description.split(":")[0]?.trim() || task.id);
+        map.set("assignedRole", task.assigned_role);
+        map.set("status", task.status);
+        map.set("priority", task.priority || 3);
+        map.set("complexity", ctx.complexity || "medium");
+        map.set("taskType", ctx.type || "work");
+        map.set("dependencies", Array.from(task.prerequisites.keys()));
+        map.set("createdBy", ctx.createdBy || "planner");
+        map.set("parentTask", ctx.parentTask || null);
+        map.set("planId", ctx.planId || null);
+        map.set("expectedOutput", ctx.expectedOutput || "");
+        map.set("onDependencyFail", ctx.onDependencyFail || "fail");
+        map.set("body", task.description);
+        map.set("output", task.output || null);
+        map.set("completedAt", null);
+        map.set("createdAt", new Date().toISOString());
+        if (ctx.references) {
+          map.set("references", ctx.references);
+        }
+      });
 
       // Set metadata for collab tool discovery
       doc.setMeta({
@@ -171,20 +175,18 @@ export class CrdtTaskSync {
     try {
       const doc = await this._space.openDoc(docName);
       const map = doc.getMap("meta");
-      map.set("status", newStatus);
-      if (newStatus === "completed") {
-        map.set("completedAt", new Date().toISOString());
-        if (output != null) {
-          map.set("output", output);
+      doc.transact(() => {
+        map.set("status", newStatus);
+        if (newStatus === "completed") {
+          map.set("completedAt", new Date().toISOString());
+          if (output != null) {
+            map.set("output", output);
+          }
         }
-        // Note: The agent writes the real completion report to {taskId}/report
-        // via collab write-block BEFORE calling complete_task.
-        // We don't generate a system report here — the agent's report IS the report.
-      }
+      });
       logger.debug(`Synced status ${taskId} → ${newStatus}`);
     } catch (err) {
       logger.error(`Failed to sync status for ${taskId}: ${err}`);
-      // Don't throw — status sync failure shouldn't block task execution
     }
   }
 
@@ -202,14 +204,6 @@ export class CrdtTaskSync {
     try {
       const doc = await this._space.openDoc("plan");
       const map = doc.getMap("meta");
-      map.set("type", "plan");
-      map.set("planId", plan.planId);
-      map.set("goalId", goalId);
-      map.set("goal", plan.goal);
-      map.set("status", "pending");
-      map.set("version", plan.version || 1);
-      map.set("taskCount", plan.tasks?.length || 0);
-      map.set("createdAt", new Date().toISOString());
 
       // Task summary list for easy agent reading
       const taskSummary = (plan.tasks || []).map((t: any) => ({
@@ -219,7 +213,19 @@ export class CrdtTaskSync {
         priority: t.priority,
         dependencies: t.dependencies || [],
       }));
-      map.set("tasks", taskSummary);
+
+      // Batch all writes in a single transaction
+      doc.transact(() => {
+        map.set("type", "plan");
+        map.set("planId", plan.planId);
+        map.set("goalId", goalId);
+        map.set("goal", plan.goal);
+        map.set("status", "pending");
+        map.set("version", plan.version || 1);
+        map.set("taskCount", plan.tasks?.length || 0);
+        map.set("createdAt", new Date().toISOString());
+        map.set("tasks", taskSummary);
+      });
 
       doc.setMeta({
         description: `Plan: ${plan.goal} (${plan.tasks?.length || 0} tasks)`,
@@ -292,7 +298,6 @@ export class CrdtTaskSync {
     try {
       const doc = await this._space.openDoc("_index");
       const map = doc.getMap("meta");
-      map.set("type", "index");
 
       // Group by role
       const byRole: Record<string, string[]> = {};
@@ -309,10 +314,13 @@ export class CrdtTaskSync {
         byStatus[status].push(task.id);
       }
 
-      map.set("byRole", byRole);
-      map.set("byStatus", byStatus);
-      map.set("totalTasks", tasks.length);
-      map.set("updatedAt", new Date().toISOString());
+      doc.transact(() => {
+        map.set("type", "index");
+        map.set("byRole", byRole);
+        map.set("byStatus", byStatus);
+        map.set("totalTasks", tasks.length);
+        map.set("updatedAt", new Date().toISOString());
+      });
     } catch (err) {
       logger.debug(`Index update failed (non-critical): ${err}`);
     }
@@ -330,8 +338,10 @@ export class CrdtTaskSync {
     try {
       const doc = await this._space.openDoc('agent-statuses');
       const map = doc.getMap('meta');
-      map.set('type', 'agent-statuses');
-      map.set(role, { status, task: taskId || null, since: Date.now() });
+      doc.transact(() => {
+        map.set('type', 'agent-statuses');
+        map.set(role, { status, task: taskId || null, since: Date.now() });
+      });
     } catch (err) {
       logger.debug(`Agent status update failed (non-critical): ${err}`);
     }

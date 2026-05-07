@@ -98,17 +98,37 @@ export class SqliteChatService implements IChatService {
   async getSessionMessages(teamId: string, options?: {
     sessionLimit?: number;
     workerLimit?: number;
+    userId?: string;
   }): Promise<{ session: ChatMessage[]; worker: ChatMessage[] }> {
     const sessionLimit = options?.sessionLimit ?? 100;
     const workerLimit = options?.workerLimit ?? 50;
 
-    // Session agent messages (planner + chat-agent) — larger window
+    // userId filter: when provided, only load messages from this user + assistant responses
+    if (options?.userId) {
+      const sessionRows = this.db.query(
+        `SELECT * FROM messages WHERE teamId = ? AND (agentLayer = 'planner' OR agentLayer = 'chat-agent')
+         AND (userId = ? OR role = 'assistant')
+         ORDER BY timestamp DESC LIMIT ?`,
+      ).all(teamId, options.userId, sessionLimit) as ChatMessage[];
+
+      const workerRows = this.db.query(
+        `SELECT * FROM messages WHERE teamId = ? AND (agentLayer = 'worker' OR agentLayer IS NULL)
+         AND (userId = ? OR role = 'assistant')
+         ORDER BY timestamp DESC LIMIT ?`,
+      ).all(teamId, options.userId, workerLimit) as ChatMessage[];
+
+      return {
+        session: sessionRows.reverse(),
+        worker: workerRows.reverse(),
+      };
+    }
+
+    // No userId filter — return all messages
     const sessionRows = this.db.query(
       `SELECT * FROM messages WHERE teamId = ? AND (agentLayer = 'planner' OR agentLayer = 'chat-agent')
        ORDER BY timestamp DESC LIMIT ?`,
     ).all(teamId, sessionLimit) as ChatMessage[];
 
-    // Worker messages — smaller window (recent only)
     const workerRows = this.db.query(
       `SELECT * FROM messages WHERE teamId = ? AND (agentLayer = 'worker' OR agentLayer IS NULL)
        ORDER BY timestamp DESC LIMIT ?`,
