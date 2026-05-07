@@ -127,14 +127,10 @@ export class GoalManager implements IGoalManager {
   // GOAL CONTEXT MANAGEMENT
   // ═══════════════════════════════════════════════════════════════════
 
-  /** Get or create a GoalContext. FF gate: single-goal when FF_PARALLEL_PLANS is off. */
+  /** Get or create a GoalContext. Multi-goal: each goalId gets its own context. */
   private getOrCreateGoal(goalId: string, title?: string): GoalContext {
     let goal = this.goals.get(goalId);
     if (!goal) {
-      if (!process.env.FF_PARALLEL_PLANS && this.goals.size >= 1) {
-        // Single-goal mode: clear existing goals
-        this.goals.clear();
-      }
       goal = {
         goalId,
         state: "idle",
@@ -309,6 +305,9 @@ export class GoalManager implements IGoalManager {
   getChatAgentByRole(role: string, goalId?: string): ChatAgent | null {
     const roleKey = role.toLowerCase();
     const gid = goalId ?? this.activeGoalId;
+    if (!goalId && this.activeGoalId) {
+      log.warn(`getChatAgentByRole('${role}') called without goalId — falling back to activeGoalId '${this.activeGoalId}'. Caller should pass goalId explicitly.`);
+    }
     if (!gid) return null;
 
     const goal = this.goals.get(gid);
@@ -355,11 +354,17 @@ export class GoalManager implements IGoalManager {
   getGoalContext(goalId: string) { return this.goals.get(goalId); }
   getPendingPlan(goalId?: string): any | null {
     const gid = goalId ?? this.activeGoalId;
+    if (!goalId && this.activeGoalId) {
+      log.warn(`getPendingPlan() called without goalId — falling back to activeGoalId '${this.activeGoalId}'.`);
+    }
     const goal = gid ? this.goals.get(gid) : undefined;
     return goal?.pendingPlan ?? null;
   }
   setPendingPlan(plan: any | null, goalId?: string): void {
     const gid = goalId ?? this.activeGoalId;
+    if (!goalId && this.activeGoalId) {
+      log.warn(`setPendingPlan() called without goalId — falling back to activeGoalId '${this.activeGoalId}'.`);
+    }
     if (gid) {
       const goal = this.goals.get(gid);
       if (goal) goal.pendingPlan = plan;
@@ -715,7 +720,7 @@ export class GoalManager implements IGoalManager {
             taskId: dep.id, status: "failed", role: dep.assigned_role, timestamp: Date.now(),
           });
           log.info(`[DependencyFail] Cascaded failure: ${taskId} → ${dep.id} (${dep.assigned_role})`);
-          this.handleTaskFailure(dep.id, `Upstream dependency ${taskId} failed`);
+          await this.handleTaskFailure(dep.id, `Upstream dependency ${taskId} failed`);
           break;
 
         case "skip":

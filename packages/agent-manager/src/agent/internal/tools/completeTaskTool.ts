@@ -73,7 +73,7 @@ Do NOT fabricate output when blocked.`;
 Your report doc is the full handoff to downstream agents. Write it now, then call complete_task again.`;
       }
 
-      onComplete?.({
+      await onComplete?.({
         taskId,
         role,
         summary: input.summary,

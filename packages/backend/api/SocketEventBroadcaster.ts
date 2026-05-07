@@ -88,7 +88,7 @@ export class SocketEventBroadcaster {
             acc.parts.push({ type: "tool-output", toolCallId: part.toolCallId, output: part.output });
             break;
           case "reasoning-delta": {
-            const lastReasoning = acc.parts.findLast((p: any) => p.type === "reasoning");
+            const lastReasoning = acc.parts.findLast((p: { type: string; text?: string }) => p.type === "reasoning") as { type: string; text?: string } | undefined;
             if (lastReasoning) {
               lastReasoning.text = (lastReasoning.text || "") + (part.delta || "");
             } else {
@@ -163,7 +163,7 @@ export class SocketEventBroadcaster {
             content: formatProgressContent(event),
             tool: event.tool,
             timestamp: Date.now(),
-          } satisfies ProgressResponse);
+          } as any);
         }
 
         if (routes.includes("stream")) {

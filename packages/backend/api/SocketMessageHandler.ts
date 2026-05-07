@@ -59,20 +59,23 @@ export class SocketMessageHandler {
       return;
     }
 
-    logger.info(`[SocketMessageHandler] handleMessage:`, {
-      teamId, agentId, taskId, sessionId,
-      contentPreview: content?.substring(0, 50),
-    });
+    logger.info({ teamId, agentId, taskId, sessionId, contentPreview: content?.substring(0, 50) }, "[SocketMessageHandler] handleMessage");
 
     try {
       const manager = await agentManagerRegistry.getForTeam(teamId);
 
       // Save user message (defer orchestrator messages until goalId is resolved)
       const isOrchestratorMsg = agentId === "manager" || agentId === "orchestrator";
+
+      // Reject non-orchestrator messages without goalId at the boundary.
+      // Chat-agent and worker messages MUST be goal-scoped — ephemeral chat is not supported.
+      if (!isOrchestratorMsg && !clientGoalId) {
+        emitError(socket, { error: "goalId is required for chat-agent and worker messages" });
+        return;
+      }
+
       if (this.services && !isOrchestratorMsg) {
-        if (!clientGoalId) {
-          logger.warn(`[SocketMessageHandler] Skipping user message persistence — no goalId. agentId=${agentId}, teamId=${teamId}`);
-        } else {
+        if (clientGoalId) {
           const layer = agentId.startsWith("chat-") ? "chat-agent" as const : "worker" as const;
           this.services.chat.addMessage({
             teamId,
@@ -88,15 +91,16 @@ export class SocketMessageHandler {
         }
       }
 
+
       const joined = await this.joinTeamRoom(socket, teamId);
       if (!joined) return;
       this.broadcaster.ensureTeamCallbacks(teamId, manager);
 
       if (agentId === "manager" || agentId === "orchestrator") {
-        await this.handleOrchestratorMessage(socket, manager, teamId, sessionId, content, clientGoalId, nonce, repoUrl, repoBranch);
+        await this.handleOrchestratorMessage(socket, manager, teamId, sessionId, content, clientGoalId ?? undefined, nonce, repoUrl, repoBranch);
       } else if (agentId.startsWith("chat-") && manager.isChatAgentEnabled()) {
         const role = agentId.replace("chat-", "");
-        await this.handleChatAgentMessage(socket, manager, teamId, role, sessionId, content, clientGoalId || undefined);
+        await this.handleChatAgentMessage(socket, manager, teamId, role, sessionId, content, clientGoalId ?? undefined);
       } else {
         await this.handleWorkerMessage(socket, manager, agentId, taskId, content);
       }
@@ -143,9 +147,9 @@ export class SocketMessageHandler {
     // MUST be awaited — fire-and-forget causes race where tasks insert before goal row commits
     if (this.services) {
       try {
-        // In hybrid mode, verify team is registered in PG before creating goals.
+        // Verify team is registered in PG before creating goals.
         // Teams must be installed via POST /api/v2/teams (or seed:teams in dev).
-        if (this.services.mode === "hybrid" && this.services.teamRegistry) {
+        if (this.services.teamRegistry) {
           const owner = await this.services.teamRegistry.getOwner(teamId);
           if (!owner) {
             logger.error(`[SocketMessageHandler] Team ${teamId} not installed in PostgreSQL — cannot create goal. Install via POST /api/v2/teams first.`);
@@ -165,7 +169,7 @@ export class SocketMessageHandler {
         });
       } catch (err) {
         // Non-fatal — goal may already exist (e.g., page refresh re-sends), or we're in local mode
-        logger.warn("[SocketMessageHandler] Failed to save goal row:", err);
+        logger.warn({ err }, "[SocketMessageHandler] Failed to save goal row");
       }
     }
 

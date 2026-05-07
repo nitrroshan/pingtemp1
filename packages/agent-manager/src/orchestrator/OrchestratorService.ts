@@ -124,7 +124,8 @@ export class OrchestratorService {
   private autoExecute: boolean;
 
   // Dispatch tracking — delegated to DispatchManager
-  private messageChain: Promise<string> = Promise.resolve(""); // serialized user messages
+  /** Per-goal message serialization. Each goal has its own promise chain — goals don't block each other. */
+  private messageChains = new Map<string, Promise<string>>();
 
   constructor(config: OrchestratorServiceConfig) {
     this.teamId = config.teamId;
@@ -141,9 +142,9 @@ export class OrchestratorService {
     this.sessionId = `team-${config.teamId}`;
     this.autoExecute = config.autoExecute ?? false;
 
-    // Phase 4.5: Create DispatchManager — owns concurrency + retry
+    // Phase 4.5: Create DispatchManager — owns per-goal concurrency + retry
     this.dispatchManager = new DispatchManager({
-      maxConcurrent: MAX_CONCURRENT_DISPATCHES,
+      maxConcurrentPerGoal: MAX_CONCURRENT_DISPATCHES,
       maxRetries: MAX_TASK_RETRIES,
       executeTask: (taskId, role) => this.dispatchTask(taskId, role),
       getTask: (taskId) => this.taskStore.get(taskId),
@@ -203,7 +204,7 @@ export class OrchestratorService {
       onEvent: (data) => this.callbacks.onEvent?.(data),
       onDone: (data) => this.callbacks.onDone?.(data),
       onError: (data) => this.callbacks.onError?.(data),
-      onAgentComplete: (data) => this.goalManager.onWorkerDone(data),
+      onAgentComplete: async (data) => { await this.goalManager.onWorkerDone(data); },
       // R10-3 FIX: Track last reported status on task for blocked detection
       onStatusUpdate: (data) => {
         const task = this.taskStore.get(data.taskId);
@@ -223,7 +224,7 @@ export class OrchestratorService {
           taskId: data.taskId, status: "pending", role: data.targetRole, timestamp: Date.now(),
         });
         // Notify planner so it can track agent-created tasks
-        const createdTaskGoalId = this.taskStore.get(data.taskId)?.goalId || this.goalManager.getGoalId() || '';
+        const createdTaskGoalId = this.taskStore.get(data.taskId)?.goalId || '';
         this.notifyPlanner(createdTaskGoalId,
           PromptLoader.loadTemplate("orchestrator", "task-created", {
             createdBy: data.createdBy,
@@ -237,7 +238,7 @@ export class OrchestratorService {
           this.dispatchReadyTasks();
         }
       },
-      onBounce: (data) => {
+      onBounce: async (data) => {
         log.info(`Task bounced: ${data.taskId} by ${data.role} — ${data.reason}`);
 
         // Channel B: emit blocked event for bounced task
@@ -250,11 +251,11 @@ export class OrchestratorService {
 
         // R9-2 FIX: Handle dependency failure for bounced task
         // Bounced tasks are marked "failed" — notify planner with blocked downstream info
-        this.goalManager.handleTaskFailure(data.taskId, `Bounced by ${data.role}: ${data.reason}`);
+        await this.goalManager.handleTaskFailure(data.taskId, `Bounced by ${data.role}: ${data.reason}`);
 
         // Gap D: When ChatAgent handles this role, skip per-bounce planner notification
         if (!this.chatAgentDispatch) {
-          const bouncedTaskGoalId = this.taskStore.get(data.taskId)?.goalId || this.goalManager.getGoalId() || '';
+          const bouncedTaskGoalId = this.taskStore.get(data.taskId)?.goalId || '';
           this.notifyPlanner(bouncedTaskGoalId,
             PromptLoader.loadTemplate("orchestrator", "task-bounced", {
               taskId: data.taskId,
@@ -288,8 +289,9 @@ export class OrchestratorService {
    * @param goalId - goalId from frontend (required correlation ID)
    */
   async handleMessage(content: string, goalId: string, repoUrl?: string, repoBranch?: string): Promise<string> {
-    const result = this.messageChain.then(() => this._handleMessage(content, goalId, repoUrl, repoBranch));
-    this.messageChain = result.catch(() => "");
+    const chain = this.messageChains.get(goalId) ?? Promise.resolve("");
+    const result = chain.then(() => this._handleMessage(content, goalId, repoUrl, repoBranch));
+    this.messageChains.set(goalId, result.catch(() => ""));
     return result;
   }
 

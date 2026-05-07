@@ -140,13 +140,14 @@ export interface ClientToServerEvents {
   }) => void;
   action: (data: {
     teamId: string;
-    type: 'approve-plan' | 'start-task' | 'complete-task' | 'cancel-task' | 'auto-execute' | 'get-state';
+    type: 'approve-plan' | 'reject-plan' | 'start-task' | 'complete-task' | 'cancel-task' | 'modify-task' | 'auto-execute' | 'get-state';
     sessionId?: string;
     taskId?: string;
     goalId?: string;
     output?: unknown;
     enabled?: boolean;
     changes?: unknown;
+    feedback?: string;
   }) => void;
   subscribeToGoal: (data: { teamId: string; goalId: string }) => void;
   unsubscribeFromGoal: (data: { teamId: string; goalId: string }) => void;

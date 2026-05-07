@@ -2,14 +2,14 @@
 /**
  * seed-teams.ts — Register plugin teams in PostgreSQL.
  *
- * Reads all plugins from the registry folder, creates:
- *   - A default organization (owned by the admin user)
- *   - An agent_team row per plugin (with deterministic team_id)
+ * Creates agent_team rows per plugin with direct user ownership (GitHub model).
+ * Optionally creates a default organization if SEED_ORG=true is set.
  *
  * Run AFTER seed:admin (needs the admin user to exist for ownership).
  *
  * Usage:
- *   bun run seed:teams                                          # default admin owner
+ *   bun run seed:teams                                          # user-owned teams (default)
+ *   SEED_ORG=true bun run seed:teams                            # teams under a shared org
  *   ADMIN_EMAIL=me@example.com bun run seed:teams               # custom owner
  *
  * Idempotent: skips existing teams, safe to re-run.
@@ -58,7 +58,7 @@ async function seedTeams() {
     const { user } = await import("../../db/schema.js");
     const adminRows = await db.select({ id: user.id }).from(user)
       .where(eq(user.email, adminEmail)).limit(1);
-    if (adminRows.length > 0) {
+    if (adminRows.length > 0 && adminRows[0]) {
       adminUserId = adminRows[0].id;
       logger.info(`[seed:teams] Admin user found: ${adminEmail} (${adminUserId})`);
     }
@@ -68,27 +68,35 @@ async function seedTeams() {
 
   const ownerId = adminUserId || "system";
 
-  // Create or find the default organization
-  let orgId: string;
-  const existingOrgs = await db.select({ orgId: orgMembers.orgId }).from(orgMembers)
-    .where(and(eq(orgMembers.userId, ownerId), eq(orgMembers.role, "owner"))).limit(1);
+  // Organization is optional (GitHub model).
+  // By default teams are user-owned. Set SEED_ORG=true for shared org.
+  let orgId: string | null = null;
 
-  if (existingOrgs.length > 0) {
-    orgId = existingOrgs[0].orgId;
-    logger.info(`[seed:teams] Using existing organization: ${orgId}`);
+  if (process.env.SEED_ORG === "true") {
+    const existingOrgs = await db.select({ orgId: orgMembers.orgId }).from(orgMembers)
+      .where(and(eq(orgMembers.userId, ownerId), eq(orgMembers.role, "owner"))).limit(1);
+
+    if (existingOrgs.length > 0 && existingOrgs[0]) {
+      orgId = existingOrgs[0].orgId;
+      logger.info(`[seed:teams] Using existing organization: ${orgId}`);
+    } else {
+      const rows = await db.insert(organizations).values({
+        name: "Default",
+        plan: "free",
+      }).returning();
+      const org = rows[0];
+      if (!org) throw new Error("Failed to create organization");
+      orgId = org.id;
+
+      await db.insert(orgMembers).values({
+        orgId,
+        userId: ownerId,
+        role: "owner",
+      });
+      logger.info(`[seed:teams] Created default organization: ${orgId}`);
+    }
   } else {
-    const [org] = await db.insert(organizations).values({
-      name: "Default",
-      plan: "free",
-    }).returning();
-    orgId = org.id;
-
-    await db.insert(orgMembers).values({
-      orgId,
-      userId: ownerId,
-      role: "owner",
-    });
-    logger.info(`[seed:teams] Created default organization: ${orgId}`);
+    logger.info(`[seed:teams] User-owned mode (no org). Set SEED_ORG=true for shared org.`);
   }
 
   // Load all plugins
@@ -127,7 +135,8 @@ async function seedTeams() {
 
     await db.insert(agentTeams).values({
       teamId,
-      orgId,
+      createdBy: ownerId,
+      orgId: orgId ?? undefined,
       name: displayName,
       description: manifest.description ?? "",
       pluginName: manifest.name,

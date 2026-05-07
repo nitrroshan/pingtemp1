@@ -165,13 +165,13 @@ async function createAuth() {
   });
 }
 
-let _auth: ReturnType<typeof betterAuth> | null = null;
+let _auth: Awaited<ReturnType<typeof createAuth>> | null = null;
 
 /**
  * Get the better-auth instance. Lazy-initialized.
  * In file mode, works without MongoDB. In mongo mode, requires connection first.
  */
-export async function getAuth() {
+export async function getAuth(): Promise<Awaited<ReturnType<typeof createAuth>>> {
   if (!_auth) {
     _auth = await createAuth();
   }
@@ -186,7 +186,8 @@ let _nodeHandler: ReturnType<typeof toNodeHandler> | null = null;
 
 export async function getAuthHandler() {
   if (!_nodeHandler) {
-    _nodeHandler = toNodeHandler(await getAuth());
+    const auth = await getAuth();
+    _nodeHandler = toNodeHandler(auth as any);
   }
   return _nodeHandler;
 }

@@ -177,7 +177,7 @@ export class SocketActionHandler {
       try {
         await taskStore.completeTask(taskId, output || { completedBy: "user" });
       } catch (err) {
-        logger.warn(`[SocketActionHandler] Failed to complete task ${taskId} in TaskStore:`, err);
+        logger.warn({ err }, `[SocketActionHandler] Failed to complete task ${taskId} in TaskStore`);
       }
     }
 

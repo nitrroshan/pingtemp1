@@ -101,7 +101,7 @@ export class SocketServerV2 {
       this.rateLimiter,
       this.broadcaster,
       this.joinTeamRoom.bind(this),
-      this.services,
+      this.services ?? undefined,
     );
 
     this.setupSocketIO();
@@ -114,6 +114,9 @@ export class SocketServerV2 {
     this.io.use(async (socket, next) => {
       try {
         const auth = await getAuth();
+        if (!auth) {
+          return next(new Error("Auth not initialized"));
+        }
         const headers = socket.handshake.headers;
         const session = await auth.api.getSession({
           headers: new Headers({
@@ -128,8 +131,8 @@ export class SocketServerV2 {
         socket.data.userEmail = session.user.email;
         socket.data.userName = session.user.name;
         next();
-      } catch (err) {
-        logger.warn("[SocketServerV2] Socket auth failed:", err);
+      } catch (err: unknown) {
+        logger.warn({ err }, "[SocketServerV2] Socket auth failed");
         next(new Error("Authentication failed"));
       }
     });

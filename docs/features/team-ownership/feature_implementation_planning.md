@@ -18,10 +18,12 @@ This version delivers the Phase 2 backend foundation:
 
 - PostgreSQL + Drizzle for relational data
 - `hybrid` runtime mode in the backend
-- PostgreSQL-backed agent team instances, goals, tasks, and organization membership
+- PostgreSQL-backed agent team instances, goals, tasks, and optional organization membership
+- GitHub-style ownership: direct `created_by` user on teams, optional org assignment
 - better-auth moved onto the PostgreSQL connection in hybrid mode
 - migration path from existing MongoDB and SQLite relational data
-- organization-level authorization for HTTP and Socket.IO (canAccess + canMutate on all paths)
+- Two-path authorization for HTTP and Socket.IO: user-owned (created_by check) + org-owned (org_members role check)
+- Org management API (CRUD, members, transfer)
 
 Out of scope for this version:
 
@@ -68,7 +70,7 @@ Why not use business IDs as PKs:
 
 ### Table 1: `organizations`
 
-Human teams — companies/orgs that own agent teams.
+Shared workspaces — created explicitly when users want team-level collaboration. Agent teams can optionally be assigned to an org.
 
 | Column | Type | Nullable | Default | Notes |
 |--------|------|:--------:|---------|-------|
@@ -106,15 +108,23 @@ AI agent teams — work units with agents loaded from plugins.
 |--------|------|:--------:|---------|-------|
 | `id` | uuid PK | ✗ | `gen_random_uuid()` | DB-generated |
 | `team_id` | text UNIQUE | ✗ | — | Business ID (SHA-256 hash of pluginName) — lookup key |
-| `org_id` | uuid FK → organizations | ✗ | — | CASCADE delete |
+| `org_id` | uuid FK → organizations | ✓ | `NULL` | NULL = user-owned, set = org-owned (GitHub-style) |
+| `created_by` | text | ✗ | — | Direct user ownership — always set |
 | `name` | text | ✗ | — | Display name (derived from pluginName) |
 | `description` | text | ✓ | — | |
 | `plugin_name` | text | ✗ | — | Plugin folder name |
 | `is_active` | boolean | ✓ | `true` | Soft disable |
 | `created_at` | timestamp | ✓ | `now()` | |
 
-**Indexes:** `idx_agent_teams_team_id` (unique), `idx_agent_teams_org`, `idx_agent_teams_plugin`  
+**Indexes:** `idx_agent_teams_team_id` (unique), `idx_agent_teams_org`, `idx_agent_teams_plugin`, `idx_agent_teams_created_by`  
 **Old source:** `teamregistries.teamId` + `pluginName` → merged here
+
+**Ownership model (GitHub-style):**
+- `created_by` is the direct owner (always set)
+- `org_id` is nullable: NULL = user-owned team, set = org-owned team
+- User-owned access: check `created_by === userId`
+- Org-owned access: check `org_members` for role-based access
+- Transfer: `POST /api/v2/teams/:teamId/transfer` moves team to/from org
 
 ---
 

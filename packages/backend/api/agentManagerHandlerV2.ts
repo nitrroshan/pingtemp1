@@ -115,7 +115,7 @@ export function createAgentManagerHandlerV2(services: ServiceRegistry): express.
           if (canAccess) filteredTeams.push(t);
         } catch (err) {
           // Fail-closed: skip team on auth error (don't expose on transient failures)
-          logger.warn(`[V2] Access check failed for team ${t.id}, skipping:`, err);
+          logger.warn({ err }, `[V2] Access check failed for team ${t.id}, skipping`);
         }
       }
 

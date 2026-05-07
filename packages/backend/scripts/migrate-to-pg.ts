@@ -65,24 +65,10 @@ if (!useMongoSource && !useSqliteSource) {
   process.exit(0);
 }
 
-const counts = { goals: 0, tasks: 0, teams: 0, orgs: 0, skipped: 0 };
+const counts = { goals: 0, tasks: 0, teams: 0, skipped: 0 };
 
-// Helper: insert org + owner membership, return org UUID
-async function ensureOrg(ownerId: string): Promise<string> {
-  // Check existing
-  const existing = await db.select({ orgId: orgMembers.orgId }).from(orgMembers)
-    .where(({ eq, and }) => and(eq(orgMembers.userId, ownerId), eq(orgMembers.role, "owner")))
-    .limit(1);
-  if (existing.length > 0) return existing[0].orgId;
-
-  const [org] = await db.insert(organizations).values({ name: "Personal", plan: "free" }).returning();
-  await db.insert(orgMembers).values({ orgId: org.id, userId: ownerId, role: "owner" });
-  counts.orgs++;
-  return org.id;
-}
-
-// Helper: insert agent_team, return UUID
-async function ensureTeam(teamId: string, orgId: string, pluginName: string): Promise<string> {
+// Helper: insert agent_team with direct user ownership, return UUID
+async function ensureTeam(teamId: string, ownerId: string, pluginName: string): Promise<string> {
   const { eq } = await import("drizzle-orm");
   const existing = await db.select({ id: agentTeams.id }).from(agentTeams)
     .where(eq(agentTeams.teamId, teamId)).limit(1);
@@ -90,7 +76,7 @@ async function ensureTeam(teamId: string, orgId: string, pluginName: string): Pr
 
   const [team] = await db.insert(agentTeams).values({
     teamId,
-    orgId,
+    createdBy: ownerId,
     name: pluginName.replace(/-/g, " ").replace(/\b\w/g, (c: string) => c.toUpperCase()),
     pluginName,
   }).returning();
@@ -139,8 +125,7 @@ if (useMongoSource) {
     for (const t of teamDocs) {
       const doc = t as any;
       try {
-        const orgId = await ensureOrg(doc.ownerId);
-        await ensureTeam(doc.teamId, orgId, doc.pluginName ?? "unknown");
+        await ensureTeam(doc.teamId, doc.ownerId, doc.pluginName ?? "unknown");
       } catch (e: any) { console.warn(`   ⚠️ Team ${doc.teamId}: ${e.message}`); counts.skipped++; }
     }
   }
@@ -221,8 +206,7 @@ if (useSqliteSource) {
     if (!dryRun) {
       for (const row of teamRows) {
         try {
-          const orgId = await ensureOrg(row.owner_id);
-          await ensureTeam(row.team_id, orgId, row.plugin_name ?? "unknown");
+          await ensureTeam(row.team_id, row.owner_id, row.plugin_name ?? "unknown");
         } catch (e: any) { counts.skipped++; }
       }
     }
@@ -282,7 +266,6 @@ if (useSqliteSource) {
 
 // Summary
 console.log("\n📊 Migration Summary:");
-console.log(`   Organizations: ${counts.orgs}`);
 console.log(`   Teams: ${counts.teams}`);
 console.log(`   Goals: ${counts.goals}`);
 console.log(`   Tasks: ${counts.tasks}`);

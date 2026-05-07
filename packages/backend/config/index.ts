@@ -101,29 +101,17 @@ function buildConfig(): AppConfig {
   config.port = parseInt(process.env.API_PORT || String(config.port), 10);
   config.nodeEnv = process.env.NODE_ENV || config.nodeEnv;
 
-  // PING_MODE controls the full stack: local (file-based) vs cloud (MongoDB) vs hybrid (PG + MongoDB)
-  // LOCAL_FIRST=true is a legacy alias for PING_MODE=local
-  const pingMode = process.env.PING_MODE || (process.env.LOCAL_FIRST === "true" ? "local" : undefined);
-  if (pingMode === "local" || pingMode === "cloud" || pingMode === "hybrid") {
-    config.mode = pingMode;
-  }
+  // PING_MODE is always hybrid — PostgreSQL for relational data, MongoDB for chat
+  // Legacy modes (local, cloud) removed in Phase 2 cleanup
+  config.mode = "hybrid" as any;
+  config.databaseUrl = process.env.DATABASE_URL || config.databaseUrl;
+  config.mongodbUri = process.env.MONGODB_URI || config.mongodbUri;
 
-  // In local mode, force file-based storage (ignore MONGODB_URI and DATABASE_URL)
-  if (config.mode === "local") {
-    config.mongodbUri = "";
-    config.databaseUrl = "";
-  } else if (config.mode === "hybrid") {
-    config.mongodbUri = process.env.MONGODB_URI || config.mongodbUri;
-    config.databaseUrl = process.env.DATABASE_URL || config.databaseUrl;
-    if (!config.databaseUrl) {
-      throw new Error(
-        "[Config] PING_MODE=hybrid requires DATABASE_URL. " +
-        "Set it to a PostgreSQL connection string."
-      );
-    }
-  } else {
-    config.mongodbUri = process.env.MONGODB_URI || config.mongodbUri;
-    config.databaseUrl = process.env.DATABASE_URL || config.databaseUrl;
+  if (!config.databaseUrl) {
+    throw new Error(
+      "[Config] DATABASE_URL is required. " +
+      "Set it to a PostgreSQL connection string (e.g. postgresql://ping:ping@localhost:5432/ping)."
+    );
   }
 
   config.azureOpenAi = {

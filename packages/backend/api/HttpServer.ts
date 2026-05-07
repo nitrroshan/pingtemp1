@@ -27,6 +27,7 @@ import { createChatRoutes } from "./routes/chatRoutes.js";
 import { createGithubRoutes } from "./routes/githubRoutes.js";
 import { createCollabRoutes } from "./routes/collabRoutes.js";
 import { createWorkspaceRoutes } from "./routes/workspaceRoutes.js";
+import { createOrgRoutes } from "./routes/orgRoutes.js";
 
 const logger = rootLogger.child({ module: "HttpServer" });
 
@@ -178,6 +179,7 @@ export class HttpServer {
     this.app.use("/api/v2", createGithubRoutes(services));
     this.app.use("/api", createCollabRoutes());
     this.app.use("/api/v2", createWorkspaceRoutes(services));
+    this.app.use("/api/v2", createOrgRoutes(services));
 
     // ── Registry (lazy mount) ──
     this.mountRegistryRoutes();

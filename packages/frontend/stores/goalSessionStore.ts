@@ -773,7 +773,7 @@ export const useGoalSessionStore = create<GoalSessionState>()(devtools((set, get
     const goalId = get().activeGoalId;
     agentServiceV2.rejectPlan(goalId ?? undefined, feedback);
     get().addLog('SYSTEM', feedback ? 'Plan rejected with feedback, replanning...' : 'Plan rejected, replanning...', 'warning');
-    set({ sessionState: 'planning', allTasks: [] });
+    set({ sessionState: 'planning', tasks: [] });
   },
 
   startTask: (taskId) => {

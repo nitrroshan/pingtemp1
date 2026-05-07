@@ -295,6 +295,9 @@ start_backend() {
   local env_vars="PING_MODE=${mode}"
   if [[ "$mode" == "hybrid" ]]; then
     env_vars="PING_MODE=hybrid DATABASE_URL=postgresql://ping:ping@localhost:${POSTGRES_PORT}/ping MONGODB_URI=mongodb://localhost:${MONGO_PORT}/ping"
+    # Run Drizzle migrations (idempotent — skips already-applied)
+    warn "Running PostgreSQL migrations..."
+    cd "$ROOT/packages/backend" && DATABASE_URL="postgresql://ping:ping@localhost:${POSTGRES_PORT}/ping" bun run db:migrate 2>/dev/null && info "Migrations applied"
     # Ensure teams are seeded in PostgreSQL before backend starts
     warn "Ensuring teams are seeded in PostgreSQL..."
     cd "$ROOT/packages/backend" && PING_MODE=hybrid DATABASE_URL="postgresql://ping:ping@localhost:${POSTGRES_PORT}/ping" MONGODB_URI="mongodb://localhost:${MONGO_PORT}/ping" bun run seed:admin 2>/dev/null

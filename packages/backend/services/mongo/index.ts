@@ -1,8 +1,8 @@
 /**
  * MongoDB service exports.
  *
- * MongoChatService + MongoGoalService used in cloud mode.
+ * MongoChatService — chat messages (document-shaped, append-heavy).
+ * Goal/Task/Team services removed — PostgreSQL is the only backend.
  */
 
 export { MongoChatService } from "./MongoChatService.js";
-export { MongoGoalService } from "./MongoGoalService.js";

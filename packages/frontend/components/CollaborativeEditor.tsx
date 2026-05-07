@@ -116,6 +116,7 @@ export function CollaborativeEditor({
 
   // Create provider once, destroy on unmount/docId change
   useEffect(() => {
+    let cancelled = false;
     setStatus("connecting");
 
     const p = new HocuspocusProvider({
@@ -123,9 +124,12 @@ export function CollaborativeEditor({
       name: docId,
       token: token || undefined,
       onStatus: ({ status: s }) => {
-        if (s === "connected") {
+        if (!cancelled && s === "connected") {
           setStatus("connected");
         }
+      },
+      onDisconnect: () => {
+        // Suppress "WebSocket closed before connection established" during StrictMode cleanup
       },
     });
 
@@ -134,12 +138,15 @@ export function CollaborativeEditor({
 
     // Timeout
     const timeout = setTimeout(() => {
-      setStatus((prev) =>
-        prev === "connecting" ? "error" : prev,
-      );
+      if (!cancelled) {
+        setStatus((prev) =>
+          prev === "connecting" ? "error" : prev,
+        );
+      }
     }, 8000);
 
     return () => {
+      cancelled = true;
       clearTimeout(timeout);
       p.destroy();
       providerRef.current = null;

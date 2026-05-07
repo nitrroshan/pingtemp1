@@ -26,7 +26,7 @@ export function createGithubRoutes(services?: ServiceRegistry): Router {
       }
       return null;
     } catch (err) {
-      logger.warn("[GitHubRoutes] Failed to retrieve token:", err);
+      logger.warn({ err }, "[GitHubRoutes] Failed to retrieve token");
       return null;
     }
   });

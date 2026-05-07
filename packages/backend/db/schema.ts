@@ -7,10 +7,12 @@
  *   - FKs reference UUID PKs, never business IDs
  *   - snake_case everywhere, enums for constrained values
  *
- * Two-tier model:
- *   organizations (human teams) → agent_teams (AI worker units)
- *   org_members provides role-based access control
- *   goals + tasks cascade from agent_teams
+ * Ownership model (GitHub-style):
+ *   - Agent teams have a created_by (user) for direct ownership
+ *   - org_id is OPTIONAL — NULL means user-owned, set means org-owned
+ *   - Organizations are explicit: users create them when they want shared teams
+ *   - org_members provides role-based access control for org-owned teams
+ *   - goals + tasks cascade from agent_teams
  *
  * Auth tables (users, sessions, accounts) managed by better-auth Drizzle adapter.
  * Chat messages stay in MongoDB — not in this schema.
@@ -146,9 +148,11 @@ export const agentTeams = pgTable(
   "agent_teams",
   {
     id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
+    /** Optional — NULL = user-owned, set = org-owned (GitHub model) */
     orgId: uuid("org_id")
-      .notNull()
       .references(() => organizations.id, { onDelete: "cascade" }),
+    /** The user who created/owns this team (always set) */
+    createdBy: text("created_by").notNull(),
     /** Deterministic SHA-256 hash of plugin name — used by PluginTeamService for lookups */
     teamId: text("team_id").notNull(),
     name: text("name").notNull(),
@@ -161,6 +165,7 @@ export const agentTeams = pgTable(
     uniqueIndex("idx_agent_teams_team_id").on(t.teamId),
     index("idx_agent_teams_org").on(t.orgId),
     index("idx_agent_teams_plugin").on(t.pluginName),
+    index("idx_agent_teams_created_by").on(t.createdBy),
   ],
 );
 

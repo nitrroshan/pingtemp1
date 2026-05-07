@@ -65,7 +65,9 @@ export function assembleLifecycleTools(
   // Shared state between lifecycle tools — enables blocked guard
   const agentState: AgentState = { lastStatus: "in_progress" };
 
-  // report_status
+  // report_status — writes to both agentState (for complete_task blocked guard)
+  // and task.lastReportedStatus (for dispatchTask auto-complete guard) via callback.
+  // Both mutations are synchronous and happen in the same call.
   tools.push(
     createReportStatusTool(taskId, roleKey, (data) => {
       agentState.lastStatus = data.status;
@@ -78,7 +80,7 @@ export function assembleLifecycleTools(
     createCompleteTaskTool(
       taskId,
       roleKey,
-      (data) => callbacks.onAgentComplete?.(data),
+      async (data) => { await callbacks.onAgentComplete?.(data); },
       agentState,
     ),
   );
@@ -108,7 +110,7 @@ export function assembleLifecycleTools(
         availableRoles: taskServices.teamRoles,
         taskStore: taskServices.taskStore,
         crdtTaskSync: taskServices.crdtTaskSync,
-        onBounce: (data) => callbacks.onBounce?.(data),
+        onBounce: async (data) => { await callbacks.onBounce?.(data); },
       }),
     );
   }

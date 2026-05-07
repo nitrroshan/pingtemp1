@@ -92,6 +92,7 @@ export function useDiscussion({
   const docName = `${teamId}/${goalId}/${taskId}/discussion`;
 
   useEffect(() => {
+    let cancelled = false;
     setStatus("connecting");
 
     const p = new HocuspocusProvider({
@@ -99,16 +100,33 @@ export function useDiscussion({
       name: docName,
       token: token || undefined,
       onStatus: ({ status: s }) => {
-        if (s === "connected") setStatus("connected");
+        if (!cancelled && s === "connected") setStatus("connected");
+      },
+      onDisconnect: () => {
+        // Suppress "WebSocket closed before connection established" during StrictMode cleanup
       },
     });
 
     providerRef.current = p;
     setProvider(p);
 
+    // Safe observer wrapper — catches Yjs "mismatched transaction" from stale state
+    const safeObserve = <T,>(fn: () => T): T | undefined => {
+      try { return fn(); } catch (err) {
+        if (err instanceof RangeError && String(err).includes('mismatched')) {
+          console.warn('[useDiscussion] Yjs mismatched transaction — stale state, clearing local cache');
+          return undefined;
+        }
+        throw err;
+      }
+    };
+
     // Subscribe to discussion Y.Array
     const discussion = p.document.getArray("discussion");
-    const updateBlocks = () => setBlocks(discussion.toJSON() as DiscussionBlock[]);
+    const updateBlocks = () => {
+      if (cancelled) return;
+      safeObserve(() => setBlocks(discussion.toJSON() as DiscussionBlock[]));
+    };
     discussion.observe(updateBlocks);
     p.on("synced", updateBlocks);
     updateBlocks();
@@ -116,25 +134,32 @@ export function useDiscussion({
     // Subscribe to decisions Y.Map
     const decisionsMap = p.document.getMap("decisions");
     const updateDecisions = () => {
-      const json = decisionsMap.toJSON();
-      const { _meta, ...rest } = json;
-      setDecisions(rest as Record<string, Decision>);
+      if (cancelled) return;
+      safeObserve(() => {
+        const json = decisionsMap.toJSON();
+        const { _meta, ...rest } = json;
+        setDecisions(rest as Record<string, Decision>);
+      });
     };
     decisionsMap.observe(updateDecisions);
     updateDecisions();
 
     // Subscribe to config Y.Map
     const configMap = p.document.getMap("config");
-    const updateConfig = () => setConfig(configMap.toJSON() as DiscussionConfig);
+    const updateConfig = () => {
+      if (cancelled) return;
+      safeObserve(() => setConfig(configMap.toJSON() as DiscussionConfig));
+    };
     configMap.observe(updateConfig);
     updateConfig();
 
     // Timeout
     const timeout = setTimeout(() => {
-      setStatus((prev) => (prev === "connecting" ? "error" : prev));
+      if (!cancelled) setStatus((prev) => (prev === "connecting" ? "error" : prev));
     }, 8000);
 
     return () => {
+      cancelled = true;
       clearTimeout(timeout);
       discussion.unobserve(updateBlocks);
       decisionsMap.unobserve(updateDecisions);

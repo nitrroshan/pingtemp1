@@ -16,4 +16,10 @@ export interface ITeamRegistryService {
   canMutate(userId: string, teamId: string): Promise<boolean>;
   /** Get all team IDs accessible to a user */
   getTeamsForUser(userId: string): Promise<string[]>;
+  /** Get user's role for a team (owner/admin/member/viewer or null). Org-aware: checks org membership if team is org-owned. */
+  getUserRoleForTeam(userId: string, teamId: string): Promise<string | null>;
+  /** Transfer a team to an organization */
+  transferToOrg(teamId: string, orgId: string): Promise<void>;
+  /** Remove a team from its organization (back to user-owned) */
+  removeFromOrg(teamId: string): Promise<void>;
 }

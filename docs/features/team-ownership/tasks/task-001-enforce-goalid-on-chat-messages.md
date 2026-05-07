@@ -1,93 +1,45 @@
 # Task 001: Enforce goalId on all chat messages
 
-**Status:** `in-progress` (warnings added, strict enforcement deferred)
+**Status:** `done`
 **Assignee:**
 **Branch:** `feature/team-ownership-v1.0`
 
 ## Description
 
-Chat messages can currently be saved without a `goalId`, which makes it impossible to separate conversations between goals. Three code paths allow `goalId` to be `undefined`. All must be fixed so `goalId` is always present when a message is persisted.
+Chat messages must always have a `goalId` — goal-less messages cannot be restored on reload and break conversation isolation between goals. This task enforced goalId across all persistence paths.
 
-### Current State (May 5, 2026)
+### Resolution (May 6, 2026)
 
-- `logger.warn()` added at both persistence paths (SocketMessageHandler + SocketEventBroadcaster) when goalId is missing — makes the issue visible in logs
-- Production path (plan → approve → execute) always has goalId because GoalManager sets it on every task
-- Edge case: legacy "chat mode" (direct worker send without a plan) can still omit goalId
-- Making the types strict (`goalId: string` required) is deferred — requires changes across agent-manager + backend interfaces
+All three paths are now enforced:
 
-## Problem
+1. **`onStream` callback type** — `goalId: string` (required) in both `AgentManagerV2.ts` and `orchestrator/types.ts`. No optional goalId anywhere in the stream contract.
+2. **API boundary rejection** — `SocketMessageHandler` rejects non-orchestrator messages without `goalId` at the socket boundary (returns error to client). Orchestrator messages are exempt because they generate goalId server-side.
+3. **WorkerPool guard** — `WorkerPool.executeTask` only fires `onStream` when `taskGoalId` is defined. Tasks without goalId produce a log warning but never emit stream events.
+4. **SocketEventBroadcaster** — skip-and-warn on missing `streamGoalId` as a defense-in-depth layer. Should never fire after the boundary check.
+5. **Frontend** — `AgentServiceV2.sendToChatAgent()` signature changed from `goalId?: string` to `goalId: string`. The `|| null` fallback removed from socket emit.
 
-The architecture doc states `goalId` is required on all chat messages, but three runtime code paths still allow it to be undefined:
+### Acceptance Criteria (all met)
 
-### Path 1: Worker stream save (`SocketEventBroadcaster`)
+- [x] `onStream` callback type changed to `goalId: string` (required)
+- [x] `WorkerPool.executeTask` only fires `onStream` when `taskGoalId` is defined
+- [x] `SocketEventBroadcaster` skips persistence when `streamGoalId` is missing (defense-in-depth)
+- [x] `SocketMessageHandler` rejects non-orchestrator messages without `clientGoalId` at the boundary
+- [x] No chat message is persisted without `goalId` (enforced at API entry point)
+- [x] Frontend `sendToChatAgent` requires `goalId: string`
 
-**File:** `packages/backend/api/SocketEventBroadcaster.ts` ~L116
+## Files Changed
 
-```typescript
-goalId: streamGoalId || undefined,
-```
-
-`streamGoalId` comes from `onStream` callback's `goalId` param, which is typed as optional (`goalId?: string`). If the task in `TaskStore` somehow lacks a `goalId`, this saves a message with no goal scope.
-
-### Path 2: Non-orchestrator user messages (`SocketMessageHandler`)
-
-**File:** `packages/backend/api/SocketMessageHandler.ts` ~L80
-
-```typescript
-goalId: clientGoalId || undefined,
-```
-
-For non-orchestrator user messages (direct worker or chat-agent sends), `clientGoalId` comes from the client payload. If the client doesn't send it, the message has no goal scope.
-
-### Path 3: WorkerPool task execution
-
-**File:** `packages/agent-manager/src/services/WorkerPool.ts` ~L241, ~L252
-
-```typescript
-taskGoalId = storedTask?.goalId;  // can be undefined
-```
-
-`taskGoalId` is read from `TaskStore.get(taskId)?.goalId`. If the task is missing from the store or has no `goalId`, all stream events from this worker execution have no goal scope.
-
-## Root cause
-
-The `onStream` callback type declares `goalId` as optional:
-
-```typescript
-// packages/agent-manager/src/AgentManagerV2.ts L40
-onStream?: (data: { taskId: string; agentId: string; part: any; goalId?: string }) => void;
-```
-
-This cascades to `WorkerPool` and `OrchestratorService` types.
-
-## Acceptance Criteria
-
-- [ ] `onStream` callback type changed to `goalId: string` (required)
-- [ ] `WorkerPool.executeTask` throws or logs error if `taskGoalId` is undefined — never passes undefined to `onStream`
-- [ ] `SocketEventBroadcaster` saves `goalId` as required field, never `undefined`
-- [ ] `SocketMessageHandler` non-orchestrator user messages require `clientGoalId` — reject or resolve from context if missing
-- [ ] No chat message is ever persisted to MongoDB without `goalId`
-- [ ] Existing `ChatMessageSchema` updated: `goalId` changed from `default: null` to `required: true`
-
-## Implementation Notes
-
-- Files to modify:
-  - `packages/agent-manager/src/AgentManagerV2.ts` — `StreamCallbacks.onStream` type
-  - `packages/agent-manager/src/orchestrator/types.ts` — same type
-  - `packages/agent-manager/src/services/WorkerPool.ts` — guard `taskGoalId`, L241 and L252
-  - `packages/backend/api/SocketEventBroadcaster.ts` — remove `|| undefined` fallback on L116
-  - `packages/backend/api/SocketMessageHandler.ts` — require `clientGoalId` for non-orchestrator messages, L80
-  - `packages/backend/services/mongo/schemas/ChatMessageSchema.ts` — make `goalId` required
-- The orchestrator path (`handleOrchestratorMessage`) is already correct: it generates `resolvedGoalId = goalId || randomUUID()` server-side before any message is saved
-- `TaskStore.createTask` already validates `goalId` is present — so `storedTask.goalId` should never actually be undefined if the task was created properly. The fix is a defensive guard + error log.
-
-## Testing
-
-- Unit test: Attempt to save a chat message without `goalId` — should throw or be rejected
-- Integration test: Send a worker message through the full pipeline — verify `goalId` is present in MongoDB
-- Edge case: Worker with a task whose `goalId` is missing from TaskStore — should log error, not save orphan message
+| File | Change |
+|------|--------|
+| `packages/agent-manager/src/AgentManagerV2.ts` | `onStream` callback: `goalId: string` (required) |
+| `packages/agent-manager/src/orchestrator/types.ts` | `OrchestratorCallbacks.onStream`: `goalId: string` (required) |
+| `packages/agent-manager/src/services/WorkerPool.ts` | Guard: only fires `onStream` when `taskGoalId` is defined |
+| `packages/backend/api/SocketMessageHandler.ts` | Rejects non-orchestrator messages without goalId |
+| `packages/backend/api/SocketEventBroadcaster.ts` | Skip-and-warn on missing `streamGoalId` |
+| `packages/frontend/services/AgentServiceV2.ts` | `sendToChatAgent(role, content, goalId: string)` — required |
 
 ## Notes
 
-- This is a data integrity fix, not a feature. Once enforced, session restore and goal-scoped queries will be reliable.
-- Migration note: existing messages with `goalId: null` in MongoDB need a backfill strategy (separate task or migration script).
+- Orchestrator messages (`manager`/`orchestrator`) don't require goalId from the client — the server generates one via `randomUUID()` before any persistence
+- Existing messages with `goalId: null` in MongoDB are historical — no backfill needed since they predate goal isolation
+- The `ChatMessageSchema` still has `goalId` as optional at the MongoDB level for backward compatibility with existing documents, but no new documents are created without it

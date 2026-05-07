@@ -93,7 +93,7 @@ export function createBounceTaskTool(ctx: BounceTaskContext) {
       }
 
       // Notify orchestrator (planner will see this and can reassign)
-      ctx.onBounce?.({
+      await ctx.onBounce?.({
         taskId: ctx.taskId,
         role: ctx.role,
         reason: input.reason,

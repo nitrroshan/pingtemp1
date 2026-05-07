@@ -249,16 +249,16 @@ export function toRenderedParts(
     if (p.type === "tool-call" || p.type === "tool-input") {
       const id = p.toolCallId;
       if (!toolCards.has(id)) toolOrder.push(id);
-      const card = toolCards.get(id) || { toolCallId: id, toolName: p.toolName || "unknown", status: "complete", argsText: "" };
+      const card = toolCards.get(id) || { toolCallId: id, toolName: p.toolName || "unknown", status: "complete", argsText: "", args: undefined as unknown, result: undefined as unknown };
       card.toolName = p.toolName || card.toolName;
-      card.args = p.args ?? p.input;
-      try { card.argsText = JSON.stringify(p.args ?? p.input, null, 2); } catch { card.argsText = ""; }
+      card.args = (p as any).args ?? (p as any).input;
+      try { card.argsText = JSON.stringify(card.args, null, 2); } catch { card.argsText = ""; }
       toolCards.set(id, card);
     } else if (p.type === "tool-result" || p.type === "tool-output") {
       const id = p.toolCallId;
       if (!toolCards.has(id)) toolOrder.push(id);
-      const card = toolCards.get(id) || { toolCallId: id, toolName: "unknown", status: "complete", argsText: "" };
-      card.result = p.result ?? p.output;
+      const card = toolCards.get(id) || { toolCallId: id, toolName: "unknown", status: "complete", argsText: "", args: undefined as unknown, result: undefined as unknown };
+      card.result = (p as any).result ?? (p as any).output;
       card.status = "complete";
       toolCards.set(id, card);
     }

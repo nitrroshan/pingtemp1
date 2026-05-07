@@ -75,11 +75,13 @@ export function createChatRoutes(services?: ServiceRegistry): Router {
         return;
       }
       const manager = await agentManagerRegistry.getForTeam(teamId);
-      const snapshot = manager.getChatAgentSnapshot(role);
-      if (!snapshot) {
+      const goalId = req.query.goalId as string | undefined;
+      const chatAgent = manager.getChatAgent(role, goalId);
+      if (!chatAgent) {
         res.json({ tasks: [], role, enabled: false });
         return;
       }
+      const snapshot = chatAgent.getSnapshot();
       res.json({ ...snapshot, enabled: true });
     } catch (err: any) {
       res.status(500).json({ error: safeError(err) });

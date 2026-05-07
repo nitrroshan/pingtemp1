@@ -246,7 +246,7 @@ export class AgentManagerRegistry {
                 agentLayer: "planner",
                 content: `[planner conversation snapshot: ${messages.length} messages]`,
                 contextMessages: JSON.stringify(messages),
-                timestamp: new Date(),
+                timestamp: new Date().toISOString(),
               });
             }
           : undefined;
@@ -301,7 +301,7 @@ export class AgentManagerRegistry {
         try {
           await manager.flush();
         } catch (err) {
-          logger.warn(`[Registry] Flush failed for team ${teamId}:`, err);
+          logger.warn({ err }, `[Registry] Flush failed for team ${teamId}`);
         }
       }),
     );

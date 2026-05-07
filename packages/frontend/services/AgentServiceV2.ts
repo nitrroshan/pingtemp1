@@ -517,7 +517,7 @@ export class AgentServiceV2 {
    * Send message to a persistent ChatAgent (L2) for a role.
    * Uses "chat-{role}" agentId convention — backend routes to ChatAgent.
    */
-  sendToChatAgent(role: string, content: string, goalId?: string): void {
+  sendToChatAgent(role: string, content: string, goalId: string): void {
     if (!this.isReady()) {
       logger.error("[AgentServiceV2] Cannot send: socket =", !!this.socket, "clientId =", this.clientId, "teamId =", this.teamId);
       throw new Error("Not connected or no team selected");
@@ -537,7 +537,7 @@ export class AgentServiceV2 {
       teamId,
       agentId,
       sessionId: this.sessionId,
-      goalId: goalId || null,
+      goalId,
       content,
     });
   }
@@ -557,7 +557,7 @@ export class AgentServiceV2 {
    * Reject the current plan with optional feedback for the planner
    */
   rejectPlan(goalId?: string, feedback?: string): void {
-    this.emitAction("reject-plan", { goalId, feedback } as any);
+    this.emitAction("reject-plan", { goalId, feedback });
   }
 
   /**

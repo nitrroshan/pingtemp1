@@ -1,6 +1,6 @@
 # Platform Roadmap — Phased Delivery Plan
 
-**Date:** May 4, 2026
+**Date:** May 6, 2026 (updated)
 **Purpose:** Unified plan for all major features, ordered by dependency and impact.
 
 ---
@@ -19,12 +19,13 @@
 | **Document Pane** | ✅ MVP | DocumentList, CrdtDocViewer, WorkspaceFileViewer. Auto-open on approval. `Cmd+D` shortcut. |
 | **Conversation persistence** | ✅ v1.2 | Planner + ChatAgent save/restore wired end-to-end. User-scoped session restore (B-008). |
 | **Goal isolation** | ✅ Working | Parallel goals. Goal-scoped tasks, notifications, DAG. |
-| **Database** | ⚠️ Transitional | MongoDB (cloud) + SQLite (local). Hybrid PostgreSQL + MongoDB planned. |
+| **Database** | ✅ Hybrid | PostgreSQL (Drizzle) for relational + MongoDB for chat. `PING_MODE=hybrid`. |
+| **CRDT workspace** | ✅ Goal-scoped | Each goal gets isolated CRDT namespace `{teamId}/{goalId}/*`. No cross-goal leakage. |
 | **Redis** | ❌ None | Zero deps. All state in-memory. Single-server only. |
-| **Team membership** | ❌ Owner-only | No multi-member teams. No organizations. |
+| **Team membership** | ⚠️ Basic | Organizations + org_members in PostgreSQL. User-owned + org-owned teams. No invitations yet. |
 | **Process isolation** | ❌ None | All workers in same Node.js process. |
 
-### What Was Shipped (this branch — `user/nitrroshan/fixplans`)
+### What Was Shipped (Phase 1 — `user/nitrroshan/fixplans`, merged to `dev`)
 
 **PR1-4: CRDT-First Architecture**
 - CRDT writes restored via GoalEventBus + CrdtProjectionHandler
@@ -71,8 +72,8 @@
 | Hocuspocus filesystem persistence | P1 | Must switch to S3 for production |
 | Document Pane polish | P1 | Resize, metadata header, read-only, report visibility, syntax highlighting |
 | PlanStore full removal | P2 | Now fallback-only, blocked by cross-plan ref migration |
-| Team ownership model | P1 | Organizations → agent teams hierarchy. See [team-ownership](features/team-ownership/feature_architecture.md) |
-| Hybrid database (PostgreSQL + MongoDB) | P1 | See [team-ownership](features/team-ownership/feature_architecture.md) for migration plan |
+| Goal CRDT archival | P2 | Completed goals leave blob files forever. Building blocks exist. See [team-ownership](features/team-ownership/feature_architecture.md#goal-document-archival) |
+| goalId enforcement on chat messages | ✅ Done | All 3 paths enforced. See [task-001](features/team-ownership/tasks/task-001-enforce-goalid-on-chat-messages.md) |
 
 ---
 
@@ -270,7 +271,7 @@ Server restarts
 |-------|-----------|--------|
 | **`organizations`** | id, name, plan | Root entity, FK cascade to teams |
 | **`org_members`** | orgId → orgs, userId → users, role | Join table, role enums |
-| **`agent_teams`** | id, orgId → orgs, pluginName | FK to org, cascade delete |
+| **`agent_teams`** | id, created_by, org_id (nullable) → orgs, pluginName | Direct user ownership, optional org FK |
 | **`goals`** | id, agentTeamId → teams, createdBy, approvedBy, status | FK chain, status enums |
 | **`tasks`** | id, goalId → goals, assignedRole, output (JSONB) | FK cascade, dependencies array |
 | **`agent_definitions`** | id, agentTeamId → teams, role, capabilities (JSONB) | Team-scoped, config as JSONB |
@@ -331,7 +332,7 @@ Each phase has concrete steps grounded in the actual codebase (audited May 4, 20
 ---
 
 ### Phase 1: CRDT-First + Document-Based Planning ✅ COMPLETE
-**Priority:** P0 | **Status:** Shipped on `user/nitrroshan/fixplans` branch
+**Priority:** P0 | **Status:** Shipped (merged to `dev`)
 
 **What was delivered:**
 - PR1: DB safety (unique index, async persist, GoalSchema)
@@ -352,74 +353,79 @@ Each phase has concrete steps grounded in the actual codebase (audited May 4, 20
 
 ---
 
-### Phase 2: Hybrid Database + Team Ownership ← NEXT
+### Phase 2: Hybrid Database + Team Ownership ⚠️ IN PROGRESS
 **Priority:** P1 | **Effort:** ~6.5 days | **Dependencies:** Phase 1 ✅
+**Branch:** `feature/team-ownership-v1.0`
 
 **Problem:** Relational data (teams, goals, tasks, memberships) in MongoDB/SQLite. No ownership hierarchy. No organizations.
 
-**Architecture:** [team-ownership](features/team-ownership/feature_architecture.md) — hybrid PostgreSQL + MongoDB, two-tier org→agent team model
+**Architecture:** [team-ownership](features/team-ownership/feature_architecture.md) — hybrid PostgreSQL + MongoDB, GitHub-style ownership
 
-**Two-tier model:**
+**GitHub-style ownership model:**
 ```
-organizations (human teams)
-  ├── org_members (userId, role: owner/admin/member/viewer)
-  └── agent_teams (pluginName, agents)
-       └── goals (createdBy, approvedBy)
-            └── tasks (goalId FK, cascade delete)
+users (better-auth)
+  ├── agent_teams (created_by → user, org_id NULL)   ← user-owned (default)
+  │    └── goals → tasks (cascade)
+  └── organizations (explicit creation, opt-in)
+       ├── org_members (userId, role: owner/admin/member/viewer)
+       └── agent_teams (created_by → user, org_id → org) ← org-owned
+            └── goals → tasks (cascade)
 ```
 
-| Step | What | Effort |
+**Access control:** User-owned teams check `created_by`. Org-owned teams check `org_members`. Transfer moves teams between modes.
+
+| Step | What | Status |
 |------|------|--------|
-| 2.1 | Add PostgreSQL + Drizzle ORM, schema definitions | 1 day |
-| 2.2 | PgGoalService, PgTaskService, PgTeamService implementations | 2 days |
-| 2.3 | Migration script: MongoDB → PostgreSQL | 1 day |
-| 2.4 | org_members + access control middleware | 2 days |
-| 2.5 | Cleanup: remove Mongo/SQLite for migrated collections | 0.5 day |
+| 2.1 | PostgreSQL + Drizzle ORM, schema definitions | ✅ Done |
+| 2.2 | PgGoalService, PgTaskService, PgTeamService | ✅ Done |
+| 2.3 | ServiceRegistry hybrid mode wiring | ✅ Done |
+| 2.4 | Config: `PING_MODE=hybrid` + `DATABASE_URL` | ✅ Done |
+| 2.5 | Migration script: MongoDB → PostgreSQL | ✅ Done |
+| 2.6 | Org management API + access control middleware | ⚠️ Partial |
+| 2.7 | Cleanup: deprecate Mongo/SQLite for migrated collections | ❌ Not started |
 
-**Database split:** PostgreSQL for relational (teams, goals, tasks, members). MongoDB stays for chat messages + index snapshots.
+**Database split:** PostgreSQL for relational (teams, goals, tasks, orgs, members). MongoDB stays for chat messages + index snapshots.
 
-**After Phase 2:** Organizations → agent teams → goals → tasks with FK constraints + cascading deletes. Multi-member teams with roles. Hybrid PostgreSQL + MongoDB.
+**CRDT workspace scoping:** Each goal gets an isolated CRDT namespace (`{teamId}/{goalId}/*`). No team-level shared CRDT docs. Agents coordinate only within their goal's `CollaborationSpace`. See [team-ownership architecture](features/team-ownership/feature_architecture.md#crdt-document-scoping-goal-isolation).
+
+**After Phase 2:** Agent teams with direct user ownership + optional org assignment. Hybrid PostgreSQL + MongoDB. Goal-isolated CRDT workspaces.
 
 ---
 
-### Phase 3: CRDT Team Workspace (Agent Memory)
-**Priority:** P1 | **Effort:** 2 weeks | **Dependencies:** Phase 1 ✅
+### Phase 3: CRDT Agent Memory (Deferred — YAGNI)
+**Priority:** P3 | **Effort:** 2 weeks | **Dependencies:** Phase 2
+**Status:** Deferred. Each goal already has an isolated CRDT workspace. Cross-goal memory is not needed yet.
 
 **Problem:** No personal space per agent. No team-level knowledge persistence across goals. Knowledge dies when goal ends.
 
-**Feature docs:** [crdt-scoped-memory](features/crdt-scoped-memory/feature_architecture.md), [crdt-scoped-memory impl](features/crdt-scoped-memory/feature_implementation_planning.md), [CRDT-FEATURE-LIST](features/CRDT-FEATURE-LIST.md) Feature 1-2
+**Why deferred:** The current goal-scoped CRDT workspace (`{teamId}/{goalId}/*` via `CollaborationSpace`) is sufficient for agent coordination within a goal. Cross-goal team memory (`team_memory` tool, `personal_notes` tool, goal archival → learnings extraction) adds complexity without clear user demand. When needed, the naming convention extends naturally to `{teamId}/team/*` docs.
 
-| Step | File(s) | What | Code Change |
-|------|---------|------|-------------|
-| 2.1 | `collab-service/src/rooms/` | IdentityRegistry — agents get real identities | `register(teamId, role)` → `AgentIdentity { id, teamId, role }` (~40 lines) |
-| 2.2 | `collab-service/src/rooms/` | RoomManager — rooms as first-class entities | `createRoom()`, `getRoomForDoc()`, `listRooms()` (~60 lines) |
-| 2.3 | `collab-service/src/rooms/` | AccessControl — room permissions | `resolveAccess(identity, docName)` → write/read/deny (~50 lines) |
-| 2.4 | `HocuspocusServer.ts` | onAuthenticate hook with identity + access | Verify agent token → resolve room access |
-| 2.5 | `collaboration/src/L2/memory/` | MemoryScope — remember/recall/list/delete API | Write to Y.Map in team or personal room (~80 lines) |
-| 2.6 | `collaboration/src/L2/tools/` | `team_memory` agent tool | remember/recall/list/delete actions (~60 lines) |
-| 2.7 | `collaboration/src/L2/tools/` | `personal_notes` agent tool | write/read/delete/list actions (~50 lines) |
-| 2.8 | `GoalManager.ts` / goal completion | Goal archival → extract learnings to team memory | LLM extracts decisions/lessons → writes to `{teamId}/team/decisions` |
+**Feature docs:** [crdt-scoped-memory](features/crdt-scoped-memory/feature_architecture.md), [CRDT-FEATURE-LIST](features/CRDT-FEATURE-LIST.md) Feature 1-2
 
-**After Phase 3:** Agents have personal rooms + shared team memory. Knowledge persists across goals. Room-level access control.
+**After Phase 3 (when implemented):** Agents have personal rooms + shared team memory. Knowledge persists across goals.
 
 ---
 
-### Phase 4: Parallel Goals (State + Concurrency)
-**Priority:** P1 | **Effort:** 3 weeks | **Dependencies:** Phase 2
+### Phase 4: Parallel Goals (State + Concurrency) ← NEXT
+**Priority:** P1 | **Effort:** 3 weeks | **Dependencies:** Phase 2 ⚠️
 
 **Problem:** Single goal at a time per team. All state in-memory. Goals lost on restart.
+
+**Foundation from Phase 2:** Goals and tasks already in PostgreSQL. CRDT workspace already goal-scoped (`{teamId}/{goalId}/*`). GoalManager already has `Map<goalId, GoalContext>` — needs externalization.
 
 **Feature docs:** [parallel-goals](features/parallel-goals/feature_architecture.md), [goal-isolation](features/goal-isolation/), [workspace-isolation](features/workspace-isolation/)
 
 | Step | What |
 |------|------|
-| 4.1 | Move GoalContext to PostgreSQL (Phase 2 already migrated goals/tasks) |
-| 4.2 | Remove execution mutex — allow multiple goals executing |
+| 4.1 | Move GoalContext to PostgreSQL (goals/tasks already migrated in Phase 2) |
+| 4.2 | Remove execution mutex (`FF_PARALLEL_PLANS` gate) — allow multiple goals executing |
 | 4.3 | Per-goal concurrency budget in WorkerPool |
 | 4.4 | Planner cross-goal awareness (inject active goals into prompt) |
 | 4.5 | Workspace isolation per goal (own repo clone/branch) |
 | 4.6 | Frontend goal dashboard |
 | 4.7 | Goal CRUD endpoints |
+
+**CRDT isolation already works:** Each goal gets `{teamId}/{goalId}/*` namespace via `CollaborationSpace`. Two parallel goals get fully separate CRDT doc sets. No additional CRDT work needed.
 
 **After Phase 4:** Users run 3-5 goals simultaneously. State in PostgreSQL. Survives restarts.
 
@@ -470,22 +476,22 @@ organizations (human teams)
 ```
 Phase 1: CRDT-First + Document Planning     ✅ COMPLETE
   │
-  ├── Phase 2: Hybrid DB + Team Ownership    ← NEXT (~6.5 days)
+  ├── Phase 2: Hybrid DB + Team Ownership    ⚠️ IN PROGRESS
   │     │
-  │     ├── Phase 3: CRDT Team Workspace     (parallel with 4)
-  │     │     │
-  │     │     └── Phase 6: CRDT Intelligence
-  │     │
-  │     └── Phase 4: Parallel Goals          (parallel with 3)
+  │     └── Phase 4: Parallel Goals          ← NEXT
   │           │
   │           └── Phase 5: Process Isolation
+  │
+  ├── Phase 3: CRDT Agent Memory             (deferred — YAGNI)
+  │     │
+  │     └── Phase 6: CRDT Intelligence       (deferred)
   │
   └── (Document Pane polish — see TASK-BACKLOG.md)
 ```
 
-**Critical path to production:** 1 ✅ → 2 → 4 → 5
+**Critical path to production:** 1 ✅ → 2 ⚠️ → 4 → 5
 
-**Intelligence track:** 1 ✅ → 3 → 6 (can run in parallel with critical path)
+**Deferred track:** 3 → 6 (only when cross-goal memory is needed)
 
 ---
 
@@ -494,10 +500,10 @@ Phase 1: CRDT-First + Document Planning     ✅ COMPLETE
 | Milestone | Phases | Timeline | What It Enables |
 |-----------|--------|----------|------------------|
 | **Alpha** | 1 ✅ | Done | Document-first planning. CRDT context. DocumentRef. Document Pane. |
-| **Foundation** | 2 | +1 week | PostgreSQL + MongoDB hybrid. Organizations. Team membership. |
-| **Beta** | 2 + 4 | +4 weeks | Multi-user, parallel goals, persistent state |
+| **Foundation** | 2 ⚠️ | In progress | PostgreSQL + MongoDB hybrid. Organizations. Team ownership. |
+| **Beta** | 2 + 4 | +3-4 weeks | Parallel goals, persistent state, goal-isolated CRDT workspaces |
 | **Production** | 2-5 | +10 weeks | Horizontal scaling, crash isolation |
-| **Intelligence** | 3 + 6 | Anytime | Cross-goal memory, semantic search |
+| **Deferred** | 3 + 6 | When needed | Cross-goal memory, semantic search (YAGNI for now) |
 
 ---
 
