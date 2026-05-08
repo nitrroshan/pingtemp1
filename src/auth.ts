@@ -1,115 +1,93 @@
+import express from 'express';
 import bcrypt from 'bcrypt';
 import jwt from 'jsonwebtoken';
-import { Request, Response } from 'express';
-import { pool } from './db'; // Assuming a database connection file exists
+import { Pool } from 'pg';
 
-// Constants
-const JWT_SECRET = process.env.JWT_SECRET || 'default_secret';
-const SALT_ROUNDS = 10;
+const router = express.Router();
+const pool = new Pool();
 
-// Helper function to hash passwords
-async function hashPassword(password: string): Promise<string> {
-    return bcrypt.hash(password, SALT_ROUNDS);
-}
+const JWT_SECRET = process.env.JWT_SECRET || 'your_jwt_secret';
+const JWT_EXPIRATION = '1h';
 
-// Helper function to verify passwords
-async function verifyPassword(password: string, hash: string): Promise<boolean> {
-    return bcrypt.compare(password, hash);
-}
-
-// Helper function to generate JWT
-type JwtPayload = { id: number; email: string };
-function generateToken(payload: JwtPayload): string {
-    return jwt.sign(payload, JWT_SECRET, { expiresIn: '1h' });
-}
-
-// Register endpoint
-export async function register(req: Request, res: Response): Promise<void> {
-    const { email, password, name } = req.body;
-
-    // Input validation
-    if (!email || !password || !name) {
-        res.status(400).json({ error: 'Email, password, and name are required.' });
-        return;
-    }
-
-    try {
-        // Check if user already exists
-        const existingUserQuery = 'SELECT id FROM users WHERE email = $1';
-        const existingUserResult = await pool.query(existingUserQuery, [email]);
-
-        if (existingUserResult.rowCount > 0) {
-            res.status(409).json({ error: 'User with this email already exists.' });
-            return;
-        }
-
-        // Hash password
-        const passwordHash = await hashPassword(password);
-
-        // Insert new user into the database
-        const insertUserQuery = `
-            INSERT INTO users (email, password_hash, name, created_at, updated_at)
-            VALUES ($1, $2, $3, NOW(), NOW())
-            RETURNING id;
-        `;
-        const insertUserResult = await pool.query(insertUserQuery, [email, passwordHash, name]);
-
-        const userId = insertUserResult.rows[0].id;
-
-        // Generate JWT
-        const token = generateToken({ id: userId, email });
-
-        // Return response
-        res.status(201).json({ message: 'User registered successfully.', token });
-    } catch (error) {
-        console.error('Error registering user:', error);
-        res.status(500).json({ error: 'An unexpected error occurred.' });
-    }
-}
-
-// Login endpoint
-export async function login(req: Request, res: Response): Promise<void> {
+// Register Endpoint
+router.post('/register', async (req, res) => {
     const { email, password } = req.body;
 
-    // Input validation
     if (!email || !password) {
-        res.status(400).json({ error: 'Email and password are required.' });
-        return;
+        return res.status(400).json({ message: 'Email and password are required.' });
     }
 
     try {
-        // Check if user exists
-        const userQuery = 'SELECT id, password_hash FROM users WHERE email = $1';
-        const userResult = await pool.query(userQuery, [email]);
+        const hashedPassword = await bcrypt.hash(password, 10);
+        const client = await pool.connect();
 
-        if (userResult.rowCount === 0) {
-            res.status(401).json({ error: 'Invalid email or password.' });
-            return;
-        }
+        const result = await client.query(
+            'INSERT INTO users (email, password) VALUES ($1, $2) RETURNING id, email',
+            [email, hashedPassword]
+        );
 
-        const { id, password_hash: passwordHash } = userResult.rows[0];
+        client.release();
 
-        // Verify password
-        const isPasswordValid = await verifyPassword(password, passwordHash);
-        if (!isPasswordValid) {
-            res.status(401).json({ error: 'Invalid email or password.' });
-            return;
-        }
-
-        // Generate JWT
-        const token = generateToken({ id, email });
-
-        // Return response
-        res.status(200).json({ message: 'Login successful.', token });
+        return res.status(201).json(result.rows[0]);
     } catch (error) {
-        console.error('Error logging in user:', error);
-        res.status(500).json({ error: 'An unexpected error occurred.' });
-    }
-}
+        if (error.code === '23505') { // Unique constraint violation
+            return res.status(409).json({ message: 'Email already exists.' });
+        }
 
-// Logout endpoint (stateless JWT example)
-export async function logout(_: Request, res: Response): Promise<void> {
-    // In stateless JWT, logout is handled by the client by removing the token
-    // Optionally, implement token blacklisting if required
-    res.status(200).json({ message: 'Logout successful.' });
-}
+        console.error('Error during registration:', error);
+        return res.status(500).json({ message: 'Internal server error.' });
+    }
+});
+
+// Login Endpoint
+router.post('/login', async (req, res) => {
+    const { email, password } = req.body;
+
+    if (!email || !password) {
+        return res.status(400).json({ message: 'Email and password are required.' });
+    }
+
+    try {
+        const client = await pool.connect();
+        const result = await client.query('SELECT id, email, password FROM users WHERE email = $1', [email]);
+        client.release();
+
+        if (result.rows.length === 0) {
+            return res.status(401).json({ message: 'Invalid credentials.' });
+        }
+
+        const user = result.rows[0];
+        const isPasswordValid = await bcrypt.compare(password, user.password);
+
+        if (!isPasswordValid) {
+            return res.status(401).json({ message: 'Invalid credentials.' });
+        }
+
+        const token = jwt.sign({ userId: user.id }, JWT_SECRET, { expiresIn: JWT_EXPIRATION });
+        return res.status(200).json({ token });
+    } catch (error) {
+        console.error('Error during login:', error);
+        return res.status(500).json({ message: 'Internal server error.' });
+    }
+});
+
+// Refresh Token Endpoint
+router.post('/refresh-token', (req, res) => {
+    const { token } = req.body;
+
+    if (!token) {
+        return res.status(400).json({ message: 'Token is required.' });
+    }
+
+    try {
+        const payload = jwt.verify(token, JWT_SECRET);
+        const newToken = jwt.sign({ userId: payload.userId }, JWT_SECRET, { expiresIn: JWT_EXPIRATION });
+
+        return res.status(200).json({ token: newToken });
+    } catch (error) {
+        console.error('Error during token refresh:', error);
+        return res.status(401).json({ message: 'Invalid token.' });
+    }
+});
+
+export default router;
