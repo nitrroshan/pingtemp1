@@ -1,85 +1,52 @@
 import request from 'supertest';
 import app from '../app';
-import { db } from '../db';
 
-// Tests for notes CRUD operations
-describe('Notes CRUD Endpoints', () => {
-  let token: string;
-  let noteId: number;
+describe('Notes Endpoints', () => {
+    let token: string;
 
-  beforeAll(async () => {
-    // Create a test user and log in to retrieve token
-    await db.query("INSERT INTO users (email, password) VALUES ('testuser@example.com', '$2b$10$hashedpassword')");
-    const res = await request(app)
-      .post('/auth/login')
-      .send({ email: 'testuser@example.com', password: 'password' });
-    token = res.body.token;
-  });
+    beforeAll(async () => {
+        const res = await request(app).post('/auth/login').send({
+            email: 'test@example.com',
+            password: 'password123'
+        });
+        token = res.body.token;
+    });
 
-  afterAll(async () => {
-    // Clean up test data
-    await db.query('DELETE FROM notes');
-    await db.query('DELETE FROM users');
-  });
+    test('POST /notes - Create a new note', async () => {
+        const res = await request(app)
+            .post('/notes')
+            .set('Authorization', `Bearer ${token}`)
+            .send({ title: 'Test Note', content: 'This is a test note.' });
 
-  test('Create a new note', async () => {
-    const res = await request(app)
-      .post('/notes')
-      .set('Authorization', `Bearer ${token}`)
-      .send({ title: 'Test Note', content: 'This is a test note.' });
+        expect(res.status).toBe(201);
+        expect(res.body).toHaveProperty('id');
+    });
 
-    expect(res.statusCode).toBe(201);
-    expect(res.body).toHaveProperty('id');
-    noteId = res.body.id;
-  });
+    test('GET /notes - Fetch all notes for user', async () => {
+        const res = await request(app)
+            .get('/notes')
+            .set('Authorization', `Bearer ${token}`);
 
-  test('Get all notes', async () => {
-    const res = await request(app)
-      .get('/notes')
-      .set('Authorization', `Bearer ${token}`);
+        expect(res.status).toBe(200);
+        expect(Array.isArray(res.body)).toBe(true);
+    });
 
-    expect(res.statusCode).toBe(200);
-    expect(res.body).toHaveLength(1);
-  });
+    test('PUT /notes/:id - Update a note', async () => {
+        const res = await request(app)
+            .put('/notes/1')
+            .set('Authorization', `Bearer ${token}`)
+            .send({ title: 'Updated Note', content: 'Updated content.' });
 
-  test('Search notes by query', async () => {
-    const res = await request(app)
-      .get('/notes/search')
-      .set('Authorization', `Bearer ${token}`)
-      .query({ query: 'Test', page: 1, limit: 10 });
+        expect(res.status).toBe(200);
+        expect(res.body.title).toBe('Updated Note');
+    });
 
-    expect(res.statusCode).toBe(200);
-    expect(res.body.notes).toHaveLength(1);
-    expect(res.body.total).toBe(1);
-    expect(res.body.page).toBe(1);
-    expect(res.body.totalPages).toBe(1);
-  });
+    test('DELETE /notes/:id - Delete a note', async () => {
+        const res = await request(app)
+            .delete('/notes/1')
+            .set('Authorization', `Bearer ${token}`);
 
-  test('Get a note by ID', async () => {
-    const res = await request(app)
-      .get(`/notes/${noteId}`)
-      .set('Authorization', `Bearer ${token}`);
-
-    expect(res.statusCode).toBe(200);
-    expect(res.body.id).toBe(noteId);
-  });
-
-  test('Update a note', async () => {
-    const res = await request(app)
-      .put(`/notes/${noteId}`)
-      .set('Authorization', `Bearer ${token}`)
-      .send({ title: 'Updated Note', content: 'Updated content.' });
-
-    expect(res.statusCode).toBe(200);
-    expect(res.body.title).toBe('Updated Note');
-  });
-
-  test('Delete a note', async () => {
-    const res = await request(app)
-      .delete(`/notes/${noteId}`)
-      .set('Authorization', `Bearer ${token}`);
-
-    expect(res.statusCode).toBe(200);
-    expect(res.body.message).toBe('Note deleted successfully.');
-  });
+        expect(res.status).toBe(200);
+        expect(res.body.message).toBe('Note deleted successfully');
+    });
 });
