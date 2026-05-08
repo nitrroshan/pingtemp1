@@ -13,6 +13,8 @@ import type { TaskStore } from "../orchestrator/TaskStore.js";
 import type { TaskUpdate } from "../types/TaskUpdate.js";
 import { AiSdkAgent } from "../agent/internal/AiSdkAgent.js";
 import type { AgentDefinition, AgentEvent, InternalConfig } from "../agent/types.js";
+import type { AgentRuntimeFactory } from "../agent/runtime/AgentRuntimeFactory.js";
+import type { StreamingAgentContext, StreamingHooks, AgentRunResult } from "../agent/streaming/types.js";
 import { rootLogger } from "../logging.js";
 
 const log = rootLogger.child({ module: "ChatAgent" });
@@ -30,6 +32,27 @@ export interface ChatAgentConfig {
   onNotifyPlanner?: (message: string) => void;
   /** Callback to load prior conversation for context restoration on restart */
   loadConversation?: () => Promise<Array<{ role: "user" | "assistant" | "system"; content: string }>>;
+  /**
+   * Required: the team's `AgentRuntimeFactory`. ChatAgent uses the SAME
+   * factory as workers and planner so its stream events flow through
+   * the production visitor stack (StreamPublisher → goal-room broadcast,
+   * persistence via SocketEventBroadcaster).
+   */
+  agentRuntimeFactory: AgentRuntimeFactory;
+}
+
+/**
+ * Optional caller-side observation hooks for `ChatAgent.handleUserMessage`.
+ * Stream emission + persistence are owned by the visitor stack — the
+ * consumer only sees `onFinish` / `onError` for caller-side logging or
+ * error handling. (May 9 2026 PM-6 — stream + persist are NOT consumer
+ * concerns; the visitor publishes to the goal room.)
+ */
+export interface ChatAgentStreamConsumer {
+  /** Awaited: full assistant turn finished. */
+  onFinish?: (result: AgentRunResult) => void | Promise<void>;
+  /** Awaited: turn failed. */
+  onError?: (error: Error) => void | Promise<void>;
 }
 
 /**
@@ -61,6 +84,8 @@ export class ChatAgent {
   /** Accumulated role context from completed tasks — used for R1 chat grounding */
   private roleContext = "";
 
+  private agentRuntimeFactory: AgentRuntimeFactory;
+
   constructor(config: ChatAgentConfig) {
     this.role = config.role.toLowerCase();
     this.teamId = config.teamId;
@@ -69,6 +94,7 @@ export class ChatAgent {
     this.onDispatchTask = config.onDispatchTask;
     this.onNotifyPlanner = config.onNotifyPlanner;
     this.loadConversation = config.loadConversation;
+    this.agentRuntimeFactory = config.agentRuntimeFactory;
 
     // Subscribe to role-filtered task events
     this.taskStore.onRoleEvent(this.role, "ready", (task) => this.onMyTaskReady(task));
@@ -185,6 +211,16 @@ export class ChatAgent {
   private buildTools(): any[] {
     const taskStore = this.taskStore;
     const role = this.role;
+    const goalId = this.goalId;
+
+    // Goal-scoped role tasks: when goalId is set, restrict to this goal to
+    // prevent cross-goal task leakage in parallel-goal mode.
+    const listRoleTasks = () => {
+      if (goalId) {
+        return taskStore.getByGoal(goalId).filter(t => t.assigned_role === role);
+      }
+      return taskStore.getByRole(role);
+    };
 
     return [
       {
@@ -192,7 +228,7 @@ export class ChatAgent {
         description: "Get all tasks assigned to your role with their current status",
         schema: z.object({}),
         invoke: async () => {
-          const tasks = taskStore.getByRole(role);
+          const tasks = listRoleTasks();
           if (tasks.length === 0) return "No tasks assigned to this role.";
           return tasks.map(t =>
             `[${t.status}] ${t.id}: ${t.description?.slice(0, 100) || t.id}`
@@ -209,6 +245,9 @@ export class ChatAgent {
           const task = taskStore.get(args.taskId);
           if (!task) return `Task '${args.taskId}' not found.`;
           if (task.assigned_role !== role) return `Task '${args.taskId}' is not assigned to your role.`;
+          if (goalId && task.goalId !== goalId) {
+            return `Task '${args.taskId}' is not part of your current goal.`;
+          }
           return JSON.stringify({
             id: task.id,
             status: task.status,
@@ -224,7 +263,7 @@ export class ChatAgent {
         description: "Get a summary of your role's overall progress",
         schema: z.object({}),
         invoke: async () => {
-          const tasks = taskStore.getByRole(role);
+          const tasks = listRoleTasks();
           const byStatus: Record<string, number> = {};
           for (const t of tasks) {
             byStatus[t.status] = (byStatus[t.status] || 0) + 1;
@@ -244,15 +283,59 @@ export class ChatAgent {
   // ─── Chat (Step 2) ─────────────────────────────────────────────────
 
   /**
-   * Handle a user message — returns an async generator of AgentEvents.
-   * Same streaming interface as Planner/Worker (unified agent model).
+   * Handle a user message — drives `agent.runWithHooks(...)` through the
+   * team's `AgentRuntimeFactory` (same single visitor stack as workers
+   * and planner). The visitor publishes to the goal room (broadcast, not
+   * unicast — fixes the May 8 2026 ChatAgent unicast bug) and persists
+   * the assistant message via the SocketEventBroadcaster path. The
+   * `chat-{role}` `agentId` lets the broadcaster set
+   * `agentLayer="chat-agent"` for this run.
+   *
+   * The optional `consumer` is for caller-side observation only
+   * (`onFinish` / `onError`). Stream parts are NOT delivered to the
+   * consumer — they go to the goal room via the visitor.
+   *
+   * (May 9 2026 PM-6 — review fix #2 redo: the per-call consumer +
+   * factory bypass that PM-5 introduced was the WRONG fix. The
+   * architecture says one visitor stack for ALL agents — the per-socket
+   * emit IS the bug being fixed, not a feature to preserve.)
    */
-  async *handleUserMessage(content: string): AsyncGenerator<AgentEvent> {
+  async handleUserMessage(content: string, consumer: ChatAgentStreamConsumer = {}): Promise<AgentRunResult> {
     const agent = await this.ensureAgent();
     // Refresh system prompt with latest roleContext + thread activity
     agent.definition.systemPrompt = this.buildSystemPrompt();
-    const input = { message: content, threadId: `chat-${this.role}` };
-    yield* agent.execute(input);
+
+    if (!this.agentRuntimeFactory) {
+      throw new Error(
+        `ChatAgent.handleUserMessage: agentRuntimeFactory is required (role=${this.role}, goalId=${this.goalId})`,
+      );
+    }
+
+    const ctx: StreamingAgentContext = {
+      teamId: this.teamId,
+      goalId: this.goalId ?? "",
+      // Prefix with `chat-` so SocketEventBroadcaster can route persistence
+      // to `agentLayer="chat-agent"` (the broadcaster reads agentId).
+      agentId: `chat-${this.role}`,
+      threadId: `chat-${this.role}`,
+    };
+
+    // The factory's default visitor stack is the SOLE owner of stream
+    // emission + persistence. The per-call consumer (`onFinish`/`onError`)
+    // is for caller-side observation only (e.g. error logging in
+    // SocketMessageHandler) — it does NOT emit to the socket and does
+    // NOT persist.
+    const consumerObserver: StreamingHooks = {
+      onFinish: async (result) => { await consumer.onFinish?.(result); },
+      onError: async (err) => { await consumer.onError?.(err); },
+    };
+
+    this.agentRuntimeFactory.wire({
+      agent,
+      context: ctx,
+      extraStreamingHooks: [consumerObserver],
+    });
+    return await agent.runWithHooks({ message: content, context: ctx });
   }
 
   // ─── Task Queries (Step 1) ─────────────────────────────────────────

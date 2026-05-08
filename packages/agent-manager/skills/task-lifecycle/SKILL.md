@@ -231,3 +231,47 @@ If at any point you can't continue:
 - **Need work from another role** → `request_task({ relationship: "blocks-me" })` then `bounce_task()`
 - **Wrong role for this task** → `bounce_task({ reason: "...", suggestedRole: "..." })`
 - **Partial progress possible** → Do what you can, then `complete_task` with honest summary of what's done and what's missing
+
+---
+
+## ⚠ CRITICAL — These rules supersede everything above
+
+### `report_status` is NOT completion
+
+`report_status({ status: "in_progress", progress: 60, summary: "..." })` does NOT end the task. It only tells the system you're still working.
+
+After every `report_status("in_progress")` you MUST keep working AND eventually call `complete_task` (or `bounce_task` if you can't finish).
+
+**Wrong:**
+```
+report_status({ status: "in_progress", summary: "Implemented endpoints, added tests for create/read/get" })
+[stop here — task fails!]
+```
+
+**Right:**
+```
+report_status({ status: "in_progress", summary: "Implemented endpoints, added tests for create/read/get" })
+[continue: write the report doc]
+collab({ action: "write-block", docName: "{your-task-id}/report", value: "## What Was Done ..." })
+complete_task({ summary: "...", deliverables: [...], producedDocs: [{ uri: "crdt:{your-task-id}/report", name: "completion-report" }] })
+```
+
+### Stating intent ≠ doing the work
+
+If you write *"I will now implement X"* or *"Next: define endpoints"* in your assistant text and stop without making more tool calls, the task fails. **The system can only see your tool calls, not your prose intent.** The user pays for a re-run when this happens.
+
+### One last tool call rule
+
+Your last tool call in any task turn MUST be one of:
+- `complete_task(...)` — work is done
+- `bounce_task(...)` — you cannot complete and someone else should take over
+- `request_task(... relationship: "blocks-me" ...)` followed by `bounce_task(...)` — you need someone else to do something first
+
+If your last tool call is `report_status`, `workspace_commit`, `workspace_publish`, `collab`, or any other non-terminal tool — and then you stop — the task fails.
+
+**Before you generate any text after a tool call, ask yourself:**
+1. Have I done the actual work?
+2. Have I written the report doc?
+3. Did I just call `complete_task` or `bounce_task`?
+
+If the answer to #3 is "no" and the answer to #1 is "yes (or as much as I can)" → call `complete_task` NOW. Don't write a summary paragraph first. The tool result IS your summary to the user.

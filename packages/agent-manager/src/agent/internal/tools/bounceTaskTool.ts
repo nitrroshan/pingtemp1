@@ -11,6 +11,7 @@
 import { z } from "zod";
 import { tool } from "@langchain/core/tools";
 import { PromptLoader } from "../../../orchestrator/PromptLoader.js";
+import type { AgentContext, TaskLifecycleHooks } from "../../streaming/types.js";
 
 export const BounceTaskSchema = z.object({
   reason: z.string().describe("Why you can't complete this task"),
@@ -30,7 +31,7 @@ export interface BounceTaskContext {
   taskStore: any;
   /** CrdtTaskSync for CRDT persistence */
   crdtTaskSync: any;
-  /** Callback for notifying orchestrator */
+  /** Callback for notifying orchestrator. @deprecated unused in hooks-only mode (May 9 2026 — patch #5). */
   onBounce?: (data: {
     taskId: string;
     role: string;
@@ -38,6 +39,19 @@ export interface BounceTaskContext {
     suggestedRole?: string;
     timestamp: number;
   }) => void;
+  /**
+   * TaskLifecycleHooks — the orchestrator owns the failure mutation +
+   * CRDT sync via `lifecycleHooks.onBounce`. Required: the tool returns
+   * an error string to the LLM if missing.
+   */
+  lifecycleHooks?: TaskLifecycleHooks;
+  /** AgentContext required when `lifecycleHooks` is set. */
+  lifecycleCtx?: AgentContext;
+  /**
+   * Called when the bounce is accepted by orchestration. Wired to
+   * `agent.markTerminated('bounce')` so the streamText loop exits.
+   */
+  onTerminated?: (kind: "complete" | "bounce") => void;
 }
 
 /**
@@ -71,36 +85,19 @@ export function createBounceTaskTool(ctx: BounceTaskContext) {
         return `Warning: Task is in state "${task.status}", not "in_progress". Cannot bounce.`;
       }
 
-      // Update task status back to failed (allows retry as ready)
-      try {
-        await ctx.taskStore.updateStatus(ctx.taskId, "failed");
-      } catch {
-        // May already be in a terminal state
+      // Hooks-only path (May 9 2026 — patch #5: legacy local mutation
+      // branch deleted). The orchestrator owns the failure mutation +
+      // CRDT sync via `lifecycleHooks.onBounce`. The tool only validates
+      // inputs and the in-progress precondition.
+      if (!ctx.lifecycleHooks?.onBounce || !ctx.lifecycleCtx) {
+        return `Error: bounce_task is missing lifecycleHooks/lifecycleCtx — programmer error.`;
       }
-
-      // Sync to CRDT
-      if (ctx.crdtTaskSync) {
-        try {
-          await ctx.crdtTaskSync.syncStatus(ctx.taskId, "failed", {
-            bounced: true,
-            bouncedBy: ctx.role,
-            reason: input.reason,
-            suggestedRole: input.suggestedRole,
-          });
-        } catch {
-          // Non-fatal
-        }
-      }
-
-      // Notify orchestrator (planner will see this and can reassign)
-      await ctx.onBounce?.({
-        taskId: ctx.taskId,
-        role: ctx.role,
-        reason: input.reason,
-        suggestedRole: input.suggestedRole,
-        timestamp: Date.now(),
-      });
-
+      await ctx.lifecycleHooks.onBounce(
+        { reason: input.reason, suggestedRole: input.suggestedRole },
+        ctx.lifecycleCtx,
+      );
+      // Accepted — mark agent terminated so the streamText loop exits.
+      ctx.onTerminated?.("bounce");
       const suggestion = input.suggestedRole
         ? ` Suggested reassignment to: ${input.suggestedRole}.`
         : "";

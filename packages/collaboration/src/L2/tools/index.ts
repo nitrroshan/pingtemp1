@@ -452,9 +452,42 @@ export function createCollabTool(
             return JSON.stringify(map.toJSON(), null, 2);
           }
           const val = map.get(key);
-          return val != null
-            ? JSON.stringify(val, null, 2)
-            : `Key "${key}" not found in "${docName}".`;
+          if (val != null) return JSON.stringify(val, null, 2);
+
+          // Key not found in the Y.Map. Many agent slips end up here because
+          // the writer stored the value as a separate doc at "{docName}/{key}"
+          // (via `write-block`) — different storage area entirely.
+          // Auto-detect that case and return the rich-text content from
+          // the sibling doc, so a misuse turns into a recoverable hit instead
+          // of a dead-end error message.
+          const subDocName = `${docName}/${key}`;
+          if (await space.hasDoc(subDocName)) {
+            const subDoc = await space.openDoc(subDocName);
+            const fragment = subDoc.getXmlFragment("content");
+            const text = await xmlFragmentToMarkdown(fragment);
+            if (text.trim()) {
+              return (
+                `[Auto-resolved: "${key}" was not a Y.Map key in "${docName}", ` +
+                `but a sibling doc "${subDocName}" exists with rich text content. ` +
+                `Use \`collab({ action: "read-block", docName: "${subDocName}" })\` next time.]\n\n` +
+                text
+              );
+            }
+            // Doc exists but is empty rich text — also try Y.Map fallback.
+            const subMap = getDocMap(subDoc);
+            const subData = subMap.toJSON();
+            if (Object.keys(subData).length > 0) {
+              return (
+                `[Auto-resolved from sibling doc "${subDocName}".]\n\n` +
+                JSON.stringify(subData, null, 2)
+              );
+            }
+          }
+          return (
+            `Key "${key}" not found in "${docName}". ` +
+            `If you wrote to "${docName}/${key}" with write-block, read it via ` +
+            `\`collab({ action: "read-block", docName: "${docName}/${key}" })\`.`
+          );
         }
         // Full doc read
         const data = extractDocData(doc);

@@ -11,6 +11,7 @@
 import { z } from "zod";
 import { tool } from "@langchain/core/tools";
 import { PromptLoader } from "../../../orchestrator/PromptLoader.js";
+import type { AgentContext, TaskLifecycleHooks } from "../../streaming/types.js";
 
 /**
  * Schema for task completion
@@ -35,16 +36,36 @@ export type CompleteTaskInput = z.infer<typeof CompleteTaskSchema>;
 /**
  * Create a complete_task tool that signals task completion
  *
+ * Phase 1.6 of the agent-stream-bus refactor:
+ *   When `lifecycleHooks` is provided, the tool ALSO calls
+ *   `lifecycleHooks.onComplete(payload, lifecycleCtx)` after the typed
+ *   callback. If the hook returns `{ accepted: false, reason }`, the tool
+ *   surfaces the reason back to the LLM as an actionable error and the task
+ *   is NOT marked complete from the agent's perspective.
+ *
+ * Phase 1.6 fix (May 8 2026): added `onTerminated` callback. Called ONLY
+ * when completion is genuinely accepted (orchestration succeeded). The
+ * agent runtime uses this to flip its `terminationState` so the streamText
+ * `stopWhen` exits cleanly. When the protocol is rejected (e.g. missing
+ * report doc) `onTerminated` is NOT called — the agent stays in the loop
+ * and reads the error to self-correct.
+ *
  * @param taskId - The task ID this tool is bound to
  * @param role - The agent role
- * @param onComplete - Callback invoked on task completion
+ * @param onComplete - Legacy typed callback invoked on task completion
  * @param agentState - Shared state with report_status for blocked guard
+ * @param lifecycleHooks - Optional TaskLifecycleHooks (Phase 1.6)
+ * @param lifecycleCtx - AgentContext required when lifecycleHooks is set
+ * @param onTerminated - Called when completion is accepted by orchestration
  */
 export function createCompleteTaskTool(
   taskId: string,
   role: string,
   onComplete?: (data: { taskId: string; role: string; summary: string; deliverables: string[]; nextSteps: string[]; producedDocs?: Array<{ uri: string; name: string; description?: string }>; decisions?: Array<{ decision: string; rationale?: string }>; timestamp: number }) => void,
   agentState?: { lastStatus: string },
+  lifecycleHooks?: TaskLifecycleHooks,
+  lifecycleCtx?: AgentContext,
+  onTerminated?: (kind: "complete" | "bounce") => void,
 ) {
   return tool(
     async (input: CompleteTaskInput) => {
@@ -83,6 +104,29 @@ Your report doc is the full handoff to downstream agents. Write it now, then cal
         decisions: input.decisions,
         timestamp: Date.now(),
       });
+
+      // Fan-out to TaskLifecycleHooks (Phase 1.6).
+      if (lifecycleHooks?.onComplete && lifecycleCtx) {
+        const ack = await lifecycleHooks.onComplete(
+          {
+            summary: input.summary,
+            deliverables: input.deliverables,
+            nextSteps: input.nextSteps,
+            producedDocs: input.producedDocs,
+            decisions: input.decisions,
+            timestamp: Date.now(),
+          },
+          lifecycleCtx,
+        );
+        if (ack && ack.accepted === false) {
+          // Rejected. Do NOT terminate — let the LLM read the reason and
+          // call again with the missing pieces.
+          return `ERROR: Orchestrator rejected complete_task: ${ack.reason ?? "no reason given"}`;
+        }
+      }
+
+      // Accepted. Mark agent terminated so the streamText loop exits.
+      onTerminated?.("complete");
 
       // Return confirmation to the agent
       return `Task marked complete. Summary: ${input.summary}`;

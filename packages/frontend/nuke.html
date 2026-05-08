@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Ping — Nuke Browser State</title>
+  <style>
+    html, body {
+      margin: 0;
+      padding: 0;
+      background: #0d0d0d;
+      color: #ddd;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .panel {
+      max-width: 540px;
+      padding: 32px;
+      border: 1px solid #2a2a2a;
+      border-radius: 8px;
+      background: #161616;
+    }
+    h1 {
+      margin: 0 0 12px;
+      font-size: 22px;
+      color: #fff;
+    }
+    p { line-height: 1.6; }
+    pre {
+      background: #0a0a0a;
+      border: 1px solid #2a2a2a;
+      padding: 12px;
+      border-radius: 4px;
+      overflow-x: auto;
+      font-size: 12px;
+      max-height: 240px;
+    }
+    .ok { color: #4ade80; }
+    .err { color: #f87171; }
+    .dim { color: #888; }
+    button {
+      margin-top: 16px;
+      padding: 10px 20px;
+      background: #2563eb;
+      color: white;
+      border: none;
+      border-radius: 4px;
+      font-size: 14px;
+      cursor: pointer;
+    }
+    button:hover { background: #1d4ed8; }
+    code { color: #93c5fd; }
+  </style>
+</head>
+<body>
+  <div class="panel">
+    <h1 id="title">Wiping browser state…</h1>
+    <p class="dim">Clearing localStorage, sessionStorage, IndexedDB and cookies for this origin.</p>
+    <pre id="log"></pre>
+    <button id="goto" style="display:none" onclick="location.href='/'">Open fresh app →</button>
+  </div>
+  <script>
+    const logEl = document.getElementById('log');
+    const titleEl = document.getElementById('title');
+    const gotoEl = document.getElementById('goto');
+    const lines = [];
+    function log(line, cls) {
+      lines.push(cls ? `<span class="${cls}">${line}</span>` : line);
+      logEl.innerHTML = lines.join('\n');
+    }
+
+    async function nuke() {
+      try {
+        const lsKeys = Object.keys(localStorage);
+        log(`localStorage: ${lsKeys.length} keys`, 'dim');
+        lsKeys.forEach(k => log('  • ' + k, 'dim'));
+        localStorage.clear();
+        log('  ✓ localStorage cleared', 'ok');
+      } catch (e) {
+        log('  ✗ localStorage: ' + e.message, 'err');
+      }
+
+      try {
+        const ssKeys = Object.keys(sessionStorage);
+        log(`sessionStorage: ${ssKeys.length} keys`, 'dim');
+        ssKeys.forEach(k => log('  • ' + k, 'dim'));
+        sessionStorage.clear();
+        log('  ✓ sessionStorage cleared', 'ok');
+      } catch (e) {
+        log('  ✗ sessionStorage: ' + e.message, 'err');
+      }
+
+      // Cookies (this origin only — http-only cookies require the server to clear them)
+      try {
+        const cookies = document.cookie.split(';').filter(c => c.trim());
+        log(`cookies: ${cookies.length} non-httponly`, 'dim');
+        cookies.forEach(c => {
+          const name = c.trim().split('=')[0];
+          document.cookie = `${name}=;expires=Thu, 01 Jan 1970 00:00:00 GMT;path=/`;
+          document.cookie = `${name}=;expires=Thu, 01 Jan 1970 00:00:00 GMT;path=/;domain=${location.hostname}`;
+        });
+        log('  ✓ cookies cleared (http-only need server logout)', 'ok');
+      } catch (e) {
+        log('  ✗ cookies: ' + e.message, 'err');
+      }
+
+      // IndexedDB
+      try {
+        if (indexedDB.databases) {
+          const dbs = await indexedDB.databases();
+          log(`IndexedDB: ${dbs.length} databases`, 'dim');
+          for (const db of dbs) {
+            if (!db.name) continue;
+            await new Promise((res, rej) => {
+              const req = indexedDB.deleteDatabase(db.name);
+              req.onsuccess = () => res();
+              req.onerror = () => rej(req.error);
+              req.onblocked = () => res();
+            });
+            log('  ✓ ' + db.name, 'ok');
+          }
+        }
+      } catch (e) {
+        log('  ✗ IndexedDB: ' + e.message, 'err');
+      }
+
+      // Cache API (service workers)
+      try {
+        if (caches) {
+          const keys = await caches.keys();
+          log(`Cache API: ${keys.length} caches`, 'dim');
+          for (const k of keys) {
+            await caches.delete(k);
+            log('  ✓ ' + k, 'ok');
+          }
+        }
+      } catch (e) {
+        log('  ✗ Cache API: ' + e.message, 'err');
+      }
+
+      titleEl.textContent = '✅ Browser state nuked';
+      titleEl.style.color = '#4ade80';
+      gotoEl.style.display = 'inline-block';
+
+      // Auto-redirect after 2s if user does nothing
+      setTimeout(() => location.href = '/', 2000);
+    }
+
+    nuke();
+  </script>
+</body>
+</html>

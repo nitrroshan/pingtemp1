@@ -15,6 +15,7 @@
 import { z } from "zod";
 import { tool } from "@langchain/core/tools";
 import { PromptLoader } from "../../../orchestrator/PromptLoader.js";
+import type { AgentContext, TaskLifecycleHooks } from "../../streaming/types.js";
 
 const MAX_AGENT_TASKS_PER_PLAN = 5;
 const MAX_AGENT_PRIORITY = 2;
@@ -69,6 +70,17 @@ export interface RequestTaskContext {
     relationship: string;
     parentTaskId: string;
   }) => void;
+  /**
+   * Phase 1.6: Optional TaskLifecycleHooks. When set, the tool also calls
+   * `lifecycleHooks.onSubtaskRequest(payload, lifecycleCtx)` after the typed
+   * `onTaskCreated` callback fires. If the hook returns
+   * `{ accepted: false, reason }`, the tool surfaces the reason as an error
+   * and the previously-created task is left in place (cleanup is the
+   * orchestrator's responsibility, since the task is already persisted).
+   */
+  lifecycleHooks?: TaskLifecycleHooks;
+  /** AgentContext required when `lifecycleHooks` is set. */
+  lifecycleCtx?: AgentContext;
 }
 
 /** Track agent-created task counts per agent role */
@@ -107,115 +119,56 @@ export function createRequestTaskTool(ctx: RequestTaskContext) {
       }
 
       // ── Create Task ────────────────────────────────────────────────
+      // The orchestrator owns ALL state mutations via the hook
+      // (`lifecycleHooks.onSubtaskRequest` →
+      // `GoalManagerOrchestratorAdapter.createSubtask` → `buildSubtask`).
+      // The tool only validates inputs and surfaces the orchestrator's
+      // ack to the LLM. Single-owner invariant (May 9 2026 — debt patch
+      // #5: legacy local-mutations branch deleted along with WorkerPool's
+      // legacy runTask path in patch #2).
 
-      // R6-5 FIX: Use sequential task IDs, prefixed with goal slug to avoid cross-goal collision
-      const goalPrefix = ctx.goalId ? ctx.goalId.slice(0, 8) : '';
-      const existingNums = goalTasks.map((t: any) => {
-            const m = t.id.match(/task-(\d+)$/);
-            return m ? parseInt(m[1], 10) : 0;
-          });
-      const newTaskId = goalPrefix ? `${goalPrefix}-task-${Math.max(0, ...existingNums) + 1}` : `task-${Math.max(0, ...existingNums) + 1}`;
-
-      // Build the Task object
-      const dependencies: string[] = [];
-      if (input.relationship === "subtask" || input.relationship === "blocks-me") {
-        // The new task doesn't depend on the current task for subtask/blocks-me
-        // (the dependency goes the other direction for blocks-me)
+      if (!ctx.lifecycleHooks?.onSubtaskRequest || !ctx.lifecycleCtx) {
+        return `Error: request_task is missing lifecycleHooks/lifecycleCtx — programmer error.`;
       }
-
-      const newTask = {
-        id: newTaskId,
-        description: `${input.title}: ${input.description}`,
-        assigned_role: targetLower,
-        status: "pending" as const,
-        priority: input.priority,
-        goalId: ctx.goalId || undefined,
-        planId: ctx.planId || undefined,
-        prerequisites: new Map<string, boolean>(
-          dependencies.map((d) => [d, false] as [string, boolean]),
-        ),
-        // Fix #10: Set dependants for blocks-me (reverse link)
-        dependants: input.relationship === "blocks-me" ? [ctx.taskId] : [] as string[],
-        context: {
+      const ack = await ctx.lifecycleHooks.onSubtaskRequest(
+        {
+          description: `${input.title}: ${input.description}`,
           title: input.title,
-          planId: ctx.planId,
-          createdBy: `agent:${ctx.role}`,
+          assignedRole: targetLower,
+          dependsOn: input.relationship === "blocks-me" ? [ctx.taskId] : undefined,
+          priority: input.priority,
           type: input.type,
-          parentTask: input.relationship === "subtask" ? ctx.taskId : null,
-          expectedOutput: "",
-          reason: input.context?.reason || `Created by ${ctx.role} during task ${ctx.taskId}`,
-          files: input.context?.files || [],
-          artifacts: input.context?.artifacts || [],
-          relatedTasks: [ctx.taskId],
+          relationship: input.relationship,
+          parentTaskId: ctx.taskId,
+          goalId: ctx.goalId ?? undefined,
+          planId: ctx.planId ?? undefined,
+          context: input.context
+            ? {
+                reason: input.context.reason,
+                files: input.context.files,
+                artifacts: input.context.artifacts,
+              }
+            : undefined,
         },
-      };
-
-      // Register in TaskStore
-      try {
-        await ctx.taskStore.create(newTask);
-      } catch (err: any) {
-        return `Error creating task: ${err.message}`;
+        ctx.lifecycleCtx,
+      );
+      if (ack && ack.accepted === false) {
+        return `ERROR: Orchestrator rejected new task: ${ack.reason ?? "no reason given"}`;
       }
+      const finalId = ack?.newTaskId ?? "unknown";
 
-      // Handle "blocks-me" relationship — add new task as prerequisite to current task
-      if (input.relationship === "blocks-me") {
-        const currentTask = ctx.taskStore.get(ctx.taskId);
-        if (currentTask) {
-          // Validate cycle BEFORE persisting
-          const testPrereqs = new Map(currentTask.prerequisites);
-          testPrereqs.set(newTaskId, false);
-          const cycleErr = ctx.dagResolver.validateDependencies?.(
-            ctx.taskId,
-            Array.from(testPrereqs.keys()),
-          );
-          if (cycleErr) {
-            // Rollback — mark discarded through TaskStore write-through, then remove from Map
-            try {
-              await ctx.taskStore.updateStatus(newTaskId, "discarded");
-            } catch {
-              // Best effort — task may remain as pending in DB, cleaned up on next replan
-            }
-            ctx.taskStore.remove(newTaskId);
-            return `Error: Adding this dependency would create a cycle: ${cycleErr}`;
-          }
-          // Add prerequisite via TaskStore (persists to MongoDB)
-          await ctx.taskStore.addPrerequisite(ctx.taskId, newTaskId);
-        }
-      }
-
-      // TaskStore write-through already persisted the new task to MongoDB.
-      // Event bus already handles CRDT projection.
-      // No duplicate persistence calls needed.
-
-      // Rebuild DAG
-      try {
-        ctx.dagResolver.rebuild(ctx.taskStore);
-      } catch (err: any) {
-        return `Error rebuilding DAG: ${err.message}`;
-      }
-
-      // CRDT projection handled by event bus — no direct calls needed
-
-      // Update runtime cache (secondary — TaskStore.getAll() is primary for guard rail check)
+      // Update runtime cache (secondary — TaskStore.getAll() is primary
+      // for the per-agent guard rail check at the top of this tool).
       const cacheKey = `${ctx.role}:${ctx.planId}`;
       agentTaskCounts.set(cacheKey, currentCount + 1);
 
-      // Notify orchestrator
-      ctx.onTaskCreated?.({
-        taskId: newTaskId,
-        createdBy: `agent:${ctx.role}`,
-        targetRole: targetLower,
-        relationship: input.relationship,
-        parentTaskId: ctx.taskId,
-      });
-
       const relationshipNote = input.relationship === "blocks-me"
-        ? ` Your current task (${ctx.taskId}) is now blocked until ${newTaskId} completes.`
+        ? ` Your current task (${ctx.taskId}) is now blocked until ${finalId} completes.`
         : input.relationship === "subtask"
         ? ` Created as subtask of ${ctx.taskId}.`
         : "";
 
-      return `Task created: ${newTaskId} — "${input.title}" assigned to ${targetLower} (priority ${input.priority}).${relationshipNote}`;
+      return `Task created: ${finalId} — "${input.title}" assigned to ${targetLower} (priority ${input.priority}).${relationshipNote}`;
     },
     {
       name: "request_task",

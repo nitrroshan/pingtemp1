@@ -13,12 +13,24 @@ import {
   createRequestTaskTool,
   createBounceTaskTool,
 } from "../../agent/internal/tools/index.js";
+import type { AgentContext, TaskLifecycleHooks } from "../../agent/streaming/types.js";
 
-// ── Public types ────────────────────────────────────────────────────────────
+// ── Public types ───────────────────────────────────────────────
 
 export interface LifecycleToolCallbacks {
   onStatusUpdate?: (data: { taskId: string; role: string; status: string; summary: string; progress?: number; timestamp: number }) => void;
-  onAgentComplete?: (data: { taskId: string; role: string; summary: string; deliverables: string[]; nextSteps: string[]; timestamp: number }) => void;
+  onAgentComplete?: (data: {
+    taskId: string;
+    role: string;
+    summary: string;
+    deliverables: string[];
+    nextSteps: string[];
+    /** Phase 1.6 fix: type now matches what completeTaskTool actually passes. */
+    producedDocs?: Array<{ uri: string; name: string; description?: string }>;
+    /** Phase 1.6 fix: type now matches what completeTaskTool actually passes. */
+    decisions?: Array<{ decision: string; rationale?: string }>;
+    timestamp: number;
+  }) => void;
   onTaskCreated?: (data: { taskId: string; createdBy: string; targetRole: string; relationship: string; parentTaskId: string }) => void;
   onBounce?: (data: { taskId: string; role: string; reason: string; suggestedRole?: string; timestamp: number }) => void;
 }
@@ -37,8 +49,32 @@ export interface TaskServices {
 export interface AssembleLifecycleToolsParams {
   taskId: string;
   roleKey: string;
+  /**
+   * @deprecated Hooks is now the only orchestration path (May 9 2026 —
+   * debt patch #5). The typed callbacks are no longer forwarded; the
+   * field is retained on the type only for back-compat with callers
+   * still passing it.
+   */
   callbacks: LifecycleToolCallbacks;
   taskServices: TaskServices;
+  /**
+   * TaskLifecycleHooks — REQUIRED. Hooks is the only orchestration mode
+   * (debt patch #5). Each lifecycle tool delegates to the corresponding
+   * hook (`onComplete` / `onBounce` / `onSubtaskRequest` / `onStatusChange`).
+   */
+  lifecycleHooks?: TaskLifecycleHooks;
+  lifecycleCtx?: AgentContext;
+  /**
+   * Terminal-acceptance callback. Called AFTER the orchestration hook has
+   * accepted (`complete_task` returns `accepted: true`, or `bounce_task`
+   * returns without throwing). Wire this to `agent.markTerminated(kind)`
+   * so the streamText loop's stop condition exits cleanly.
+   *
+   * NOT called if the hook throws or returns `accepted: false` (e.g.
+   * `complete_task` rejected for missing report doc) — leaving the agent
+   * free to read the error and self-correct in the next step.
+   */
+  onTerminated?: (kind: "complete" | "bounce") => void;
 }
 
 /**
@@ -59,33 +95,62 @@ export interface LifecycleToolsResult {
 export function assembleLifecycleTools(
   params: AssembleLifecycleToolsParams,
 ): LifecycleToolsResult {
-  const { taskId, roleKey, callbacks, taskServices } = params;
+  const {
+    taskId,
+    roleKey,
+    taskServices,
+    lifecycleHooks,
+    lifecycleCtx,
+    onTerminated,
+  } = params;
+
+  // Hooks is now the only orchestration mode (May 9 2026 — debt patch #5).
+  // The legacy callback fan-out path was deleted along with the legacy
+  // WorkerPool.runTask branch (patch #2). Tools now have exactly one
+  // orchestration owner: the hook. The typed `callbacks` parameter is
+  // kept on the type for back-compat with mixed callers but is no longer
+  // forwarded.
+  if (!lifecycleHooks || !lifecycleCtx) {
+    throw new Error(
+      `assembleLifecycleTools: lifecycleHooks and lifecycleCtx are required (hooks is now the only mode)`,
+    );
+  }
+
   const tools: any[] = [];
 
-  // Shared state between lifecycle tools — enables blocked guard
+  // Shared state between lifecycle tools — enables blocked guard.
   const agentState: AgentState = { lastStatus: "in_progress" };
 
-  // report_status — writes to both agentState (for complete_task blocked guard)
-  // and task.lastReportedStatus (for dispatchTask auto-complete guard) via callback.
-  // Both mutations are synchronous and happen in the same call.
+  // ---- report_status ----
+  // The hook is the only orchestration listener. We still update agentState
+  // locally so the complete_task blocked-guard works.
   tools.push(
-    createReportStatusTool(taskId, roleKey, (data) => {
-      agentState.lastStatus = data.status;
-      callbacks.onStatusUpdate?.(data);
-    }),
+    createReportStatusTool(
+      taskId,
+      roleKey,
+      (data) => { agentState.lastStatus = data.status; },
+      lifecycleHooks,
+      lifecycleCtx,
+    ),
   );
 
-  // complete_task (uses agentState for blocked guard)
+  // ---- complete_task ----
+  // The tool itself calls `onTerminated('complete')` AFTER the hook
+  // returns `accepted: true`. No typed callback — the hook IS the
+  // orchestration call.
   tools.push(
     createCompleteTaskTool(
       taskId,
       roleKey,
-      async (data) => { await callbacks.onAgentComplete?.(data); },
+      undefined,
       agentState,
+      lifecycleHooks,
+      lifecycleCtx,
+      onTerminated,
     ),
   );
 
-  // request_task + bounce_task (only when task services are available)
+  // ---- request_task + bounce_task (only when task services are available) ----
   if (taskServices.taskStore && taskServices.dagResolver) {
     tools.push(
       createRequestTaskTool({
@@ -99,10 +164,13 @@ export function assembleLifecycleTools(
         crdtTaskSync: taskServices.crdtTaskSync,
         taskPersistence: taskServices.taskPersistence || null,
         teamId: taskServices.teamId,
-        onTaskCreated: (data) => callbacks.onTaskCreated?.(data),
+        lifecycleHooks,
+        lifecycleCtx,
       }),
     );
 
+    // The tool itself calls `onTerminated('bounce')` after the hook
+    // returns without throwing.
     tools.push(
       createBounceTaskTool({
         taskId,
@@ -110,7 +178,9 @@ export function assembleLifecycleTools(
         availableRoles: taskServices.teamRoles,
         taskStore: taskServices.taskStore,
         crdtTaskSync: taskServices.crdtTaskSync,
-        onBounce: async (data) => { await callbacks.onBounce?.(data); },
+        lifecycleHooks,
+        lifecycleCtx,
+        onTerminated,
       }),
     );
   }

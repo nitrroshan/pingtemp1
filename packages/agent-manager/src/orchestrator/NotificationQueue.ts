@@ -8,7 +8,7 @@
  * Usage:
  *   OrchestratorService pushes messages on task complete/fail/stall.
  *   Queue debounces (100ms default), fires onFlush with batched message.
- *   AgentManager wires onFlush → plannerAgent.execute({ message }).
+ *   AgentManager wires onFlush → goalManager.executePlannerTurn(goalId, message).
  *
  * Urgent messages (worker died, plan blocked) flush immediately.
  */

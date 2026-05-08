@@ -51,6 +51,22 @@ export class CollabDocument {
     return this.ydoc.getText(name);
   }
 
+  /**
+   * Run an atomic transaction on the underlying Y.Doc. Multiple shared-type
+   * mutations inside the callback are batched into a single update event,
+   * which both improves performance and ensures observers see them as one
+   * logical change.
+   *
+   * Wraps `Y.Doc.transact` so callers don't need to reach through `.ydoc`.
+   *
+   * @param fn  Callback that performs the mutations.
+   * @param origin  Optional origin tag attached to the transaction (useful
+   *                for filtering observer events when broadcasting updates).
+   */
+  transact<T>(fn: () => T, origin?: any): T {
+    return this.ydoc.transact(fn, origin);
+  }
+
   // ─────────────────────────────────────────────────────────────────────────
   // Serialization
   // ─────────────────────────────────────────────────────────────────────────

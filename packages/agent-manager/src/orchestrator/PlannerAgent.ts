@@ -9,16 +9,33 @@
  * - team-config.xml: runtime injection with {{teamId}}, {{teamRoles}}
  *
  * XML tags make it clear to developers what's static vs injected.
+ *
+ * Stream wiring (May 9 2026 PM-4 — Patch #1):
+ *   The underlying `IAgent` is invoked by `GoalManager.executePlannerTurn`
+ *   via `factory.wire()` + `agent.runWithHooks()`. PlannerAgent itself no
+ *   longer exposes an `execute()` method — callers go through
+ *   `getAgent().runWithHooks(...)` directly. The `agentRuntimeFactory` +
+ *   `goalId` config fields are kept for back-compat with test fixtures.
  */
 
 import { AgentFactory } from "../agent/AgentFactory.js";
 import type { IAgent } from "../agent/types.js";
+import type { AgentRuntimeFactory } from "../agent/runtime/AgentRuntimeFactory.js";
 import { PromptLoader } from "./PromptLoader.js";
 
 export interface PlannerAgentConfig {
   agentFactory: AgentFactory;
   teamRoles: string[];
   teamId: string;
+  /**
+   * @deprecated PlannerAgent no longer wires the factory; the wiring
+   * happens per-turn in `GoalManager.executePlannerTurn`. Field is kept
+   * on the type for back-compat with test fixtures and the AgentManagerV2
+   * wiring point.
+   */
+  agentRuntimeFactory?: AgentRuntimeFactory;
+  /** @deprecated Same as `agentRuntimeFactory` above. */
+  goalId?: string;
 }
 
 export class PlannerAgent {
@@ -63,6 +80,11 @@ export class PlannerAgent {
     }
 
     await this.agent.initialize();
+
+    // Note: stream wiring happens per-turn in `GoalManager.executePlannerTurn`
+    // via `factory.wire()` with a per-turn visitor that calls
+    // `onPlannerStream`. The pre-wiring seam that used to live here was
+    // removed May 9 2026 PM-4 along with `PlannerAgent.execute()`.
   }
 
   /**
@@ -81,14 +103,6 @@ export class PlannerAgent {
   getAgent(): IAgent {
     if (!this.agent) throw new Error("PlannerAgent not initialized");
     return this.agent;
-  }
-
-  /**
-   * Execute the planner with a message.
-   */
-  execute(params: { message: string; threadId: string }) {
-    if (!this.agent) throw new Error("PlannerAgent not initialized");
-    return this.agent.execute(params);
   }
 
   /**

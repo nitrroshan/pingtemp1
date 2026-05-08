@@ -364,6 +364,14 @@ export interface IAgent {
   failTask(taskId: string, error: string): void;
 
   // Execution
+  /**
+   * @deprecated Internal: production callers should use
+   * `IStreamingAgent.runWithHooks(input)` (May 9 2026 PM-4 — Patch #1).
+   * Kept on the interface only because `AiSdkAgent.runWithHooks` drives
+   * its own iteration through this generator internally; once `runWithHooks`
+   * is rewritten to drive `streamText` callbacks natively, this method
+   * will be removed from the interface entirely.
+   */
   execute(input: AgentInput): AsyncGenerator<AgentEvent>;
 
   // State

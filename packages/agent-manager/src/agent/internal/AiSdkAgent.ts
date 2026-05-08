@@ -8,7 +8,7 @@
  *   2. Structured Output Mode — generateText() with Output.object() schema
  */
 
-import { streamText, generateText, Output, tool, stepCountIs, isLoopFinished, hasToolCall } from "ai";
+import { streamText, generateText, Output, tool, stepCountIs, isLoopFinished } from "ai";
 import type { ModelMessage, StopCondition, ToolSet } from "ai";
 import { z } from "zod";
 import { rootLogger } from "../../logging.js";
@@ -22,6 +22,16 @@ import type {
   InternalConfig,
   ToolConfig,
 } from "../types.js";
+import type {
+  AgentRunInput,
+  AgentRunResult,
+  AgentStepInfo,
+  IStreamingAgent,
+  StreamingAgentContext,
+  StreamingHooks,
+  StreamPart,
+  TaskLifecycleHooks,
+} from "../streaming/types.js";
 import {
   AgentRoleSchema,
   AgentConfigSchema,
@@ -40,11 +50,40 @@ const SCHEMAS: Record<string, z.ZodSchema> = {
   AgentDefinitionListSchema,
 };
 
-export class AiSdkAgent extends BaseAgent {
+export class AiSdkAgent extends BaseAgent implements IStreamingAgent {
   private model: any = null;
   private loadedTools: Record<string, any> = {};
   private isStructuredMode = false;
   private outputSchema: z.ZodSchema | null = null;
+
+  // ---------------------------------------------------------------------------
+  // IStreamingAgent surface (Phase 1.5 of agent-stream-bus refactor)
+  //
+  // Set by `AgentFactory.create()` (Phase 1.7) before `runWithHooks()` is
+  // called. Optional so the legacy `execute()` / `run()` paths remain usable
+  // without configuring hooks.
+  // ---------------------------------------------------------------------------
+
+  /** Streaming observation hooks. Read-only fan-out of stream parts. */
+  onStreaming?: StreamingHooks;
+
+  /** Task lifecycle hooks. Lifecycle tools call into these (Phase 1.6). */
+  onTaskLifecycle?: TaskLifecycleHooks;
+
+  /**
+   * Per-execution termination state. Flipped by `markTerminated()` when
+   * a lifecycle tool's call has been ACCEPTED by orchestration (the hook
+   * returned `accepted: true`, OR the typed callback completed without
+   * throwing).
+   *
+   * The `streamText` stop condition reads this — so the loop only stops
+   * when termination is genuinely accepted, NOT just because the tool was
+   * invoked. This lets the agent self-correct when `complete_task` is
+   * rejected (e.g. for a missing report doc): the rejection error string
+   * is fed back to the LLM, which writes the report doc and calls again,
+   * and only THEN the loop ends.
+   */
+  private terminationState: { kind: "complete" | "bounce" | null } = { kind: null };
 
   /** Conversation messages for this thread (full AI SDK format to preserve tool calls/results) */
   private messages: Array<ModelMessage> = [];
@@ -331,9 +370,18 @@ export class AiSdkAgent extends BaseAgent {
       stopConditions.push(isLoopFinished());
       stopConditions.push(stepCountIs(200)); // absolute safety cap
     }
-    // Terminal tools: stop the loop immediately after these are called
-    stopConditions.push(hasToolCall("complete_task"));
-    stopConditions.push(hasToolCall("bounce_task"));
+    // Terminal acceptance: stop ONLY when a lifecycle tool's call was
+    // accepted by orchestration (markTerminated was called). This replaces
+    // the older hasToolCall("complete_task") / hasToolCall("bounce_task")
+    // stops which fired the moment the tool was INVOKED, even if the tool
+    // returned an error. With this, a rejected complete_task lets the LLM
+    // see the error string, follow the recovery instructions, and call
+    // again — the loop only exits on a genuinely accepted call.
+    //
+    // Reset the state at the start of each turn so a previous run's
+    // termination doesn't short-circuit this one.
+    this.terminationState.kind = null;
+    stopConditions.push(() => this.terminationState.kind !== null);
 
     const agentId = this.id;
 
@@ -587,6 +635,221 @@ export class AiSdkAgent extends BaseAgent {
     }
 
     return response;
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // IStreamingAgent — runWithHooks
+  //
+  // Phase 1.5 of the agent-stream-bus refactor. Drives the existing
+  // `execute()` generator and translates AgentEvents into hook calls so the
+  // visitor-based pipeline gets the same data the legacy callbacks see.
+  //
+  // Strangler approach: the existing `execute()` generator path is
+  // UNCHANGED. WorkerPool, OrchestratorService, and AgentManager continue
+  // to consume it. Phase 1.7/1.8 will switch callers to `runWithHooks()`,
+  // and Phase 1.11 will retire the generator path.
+  //
+  // Back-pressure contract (matches StreamingHooks docstring):
+  //   - `onStart`, `onChunk`, `onStepFinish` are FIRE-AND-FORGET. We invoke
+  //     them but do NOT await — a slow visitor must not stall token flow.
+  //     `safeHookAsync()` schedules the call and isolates errors.
+  //   - `onFinish` and `onError` ARE AWAITED so persistence/cleanup
+  //     completes before `runWithHooks()` returns or throws.
+  //
+  // Structured-mode agents (builders) are explicitly rejected here — they
+  // use `generateText()` not `streamText()` and have no chunk stream. Use
+  // the legacy `run(prompt)` helper for builders until Phase 1.7/1.8.
+  // ─────────────────────────────────────────────────────────────────────────
+
+  /**
+   * Mark this agent's current run as terminated. Called by the lifecycle
+   * tools (or their orchestration hooks) when `complete_task` or
+   * `bounce_task` has been ACCEPTED — i.e. the orchestrator has confirmed
+   * the call should end the loop.
+   *
+   * The streamText `stopWhen` reads `terminationState` so the loop only
+   * exits on accepted termination. A rejected `complete_task` (e.g.
+   * missing report doc) does NOT call this, letting the LLM see the
+   * rejection error and self-correct in the next step.
+   */
+  markTerminated(kind: "complete" | "bounce"): void {
+    this.terminationState.kind = kind;
+  }
+
+  /**
+   * Read the current termination state. Useful for tests / diagnostics.
+   * `null` means the agent has not yet accepted a terminal call this run.
+   */
+  getTerminationState(): "complete" | "bounce" | null {
+    return this.terminationState.kind;
+  }
+
+  async runWithHooks(input: AgentRunInput): Promise<AgentRunResult> {
+    if (this.isStructuredMode) {
+      throw new Error(
+        `AiSdkAgent ${this.id}: runWithHooks() is not supported in structured-output mode. ` +
+        `Use run(prompt) for builders. (Phase 1.5 strangler limitation.)`,
+      );
+    }
+
+    const ctx = input.context;
+    const hooks = this.onStreaming;
+
+    // Per-step accumulation for synthesising onStepFinish from chunk events.
+    let stepIndex = 0;
+    let stepText = "";
+    const stepToolCalls: AgentStepInfo["toolCalls"] = [];
+    const stepToolResults: AgentStepInfo["toolResults"] = [];
+
+    // Final-result accumulators.
+    let fullText = "";
+    let doneOutput: unknown;
+    const allToolCalls: NonNullable<AgentRunResult["toolCalls"]> = [];
+
+    // Hooks are invoked directly. The `AgentRuntimeFactory.composeStreamingHooks`
+    // composer is the SOLE isolation layer (May 9 2026 — debt patch #8): it
+    // wraps each visitor in its own try/catch and attaches `.catch()` to any
+    // promise-like return from fire-and-forget hooks. Composed hooks return
+    // void synchronously for `onStart`/`onChunk`/`onStepFinish` and resolve
+    // cleanly for `onFinish`/`onError` even when individual visitors throw.
+    //
+    // Callers wiring custom (non-composed) hooks are responsible for their
+    // own error handling — see the StreamingHooks contract docstring.
+
+    // FIRE-AND-FORGET — schedule but don't block on onStart.
+    hooks?.onStart?.(ctx);
+
+    let runError: Error | null = null;
+    let finishReason: string | undefined;
+
+    try {
+      for await (const event of this.execute({
+        message: input.message,
+        threadId: ctx.threadId ?? ctx.taskId ?? `${this.id}-${Date.now()}`,
+        taskId: ctx.taskId,
+      })) {
+        if (event.type === "stream_part") {
+          const part = event.part as StreamPart;
+
+          // Update accumulators that feed onStepFinish + onFinish.
+          this.accumulatePartForStep(
+            part,
+            (delta) => {
+              stepText += delta;
+              fullText += delta;
+            },
+            stepToolCalls!,
+            stepToolResults!,
+            allToolCalls,
+          );
+
+          // FIRE-AND-FORGET — token flow must not block on visitors.
+          hooks?.onChunk?.(part, ctx);
+
+          if (part.type === "finish-step") {
+            const usage = (part as any).usage as AgentStepInfo["usage"];
+            const step: AgentStepInfo = {
+              stepIndex,
+              finishReason: (part as any).finishReason,
+              text: stepText || undefined,
+              toolCalls: stepToolCalls!.length ? [...stepToolCalls!] : undefined,
+              toolResults: stepToolResults!.length ? [...stepToolResults!] : undefined,
+              usage,
+            };
+            // FIRE-AND-FORGET.
+            hooks?.onStepFinish?.(step, ctx);
+            stepIndex += 1;
+            stepText = "";
+            stepToolCalls!.length = 0;
+            stepToolResults!.length = 0;
+          }
+
+          if (part.type === "finish") {
+            finishReason = (part as any).finishReason;
+          }
+        } else if (event.type === "done") {
+          // Generator's terminal event carries the full output payload (e.g.
+          // `{ response: fullText }` for tool mode). We capture it so callers
+          // get the same shape they'd get from the legacy run() helper.
+          if (event.output !== undefined) {
+            doneOutput = event.output;
+            // Guard against generators that omit text deltas but still
+            // produce a `done.output.response` string.
+            if (!fullText && typeof (event.output as any)?.response === "string") {
+              fullText = (event.output as any).response;
+            }
+          }
+        } else if (event.type === "message" && !fullText) {
+          // Some generator paths only yield a final `message` (no deltas).
+          if (typeof event.content === "string") {
+            fullText = event.content;
+          }
+        } else if (event.type === "error") {
+          runError = new Error(event.error);
+        }
+      }
+    } catch (err) {
+      runError = err instanceof Error ? err : new Error(String(err));
+    }
+
+    if (runError) {
+      // AWAITED — cleanup must complete before throwing. Composed onError
+      // resolves cleanly even when individual visitors reject.
+      await hooks?.onError?.(runError, ctx);
+      throw runError;
+    }
+
+    const result: AgentRunResult = {
+      text: fullText,
+      finishReason,
+      responseMessages: this.messages.slice(-1), // best-effort; agent already pushed
+      toolCalls: allToolCalls.length ? allToolCalls : undefined,
+      output: doneOutput,
+    };
+
+    // AWAITED — persistence must complete before returning.
+    await hooks?.onFinish?.(result, ctx);
+
+    return result;
+  }
+
+  /** Update step accumulators based on a single stream part. */
+  private accumulatePartForStep(
+    part: StreamPart,
+    appendText: (delta: string) => void,
+    stepToolCalls: NonNullable<AgentStepInfo["toolCalls"]>,
+    stepToolResults: NonNullable<AgentStepInfo["toolResults"]>,
+    allToolCalls: NonNullable<AgentRunResult["toolCalls"]>,
+  ): void {
+    switch (part.type) {
+      case "text-delta": {
+        const delta = (part as any).delta as string | undefined;
+        if (delta) appendText(delta);
+        break;
+      }
+      case "tool-input-available": {
+        const toolCallId = (part as any).toolCallId as string;
+        const toolName = (part as any).toolName as string;
+        const args = (part as any).input;
+        stepToolCalls.push({ toolCallId, toolName, args });
+        allToolCalls.push({ toolCallId, toolName, args });
+        break;
+      }
+      case "tool-output-available": {
+        const toolCallId = (part as any).toolCallId as string;
+        const toolName = (part as any).toolName as string | undefined;
+        const result = (part as any).output;
+        stepToolResults.push({ toolCallId, toolName, result });
+        // Attach the result onto the matching tool call in allToolCalls.
+        const target = allToolCalls.find((c) => c.toolCallId === toolCallId);
+        if (target) target.result = result;
+        break;
+      }
+      default:
+        // Other parts (start, step boundaries, reasoning, finish) don't
+        // contribute to the per-step accumulators.
+        break;
+    }
   }
 
   getTools(): string[] {

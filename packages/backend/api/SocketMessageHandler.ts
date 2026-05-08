@@ -25,7 +25,6 @@ import {
   type MessagePayload,
   type StateResponse,
   type TokenBucketLimiter,
-  toRenderedParts,
   buildStateResponse,
   buildPlan,
   buildPlanFromPending,
@@ -102,7 +101,15 @@ export class SocketMessageHandler {
         const role = agentId.replace("chat-", "");
         await this.handleChatAgentMessage(socket, manager, teamId, role, sessionId, content, clientGoalId ?? undefined);
       } else {
-        await this.handleWorkerMessage(socket, manager, agentId, taskId, content);
+        // Worker direct-chat path was deleted May 9 2026 along with
+        // AgentManagerV2.startTask/continueTask. The frontend should
+        // route worker messages through the chat-agent layer
+        // (`agentId` prefixed with `chat-`).
+        emitError(socket, {
+          error: `Worker direct-chat is not supported. Send to 'chat-${agentId}' instead.`,
+          sessionId,
+          taskId,
+        });
       }
     } catch (error: any) {
       logger.error("[SocketMessageHandler] Message error:", error);
@@ -246,68 +253,14 @@ export class SocketMessageHandler {
     logger.info(`[SocketMessageHandler] ChatAgent message for role '${role}' goalId=${resolvedGoalId}`);
 
     try {
-      const agentId = `chat-${role}`;
-      const stream = manager.chatAgentMessage(role, content, resolvedGoalId);
-
-      const acc = { text: "", parts: [] as Array<{ type: string; [key: string]: any }> };
-
-      for await (const event of stream) {
-        if (event.type === "stream_part") {
-          socket.emit("stream", {
-            teamId,
-            agentId,
-            sessionId: sessionId || "default",
-            part: event.part,
-            goalId: resolvedGoalId,
-          });
-
-          switch (event.part?.type) {
-            case "text-delta":
-              if (event.part.delta) acc.text += event.part.delta;
-              break;
-            case "tool-call":
-              acc.parts.push({ type: "tool-call", toolCallId: event.part.toolCallId, toolName: event.part.toolName, args: event.part.args });
-              break;
-            case "tool-result":
-              acc.parts.push({ type: "tool-result", toolCallId: event.part.toolCallId, result: event.part.result });
-              break;
-            case "tool-input-available":
-              acc.parts.push({ type: "tool-input", toolCallId: event.part.toolCallId, toolName: event.part.toolName, input: event.part.input });
-              break;
-            case "tool-output-available":
-              acc.parts.push({ type: "tool-output", toolCallId: event.part.toolCallId, output: event.part.output });
-              break;
-            case "reasoning-delta": {
-              const lastReasoning = acc.parts.findLast((p: any) => p.type === "reasoning");
-              if (lastReasoning) {
-                lastReasoning.text = (lastReasoning.text || "") + (event.part.delta || "");
-              } else {
-                acc.parts.push({ type: "reasoning", id: event.part.id, text: event.part.delta || "" });
-              }
-              break;
-            }
-          }
-
-          if (event.part?.type === "finish" && this.services) {
-            if (acc.text.trim() || acc.parts.length > 0) {
-              const contextMessages = manager.getChatAgentContext(role, resolvedGoalId);
-
-              this.services.chat.addMessage({
-                teamId,
-                userId: socket.data.userId,
-                role: "assistant",
-                agentId,
-                goalId: resolvedGoalId,
-                content: acc.text,
-                streamParts: (acc.text.trim() || acc.parts.length > 0) ? JSON.stringify(toRenderedParts(acc.text, acc.parts)) : undefined,
-                agentLayer: "chat-agent",
-                contextMessages: contextMessages || undefined,
-                timestamp: new Date().toISOString(),
-              }).catch(err => logger.warn("[SocketMessageHandler] Failed to save chat agent message:", err));
-            }
-          }
-        }
-      }
+      // Stream emission + persistence are owned by the visitor stack
+      // wired through `AgentRuntimeFactory` (StreamPublisherVisitor →
+      // SocketEventBroadcaster → goal-room broadcast). The handler does
+      // NOT emit to the socket here — that would be unicast (the bug
+      // the architecture says to fix). The optional consumer is only
+      // for caller-side error logging.
+      // (May 9 2026 PM-6 — review fix #2 redo.)
+      await manager.chatAgentMessage(role, content, resolvedGoalId);
     } catch (err: any) {
       logger.error(`[SocketMessageHandler] ChatAgent error for role '${role}':`, err);
       socket.emit("stream", {
@@ -320,23 +273,8 @@ export class SocketMessageHandler {
     }
   }
 
-  private async handleWorkerMessage(
-    socket: Socket,
-    manager: AgentManager,
-    agentId: string,
-    taskId: string | undefined,
-    content: string,
-  ): Promise<void> {
-    let actualTaskId: string;
-
-    if (!taskId) {
-      const result = await manager.startTask(agentId, content);
-      actualTaskId = result.taskId;
-    } else {
-      actualTaskId = taskId;
-      await manager.continueTask(taskId, content);
-    }
-
-    logger.debug(`[SocketMessageHandler] Worker message processed: ${actualTaskId}`);
-  }
+  // Worker direct-chat handler removed May 9 2026. The hooks-only
+  // WorkerPool requires goal-scoped tasks; the frontend's chat-agent
+  // layer (FEATURES.chatAgentChat) is the supported path for talking to
+  // a specific worker role.
 }

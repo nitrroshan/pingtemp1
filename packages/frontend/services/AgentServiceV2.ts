@@ -488,32 +488,6 @@ export class AgentServiceV2 {
   }
 
   /**
-   * Send message to worker agent (for task execution)
-   */
-  sendToWorker(agentId: string, content: string, taskId?: string): void {
-    if (!this.isReady()) {
-      logger.error("[AgentServiceV2] Cannot send: socket =", !!this.socket, "clientId =", this.clientId, "teamId =", this.teamId);
-      throw new Error("Not connected or no team selected");
-    }
-    const socket = this.socket!;
-    const teamId = this.teamId!;
-
-    logger.info("[AgentServiceV2] sendToWorker:", {
-      teamId,
-      agentId,
-      taskId,
-      contentPreview: content?.substring(0, 50),
-    });
-
-    socket.emit("message", {
-      teamId,
-      agentId,
-      taskId,
-      content,
-    });
-  }
-
-  /**
    * Send message to a persistent ChatAgent (L2) for a role.
    * Uses "chat-{role}" agentId convention — backend routes to ChatAgent.
    */

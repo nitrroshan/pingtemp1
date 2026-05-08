@@ -10,17 +10,17 @@
 
 import { rootLogger } from "../logging.js";
 import { AiSdkAgent } from "../agent/internal/AiSdkAgent.js";
-import { assembleLifecycleTools } from "./tools/index.js";
 import { PluginRegistry } from "../plugin/PluginRegistry.js";
 import type { ToolContext } from "../plugin/types.js";
 import { loadTaskLifecycleSkill } from "../skills/taskLifecycleSkill.js";
 import type {
   AgentDefinition,
-  AgentInput,
   AgentEvent,
   InternalConfig,
 } from "../agent/types.js";
 import type { TaskWithContext } from "../util/RoleTaskQueue.types.js";
+import type { AgentRuntimeFactory } from "../agent/runtime/AgentRuntimeFactory.js";
+import type { StreamingAgentContext } from "../agent/streaming/types.js";
 import dotenv from "dotenv";
 
 dotenv.config();
@@ -61,6 +61,14 @@ export class WorkerPool {
 
   /** Active workers by task ID */
   private workers = new Map<string, AiSdkAgent>();
+
+  /**
+   * Records the AgentRuntimeFactory generation each cached worker was
+   * wired under. Bumps on `setRuntimeFactory()` so that swapping the
+   * factory invalidates cached workers (which would otherwise still hold
+   * references to the old factory's visitors / orchestrator).
+   */
+  private workerGenerations = new Map<string, number>();
 
   /** Plugin registry for plugin-based tool assembly */
   private pluginRegistry: PluginRegistry | null = null;
@@ -103,6 +111,62 @@ export class WorkerPool {
   /** Set the auth token resolver (called by AgentManager with user session info) */
   setAuthTokenResolver(resolver: () => Promise<string | null>): void {
     this.authTokenResolver = resolver;
+  }
+
+  // ===========================================================================
+  // Agent runtime wiring (May 9 2026 — debt patch #6: hot-toggle removed).
+  //
+  // The factory is now a hard requirement — inject it at construction
+  // time via `setRuntimeFactory(factory)`. There is no flag / env var to
+  // turn on or off; the legacy callback fan-out path was deleted in
+  // patch #2 along with the per-worker mode tracking it required.
+  //
+  // Swapping the factory at runtime is still supported (e.g. for tests),
+  // and bumps a `runtimeGeneration` counter so cached workers tied to the
+  // old factory's visitors are auto-disposed-and-recreated on the next
+  // `runTask()` call.
+  // ===========================================================================
+
+  private runtimeFactory: AgentRuntimeFactory | null = null;
+
+  /**
+   * Monotonic counter that bumps on every `setRuntimeFactory()`. Cached
+   * workers store the generation they were wired under; on the next
+   * `runTask()` they are recreated if the current generation differs.
+   * Catches factory swaps that would otherwise leave workers wired to
+   * a stale factory's visitors / orchestrator.
+   */
+  private runtimeGeneration = 0;
+
+  /**
+   * Inject the AgentRuntimeFactory. Required — `runTask()` throws if
+   * called with no factory injected. Swapping the factory at runtime
+   * bumps `runtimeGeneration` so cached workers get recreated.
+   */
+  setRuntimeFactory(factory: AgentRuntimeFactory | null): void {
+    if (this.runtimeFactory !== factory) {
+      this.runtimeGeneration++;
+    }
+    this.runtimeFactory = factory;
+    logger.info(
+      `AgentRuntimeFactory ${factory ? "set" : "cleared"} on WorkerPool ` +
+      `(gen=${this.runtimeGeneration})`,
+    );
+  }
+
+  /** Test/diagnostic seam — current wiring generation. */
+  getRuntimeGeneration(): number {
+    return this.runtimeGeneration;
+  }
+
+  /**
+   * Read the currently-injected AgentRuntimeFactory. Used by callers that
+   * need to wire non-worker agents (Planner, ChatAgent) through the same
+   * factory the workers use, so all stream events flow through the same
+   * visitor stack. Returns `null` if no factory has been injected yet.
+   */
+  getRuntimeFactory(): AgentRuntimeFactory | null {
+    return this.runtimeFactory;
   }
 
   // ===========================================================================
@@ -267,8 +331,24 @@ export class WorkerPool {
       );
     }
 
-    // Get or create worker
+    // Get or create worker.
+    //
+    // If the cached worker was wired under a stale `runtimeGeneration`
+    // (i.e. the AgentRuntimeFactory was swapped after the worker was
+    // created), dispose and recreate so the worker is wired to the
+    // current factory's visitors / orchestrator.
+    const requiredGeneration = this.runtimeGeneration;
     let agent: AiSdkAgent | undefined = this.workers.get(taskId);
+    if (agent) {
+      const cachedGen = this.workerGenerations.get(taskId);
+      if (cachedGen !== undefined && cachedGen !== requiredGeneration) {
+        logger.info(
+          `Recreating worker ${taskId} — cached gen=${cachedGen} but current gen=${requiredGeneration}`,
+        );
+        await this.dispose(taskId);
+        agent = undefined;
+      }
+    }
 
     if (!agent) {
       const definition = this.definitions.get(roleKey);
@@ -303,21 +383,42 @@ export class WorkerPool {
       const perTaskData = this.taskStore?.get(taskId);
       const taskPlanId = perTaskData?.planId || perTaskData?.context?.planId || null;
 
-      const { tools: lifecycleTools } = assembleLifecycleTools({
+      // Hooks-only path (May 9 2026 — debt patch #2). Workers always go
+      // through `AgentRuntimeFactory.wire()` + `agent.runWithHooks()`.
+      // The legacy callback fan-out and `agent.execute()` AsyncGenerator
+      // path were deleted in this commit; visitors registered on the
+      // factory (StreamPublisher / ChannelB / Crdt / ErrorChannel) own
+      // ALL event publication.
+      if (!this.runtimeFactory) {
+        throw new Error(
+          `WorkerPool.runTask: AgentRuntimeFactory not injected. ` +
+          `Call workerPool.setRuntimeFactory(factory) at construction.`,
+        );
+      }
+      if (!taskGoalId) {
+        throw new Error(
+          `WorkerPool.runTask: hooks mode requires goalId for task ${taskId} but none was resolved`,
+        );
+      }
+      if (!this.teamId) {
+        throw new Error(
+          `WorkerPool.runTask: hooks mode requires teamId but none was set`,
+        );
+      }
+      const wireCtx: StreamingAgentContext = {
+        teamId: this.teamId,
+        goalId: taskGoalId,
         taskId,
-        roleKey,
-        callbacks: this.callbacks,
-        taskServices: {
-          taskStore: this.taskStore,
-          dagResolver: this.dagResolver,
-          teamRoles: this.teamRoles || [],
-          crdtTaskSync: this.crdtTaskSync,
-          planId: taskPlanId || null,
-          goalId: taskGoalId || null,
-          taskPersistence: this.taskPersistence,
-          teamId: this.teamId || undefined,
-        },
+        agentId: roleKey,
+      };
+      const wired = this.runtimeFactory.wire({
+        agent,
+        context: wireCtx,
+        planId: taskPlanId,
+        onTerminated: (kind) => agent!.markTerminated(kind),
       });
+      const lifecycleTools = wired.lifecycleTools;
+
       const additionalTools: any[] = [...lifecycleTools];
 
       // ── Plugin-based tool assembly ──────────────────────────────────────
@@ -400,8 +501,9 @@ export class WorkerPool {
       this.workerBaseTools.set(taskId, baseTools);
       this.workers.set(taskId, agent);
       this.workerRoles.set(taskId, roleKey);
+      this.workerGenerations.set(taskId, requiredGeneration);
       logger.info(
-        `Created worker: ${taskId} (${roleKey}) with ${additionalTools.length} additional tools`,
+        `Created worker: ${taskId} (${roleKey}) gen=${requiredGeneration} with ${additionalTools.length} additional tools`,
       );
     }
 
@@ -415,113 +517,32 @@ export class WorkerPool {
     }
 
     try {
-      // CRDT: mark agent as busy
-      if (this.crdtTaskSync) {
-        this.crdtTaskSync.updateAgentStatus(roleKey, 'busy', taskId).catch(() => {});
-      }
-
-      const input: AgentInput = {
-        message: finalMessage,
-        threadId: taskId, // Use taskId as thread for conversation continuity
+      // Hooks-only path (May 9 2026 — debt patch #2). Visitors registered
+      // on the AgentRuntimeFactory publish ALL events: stream parts,
+      // Channel B started/progress/tool_milestone/completed/failed
+      // updates, CRDT busy/idle status, and the error channel. Output is
+      // captured from `runWithHooks()` since there is no `done` AgentEvent
+      // in this path.
+      const ctx: StreamingAgentContext = {
+        teamId: this.teamId!,
+        goalId: taskGoalId!,
+        taskId,
+        agentId: roleKey,
+        threadId: taskId,
       };
-
-      // Channel B: emit "started"
-      const role = this.workerRoles.get(taskId) || roleKey;
-      this.callbacks.onTaskUpdate?.({ type: "started", taskId, role, ts: Date.now() });
-
-      let stepCount = 0;
-      let totalTokens = 0;
-      const PROGRESS_INTERVAL = 3; // Emit progress every N steps
-
-      for await (const event of agent.execute(input)) {
-        // Forward stream_part events directly on onStream callback
-        if (event.type === "stream_part" && taskGoalId) {
-          this.callbacks.onStream?.({
-            taskId,
-            agentId: roleKey,
-            part: event.part,
-            goalId: taskGoalId,
-          });
-
-          // Channel B: synthesize from stream_part subtypes
-          const part = event.part;
-          if (part?.type === "finish-step") {
-            stepCount++;
-            totalTokens += part.usage?.totalTokens || 0;
-            // Emit progress every N steps
-            if (stepCount % PROGRESS_INTERVAL === 0) {
-              this.callbacks.onTaskUpdate?.({
-                type: "progress", taskId, role,
-                note: `Step ${stepCount}`,
-                stepIdx: stepCount,
-                tokensSoFar: totalTokens,
-                ts: Date.now(),
-              });
-            }
-          } else if (part?.type === "tool-output-available") {
-            // Check if this is a milestone tool
-            const toolName = part.toolName || "";
-            const { MILESTONE_TOOLS } = await import("../types/TaskUpdate.js");
-            if (MILESTONE_TOOLS.has(toolName)) {
-              this.callbacks.onTaskUpdate?.({
-                type: "tool_milestone", taskId, role,
-                tool: toolName,
-                summary: typeof part.output === "string" ? part.output.slice(0, 200) : JSON.stringify(part.output).slice(0, 200),
-                ts: Date.now(),
-              });
-            }
-          }
-
-          continue; // Don't emit stream_parts on onEvent (legacy channel)
-        }
-
-        // Invoke event callback for all other events (legacy progress channel)
-        this.callbacks.onEvent?.({ taskId, event });
-
-        // Capture output
-        if (event.type === "done") {
-          output = event.output;
-          this.lastResponses.set(taskId, output); // Store for getLastResponse
-          const role = this.workerRoles.get(taskId) || "worker";
-          this.callbacks.onDone?.({ taskId, role, output });
-
-          // Channel B: emit "completed"
-          this.callbacks.onTaskUpdate?.({
-            type: "completed", taskId, role,
-            summary: typeof output === "string" ? output.slice(0, 500) : "Task completed",
-            ts: Date.now(),
-          });
-        }
-
-        if (event.type === "error") {
-          this.callbacks.onError?.({ taskId, error: event.error });
-
-          // Channel B: emit "failed"
-          this.callbacks.onTaskUpdate?.({
-            type: "failed", taskId, role,
-            error: event.error || "Unknown error",
-            ts: Date.now(),
-          });
-        }
-      }
+      logger.info(`[WorkerPool] runTask: task=${taskId} role=${roleKey} goal=${taskGoalId}`);
+      const result = await agent.runWithHooks({ message: finalMessage, context: ctx });
+      logger.info(`[WorkerPool] runTask complete: task=${taskId} text=${(result.text || "").length}ch`);
+      // The legacy `done` event payload was `{ response: fullText }`. Mirror
+      // that shape so downstream consumers (AgentManager.getLastResponse,
+      // tests) see the same value.
+      output = { response: result.text, ...(result.output as any ?? {}) };
+      this.lastResponses.set(taskId, output);
     } catch (error) {
-      const msg = error instanceof Error ? error.message : String(error);
-      this.callbacks.onError?.({ taskId, error: msg });
-
-      // Channel B: emit "failed" on exception
-      const role = this.workerRoles.get(taskId) || roleKey;
-      this.callbacks.onTaskUpdate?.({
-        type: "failed", taskId, role,
-        error: msg,
-        ts: Date.now(),
-      });
-
+      // Visitors (StreamPublisher / ChannelB / Crdt / ErrorChannel) own
+      // error publication. Re-throw so the caller's TaskQueue marks the
+      // task failed, but skip any local fan-out to avoid double emission.
       throw error;
-    } finally {
-      // CRDT: mark agent as idle
-      if (this.crdtTaskSync) {
-        this.crdtTaskSync.updateAgentStatus(roleKey, 'idle', taskId).catch(() => {});
-      }
     }
 
     return output;
@@ -550,6 +571,7 @@ export class WorkerPool {
       await agent.stop();
       this.workers.delete(taskId);
       this.workerRoles.delete(taskId);
+      this.workerGenerations.delete(taskId);
       this.lastResponses.delete(taskId);
       logger.info(`Disposed: ${taskId}`);
     }
@@ -571,6 +593,7 @@ export class WorkerPool {
     );
     // Fix #4: Clear all Maps to prevent memory leaks from orphaned tasks
     this.workerBaseTools.clear();
+    this.workerGenerations.clear();
     // Fix #16: Clear stale task service references
     this.taskStore = null;
     this.dagResolver = null;

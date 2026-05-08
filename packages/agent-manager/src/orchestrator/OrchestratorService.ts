@@ -27,6 +27,13 @@ import type {
 import { GoalManager, type GoalManagerConfig } from "./GoalManager.js";
 import { TaskContextBuilder } from "./TaskContextBuilder.js";
 import { DispatchManager } from "./DispatchManager.js";
+// Phase 1.8c — agent-stream-bus runtime wiring
+import { AgentRuntimeFactory } from "../agent/runtime/AgentRuntimeFactory.js";
+import { GoalManagerOrchestratorAdapter } from "./GoalManagerOrchestratorAdapter.js";
+import { StreamPublisherVisitor } from "../agent/streaming/visitors/StreamPublisherVisitor.js";
+import { ChannelBVisitor } from "../agent/streaming/visitors/ChannelBVisitor.js";
+import { CrdtStatusVisitor, type ICrdtTaskSync } from "../agent/streaming/visitors/CrdtStatusVisitor.js";
+import { ErrorChannelVisitor } from "../agent/streaming/visitors/ErrorChannelVisitor.js";
 
 const log = rootLogger.child({ module: "OrchestratorService" });
 
@@ -77,7 +84,8 @@ export interface OrchestratorServiceConfig {
   // Phase 4.5: Agent factories (pass-through to GoalManager)
   createPlanner: (goalId: string) => Promise<import("./PlannerAgent.js").PlannerAgent>;
   createChatAgent: (goalId: string, role: string) => import("../chatAgent/ChatAgent.js").ChatAgent;
-  onPlannerStream: (data: { goalId: string; taskId: string; agentId: string; part: any }) => void;
+  // (May 9 2026 PM-5 — review fix #1: `onPlannerStream` deleted. The
+  // default StreamPublisherVisitor handles planner streams.)
   chatAgentsEnabled: boolean;
   /** v3.0: Database persistence for tasks */
   taskPersistence?: import("./contracts/ITaskPersistence.js").ITaskPersistence | null;
@@ -167,7 +175,6 @@ export class OrchestratorService {
       autoExecute: this.autoExecute,
       createPlanner: config.createPlanner,
       createChatAgent: config.createChatAgent,
-      onPlannerStream: config.onPlannerStream,
       chatAgentsEnabled: config.chatAgentsEnabled,
       taskPersistence: config.taskPersistence || null,
       eventBus: config.eventBus,
@@ -272,11 +279,136 @@ export class OrchestratorService {
       onTaskUpdate: (update) => this.callbacks.onWorkerTaskUpdate?.(update),
     });
 
+    // ─────────────────────────────────────────────────────────────────
+    // agent-stream-bus runtime factory wiring (post-cleanup state)
+    //
+    // Builds the AgentRuntimeFactory with the four default visitors:
+    //   - StreamPublisherVisitor → forwards stream parts to
+    //     `callbacks.onStream` so SocketEventBroadcaster's accumulator +
+    //     persistence path keeps working unchanged.
+    //   - ChannelBVisitor → forwards synthesized TaskUpdates to
+    //     `callbacks.onWorkerTaskUpdate`.
+    //   - CrdtStatusVisitor → bridges through the lazy crdtTaskSyncProxy.
+    //   - ErrorChannelVisitor → bridges hooks-mode failures to the legacy
+    //     `callbacks.onError` channel (review fix #1, May 9 2026).
+    //
+    // The factory + GoalManagerOrchestratorAdapter are injected into
+    // WorkerPool. Workers always go through `factory.wire()` +
+    // `agent.runWithHooks()` (the legacy callback fan-out + env flag
+    // were deleted May 9 2026 PM-2 — debt patches #2 + #6).
+    // ─────────────────────────────────────────────────────────────────
+    this.installAgentRuntimeFactory();
+
     // v3.1: Database recovery is now the only startup path
     await this.goalManager.loadFromDatabase();
 
     this.goalManager.setState("idle");
     console.log(`[OrchestratorService] Initialized for team ${this.teamId}`);
+  }
+
+  // ═══════════════════════════════════════════════════════════════════
+  // agent-stream-bus runtime factory installation
+  // ═════════════════════════════════════════════════════════════════
+
+  /**
+   * Build + inject the AgentRuntimeFactory into WorkerPool. Called once
+   * at the end of `initialize()`. The factory is REQUIRED — `runTask`
+   * throws if it isn't injected (no env flag, no fallback after the
+   * May 9 2026 PM-2 cleanup).
+   */
+  private installAgentRuntimeFactory(): void {
+    // Bridge the lazy crdtTaskSyncProxy → ICrdtTaskSync. updateAgentStatus
+    // is a best-effort no-op when the proxy hasn't resolved yet.
+    const proxy = this.crdtTaskSyncProxy;
+    const crdtBridge: ICrdtTaskSync = {
+      async updateAgentStatus(role: string, status: "busy" | "idle", taskId?: string) {
+        const sync = proxy?.get?.();
+        if (!sync || typeof sync.updateAgentStatus !== "function") return;
+        await sync.updateAgentStatus(role, status, taskId);
+      },
+    };
+
+    // StreamPublisher: forwards stream parts to the `callbacks.onStream`
+    // channel that SocketEventBroadcaster's accumulator + persistence
+    // reads. `persistMessage` is a no-op here because
+    // SocketEventBroadcaster owns the persistence path; the visitor only
+    // forwards stream parts.
+    const streamPublisher = new StreamPublisherVisitor({
+      publish: (event) => {
+        this.callbacks.onStream?.({
+          taskId: event.taskId ?? "",
+          agentId: event.agentId,
+          part: event.part,
+          goalId: event.goalId ?? "",
+        });
+      },
+      persistMessage: async () => { /* SocketEventBroadcaster owns persistence */ },
+    });
+
+    // ChannelB: forward synthesized TaskUpdates to the existing onWorkerTaskUpdate
+    // channel — same downstream consumers (ChatAgent + Frontend sidebar).
+    const channelB = new ChannelBVisitor({
+      publish: (update) => this.callbacks.onWorkerTaskUpdate?.(update),
+    });
+
+    // CrdtStatus: bridge through the lazy proxy.
+    const crdtStatus = new CrdtStatusVisitor({ crdtTaskSync: crdtBridge });
+
+    // ErrorChannel: bridge hooks-mode failures to the legacy `onError`
+    // callback so SocketEventBroadcaster's Socket.IO `error` channel still
+    // fires (May 9 2026 review fix #1). Without this, hooks-mode failures
+    // only show up via stream parts + Channel B `failed`, not the
+    // user-visible error broadcast the frontend has subscribed to.
+    const errorChannel = new ErrorChannelVisitor({
+      publishError: (data) => this.callbacks.onError?.(data),
+    });
+
+    // GoalManager adapter wires hook-mode lifecycle calls back to the
+    // existing GoalManager + TaskStore + DependencyResolver. The
+    // notifyTaskCreated bridge points at the SAME notifyPlanner +
+    // dispatchReadyTasks flow the legacy onTaskCreated callback used.
+    const adapter = new GoalManagerOrchestratorAdapter({
+      goalManager: this.goalManager,
+      taskStore: this.taskStore,
+      dagResolver: this.dagResolver as any,
+      notifyTaskCreated: async (data) => {
+        log.info(`Agent-created task (hooks mode): ${data.taskId} by ${data.createdBy} → ${data.targetRole}`);
+        this.callbacks.onTaskUpdate?.({
+          taskId: data.taskId, status: "pending", role: data.targetRole, timestamp: Date.now(),
+        });
+        const createdTaskGoalId = this.taskStore.get(data.taskId)?.goalId || "";
+        this.notifyPlanner(createdTaskGoalId,
+          PromptLoader.loadTemplate("orchestrator", "task-created", {
+            createdBy: data.createdBy,
+            taskId: data.taskId,
+            targetRole: data.targetRole,
+            blocksSuffix: data.relationship === "blocks-me" ? ` (blocks ${data.parentTaskId})` : "",
+          }),
+        );
+        if (this.autoExecute) {
+          this.dispatchReadyTasks();
+        }
+      },
+    });
+
+    const factory = new AgentRuntimeFactory({
+      defaultStreamingHooks: [streamPublisher, channelB, crdtStatus, errorChannel],
+      orchestrator: adapter,
+      taskServices: {
+        taskStore: this.taskStore,
+        dagResolver: this.dagResolver as any,
+        teamRoles: this.teamRoles,
+        crdtTaskSync: crdtBridge,
+        teamId: this.teamId,
+      },
+    });
+
+    this.workerPool.setRuntimeFactory(factory);
+    log.info(
+      `[OrchestratorService] AgentRuntimeFactory installed (gen=${this.workerPool.getRuntimeGeneration()}). ` +
+      `Workers will route through factory.wire() + agent.runWithHooks(). ` +
+      `Visitors: StreamPublisher + ChannelB + Crdt + ErrorChannel.`,
+    );
   }
 
   // ═══════════════════════════════════════════════════════════════════
@@ -611,38 +743,43 @@ export class OrchestratorService {
         createdAt: Date.now(), status: "in_progress",
       });
 
-      // If worker finished without calling complete_task (generated text and stopped),
-      // auto-complete the task. The worker's text response is its output.
-      // Guard: check status AFTER runTask returns — onWorkerDone may have already completed it
+      // Stop-condition fix (May 8 2026):
+      // The streamText loop now exits ONLY when complete_task or bounce_task
+      // is ACCEPTED by orchestration (via agent.markTerminated). A rejected
+      // complete_task (e.g. missing report doc) leaves the agent in the
+      // loop so it can read the error and self-correct.
+      //
+      // If we reach here with status=in_progress and no completionSource:
+      //   - blocked: agent reported blocked → mark failed (planner reroutes)
+      //   - cap-hit: agent ran out of steps without terminating → mark
+      //     failed with the worker text as failure context (planner sees
+      //     the work-so-far and decides next action). NO silent auto-
+      //     completion that would create a dangling crdt:report reference.
       const afterTask = this.taskStore.get(taskId);
       if (afterTask && afterTask.status === "in_progress" && !afterTask.completionSource) {
-        // R10-3 FIX: Don't auto-complete if the task was reported as blocked
         const wasBlocked = afterTask.lastReportedStatus === "blocked";
         if (wasBlocked) {
-          log.info(`[OrchestratorService] Worker for ${taskId} was blocked — marking as failed, not auto-completing`);
+          log.info(`[OrchestratorService] Worker for ${taskId} was blocked — marking as failed`);
           try { await this.taskStore.updateStatus(taskId, "failed"); } catch { /* guard */ }
           this.taskStore.queue.failTask(taskId, "Agent reported blocked and could not complete");
         } else {
-          console.log(`[OrchestratorService] Worker finished without complete_task, auto-completing ${taskId}`);
-
-          // Publish + merge workspace before completing (same as onWorkerDone path)
-          if (this.pluginRegistry) {
-            try {
-              const taskGoalForPlugin = this.taskStore.get(taskId)?.goalId;
-              const result = await this.pluginRegistry.onTaskComplete(taskId, taskGoalForPlugin || undefined);
-              if (!result.success) {
-                console.warn(`[OrchestratorService] Auto-complete merge warning for ${taskId}: ${result.error}`);
-              }
-            } catch (err) {
-              console.warn(`[OrchestratorService] Auto-complete plugin error for ${taskId}: ${err}`);
-            }
-          }
-
-          await this.taskStore.completeTask(taskId, {
-            summary: "Task completed (auto-completed — worker finished without calling complete_task)",
-            completedBy: "auto",
-            timestamp: Date.now(),
-          });
+          // Worker stopped without calling complete_task or bounce_task
+          // AND without being blocked. With the new stop conditions this
+          // means the safety cap (stepCountIs 200) hit OR isLoopFinished()
+          // fired (model thought it was done). Either way the agent did
+          // NOT formally complete — fail with a clear reason so the
+          // planner can decide what to do.
+          log.warn(
+            `[OrchestratorService] Worker for ${taskId} stopped without calling complete_task or bounce_task. ` +
+            `Marking failed so the planner can re-evaluate.`,
+          );
+          try { await this.taskStore.updateStatus(taskId, "failed"); } catch { /* guard */ }
+          this.taskStore.queue.failTask(
+            taskId,
+            "Worker stopped without calling complete_task or bounce_task. " +
+            "The agent may have hit the step cap or the model concluded prematurely. " +
+            "Re-dispatch the task with explicit instructions to call complete_task with the required report doc.",
+          );
         }
       }
     } catch (error: any) {

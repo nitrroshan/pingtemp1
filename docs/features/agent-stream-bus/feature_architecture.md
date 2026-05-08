@@ -1,709 +1,543 @@
-# Agent Stream Bus — Feature Architecture
+# Agent Hooks + Visitor Refactor — Feature Architecture
 
-**Date:** May 6, 2026
-**Status:** Architecture
-**Priority:** P1 — Foundation for clean streaming, extensibility, and ChatAgent unicast fix
-**Depends on:** None (can start immediately)
-**Related:** [goal-sessions](../goal-sessions/) (multi-goal scalar fixes still needed separately)
+**Date:** May 8, 2026
+**Status:** Architecture — final design, ready to implement
+**Priority:** P1 — Foundation for clean streaming, extensibility, universal agent interface
+**Depends on:** Multi-goal scalar fixes ✅ (completed May 7)
+**Related:** [plugin-tool-runtime](../plugin-tool-runtime/), [plugin-ecosystem](../plugin-ecosystem/)
+**Research history:** [feature_architecture_research_history.md](./feature_architecture_research_history.md)
+
+---
+
+## Bridge State (current implementation, post-PM-6)
+
+The code in `packages/agent-manager/src/agent/streaming/` is the **target** design. Most of the original Phase 1.5 strangler bridge has now closed: workers, planner, and ChatAgent all run through `factory.wire()` + `runWithHooks()`. The two remaining bridges are deferred to follow-up patches:
+
+| Surface | Doc (target) | Current bridge | Resolution path |
+|---|---|---|---|
+| Method name | `IAgent.run(input)` | `IStreamingAgent.runWithHooks(input)` | The legacy `AiSdkAgent.run(prompt, threadId)` helper is still used by the definition builder. Converges in Phase 2 when the helper is removed. |
+| `goalId` on context | `AgentInput.goalId?: string` (optional) | `StreamingAgentContext.goalId: string` (required); loose `AgentContext` keeps it optional for non-streaming/builder flows | Final shape — type-system enforcement so a streaming agent cannot be wired to Socket.IO/CRDT visitors without a goalId. Will not change. |
+| Native AI SDK callbacks | `streamText({ onChunk, onStepFinish, onFinish, onError, experimental_onToolCallStart, ... })` driven directly | `runWithHooks()` still consumes the `execute()` AsyncGenerator internally and re-translates events into hook calls. `IAgent.execute` is `@deprecated @internal` — production callers use only `runWithHooks`. | **Patch #1 follow-up**: refactor `runWithHooks` to drive native `streamText` callbacks directly, then physically remove `execute()` from `IAgent` and `AiSdkAgent`. |
+| Stream broadcast + persistence ownership | Visitors own everything — `StreamPublisherVisitor` broadcasts to goal room AND persists assistant messages | `StreamPublisherVisitor` forwards stream parts to `OrchestratorService.callbacks.onStream`; `SocketEventBroadcaster` (374 lines) accumulates + persists + broadcasts. | **Patch #3 follow-up**: visitor-owns-persistence migration. Delete `SocketEventBroadcaster`, rewire frontend Socket.IO channel mapping. Cross-package (backend + frontend). |
+
+The `StreamingHooks` back-pressure contract is firm and final:
+- `onStart`, `onChunk`, `onStepFinish` are **fire-and-forget** — slow visitors must not stall token flow.
+- `onFinish` and `onError` are **awaited** — persistence/cleanup completes before `runWithHooks()` returns.
+- Every visitor call is wrapped in try/catch (in the composer); a throwing visitor never aborts the agent loop.
 
 ---
 
 ## Problem
 
-WorkerPool.runTask() is a 280-line god method mixing 5 concerns: agent configuration, generator iteration, streaming delivery, Channel B synthesis, and error handling. Streaming goes through a 4-hop callback chain with 2 pure pass-throughs. Adding new stream consumers (cost tracking, Redis Streams) requires editing existing code.
+The agent runtime has **22 callbacks across 6 interfaces**, creating a 4-layer forwarding chain for every event. Adding a new consumer (cost tracking, Redis) requires editing 4 files. The ChatAgent path bypasses the chain entirely (unicast bug). Tools mix validation, LLM response, and orchestration side effects.
 
-## What This Feature Does
+## Solution
 
-Replace the callback-based streaming with an Observer pattern: agents emit events to a stream bus, independent observers react.
+Two extension points on a universal agent interface:
 
----
-
-## Architecture Options
-
-### Option A: IStreamPublisher Interface (Simple)
-
-**Implementation:** Single interface injected into WorkerPool and GoalManager. One class handles all stream consumers.
-
-```
-WorkerPool/GoalManager
-  → streamPublisher.publish(part)
-    → io.emit() + accumulate + Channel B + CRDT status
-```
-
-**Pros:**
-- Simplest — one new interface, one impl
-- Minimal code change (swap callback for method call)
-- Easy to understand
-
-**Cons:**
-- All consumers in one class — violates SRP
-- Adding consumers means editing the publisher
-- Violates Open/Closed principle
-- Channel B synthesis still mixed in somewhere
-
-**Effort:** 3-4 days
+1. **Streaming Visitors** — observation of execution (text tokens, tool calls, reasoning). Plugged into AI SDK `streamText()` hooks. Open/Closed for new consumers.
+2. **Task Lifecycle Hooks** — agent's decisions communicated to the system (complete, blocked, bounce, subtask). Tools call the agent's own hooks. System plugs in handlers at creation time.
 
 ---
 
-### Option B: AgentStreamBus with Observers
+## Universal Agent Interface
 
-**Implementation:** Agents emit events to a lightweight bus. Independent observer classes react to the events they care about. Each observer is a focused, testable class.
-
-```
-Agent yields event
-  → bus.emit(event, context)
-    → StreamPublisherObserver   (tokens → Socket.IO + persist)
-    → ChannelBObserver          (progress + milestones → ChatAgent + sidebar)
-    → TaskLifecycleObserver     (done/error → DAG + dispatch next)
-    → CrdtStatusObserver        (busy/idle)
-    → (future: CostTracker, RedisStreamObserver, ...)
-```
+Every agent — internal AiSdkAgent, external HTTP agent, child Ping team, Docker container — implements one interface:
 
 ```typescript
-interface AgentStreamObserver {
-  onEvent(event: AgentEvent, ctx: StreamContext): void;
+interface IAgent {
+  readonly id: string;
+  readonly role: string;
+
+  /** Execute the task. Hooks fire during execution. */
+  run(input: AgentInput): Promise<AgentResult>;
+
+  /** Streaming observation — system plugs in before calling run() */
+  onStreaming: StreamingHooks;
+
+  /** Lifecycle decisions — system plugs in before calling run() */
+  onTaskLifecycle: TaskLifecycleHooks;
 }
 
-class AgentStreamBus {
-  private observers: AgentStreamObserver[] = [];
-  addObserver(o: AgentStreamObserver): void { this.observers.push(o); }
-  emit(event: AgentEvent, ctx: StreamContext): void {
-    for (const o of this.observers) o.onEvent(event, ctx);
-  }
-}
-
-interface StreamContext {
-  teamId: string;
-  goalId: string;
-  agentKey: string;  // "planner" | "worker:backend-dev" | "chat:researcher"
+interface AgentInput {
+  message: string;
+  threadId?: string;
+  goalId?: string;
   taskId?: string;
 }
+
+interface AgentResult {
+  text: string;
+  usage?: { inputTokens?: number; outputTokens?: number; totalTokens?: number };
+  steps?: number;
+  finishReason: string;
+}
 ```
 
-**Pros:**
-- Each observer is SRP — one concern per class
-- Open/Closed — add consumers without editing existing code
-- Each observer independently testable
-- Clean separation: streaming vs progress vs lifecycle vs CRDT
-- Maps to real-world vision: agents stream freely, services observe
-- Natural extension point for Redis Streams (add observer, don't replace)
-- Fixes ChatAgent unicast bug (same bus for all agents)
+### Streaming Hooks (Observation — Read-Only)
 
-**Cons:**
-- More files (bus + 4 observers)
-- Slightly more indirection than a direct method call
-- Must be careful about observer error isolation
-
-**Effort:** 1 week
-
----
-
-### Option C: Node.js EventEmitter
-
-**Implementation:** Use built-in EventEmitter. Agents emit typed events. Listeners registered per event type.
+Visitors observe execution. They can't modify it. Fire-and-forget with per-visitor error isolation.
 
 ```typescript
-const bus = new EventEmitter();
-bus.on("stream_part", (part, ctx) => io.emit(...));
-bus.on("stream_part", (part, ctx) => channelB.observe(part));
-bus.on("done", (data, ctx) => taskStore.complete(...));
+interface StreamingHooks {
+  onChunk?(chunk: StreamChunk, ctx: AgentContext): void;
+  onStepFinish?(result: StepResult, ctx: AgentContext): void;
+  onFinish?(result: FinishResult, ctx: AgentContext): void;
+  onToolCallStart?(event: ToolCallStartEvent, ctx: AgentContext): void;
+  onToolCallFinish?(event: ToolCallFinishEvent, ctx: AgentContext): void;
+  prepareStep?(options: PrepareStepOptions, ctx: AgentContext): PrepareStepResult | void;
+  onError?(error: unknown, ctx: AgentContext): void;
+}
 ```
 
-**Pros:**
-- Built-in Node.js, no new classes needed
-- Familiar API
-- Wildcard listeners possible (`bus.on("*", ...)`)
+### Task Lifecycle Hooks (Agent Decisions — System Responds)
 
-**Cons:**
-- No type safety — event names are strings
-- Error in one listener crashes all (unless wrapped)
-- **Copilot instructions say "Do NOT add new EventEmitters"** — project convention
-- Hard to trace event flow (string-based dispatch)
-- No structured context (just positional args)
-
-**Effort:** 3-4 days
-
----
-
-## Recommendation: Option B — Tiered AgentStreamBus with Observers
-
-Option B with sync/async tiers is the gold standard:
-
-### Why This Pattern
-
-1. **It's what the codebase already wants to be.** The current callbacks ARE observers — just implemented as a 4-hop chain instead of a proper pattern.
-2. **Satisfies the team vision.** Agents stream freely (like team members communicating). Services observe (dashboard, project tracker, team lead). Adding a new observer = plugging in a new service.
-3. **Open/Closed.** Redis Streams = add `RedisStreamObserver`. Cost tracking = add `CostTrackingObserver`. No existing code changes.
-4. **Respects project convention.** No EventEmitter (Option C rejected per copilot-instructions.md).
-5. **Reactive Manifesto aligned.** Message-driven (async bus), resilient (per-observer error isolation), elastic (no contention), responsive (sync tier for real-time).
-
-### Research Findings
-
-| Pattern | Verdict |
-|---------|---------|
-| **Node.js Streams** (Transform/Writable pipeline) | Too heavy for in-memory object routing — designed for byte streams, not event fan-out. Our agents yield typed objects, not buffers. |
-| **RxJS / ReactiveX** | Powerful but adds 50KB dependency. Overkill — we need fan-out, not map/filter/merge operators. |
-| **Reactive Manifesto** | Validates our design: message-driven, resilient (failure isolation), elastic (no contention), responsive (consistent latency). |
-| **Node.js `Readable.from(asyncGenerator)`** | AiSdkAgent.execute() is already an async generator. Composable with our bus — the generator feeds the bus, not a Node.js stream. |
-| **`stream.pipeline()`** | Useful for sequential transforms, not parallel fan-out to N consumers. |
-
-### The Tiered Design
+The agent fires these when it makes decisions. The system wires handlers at creation time. The agent doesn't know who's listening.
 
 ```typescript
-interface AgentStreamObserver {
-  /** Sync — MUST be fast (<1ms). For real-time delivery. */
-  onEvent?(event: AgentEvent, ctx: StreamContext): void;
-  
-  /** Async — can be slow. For persistence, CRDT, etc. Fire-and-forget. */
-  onEventAsync?(event: AgentEvent, ctx: StreamContext): Promise<void>;
+interface TaskLifecycleHooks {
+  /**
+   * Agent completed the task — system does workspace merge + DAG cascade.
+   * Returns `{ accepted: false, reason }` to reject (e.g. unmet prereqs);
+   * the tool surfaces `reason` back to the LLM as an actionable error.
+   */
+  onComplete?(payload: TaskCompletePayload, ctx: StreamingAgentContext)
+    : Promise<{ accepted: boolean; reason?: string }>;
+  /** Agent reports status change (blocked, in_progress, etc.). Awaited. */
+  onStatusChange?(payload: TaskStatusPayload, ctx: StreamingAgentContext)
+    : Promise<void>;
+  /** Agent can't do this task — system reassigns. Awaited. */
+  onBounce?(payload: TaskBouncePayload, ctx: StreamingAgentContext)
+    : Promise<void>;
+  /**
+   * Agent needs help — system creates subtask. Returns `{ accepted, newTaskId }`
+   * so the orchestrator owns ID assignment in hooks mode.
+   */
+  onSubtaskRequest?(payload: SubtaskRequestPayload, ctx: StreamingAgentContext)
+    : Promise<{ accepted: boolean; newTaskId?: string; reason?: string }>;
 }
+```
 
-class AgentStreamBus {
-  private syncObservers: AgentStreamObserver[] = [];
-  private asyncObservers: AgentStreamObserver[] = [];
+> **Source-of-truth shapes:** `TaskCompletePayload`, `TaskStatusPayload`, `TaskBouncePayload`, and `SubtaskRequestPayload` are defined in [`packages/agent-manager/src/agent/streaming/types.ts`](../../../packages/agent-manager/src/agent/streaming/types.ts). The legacy `request_task` data (priority, type, relationship, parentTaskId, goalId, planId, context) IS carried on `SubtaskRequestPayload` so the orchestrator can persist parity with the legacy task object.
 
-  addObserver(observer: AgentStreamObserver, tier: "sync" | "async" = "sync") {
-    if (tier === "sync") this.syncObservers.push(observer);
-    else this.asyncObservers.push(observer);
-  }
+### Agent Context (Scoping)
 
-  emit(event: AgentEvent, ctx: StreamContext): void {
-    // Tier 1: Sync — run immediately, error-isolated
-    for (const o of this.syncObservers) {
-      try { o.onEvent?.(event, ctx); }
-      catch (err) { logger.error({ err, observer: o.constructor.name }, "Sync observer error"); }
-    }
-
-    // Tier 2: Async — fire-and-forget, never blocks sync
-    for (const o of this.asyncObservers) {
-      o.onEventAsync?.(event, ctx)?.catch((err) => {
-        logger.error({ err, observer: o.constructor.name }, "Async observer error");
-      });
-    }
-  }
-}
-
-interface StreamContext {
+```typescript
+interface AgentContext {
   teamId: string;
   goalId: string;
-  agentKey: string;  // "planner" | "worker:backend-dev" | "chat:researcher"
   taskId?: string;
+  agentKey: string;   // "worker:backend-dev" | "planner" | "chat:researcher"
+  userId?: string;
 }
 ```
-
-### Observer Tiers
-
-| Tier | Observer | What It Does | Latency |
-|------|----------|-------------|---------|
-| **Sync** | `StreamPublisherObserver` | `io.to(room).emit()` + accumulate text | <1ms |
-| **Sync** | `ChannelBObserver` | `finish-step` → progress, `tool-output` → milestone → ChatAgent + Socket.IO | <1ms |
-| **Async** | `TaskLifecycleObserver` | `done` → PG update + DAG dispatch; `error` → retry/notify planner | 5-50ms |
-| **Async** | `CrdtStatusObserver` | `start` → busy; `done`/`error` → idle | 2-10ms |
-| **Async** | (future) `CostTrackingObserver` | Count tokens, update billing | 1-5ms |
-| **Async** | (future) `RedisStreamObserver` | `XADD stream:key * part {json}` | 1-5ms |
-
-**Sync tier never waits for async tier.** Token delivery to the user's browser is never blocked by a database write.
-
-### Why Not Other Patterns
-
-| Alternative | Why Rejected |
-|-------------|-------------|
-| Single `IStreamPublisher.publish()` that does everything | Violates SRP + Open/Closed. All consumers in one method. Adding new consumer = edit existing code. |
-| Node.js `EventEmitter` | Project convention says no new EventEmitters. No type safety. Error in one listener crashes all. |
-| Node.js Streams (Transform pipeline) | Designed for sequential byte transforms, not parallel object fan-out. |
-| RxJS Observables | External dependency. Powerful operators we don't need. Same result with 50 lines of custom code. |
 
 ---
 
-## What Changes
+## How It Works: AiSdkAgent Implementation
 
-### Refactoring: WorkerPool Split + AgentFactory
-
-#### Current Problem: Three Agent Creation Paths
-
-```
-PLANNER:  Inline closure in AgentManagerV2.initializeOrchestrator() (42 lines)
-          Creates PlannerAgent + planner tools + collab tools
-          Captures `self`, 10+ closed-over variables
-
-WORKER:   Inline in WorkerPool.runTask() (140 lines) 
-          Creates AiSdkAgent + lifecycle tools + plugin tools + skills + identity file
-          WorkerPool has 8 setter methods for dependencies it doesn't own
-
-CHAT:     Inline closure in AgentManagerV2.initializeOrchestrator() (20 lines)
-          Creates ChatAgent with dispatch/notify callbacks
-          Captures `self`
-
-Three different creation paths. Three different tool assembly patterns.
-Tool assembly duplicated. Untestable closures.
-```
-
-#### Fix: Unified AgentFactory
+### Streaming: AI SDK Hooks → Visitor Dispatch
 
 ```typescript
-class AgentFactory {
-  constructor(
-    private pluginRegistry: PluginRegistry,
-    private definitions: Map<string, AgentDefinition>,
-    private teamId: string,
-    private teamRoles: string[],
-  ) {}
+class AiSdkAgent implements IAgent {
+  onStreaming: StreamingHooks = {};
+  onTaskLifecycle: TaskLifecycleHooks = {};
 
-  /** One entry point — give me what you need, I build it. */
-  async create(config: AgentCreateConfig): Promise<ConfiguredAgent> {
-    // 1. Get or create base agent
-    // 2. Assemble tools: lifecycle + plugin + skills (unified path)
-    // 3. Prepare workspace (if worker)
-    // 4. Return configured agent ready to execute
+  async run(input: AgentInput): Promise<AgentResult> {
+    const ctx = this.buildContext(input);
+
+    const result = await streamText({
+      model: this.model,
+      messages: this.buildMessages(),
+      tools: this.buildTools(),
+
+      // AI SDK hooks dispatch to streaming visitors
+      onChunk: ({ chunk }) => {
+        try { this.onStreaming.onChunk?.(chunk, ctx); }
+        catch (e) { logger.error({ err: e }, "Visitor onChunk error"); }
+      },
+      onStepFinish: (r) => {
+        try { this.onStreaming.onStepFinish?.(r, ctx); }
+        catch (e) { logger.error({ err: e }, "Visitor onStepFinish error"); }
+      },
+      onFinish: (r) => {
+        try { this.onStreaming.onFinish?.(r, ctx); }
+        catch (e) { logger.error({ err: e }, "Visitor onFinish error"); }
+      },
+      experimental_onToolCallStart: (event) => {
+        try { this.onStreaming.onToolCallStart?.(event, ctx); }
+        catch (e) { logger.error({ err: e }, "Visitor onToolCallStart error"); }
+      },
+      experimental_onToolCallFinish: (event) => {
+        try { this.onStreaming.onToolCallFinish?.(event, ctx); }
+        catch (e) { logger.error({ err: e }, "Visitor onToolCallFinish error"); }
+      },
+      prepareStep: async ({ stepNumber, messages }) => {
+        let result: any = {};
+        if (messages.length > 50) {
+          result.messages = [messages[0]!, ...messages.slice(-30)];
+        }
+        try {
+          const r = this.onStreaming.prepareStep?.({ stepNumber, messages }, ctx);
+          if (r) result = { ...result, ...r };
+        } catch (e) { logger.error({ err: e }, "Visitor prepareStep error"); }
+        return result;
+      },
+    });
+
+    await result.consumeStream();
+    return { text: await result.text, usage: await result.usage, finishReason: "stop" };
   }
 }
-
-// Usage — callers just ask:
-const planner = await factory.create({ goalId, consumer: "planner" });
-const worker  = await factory.create({ goalId, taskId, role: "backend-dev", consumer: "worker" });
-const chat    = await factory.create({ goalId, role: "researcher", consumer: "chat" });
 ```
 
-**All agents get tools from the same PluginRegistry path.** Adding a new tool type (MCP, custom) = add to PluginRegistry once, all agent types get it. The `consumer` field drives which tools/skills are assembled.
+### Lifecycle: Tools Call Agent's Own Hooks
 
-#### What Each Component Becomes
+Tools are thin — validate input, call the agent's hook, format response for LLM.
+
+The agent doesn't know who's listening. In tests → mocks. In CLI → console.log. In production → GoalManager + TaskStore + DAG.
+
+```typescript
+private buildLifecycleTools(): ToolSet {
+  return {
+    complete_task: tool({
+      name: "complete_task",
+      inputSchema: CompleteTaskSchema,
+      execute: async (input) => {
+        const ack = await this.onTaskLifecycle.onComplete?.(
+          {
+            summary: input.summary,
+            deliverables: input.deliverables,
+            nextSteps: input.nextSteps,
+            producedDocs: input.producedDocs,
+            decisions: input.decisions,
+            timestamp: Date.now(),
+          },
+          this.ctx,
+        );
+        return ack?.accepted === false
+          ? `ERROR: ${ack.reason ?? "no reason given"}`
+          : `Task marked complete: ${input.summary}`;
+      },
+    }),
+    report_status: tool({
+      name: "report_status",
+      inputSchema: TaskStatusSchema,
+      execute: async (input) => {
+        await this.onTaskLifecycle.onStatusChange?.(
+          { status: input.status, detail: input.summary },
+          this.ctx,
+        );
+        return `Status reported: ${input.status}`;
+      },
+    }),
+    bounce_task: tool({
+      name: "bounce_task",
+      inputSchema: BounceTaskSchema,
+      execute: async (input) => {
+        await this.onTaskLifecycle.onBounce?.(
+          { reason: input.reason, suggestedRole: input.suggestedRole },
+          this.ctx,
+        );
+        return `Task bounced: ${input.reason}`;
+      },
+    }),
+    request_task: tool({
+      name: "request_task",
+      inputSchema: RequestTaskSchema,
+      execute: async (input) => {
+        const ack = await this.onTaskLifecycle.onSubtaskRequest?.(
+          {
+            description: `${input.title}: ${input.description}`,
+            title: input.title,
+            assignedRole: input.targetRole.toLowerCase(),
+            dependsOn: input.relationship === "blocks-me" ? [this.ctx.taskId!] : undefined,
+            priority: input.priority,
+            type: input.type,
+            relationship: input.relationship,
+            parentTaskId: this.ctx.taskId,
+            goalId: this.ctx.goalId,
+            planId: this.planId,
+            context: input.context,
+          },
+          this.ctx,
+        );
+        if (ack?.accepted === false) return `ERROR: ${ack.reason ?? "no reason given"}`;
+        return `Task created: ${ack?.newTaskId ?? "unknown"}`;
+      },
+    }),
+  };
+}
+```
+
+---
+
+## System Wiring: AgentRuntimeFactory + Orchestrator Adapter
+
+> **Phase 1.7+ implemented shape (collapsed May 9 2026 — review fix #4 / debt patch #7).** The wiring is split across two pieces:
+>
+> 1. **`AgentRuntimeFactory`** ([packages/agent-manager/src/agent/runtime/AgentRuntimeFactory.ts](../../../packages/agent-manager/src/agent/runtime/AgentRuntimeFactory.ts)) — composes per-team default visitors with per-execution extras and conditionally assembles the lifecycle tools. Hooks is the only orchestration mode (the `executionMode` flag was removed May 9 2026 — debt patch #5). **Single entry point** (`wire()`); `wireStreamingOnly()` is a deprecated 1-line alias kept for back-compat:
+>    - `wire({ agent, context })` with `context.taskId` set — full task agent: composes streaming hooks, sets `agent.onTaskLifecycle`, returns lifecycle tools to inject into the agent's tool list.
+>    - `wire({ agent, context })` without `context.taskId` — stream-only: composes streaming hooks only, returns `{ lifecycleTools: [], agentState: undefined }`. Used by ChatAgent + planner.
+> 2. **`AgentRuntimeOrchestrator`** is the small interface the factory delegates to. The default implementation is **`GoalManagerOrchestratorAdapter`** ([packages/agent-manager/src/orchestrator/GoalManagerOrchestratorAdapter.ts](../../../packages/agent-manager/src/orchestrator/GoalManagerOrchestratorAdapter.ts)) which bridges back to existing `GoalManager` + `TaskStore` + `DependencyResolver`. After a successful `createSubtask`, the factory invokes the **required** `notifyTaskCreated` hook so the planner is notified + state is broadcast + `dispatchReadyTasks()` triggers — parity with the legacy `OrchestratorCallbacks.onTaskCreated` flow. (Made required May 9 2026 — review fix #4 / debt patch #10. Tests pass an explicit `async () => {}` no-op.)
+
+```typescript
+class AgentRuntimeFactory {
+  constructor(deps: {
+    defaultStreamingHooks: StreamingHooks[];   // StreamPublisher + ChannelB + Crdt + ErrorChannel + ...
+    orchestrator: AgentRuntimeOrchestrator;    // GoalManagerOrchestratorAdapter in production
+    taskServices: AgentRuntimeTaskServices;    // taskStore + dagResolver + teamRoles + crdtTaskSync
+  });
+
+  /**
+   * Single entry point. Behaviour depends on `context.taskId`:
+   *   - present → full task agent (lifecycle tools + onTaskLifecycle wired)
+   *   - absent  → stream-only (planner / ChatAgent)
+   */
+  wire(config: AgentRuntimeWireConfig): WiredAgent;
+
+  /** @deprecated 1-line alias for `wire()` without taskId. */
+  wireStreamingOnly(config: { agent; context; extraStreamingHooks? }): IStreamingAgent;
+}
+```
+
+```typescript
+// Composite streaming hook — per-visitor isolation is mandatory.
+//
+// A throwing/rejecting visitor MUST NOT prevent later visitors from
+// receiving the same event. AiSdkAgent's outer safeHook only wraps the
+// composite call, so the compose helper itself wraps EACH visitor.
+private composeStreamingHooks(parts: StreamingHooks[]): StreamingHooks {
+  const safeSync = (label, fn) => { try { fn(); } catch (err) { logger.warn(`visitor ${label} threw`, err); } };
+  const safeAsync = async (label, fn) => { try { await fn(); } catch (err) { logger.warn(`visitor ${label} rejected`, err); } };
+  return {
+    // Fire-and-forget: token flow must not block on visitors.
+    onStart: (ctx)         => parts.forEach((p, i) => p.onStart        && safeSync(`onStart[${i}]`,        () => p.onStart!(ctx))),
+    onChunk: (chunk, ctx)  => parts.forEach((p, i) => p.onChunk        && safeSync(`onChunk[${i}]`,        () => p.onChunk!(chunk, ctx))),
+    onStepFinish: (s, ctx) => parts.forEach((p, i) => p.onStepFinish   && safeSync(`onStepFinish[${i}]`,   () => p.onStepFinish!(s, ctx))),
+    // AWAITED: persistence + CRDT cleanup completes before runWithHooks() returns.
+    // Promise.all over per-visitor safeAsync wrappers — slow/rejecting visitors
+    // never serialize or abort siblings.
+    onFinish: async (r, ctx) => { await Promise.all(parts.map((p, i) => p.onFinish ? safeAsync(`onFinish[${i}]`, () => p.onFinish!(r, ctx)) : Promise.resolve())); },
+    onError:  async (e, ctx) => { await Promise.all(parts.map((p, i) => p.onError  ? safeAsync(`onError[${i}]`,  () => p.onError!(e, ctx))  : Promise.resolve())); },
+  };
+}
+```
+
+```typescript
+// Lifecycle hooks — bound per-execution, delegate to the AgentRuntimeOrchestrator.
+private buildLifecycleHooks(onCompletePolicy?): TaskLifecycleHooks {
+  return {
+    onComplete: async (payload, ctx) => {
+      if (onCompletePolicy) {
+        const policy = await onCompletePolicy(payload, ctx);
+        if (policy?.accepted === false) return policy;
+      }
+      try {
+        await this.orchestrator.onWorkerDone({ /* taskId, role, summary, ... */ });
+        return { accepted: true };
+      } catch (err) {
+        return { accepted: false, reason: err.message };
+      }
+    },
+    onStatusChange: async (payload, ctx) => {
+      this.orchestrator.updateLastReportedStatus(ctx.taskId!, payload.status);
+    },
+    onBounce: async (payload, ctx) => {
+      const reason = payload.suggestedRole
+        ? `${payload.reason} (suggested role: ${payload.suggestedRole})`
+        : payload.reason;
+      await this.orchestrator.handleTaskFailure(ctx.taskId!, reason);
+    },
+    onSubtaskRequest: async (payload, ctx) => {
+      let ack;
+      try { ack = await this.orchestrator.createSubtask(payload, ctx); }
+      catch (err) { return { accepted: false, reason: err.message }; }
+
+      // Planner notification + state broadcast + dispatch — fire-and-forget.
+      // Failure here MUST NOT roll back the persisted subtask.
+      // notifyTaskCreated is REQUIRED on the orchestrator interface
+      // (May 9 2026 — debt patch #10); no optional guard at the call site.
+      if (ack.accepted && ack.newTaskId) {
+        try {
+          await this.orchestrator.notifyTaskCreated({
+            taskId: ack.newTaskId,
+            createdBy: `agent:${ctx.agentId}`,
+            targetRole: payload.assignedRole!,
+            relationship: payload.relationship ?? "independent",
+            parentTaskId: ctx.taskId!,
+          }, ctx);
+        } catch (err) { logger.warn(`notifyTaskCreated threw`, err); }
+      }
+      return ack;
+    },
+  };
+}
+```
+
+> **Adapter notes (`GoalManagerOrchestratorAdapter`):**
+> - `onWorkerDone` sets `task.completionSource = "tool"` BEFORE delegating to `GoalManager.onWorkerDone()` — matches legacy WorkerPool ordering.
+> - `createSubtask` delegates to the shared **`buildSubtask` helper** ([packages/agent-manager/src/orchestrator/buildSubtask.ts](../../../packages/agent-manager/src/orchestrator/buildSubtask.ts)) which owns the goal-scoped sequential id, `taskStore.create`, blocks-me cycle check + rollback, `addPrerequisite`, and `dagResolver.rebuildForGoal` (with `rebuild` fallback). The legacy `request_task` tool branch routes through the SAME helper so the two cannot drift (May 9 2026 — debt patch #4). DAG-rebuild failures roll back the just-created task (May 9 2026 — review fix #2).
+> - `notifyTaskCreated` is **required** — wire it at adapter construction time. Tests pass an explicit no-op.
+
+---
+
+## Streaming Visitors (Implemented Once, Shared Across All Agents)
+
+### StreamPublisherVisitor
+
+Replaces `SocketEventBroadcaster` (374 lines deleted). Handles Socket.IO broadcast + message accumulation + persistence. Fixes ChatAgent unicast bug.
+
+### ChannelBVisitor
+
+Replaces WorkerPool Channel B synthesis. Step counting + milestones → ChatAgent + Socket.IO `task_update`.
+
+### CrdtStatusVisitor
+
+Replaces WorkerPool CRDT status calls. Busy on first chunk, idle on finish/error.
+
+**Adding new consumers:**
+```typescript
+// Cost tracking — zero changes to existing code
+class CostTrackingVisitor {
+  onStepFinish(result, ctx) {
+    db.recordUsage({ goalId: ctx.goalId, tokens: result.usage.totalTokens });
+  }
+}
+// Register: add to buildStreamingHooks()
+```
+
+---
+
+## Adapters: Any Agent → IAgent
+
+Users bring any agent. Ping wraps it. Users never see hooks, visitors, or Ping internals.
+
+| Adapter | Wraps | Hooks Called From |
+|---------|-------|-------------------|
+| `AiSdkAgent` | AI SDK `streamText()` | AI SDK hooks (`onChunk`, `onStepFinish`, etc.) |
+| `FunctionAgentAdapter` | `(msg) → string \| AsyncGenerator` | Generator yield / return |
+| `HttpAgentAdapter` | HTTP endpoint + SSE | SSE events |
+| `PingTeamAdapter` | Child Ping team | Child team streaming events |
+| `DockerAgentAdapter` | Container stdin/stdout | stdout lines |
+
+All adapters implement `IAgent`. All get same hooks wired by AgentFactory. Hooks are implemented once — adapters just call them from their own event source.
+
+Only `AiSdkAgent` exists today. Other adapters built when needed (plugin-ecosystem, external-agent-invocation features).
+
+---
+
+## Data Flow: Before vs After
+
+### Worker Stream: 10 Hops → 2 Hops
 
 ```
-BEFORE:                                    AFTER:
-
-AgentManagerV2 (1310 lines)               AgentManagerV2 (~900 lines)
-├── initializeOrchestrator (400 lines)    ├── initializeOrchestrator (~250 lines)
-│   ├── planner closure (42 lines)        │   └── wiring only, no closures
-│   ├── chatAgent closure (20 lines)      │
-│   ├── callback wiring (60 lines)        ├── AgentFactory (new, ~150 lines)
-│   └── event bus setup (80 lines)        │   └── create(type, config) — all agents
-│                                         │
-├── streamCallbacks (dead code)           └── removes: streamCallbacks,
-├── registerStreamCallbacks()                  registerStreamCallbacks(),
-└── 8+ methods for WorkerPool setup            closures, callback wiring
-
-WorkerPool (686 lines)                    WorkerPool (~150 lines)
-├── runTask (280 lines, god method)       ├── definitions: Map<role, AgentDefinition>
-│   ├── tool assembly (140 lines)         ├── workers: Map<taskId, AiSdkAgent>
-│   ├── iteration + callbacks (50 lines)  ├── executeAgent(agent, taskId): AsyncGenerator
-│   ├── Channel B (30 lines)              ├── dispose(taskId)
-│   └── done/error (20 lines)            └── disposeByGoal(goalId)
-├── 8 setter methods
-├── callbacks interface
-└── definitions + workers Maps
-
-SocketEventBroadcaster (374 lines)        DELETED — replaced by StreamPublisherObserver
+BEFORE: Agent → yield → WorkerPool.onStream → Orch.onStream → AgentMgr.streamCallbacks → Broadcaster → Socket.IO
+AFTER:  streamText onChunk → StreamPublisherVisitor → Socket.IO
 ```
 
-#### New Files
+### Lifecycle (complete_task): 9 Hops → 3 Hops
 
-| File | Lines | Purpose |
-|------|-------|---------|
-| `agent/AgentFactory.ts` | ~150 | Unified agent creation: planner, worker, chat. One tool assembly path. |
-| `streaming/AgentStreamBus.ts` | ~45 | Tiered bus + observer interface |
-| `streaming/StreamPublisherObserver.ts` | ~65 | Channel A → Socket.IO + persist on finish |
-| `streaming/ChannelBObserver.ts` | ~50 | Coarse progress synthesis |
-| `streaming/TaskLifecycleObserver.ts` | ~80 | done/error → GoalManager |
-| `streaming/CrdtStatusObserver.ts` | ~20 | CRDT busy/idle |
+```
+BEFORE: Tool → callback closure → WorkerPool.onAgentComplete → OrchestratorService → GoalManager.onWorkerDone
+AFTER:  Tool → this.onTaskLifecycle.onComplete → GoalManager.onWorkerDone
+```
 
-#### Modified Files
+### ChatAgent: Unicast Bug → Broadcast Fixed
 
-| File | Change |
-|------|--------|
-| `WorkerPool.ts` | Strip from 686 → ~150 lines. Remove tool assembly, callbacks, setters. Keep definitions + executeAgent + dispose. |
-| `OrchestratorService.ts` | `dispatchTask()`: use `agentFactory.create("worker", ...)` + iterate via `workerPool.executeAgent()` + emit to bus. Remove `workerPool.setCallbacks()` block (70 lines). |
-| `GoalManager.ts` | `executePlannerTurn()`: use `agentFactory.create("planner", ...)` + emit to bus. Remove `onPlannerStream` callback. |
-| `AgentManagerV2.ts` | Create `AgentFactory` instance. Remove planner/chatAgent closures. Remove `streamCallbacks`. Pass factory to OrchestratorService + GoalManager. |
-| `SocketMessageHandler.ts` | ChatAgent: `agentFactory.create("chat", ...)` + emit to bus (fixes unicast). |
-| `SocketServerV2.ts` | Create `StreamPublisherObserver` instead of `SocketEventBroadcaster`. |
+```
+BEFORE: socket.emit("stream") — only requesting socket sees response
+AFTER:  StreamPublisherVisitor → io.to(goalRoom).emit("stream") — all team members see it
+```
 
-#### Deleted Files
+### Total: 44 Hops → 22 Hops (50% reduction)
 
-| File | Lines | Replaced By |
-|------|-------|------------|
-| `SocketEventBroadcaster.ts` | 374 | `StreamPublisherObserver` |
+12 pure pass-through callbacks eliminated entirely.
 
-### What Stays Unchanged
+---
+
+## SOLID Compliance
+
+| Principle | How |
+|-----------|-----|
+| **Single Responsibility** | Tools: validate + call hook. Visitors: observe streaming. Task task lifecycle hooks: handle transitions. Factory: create + wire. |
+| **Open/Closed** | New streaming consumer = new visitor. New lifecycle concern = new hook handler. Zero existing code changes. |
+| **Liskov Substitution** | Any `IAgent` implementation works. Factory wires same hooks regardless of adapter type. |
+| **Interface Segregation** | `StreamingHooks` and `TaskLifecycleHooks` are separate. Agents that don't stream skip `onStreaming`. |
+| **Dependency Inversion** | Tools depend on `TaskLifecycleHooks` interface, not GoalManager. Visitors depend on `StreamingHooks`, not Socket.IO. Factory injects concrete implementations. |
+
+---
+
+## What Stays Unchanged
 
 | Component | Why |
 |-----------|-----|
-| **Orchestration flow** (GoalManager → OrchestratorService → dispatch) | Command/control, not observation |
-| **Tool callbacks** (complete_task, report_status, bounce_task) | Synchronous, must return result to agent. `report_status(blocked)` mutates `task.lastReportedStatus` which `dispatchTask()` reads immediately — MUST stay in sync control path. |
-| **Worker lifecycle callbacks** (onAgentComplete, onStatusUpdate, onBounce, onTaskCreated, onMentionedRoles) | Mutate task state or trigger orchestration. Stay as direct function calls, NOT on bus. |
-| **TaskStore / RoleTaskQueue** | Task state machine transitions |
-| **DispatchManager** | Concurrency management |
-| **GoalEventBus** | Domain events for CRDT projection |
-| **AiSdkAgent / PlannerAgent / ChatAgent** | Agent classes unchanged — factory creates them |
-
-**Only streaming pass-throughs move to bus.** The 4 callbacks that are pure pass-throughs (onStream, onDone, onError, onEvent) become bus events. The 5 callbacks that mutate state (onAgentComplete, onStatusUpdate, onBounce, onTaskCreated, onMentionedRoles) stay as direct function calls.
+| `DispatchManager` | Already clean — SRP, DIP via config. |
+| `TaskStore` / `RoleTaskQueue` | Task state machine — separate concern. |
+| `DependencyResolver` | DAG logic — isolated. |
+| `GoalEventBus` + handlers | Domain events for CRDT projection. |
+| Orchestration flow | GoalManager → OrchestratorService → dispatch. |
 
 ---
 
-## Callback Migration Map
+## Worker Execution Modes
 
-### Current State: 4-Layer Callback Chain (BEFORE)
+Workers operate in two modes. Both use the **same `IAgent` interface, same hooks, same lifecycle**:
 
-22 callbacks across 6 interfaces, 12 are pure pass-throughs.
-
-```
-┌─ AiSdkAgent (streamText generator) ──────────────────────────┐
-│  yields: stream_part, done, error                             │
-└──────────┬────────────────────────────────────────────────────┘
-           │
-           ▼
-┌─ WorkerPool.runTask() ───────────────────────────────────────┐
-│  WorkerCallbacks (10 callbacks)                               │
-│  onStream, onEvent, onDone, onError, onTaskUpdate,            │
-│  onAgentComplete, onStatusUpdate, onBounce,                   │
-│  onTaskCreated, onMentionedRoles                              │
-└──────────┬──────────────────────────┬────────────────────────┘
-           │ (pass-throughs)          │ (orchestration)
-           ▼                          ▼
-┌─ OrchestratorService ──────────────────────────────────────┐
-│  Forwards 4 streaming callbacks (onStream/Event/Done/Error) │
-│  Handles 5 lifecycle callbacks (Complete/Status/Bounce/...)  │
-│  OrchestratorCallbacks (11 callbacks, 7 pass-throughs)       │
-└──────────┬──────────────────────────────────────────────────┘
-           │
-           ▼
-┌─ AgentManagerV2 ───────────────────────────────────────────┐
-│  ManagerStreamCallbacks (10 callbacks, all forwarded)        │
-│  registerStreamCallbacks() wired by SocketEventBroadcaster   │
-└──────────┬──────────────────────────────────────────────────┘
-           │
-           ▼
-┌─ SocketEventBroadcaster ──────────────────────────────────┐
-│  io.to(room).emit("stream" | "state" | "progress" | ...)   │
-│  + message accumulation + persistence on "finish"           │
-└─────────────────────────────────────────────────────────────┘
-
-Separate path (ChatAgent) — bypasses entire chain:
-  ChatAgent generator → SocketMessageHandler → socket.emit() (unicast bug)
-```
-
-### After Migration: Bus + Direct Callbacks (AFTER)
+| Mode | How `run()` Is Called | Who Drives | Use Case |
+|------|----------------------|-----------|----------|
+| **Auto** | Called once. Agent runs autonomously to completion. | System (DispatchManager) | Default. Planned tasks from approved plan. |
+| **Interactive** | Called multiple times. Agent and user take turns. Conversation state preserved between calls. | User (via ChatAgent UI) | Manual mode. User works WITH the agent on a task (like Claude Code). |
 
 ```
-┌─ AiSdkAgent (streamText generator) ──────────────────────────┐
-│  yields: stream_part, done, error                             │
-└──────────┬────────────────────────────────────────────────────┘
-           │
-           ▼
-┌─ AgentStreamBus.emit(event, ctx) ────────────────────────────┐
-│  SYNC tier (<1ms):                                            │
-│    StreamPublisherObserver  → io.to(room).emit("stream")      │
-│    ChannelBObserver         → progress + milestone events     │
-│                                                                │
-│  ASYNC tier (fire-and-forget):                                │
-│    TaskLifecycleObserver    → done/error → GoalManager        │
-│    CrdtStatusObserver       → busy/idle                       │
-└──────────────────────────────────────────────────────────────┘
+Auto mode:
+  System dispatches task → agent.run(taskDescription)
+    → agent works autonomously (10-200 steps)
+    → agent calls onComplete/onBounce → exits
 
-Direct callbacks (unchanged, NOT on bus):
-  report_status  → task.lastReportedStatus (sync mutation)
-  complete_task  → GoalManager.onWorkerDone() (sync)
-  bounce_task    → GoalManager.handleTaskFailure() (sync)
-  request_task   → TaskStore.addTask() + DAG rebuild (sync)
+Interactive mode:
+  User starts task → agent.run(userMessage)
+    → agent responds + uses tools
+    → user sends follow-up → agent.run(nextMessage)
+    → ... (multiple rounds)
+    → agent calls onComplete → task done
 ```
 
-### Callback Classification: What Stays vs What Moves
+Both modes:
+- Same `IAgent` interface
+- Same 4 lifecycle hooks (onComplete, onStatusChange, onBounce, onSubtaskRequest)
+- Same streaming hooks (onChunk, onStepFinish, etc.)
+- Same task tracking (status, DAG, workspace)
+- Agent preserves conversation history between `run()` calls
 
-#### DELETED — Pure pass-throughs eliminated by bus (12 callbacks)
-
-| Callback | Layer | Why Deleted |
-|----------|-------|-------------|
-| `WorkerCallbacks.onStream` | WorkerPool → Orch | Bus replaces: StreamPublisherObserver |
-| `WorkerCallbacks.onEvent` | WorkerPool → Orch | Bus replaces: ChannelBObserver |
-| `WorkerCallbacks.onDone` | WorkerPool → Orch | Bus replaces: TaskLifecycleObserver |
-| `WorkerCallbacks.onError` | WorkerPool → Orch | Bus replaces: TaskLifecycleObserver |
-| `WorkerCallbacks.onTaskUpdate` | WorkerPool → Orch | Bus replaces: ChannelBObserver |
-| `OrchestratorCallbacks.onStream` | Orch → AgentMgr | Was just `this.streamCallbacks?.onStream?.(data)` |
-| `OrchestratorCallbacks.onEvent` | Orch → AgentMgr | Was just `this.streamCallbacks?.onEvent?.(data)` |
-| `OrchestratorCallbacks.onDone` | Orch → AgentMgr | Was just `this.streamCallbacks?.onDone?.(data)` |
-| `OrchestratorCallbacks.onError` | Orch → AgentMgr | Was just `this.streamCallbacks?.onError?.(data)` |
-| `ManagerStreamCallbacks.onStream` | AgentMgr → Broadcaster | Broadcaster replaced by StreamPublisherObserver |
-| `ManagerStreamCallbacks.onEvent` | AgentMgr → Broadcaster | Broadcaster replaced by ChannelBObserver |
-| `onPlannerStream` | GoalMgr → Orch → AgentMgr → Broadcaster | 3-hop pass-through. Bus replaces directly. |
-
-#### STAYS — Direct callbacks (synchronous, state-mutating, or orchestration)
-
-| Callback | Where | Why It Stays |
-|----------|-------|-------------|
-| `report_status` tool callback | assembleLifecycleTools → WorkerCallbacks.onStatusUpdate | **CRITICAL:** Writes `task.lastReportedStatus` synchronously. `dispatchTask()` reads it immediately after `runTask()` returns. Moving to async = race condition. |
-| `complete_task` tool callback | assembleLifecycleTools → WorkerCallbacks.onAgentComplete → GoalManager.onWorkerDone() | Merges workspace, marks task complete, publishes domain events. Must complete before auto-complete guard. |
-| `bounce_task` tool callback | assembleLifecycleTools → WorkerCallbacks.onBounce | Marks task failed, notifies planner. Reads/writes task state. |
-| `request_task` tool callback | assembleLifecycleTools → WorkerCallbacks.onTaskCreated | Creates task in TaskStore, rebuilds DAG. Must complete atomically. |
-| `onMentionedRoles` | WorkerPool → OrchestratorService.spawnCollabWorkers() | Spawns collab workers. Side-effect-heavy, no observation semantics. |
-| `TaskCallbacks.onTaskReady` | RoleTaskQueue → GoalManager | Part of task DAG — triggers dispatch. |
-| `TaskCallbacks.onTaskComplete` | RoleTaskQueue → GoalManager | Checks goal completion, cascades. |
-| `TaskCallbacks.onTaskFailed` | RoleTaskQueue → GoalManager | Handles failure cascade. |
-| `GoalManagerCallbacks.onDispatchTask` | GoalManager → OrchestratorService | Entry point to dispatch pipeline. |
-| `GoalManagerCallbacks.onNotifyPlanner` | GoalManager → NotificationQueue → GoalManager | Circular roundtrip (debounced). |
-
-#### MOVES TO BUS — Currently direct but becoming observers
-
-| Callback | Current Location | New Observer |
-|----------|-----------------|-------------|
-| `onWorkerTaskUpdate` (Channel B) | Orch → AgentMgr → ChatAgent + Broadcaster | ChannelBObserver |
-| `onGoalStatusChange` | GoalMgr → Orch → AgentMgr → Broadcaster | StreamPublisherObserver (state events) |
-| `onPlanProposed` | GoalMgr → Orch → AgentMgr → Broadcaster | StreamPublisherObserver (state events) |
-| `onPlanUpdate` | AgentMgr → Broadcaster | StreamPublisherObserver (state events) |
-| `onTaskUpdate` (state) | GoalMgr → Orch → AgentMgr → Broadcaster | StreamPublisherObserver (state events) |
-
-### Sequence Diagrams
-
-#### Worker Task Execution (AFTER migration)
-
-```
-User               OrchestratorService    AgentFactory    WorkerPool     AiSdkAgent      Bus            Observers
- │                       │                    │              │              │              │                │
- │  goal/plan approved   │                    │              │              │              │                │
- │──────────────────────>│                    │              │              │              │                │
- │                       │                    │              │              │              │                │
- │                       │ create(worker,     │              │              │              │                │
- │                       │  { goalId, taskId, │              │              │              │                │
- │                       │    role, callbacks})│              │              │              │                │
- │                       │───────────────────>│              │              │              │                │
- │                       │                    │              │              │              │                │
- │                       │                    │ builds agent  │              │              │                │
- │                       │                    │ + lifecycle   │              │              │                │
- │                       │                    │   tools       │              │              │                │
- │                       │                    │ + plugin      │              │              │                │
- │                       │                    │   tools       │              │              │                │
- │                       │                    │ + skills      │              │              │                │
- │                       │   <configured agent>│              │              │              │                │
- │                       │<───────────────────│              │              │              │                │
- │                       │                    │              │              │              │                │
- │                       │ executeAgent(agent, taskId, input) │              │              │                │
- │                       │──────────────────────────────────>│              │              │                │
- │                       │                    │              │ execute()    │              │                │
- │                       │                    │              │─────────────>│              │                │
- │                       │                    │              │              │              │                │
- │                       │                    │              │   ┌─────────────────────────────────────┐   │
- │                       │                    │              │   │ for await (event of generator):     │   │
- │                       │                    │              │   │                                     │   │
- │                       │  <─── yield stream_part ─────────│<──│  stream_part {text-delta}           │   │
- │                       │                    │              │   │                                     │   │
- │                       │  bus.emit(event, ctx)             │   │                                     │   │
- │                       │───────────────────────────────────────────────>│                │            │
- │                       │                    │              │   │        │                │            │
- │                       │                    │              │   │        │ SYNC:          │            │
- │  <─ io.emit("stream") ─────────────────────────────────────────────── StreamPublisher  │            │
- │                       │                    │              │   │        │ ChannelB        │            │
- │                       │                    │              │   │        │                │            │
- │                       │                    │              │   │        │ ASYNC:         │            │
- │                       │                    │              │   │        │ CrdtStatus (busy)           │
- │                       │                    │              │   │                                     │
- │                       │                    │              │   │  ── agent calls report_status ──    │
- │                       │                    │              │   │  DIRECT CALLBACK (not bus):         │
- │                       │                    │              │   │  → task.lastReportedStatus = X      │
- │                       │                    │              │   │                                     │
- │                       │                    │              │   │  ── agent calls complete_task ──    │
- │                       │                    │              │   │  DIRECT CALLBACK (not bus):         │
- │                       │                    │              │   │  → GoalManager.onWorkerDone()       │
- │                       │                    │              │   │  → workspace merge + task complete  │
- │                       │                    │              │   │                                     │
- │                       │  <─── yield done ────────────────│<──│  done {summary, deliverables}       │
- │                       │                    │              │   └─────────────────────────────────────┘
- │                       │  bus.emit(done, ctx)              │              │              │                │
- │                       │───────────────────────────────────────────────>│                │                │
- │  <─ io.emit("stream", finish) ───────────────────────────────────────── StreamPublisher │                │
- │                       │                    │              │              │ CrdtStatus(idle)              │
- │                       │                    │              │              │              │                │
- │                       │  auto-complete check:             │              │              │                │
- │                       │  if (status==in_progress &&       │              │              │                │
- │                       │      lastReportedStatus!=blocked) │              │              │                │
- │                       │    → completeTask()               │              │              │                │
-```
-
-#### Planner Streaming (AFTER migration)
-
-```
-User        GoalManager     AgentFactory     PlannerAgent       Bus           StreamPublisher
- │              │                │                │               │                │
- │  message     │                │                │               │                │
- │─────────────>│                │                │               │                │
- │              │                │                │               │                │
- │              │ create(planner,│                │               │                │
- │              │  { goalId })   │                │               │                │
- │              │───────────────>│                │               │                │
- │              │                │ builds planner │               │                │
- │              │                │ + 15 plan tools│               │                │
- │              │                │ + collab tools │               │                │
- │              │ <─ planner ───│                │               │                │
- │              │                │                │               │                │
- │              │ executePlannerTurn()            │               │                │
- │              │───────────────────────────────>│               │                │
- │              │                │                │               │                │
- │              │   ┌────────────────────────────────────────┐   │                │
- │              │   │ for await (event of planner.execute()): │   │                │
- │              │   │                                         │   │                │
- │              │   │  stream_part {text-delta}               │   │                │
- │              │   │  bus.emit(event, {agentKey:"planner"})  │   │                │
- │              │───│─────────────────────────────────────────────>│                │
- │ <── io.emit("stream", {agentId:"planner"}) ───────────────────── StreamPublisher│
- │              │   │                                         │   │                │
- │              │   │  stream_part {tool-call: submit_plan}   │   │                │
- │              │───│─────────────────────────────────────────────>│                │
- │ <── io.emit("stream", {tool-call}) ───────────────────────────── StreamPublisher│
- │              │   │                                         │   │                │
- │              │   │  done                                   │   │                │
- │              │───│─────────────────────────────────────────────>│                │
- │ <── io.emit("stream", {finish}) + persist ────────────────────── StreamPublisher│
- │              │   └────────────────────────────────────────┘   │                │
-```
-
-#### ChatAgent Message (AFTER migration — unicast bug fixed)
-
-```
-User        SocketMessageHandler   AgentFactory    ChatAgent        Bus           StreamPublisher
- │              │                      │              │               │                │
- │ chat msg     │                      │              │               │                │
- │─────────────>│                      │              │               │                │
- │              │                      │              │               │                │
- │              │  create(chat,        │              │               │                │
- │              │   { goalId, role })  │              │               │                │
- │              │─────────────────────>│              │               │                │
- │              │                      │ builds chat  │               │                │
- │              │                      │ + read tools │               │                │
- │              │                      │ + plugin tools│              │                │
- │              │  <── chatAgent ─────│              │               │                │
- │              │                      │              │               │                │
- │              │  for await (event of chatAgent.execute()):         │                │
- │              │                      │              │               │                │
- │              │  bus.emit(event, {agentKey:"chat:researcher"})     │                │
- │              │──────────────────────────────────────────────────>│                │
- │              │                      │              │               │                │
- │ <── io.to(goalRoom).emit("stream") ────────────────────────────── StreamPublisher│
- │              │                      │              │               │                │
- │  ALL users in room see the response (not just requesting socket)  │                │
- │              │                      │              │               │                │
- │              │  finish → persist via StreamPublisher               │                │
- │              │──────────────────────────────────────────────────>│                │
- │              │                      │              │ persist       │ addMessage()   │
-```
+The agent doesn't know which mode it's in. It just runs when `run()` is called, fires hooks when it makes decisions, and maintains its state.
 
 ---
 
-## Review Findings (May 7, 2026)
+## Research Decisions
 
-Code review against live runtime identified 4 risks and 1 open question. Classified as **fix first** (must resolve before or during this feature), **safe to defer** (separate feature/ticket), or **avoid** (do not change in this feature).
-
-### Finding 1 — HIGH: Async lifecycle observer would regress blocked-task handling
-
-**Classification: AVOID — keep report_status as direct callback**
-
-The architecture doc already says `report_status(blocked)` must stay synchronous. But `TaskLifecycleObserver` in the implementation plan is scoped too broadly — it lists `onStatusUpdate` as something it handles. In reality:
-
-- `report_status` tool → sets `task.lastReportedStatus = "blocked"` synchronously in WorkerPool callback
-- `OrchestratorService.dispatchTask()` L630-635 reads `afterTask.lastReportedStatus === "blocked"` immediately after `runTask()` returns
-- If this mutation lands in an async observer, a blocked worker can be auto-completed as success before the blocked status arrives
-
-**Rule:** `onStatusUpdate` stays as a direct callback passed to `assembleLifecycleTools()`. It is NOT a bus event. The `TaskLifecycleObserver` only handles post-execution events (`done`, `error`) — never mid-execution state mutations.
-
-### Finding 2 — HIGH: WorkerPool has 5 callers, not just dispatchTask
-
-The plan treats `dispatchTask()` as the main (only) path. In reality, `WorkerPool.runTask()` has 5 distinct call sites:
-
-| # | Caller | Overload | goalId? | Awaited? |
-|---|--------|----------|---------|----------|
-| 1 | `OrchestratorService.dispatchTask()` | TaskWithContext | Yes | Yes |
-| 2 | `OrchestratorService.spawnCollabWorkers()` | (taskId, role, msg, goalId) | Yes (resolved) | No (fire-and-forget) |
-| 3 | `AgentManagerV2.startTaskExecution()` | TaskWithContext | **No** — missing | Yes |
-| 4 | `AgentManagerV2.startTask()` | (taskId, role, msg) | **No** | Yes |
-| 5 | `AgentManagerV2.continueTask()` | (taskId, role, msg) | **No** | Yes |
-
-**Classification: FIX FIRST — AgentFactory must handle all 5 paths**
-
-Call sites 3-5 (AgentManagerV2) don't pass goalId and don't go through OrchestratorService. If AgentFactory only wires into the dispatchTask path, these callers silently lose plugin setup, skill injection, and workspace branching.
-
-**Resolution:** AgentFactory.buildWorker() must handle both overloads. For legacy callers (3-5), factory resolves goalId from TaskStore (same as current WorkerPool fallback). Collab workers (2) must also route through factory — they currently skip plugin preflight and skill injection.
-
-### Finding 3 — MEDIUM: ChatAgent persistence stamps wrong userId
-
-**Classification: SAFE TO DEFER — separate bug fix**
-
-The current ChatAgent path in `SocketMessageHandler.ts` L309 persists assistant messages with:
-```typescript
-userId: await this.services.teamRegistry?.getOwner(teamId) ?? "system"
-```
-
-This means assistant responses are attributed to the team owner, not the requesting user. Combined with Mongo's `getSessionMessages()` filter `{ $or: [{ userId }, { role: "assistant" }] }`, all users see all assistant messages regardless of who asked. SQLite's `getSessionMessages()` has no user filter at all.
-
-This is a multi-user bug, not a stream-bus concern. The bus refactor preserves the existing (broken) behavior — `StreamPublisherObserver` will persist with the same userId logic. Fix separately in the multi-user feature.
-
-### Finding 4 — HIGH: CRDT auth hole grows with more CRDT usage
-
-**Classification: SAFE TO DEFER — but document the risk**
-
-`HocuspocusServer.ts` L365-367:
-```typescript
-async onAuthenticate({ token }) {
-  return { user: token || "anonymous" };
-}
-```
-
-No team-level authorization. Any WebSocket client that reaches the Hocuspocus port can read/write any CRDT document. The stream-bus feature doesn't increase CRDT usage (observers don't create new CRDT docs), but the broader architecture trend of CRDT-as-planning-substrate amplifies this hole.
-
-**Rule for this feature:** CrdtStatusObserver only calls `updateAgentStatus()` (existing path). Do NOT add new CRDT document creation or cross-goal CRDT access in this feature. CRDT auth is tracked in [crdt-auth](../crdt-auth/).
-
-### Open Question: Multi-goal blockers are NOT fixed by this feature
-
-The stream-bus improves structure but does not fix the scaling blockers:
-- `messageChain` in OrchestratorService serializes all goals into one promise chain
-- `activeGoalId` fallback in GoalManager collapses to last-active goal
-- `MAX_CONCURRENT_DISPATCHES=2` is global, not per-goal
-
-These are documented in [goal-sessions](../goal-sessions/feature_implementation_planning.md). The bus makes them easier to fix later (each observer is goal-scoped via `StreamContext.goalId`), but the fix is a separate feature.
+| Decision | Outcome | Rationale |
+|----------|---------|-----------|
+| External bus vs hooks+visitor | **Hooks+Visitor** | AI SDK's native hooks eliminate the 120-line mapping loop. Agent is the bus. |
+| AgentEvent wrapper type | **Eliminated** | 20 of 23 yields were `stream_part` wrappers. Use AI SDK `TextStreamPart` directly. |
+| Lifecycle callbacks vs injected services vs hooks | **Agent-exposed hooks** | Tools call agent's own hooks. System plugs in. Agent doesn't know who's listening. |
+| `experimental_context` for service injection | **Rejected** | Tools shouldn't know about services. Hooks are cleaner — tools call `this.onTaskLifecycle.onComplete()`. |
+| `TaskLifecycleManager` (command pattern) | **Rejected** | Tool calling `ctx.lifecycle.transition()` is still the agent reaching OUT. Hooks are the agent firing its OWN events. |
+| `onClarificationNeeded` hook | **Rejected** | Workers are autonomous. If blocked → `report_status("blocked", question)` → exit → planner handles. In interactive mode, user just sends another message. |
+| Additional lifecycle hooks (8 candidates) | **Keep 4** | `onArtifactProduced`, `onDecisionMade`, `onProgress`, `onHandoff`, `onScopeChange`, `onError`, `onMention` all covered by existing mechanisms (producedDocs at completion, report_status, onSubtaskRequest). |
+| Adapter pattern (Paperclip comparison) | **Validated** | Same adapter registry approach, but with real-time hooks (not fire-and-forget process spawning). Auth token pattern useful for Phase 5 Docker workers. |
+| Protocol choice (MCP vs HTTP vs CLI) | **Transport is implementation detail** | All adapters implement IAgent. MCP/HTTP/stdio is the adapter's concern, not the interface. |
 
 ---
 
-### What This Does NOT Fix
+## What Gets Deleted
 
-The bus + factory is a streaming/creation cleanup. Multi-goal blockers need separate fixes:
-
-| Blocker | Where | Fix |
-|---------|-------|-----|
-| `FF_PARALLEL_PLANS` gate | GoalManager | Remove if block |
-| `activeGoalId` scalar | GoalManager | Require explicit goalId |
-| `messageChain` serializes all goals | OrchestratorService | `Map<goalId, Promise>` |
-| `MAX_CONCURRENT_DISPATCHES=2` global | DispatchManager | `Map<goalId, Budget>` |
-
-See [goal-sessions implementation plan](../goal-sessions/feature_implementation_planning.md).
-
-| File | Replaced By |
-|------|------------|
-| `SocketEventBroadcaster.ts` | `StreamPublisherObserver` |
-
----
-
-## Execution Flow (After)
-
-```
-OrchestratorService.dispatchTask(taskId, role):
-  │
-  ├── 1. Configure agent
-  │     definition = workerPool.getDefinition(role)
-  │     agent = new AiSdkAgent(definition)
-  │     tools = assembleLifecycleTools(...) + pluginRegistry.getTools(...)
-  │     agent.setTools(tools)
-  │
-  ├── 2. Create bus with observers
-  │     bus = new AgentStreamBus()
-  │     bus.addObserver(streamPublisherObserver)  // Channel A
-  │     bus.addObserver(channelBObserver)          // Channel B
-  │     bus.addObserver(taskLifecycleObserver)     // done/error
-  │     bus.addObserver(crdtStatusObserver)        // CRDT
-  │
-  └── 3. Iterate + emit
-        for await (event of workerPool.executeAgent(agent, taskId)):
-          bus.emit(event, { teamId, goalId, agentKey: role, taskId })
-```
-
----
-
-## Impact on Frontend
-
-None. Socket.IO events are identical — same `stream` channel, same payload shape. `StreamPublisherObserver` emits the same data that `SocketEventBroadcaster` does now.
-
-**One fix:** ChatAgent responses will now broadcast to the goal room (via observer) instead of unicasting to the requesting socket. This means other users watching the same goal will see ChatAgent responses — which is correct behavior.
+| File | Lines | Replaced By |
+|------|-------|-------------|
+| `SocketEventBroadcaster.ts` | 374 | `StreamPublisherVisitor` |
+| `WorkerCallbacks` interface | 18 | `IAgent.onStreaming + onTaskLifecycle` |
+| `ManagerStreamCallbacks` interface | 17 | Gone — visitors handle directly |
+| `AgentEvent` type (12 variants) | 23 | Gone — AI SDK `TextStreamPart` used directly |
+| 120-line mapping loop in AiSdkAgent | 120 | Gone — hooks handle events |
+| `registerStreamCallbacks()` | 10 | Gone — factory wires hooks |
+| 12 pass-through callbacks | ~60 | Gone — no forwarding layers |

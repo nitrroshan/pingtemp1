@@ -231,60 +231,77 @@ do_clean() {
     return
   fi
 
+  # ── 1. Backend data dir (canonical: packages/backend/data/) ─────────
   local data_dir="$ROOT/packages/backend/data"
   if [[ -d "$data_dir" ]]; then
-    # Remove workspaces (git clones, agent work)
-    rm -rf "$data_dir/workspaces" 2>/dev/null && info "Workspaces cleared"
-    # Remove task persistence
+    rm -rf "$data_dir/workspaces" 2>/dev/null && info "Workspaces cleared (backend/data)"
     rm -rf "$data_dir/tasks" 2>/dev/null && info "Tasks cleared"
-    # Remove plans
     rm -rf "$data_dir/plans" 2>/dev/null && info "Plans cleared"
-    # Remove SQLite DBs (auth + local storage)
     rm -f "$data_dir/auth.db" "$data_dir/auth.db-shm" "$data_dir/auth.db-wal" 2>/dev/null && info "Auth DB cleared"
     rm -f "$data_dir/ping.db" "$data_dir/ping.db-shm" "$data_dir/ping.db-wal" 2>/dev/null && info "Local DB cleared"
-    # Remove conversations
     rm -rf "$data_dir/conversations" 2>/dev/null
-    # Remove CRDT collab data (backend data dir)
-    rm -rf "$data_dir/collab" 2>/dev/null && info "CRDT data cleared (backend)"
-    info "All local data cleared."
-  else
-    dim "No data directory found"
+    rm -rf "$data_dir/collab" 2>/dev/null && info "CRDT data cleared (backend/data/collab)"
   fi
 
-  # Clear collab-service CRDT storage (separate package)
-  local collab_data="$ROOT/packages/collab-service/data/collab"
-  if [[ -d "$collab_data" ]]; then
-    rm -rf "$collab_data" 2>/dev/null && info "CRDT data cleared (collab-service)"
+  # ── 2. Stale dist data dir (created when bun dist/server.js launched from wrong cwd) ──
+  local dist_data_dir="$ROOT/packages/backend/dist/data"
+  if [[ -d "$dist_data_dir" ]]; then
+    rm -rf "$dist_data_dir" 2>/dev/null && info "Stale dist data cleared (backend/dist/data)"
   fi
 
-  # Also clear MongoDB if docker is available
+  # ── 3. collab-service data (when it ran as a separate process) ──────
+  local collab_data_root="$ROOT/packages/collab-service/data"
+  if [[ -d "$collab_data_root" ]]; then
+    rm -rf "$collab_data_root/collab" 2>/dev/null && info "CRDT data cleared (collab-service/data/collab)"
+    rm -rf "$collab_data_root/workspaces" 2>/dev/null && info "Workspaces cleared (collab-service/data/workspaces)"
+    # Hocuspocus also drops doc files into the root data dir at times.
+    find "$collab_data_root" -maxdepth 1 -name "*.yjs" -delete 2>/dev/null
+    find "$collab_data_root" -maxdepth 1 -name "*.bin" -delete 2>/dev/null
+  fi
+
+  # ── 4. Any other ./data/collab/ that any package might have created ─
+  for stray in "$ROOT/data/collab" "$ROOT/data/workspaces" "$ROOT/packages/agent-manager/data" "$ROOT/packages/collaboration/data"; do
+    if [[ -d "$stray" ]]; then
+      rm -rf "$stray" 2>/dev/null && info "Stray data cleared: ${stray#$ROOT/}"
+    fi
+  done
+
+  info "All local data cleared."
+
+  # ── 5. MongoDB (if Docker available) ─────────────────────────────────
   if command -v docker &>/dev/null && docker ps --format '{{.Names}}' 2>/dev/null | grep -q '^ping-mongo$'; then
     docker exec ping-mongo mongosh "mongodb://localhost:27017/ping" --quiet --eval '
       db.getCollectionNames().forEach(c => { if (c !== "system.version") db[c].deleteMany({}); });
     ' 2>/dev/null && info "MongoDB cleared (all collections)"
 
-    # Re-seed admin user into MongoDB (cloud mode) — only if NOT in hybrid mode (PG handles auth in hybrid)
     if ! (command -v docker &>/dev/null && docker ps --format '{{.Names}}' 2>/dev/null | grep -q '^ping-postgres$'); then
       cd "$ROOT/packages/backend" && PING_MODE=cloud bun run seed:admin 2>/dev/null && info "Admin user re-seeded (MongoDB)"
     fi
   else
-    # Re-seed admin user into SQLite (local mode)
     cd "$ROOT/packages/backend" && bun run seed:admin 2>/dev/null && info "Admin user re-seeded (SQLite)"
   fi
 
-  # Clear PostgreSQL if docker is available
+  # ── 6. PostgreSQL (if Docker available) ──────────────────────────────
   if command -v docker &>/dev/null && docker ps --format '{{.Names}}' 2>/dev/null | grep -q '^ping-postgres$'; then
     docker exec ping-postgres psql -U ping -d ping -c "
       TRUNCATE organizations, org_members, agent_teams, goals, tasks, agent_definitions, \"user\", session, account, verification CASCADE;
     " 2>/dev/null && info "PostgreSQL cleared (all tables truncated)"
 
-    # Re-seed admin + teams into PostgreSQL (hybrid mode)
     cd "$ROOT/packages/backend"
     PING_MODE=hybrid DATABASE_URL="postgresql://ping:ping@localhost:${POSTGRES_PORT}/ping" MONGODB_URI="mongodb://localhost:${MONGO_PORT}/ping" bun run seed:admin && info "Admin user re-seeded (PostgreSQL)"
     PING_MODE=hybrid DATABASE_URL="postgresql://ping:ping@localhost:${POSTGRES_PORT}/ping" MONGODB_URI="mongodb://localhost:${MONGO_PORT}/ping" bun run seed:teams && info "Teams re-seeded (PostgreSQL)"
   fi
 
   cd "$ROOT"
+
+  # ── 7. Reminder for browser-side state ───────────────────────────────
+  warn ""
+  warn "  ⚠  Browser localStorage/sessionStorage still holds session/goal IDs."
+  warn "  ⚠  Open this URL once to wipe ALL browser state in one click:"
+  warn "  ⚠      http://localhost:3001/nuke.html"
+  warn "  ⚠  (The page wipes localStorage, sessionStorage, IndexedDB, cookies,"
+  warn "  ⚠   and Cache API, then auto-redirects to /.)"
+  warn ""
 
   info "Clean complete."
 }

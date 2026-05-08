@@ -184,17 +184,11 @@ const ChatArea: React.FC<ChatAreaProps> = ({
       if (isOrchestrator) {
         // Send to manager/orchestrator for planning
         agentServiceV2.sendToManager(userMsg.content, goalId);
-      } else if (FEATURES.chatAgentChat) {
-        // Send to persistent ChatAgent (L2) for the role
-        agentServiceV2.sendToChatAgent(agent.role.toLowerCase(), userMsg.content, goalId);
       } else {
-        // Send to worker agent for task execution (legacy path)
-        // Pass taskId if there's an active (in_progress) task for this agent
-        await agentServiceV2.sendToWorker(
-          agent.role.toLowerCase(), 
-          userMsg.content, 
-          activeTask?.id
-        );
+        // Sub-agent chat — always routes through the persistent ChatAgent
+        // (L2). The legacy worker direct-chat path was deleted May 9 2026
+        // along with the dual-mode WorkerPool branch.
+        agentServiceV2.sendToChatAgent(agent.role.toLowerCase(), userMsg.content, goalId);
       }
     } catch (error: any) {
       logger.error("AgentManager Error:", error);

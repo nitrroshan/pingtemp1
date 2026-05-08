@@ -53,6 +53,16 @@ export { createPlannerTools } from "./orchestrator/tools/index.js";
 export type { PlannerToolsContext } from "./orchestrator/tools/index.js";
 export { classifyError } from "./orchestrator/types/workerTypes.js";
 export { PromptLoader } from "./orchestrator/PromptLoader.js";
+
+// Phase 1.8 of agent-stream-bus refactor — bridge from
+// AgentRuntimeFactory's hook contract to existing GoalManager/TaskStore.
+export {
+  GoalManagerOrchestratorAdapter,
+  type GoalManagerOrchestratorAdapterDeps,
+  type IGoalManagerLite,
+  type ITaskStoreLite,
+  type IDependencyResolverLite,
+} from "./orchestrator/GoalManagerOrchestratorAdapter.js";
 export { PromptBuilder } from "./agent/prompts/PromptBuilder.js";
 export { buildWorkerPrompt } from "./agent/prompts/worker/WorkerPromptFactory.js";
 export type {

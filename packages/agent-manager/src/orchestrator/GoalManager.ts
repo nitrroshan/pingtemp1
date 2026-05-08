@@ -19,6 +19,7 @@ import type { AnyGoalEvent } from "./events/GoalEvents.js";
 import type { PlannerAgent } from "./PlannerAgent.js";
 import type { ChatAgent } from "../chatAgent/ChatAgent.js";
 import type { AgentEvent } from "../agent/types.js";
+import type { IStreamingAgent, StreamingAgentContext } from "../agent/streaming/types.js";
 import { PromptLoader } from "./PromptLoader.js";
 import { rootLogger } from "../logging.js";
 
@@ -44,7 +45,10 @@ export interface GoalManagerConfig {
   createPlanner: (goalId: string) => Promise<PlannerAgent>;
   createChatAgent: (goalId: string, role: string) => ChatAgent;
   /** Stream callback for planner events — routes to Socket.IO */
-  onPlannerStream: (data: { goalId: string; taskId: string; agentId: string; part: any }) => void;
+  // (May 9 2026 PM-5 — review fix #1: `onPlannerStream` deleted. The
+  // default StreamPublisherVisitor wired by `OrchestratorService.
+  // installAgentRuntimeFactory()` is the single owner of planner stream
+  // publication. Per-turn extra visitors would double-emit.)
   /** Whether chat agents are enabled */
   chatAgentsEnabled: boolean;
   /** Optional callback to load prior conversation from storage */
@@ -77,7 +81,6 @@ export class GoalManager implements IGoalManager {
   // Phase 4.5: Agent factories (injected by AgentManagerV2 composition root)
   private createPlannerFn: (goalId: string) => Promise<PlannerAgent>;
   private createChatAgentFn: (goalId: string, role: string) => ChatAgent;
-  private onPlannerStream: GoalManagerConfig["onPlannerStream"];
   private chatAgentsEnabled: boolean;
   /** v3.0: Database persistence for tasks (optional — graceful degradation if null) */
   private taskPersistence: import("./contracts/ITaskPersistence.js").ITaskPersistence | null = null;
@@ -105,7 +108,6 @@ export class GoalManager implements IGoalManager {
     this.callbacks = config.callbacks;
     this.createPlannerFn = config.createPlanner;
     this.createChatAgentFn = config.createChatAgent;
-    this.onPlannerStream = config.onPlannerStream;
     this.chatAgentsEnabled = config.chatAgentsEnabled;
     this.taskPersistence = config.taskPersistence || null;
     this.eventBus = config.eventBus;
@@ -230,17 +232,45 @@ export class GoalManager implements IGoalManager {
     }
     const agent = goal.planner.getAgent();
     const sessionId = `team-${this.teamId}:goal-${goalId}`;
+
+    // Wire the agent through the team's default visitor stack
+    // (StreamPublisher / ChannelB / Crdt / ErrorChannel) — the same
+    // pipeline workers use. Stream parts flow through
+    // `OrchestratorService.callbacks.onStream` → `SocketEventBroadcaster`
+    // → goal-room broadcast (May 9 2026 PM-4 — Patch #1: planner uses
+    // runWithHooks).
+    const factory = this.workerPool.getRuntimeFactory();
+    const streamingAgent = agent as unknown as IStreamingAgent;
+    if (!factory) {
+      throw new Error(
+        `[GoalManager] AgentRuntimeFactory not installed; cannot execute planner turn for goal ${goalId}. ` +
+        `OrchestratorService.installAgentRuntimeFactory() must run before any planner turn.`,
+      );
+    }
+    if (typeof streamingAgent.runWithHooks !== "function") {
+      throw new Error(
+        `[GoalManager] Planner agent does not implement IStreamingAgent.runWithHooks (goal ${goalId}).`,
+      );
+    }
+
+    const ctx: StreamingAgentContext = {
+      teamId: this.teamId,
+      goalId,
+      agentId: "planner",
+      threadId: sessionId,
+    };
+
     try {
-      for await (const event of agent.execute({ message, threadId: sessionId })) {
-        if (event.type === "stream_part") {
-          this.onPlannerStream({
-            goalId,
-            taskId: `team-${this.teamId}`,
-            agentId: "planner",
-            part: event.part,
-          });
-        }
-      }
+      // The factory's default visitor stack (StreamPublisher / ChannelB /
+      // Crdt / ErrorChannel) is the single owner of stream publication.
+      // No per-turn `onPlannerStream` extra visitor — that double-emitted
+      // through `OrchestratorService.callbacks.onStream` and the legacy
+      // `onPlannerStream` callback (May 9 2026 PM-5 — review fix #1).
+      factory.wire({
+        agent: streamingAgent,
+        context: ctx,
+      });
+      await streamingAgent.runWithHooks({ message, context: ctx });
 
       // Save planner messages after each turn for session restore
       if (this.saveConversationFn) {

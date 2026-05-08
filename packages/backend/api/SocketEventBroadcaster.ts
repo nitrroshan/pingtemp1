@@ -68,7 +68,14 @@ export class SocketEventBroadcaster {
       onStream: async ({ taskId, agentId, part, goalId: streamGoalId }) => {
         if (taskId) streamedTasks.add(taskId);
 
-        const accKey = taskId || agentId || "unknown";
+        // Composite key — must include `streamGoalId` so concurrent
+        // planner/chat runs across different goals don't collide on
+        // `agentId="planner"` or `agentId="chat-{role}"` (May 9 2026 PM-7
+        // — review fix #1: prevents cross-goal accumulator contamination
+        // while SocketEventBroadcaster remains the persistence bridge).
+        // For task-scoped runs the taskId is already goal-unique, so
+        // including streamGoalId is redundant but harmless.
+        const accKey = `${streamGoalId ?? "no-goal"}::${taskId || agentId || "unknown"}`;
         const acc = messageAccumulator.get(accKey) || { agentId: agentId || "worker", text: "", parts: [] };
 
         switch (part?.type) {
@@ -118,7 +125,11 @@ export class SocketEventBroadcaster {
                 goalId: streamGoalId,
                 content: acc.text || " ",
                 streamParts: (acc.text.trim() || acc.parts.length > 0) ? JSON.stringify(toRenderedParts(acc.text, acc.parts)) : undefined,
-                agentLayer: (acc.agentId === "planner" || acc.agentId === "manager" || acc.agentId === "orchestrator") ? "planner" as const : "worker" as const,
+                agentLayer: (acc.agentId === "planner" || acc.agentId === "manager" || acc.agentId === "orchestrator")
+                  ? "planner" as const
+                  : acc.agentId.startsWith("chat-")
+                  ? "chat-agent" as const
+                  : "worker" as const,
                 contextMessages: contextMessages || undefined,
                 timestamp: new Date().toISOString(),
               };

@@ -284,7 +284,19 @@ export class AgentManager {
     const agentFactory = getAgentFactory();
     const self = this;
     const createPlanner = async (goalId: string): Promise<PlannerAgent> => {
-      const planner = new PlannerAgent({ agentFactory, teamRoles, teamId });
+      // Wire planner stream events through the same AgentRuntimeFactory
+      // workers use, so visitor fan-out is uniform. The factory is
+      // installed by OrchestratorService.installAgentRuntimeFactory()
+      // during initialize() — by the time a planner turn fires, the
+      // lookup is non-null. (May 9 2026 PM-4 — Patch #1.)
+      const agentRuntimeFactory = self.workerPool.getRuntimeFactory() ?? undefined;
+      const planner = new PlannerAgent({
+        agentFactory,
+        teamRoles,
+        teamId,
+        agentRuntimeFactory,
+        goalId,
+      });
       await planner.initialize();
       // Create goal-scoped orchestrator context for planner tools
       const goalOrchestratorContext = {
@@ -328,11 +340,24 @@ export class AgentManager {
 
     // ChatAgent factory — GoalManager calls this to create per-goal chat agents
     const createChatAgent = (goalId: string, role: string): ChatAgent => {
+      const agentRuntimeFactory = self.workerPool.getRuntimeFactory();
+      if (!agentRuntimeFactory) {
+        throw new Error(
+          `AgentManagerV2.createChatAgent: AgentRuntimeFactory not installed yet (goalId=${goalId}, role=${role}). ` +
+          `OrchestratorService.installAgentRuntimeFactory() must run before any ChatAgent is created.`,
+        );
+      }
       return new ChatAgent({
         role: role.toLowerCase(),
         teamId,
         goalId,
         taskStore: self.taskStoreInstance!,
+        // Same factory the workers + planner use. The default visitor
+        // stack (StreamPublisher / ChannelB / Crdt / ErrorChannel) is
+        // the SOLE owner of stream emission + persistence for ChatAgent
+        // too — see architecture doc "ChatAgent: Unicast Bug → Broadcast
+        // Fixed".
+        agentRuntimeFactory,
         onDispatchTask: async (taskId, r) => {
           if (self.orchestrator) {
             await self.orchestrator.directDispatchTask(taskId, r);
@@ -421,7 +446,8 @@ export class AgentManager {
       // Phase 4.5: Agent factories — GoalManager creates per-goal agents
       createPlanner,
       createChatAgent,
-      onPlannerStream: (data) => this.streamCallbacks?.onStream?.(data),
+      // (May 9 2026 PM-5 — review fix #1: `onPlannerStream` removed. The
+      // default StreamPublisherVisitor handles planner streams now.)
       chatAgentsEnabled: this.chatAgentsEnabled,
       taskPersistence: this.taskPersistence,
       eventBus,
@@ -541,9 +567,16 @@ export class AgentManager {
   }
 
   /**
-   * Send a user message to a ChatAgent and stream the response.
+   * Send a user message to a ChatAgent and stream the response via the
+   * provided consumer callbacks. Replaces the previous AsyncGenerator
+   * shape (May 9 2026 PM-4 — Patch #1: ChatAgent uses runWithHooks).
    */
-  async *chatAgentMessage(role: string, content: string, goalId?: string): AsyncGenerator<AgentEvent> {
+  async chatAgentMessage(
+    role: string,
+    content: string,
+    goalId: string | undefined,
+    consumer: import("./chatAgent/ChatAgent.js").ChatAgentStreamConsumer = {},
+  ): Promise<void> {
     if (!goalId) {
       throw new Error(`goalId is required for chatAgentMessage (role=${role})`);
     }
@@ -555,7 +588,7 @@ export class AgentManager {
         `chatAgentsEnabled=${this.chatAgentsEnabled}, goals=[${allGoals.map(g => `${g.goalId}(${g.state})`).join(',')}]`);
       throw new Error(`Chat agent not available for role '${role}'. Chat agents may not be enabled.`);
     }
-    yield* agent.handleUserMessage(content);
+    await agent.handleUserMessage(content, consumer);
   }
 
   /**
@@ -1211,41 +1244,6 @@ export class AgentManager {
 
   /** Track which role handles each task */
   private taskRoles = new Map<string, string>();
-
-  /**
-   * @deprecated Use orchestrator mode with startTaskExecution() instead
-   *
-   * Start a new task - creates taskId and routes to role (LEGACY MODE)
-   * This is for non-orchestrator usage where tasks are created ad-hoc.
-   * For orchestrator mode, use: approveTaskForChat() → startTaskExecution()
-   *
-   * @returns { taskId, response }
-   */
-  async startTask(
-    role: string,
-    message: string,
-  ): Promise<{ taskId: string; response: any }> {
-    const taskId = `task-${Date.now()}`;
-    this.taskRoles.set(taskId, role.toLowerCase());
-
-    logger.info(`Starting new task: ${taskId} → ${role}`);
-    const response = await this.workerPool.runTask(taskId, role, message);
-
-    return { taskId, response };
-  }
-
-  /**
-   * Continue an existing task - uses the same role/worker
-   */
-  async continueTask(taskId: string, message: string): Promise<any> {
-    const role = this.taskRoles.get(taskId);
-    if (!role) {
-      throw new Error(`Unknown task: ${taskId}. Use startTask() first.`);
-    }
-
-    logger.info(`Continuing task: ${taskId} (${role})`);
-    return this.workerPool.runTask(taskId, role, message);
-  }
 
   /**
    * Stop a specific task and dispose its worker
