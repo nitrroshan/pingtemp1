@@ -1,4 +1,4 @@
--- Migration to create users table
+-- Migration for creating the users table
 CREATE TABLE users (
     id SERIAL PRIMARY KEY,
     email VARCHAR(255) NOT NULL UNIQUE,
