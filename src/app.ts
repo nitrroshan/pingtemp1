@@ -1,22 +1,19 @@
 import express from 'express';
-import searchRoutes from './routes/search';
+import bodyParser from 'body-parser';
+import authRoutes from './auth/routes';
 
 const app = express();
-const PORT = process.env.PORT || 3000;
 
-// Middleware for JSON parsing
-app.use(express.json());
+// Middleware
+app.use(bodyParser.json());
 
-// Register routes
-app.use('/api', searchRoutes);
+// Routes
+app.use('/auth', authRoutes);
 
-// Global error handling middleware
-app.use((err: any, req: any, res: any, next: any) => {
-    console.error(err.stack);
-    res.status(500).json({ error: 'Something went wrong!' });
+// Error handling middleware
+app.use((err, req, res, next) => {
+  console.error(err.stack);
+  res.status(500).json({ error: 'Internal Server Error' });
 });
 
-// Start the server
-app.listen(PORT, () => {
-    console.log(`Server is running on port ${PORT}`);
-});
+export default app;
