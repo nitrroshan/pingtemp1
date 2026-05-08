@@ -1,12 +1,16 @@
--- Migration to create notes table
+-- Migration for creating the notes table
 CREATE TABLE notes (
     id SERIAL PRIMARY KEY,
-    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    title VARCHAR(255),
+    user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    title TEXT NOT NULL,
     content TEXT,
+    tags JSONB,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
--- Create a full-text search index for notes
-to_tsvector('english', title || ' ' || content);
+-- Full-text search index on title and content
+CREATE INDEX notes_search_idx ON notes USING GIN (to_tsvector('english', title || ' ' || content));
+
+-- JSONB GIN index for tags
+CREATE INDEX notes_tags_idx ON notes USING GIN (tags);
