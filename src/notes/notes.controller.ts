@@ -47,20 +47,34 @@ export async function getUserNotes(req: Request, res: Response): Promise<Respons
 export async function searchNotes(req: Request, res: Response): Promise<Response> {
     try {
         const userId = req.user.id; // Assuming user is authenticated
-        const { query } = req.query;
+        const { query, page = 1, limit = 10 } = req.query;
 
-        if (!query) {
-            return res.status(400).json({ message: 'Search query is required' });
+        if (!query || typeof query !== 'string') {
+            return res.status(400).json({ message: 'Search query is required and must be a string' });
         }
+
+        const skip = (Number(page) - 1) * Number(limit);
 
         const notes = await NoteModel.find({
             user: userId,
             $text: { $search: query },
+        })
+        .skip(skip)
+        .limit(Number(limit));
+
+        const total = await NoteModel.countDocuments({
+            user: userId,
+            $text: { $search: query },
         });
 
-        return res.status(200).json(notes);
+        return res.status(200).json({
+            notes,
+            total,
+            page: Number(page),
+            totalPages: Math.ceil(total / Number(limit))
+        });
     } catch (error) {
-        return res.status(500).json({ message: 'Failed to search notes' });
+        return res.status(500).json({ message: error.message || 'Failed to search notes' });
     }
 }
 

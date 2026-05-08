@@ -42,6 +42,19 @@ describe('Notes CRUD Endpoints', () => {
     expect(res.body).toHaveLength(1);
   });
 
+  test('Search notes by query', async () => {
+    const res = await request(app)
+      .get('/notes/search')
+      .set('Authorization', `Bearer ${token}`)
+      .query({ query: 'Test', page: 1, limit: 10 });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body.notes).toHaveLength(1);
+    expect(res.body.total).toBe(1);
+    expect(res.body.page).toBe(1);
+    expect(res.body.totalPages).toBe(1);
+  });
+
   test('Get a note by ID', async () => {
     const res = await request(app)
       .get(`/notes/${noteId}`)
