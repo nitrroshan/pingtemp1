@@ -1,13 +1,16 @@
--- Migration: Create notes table
+-- Create notes table
 CREATE TABLE notes (
-    id SERIAL PRIMARY KEY,
-    user_id INT REFERENCES users(id) ON DELETE CASCADE,
-    title VARCHAR(200) NOT NULL,
-    content TEXT NOT NULL,
+    id UUID PRIMARY KEY,
+    user_id UUID NOT NULL,
+    title VARCHAR(255),
+    content TEXT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 
--- Indexes for search
-CREATE INDEX idx_notes_title ON notes USING gin (to_tsvector('english', title));
-CREATE INDEX idx_notes_content ON notes USING gin (to_tsvector('english', content));
+-- Add index for title
+CREATE INDEX idx_notes_title ON notes (title);
+
+-- Add full-text index for content (PostgreSQL example)
+CREATE INDEX idx_notes_content_fulltext ON notes USING gin (to_tsvector('english', content));
