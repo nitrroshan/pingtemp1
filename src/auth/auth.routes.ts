@@ -11,11 +11,15 @@ router.post('/login', loginUser);
 
 // Logout user endpoint
 import { logoutUser } from './logout.controller';
-router.post('/logout', logoutUser);
+import { authenticateToken } from './auth.middleware';
+
+// Logout user endpoint
+router.post('/logout', authenticateToken, logoutUser);
 
 import { refreshToken } from './refreshToken.controller';
 
 // Refresh token endpoint
-router.post('/refresh-token', refreshToken);
+// Refresh token endpoint
+router.post('/refresh-token', authenticateToken, refreshToken);
 
 export default router;

@@ -9,6 +9,7 @@ export function authenticateToken(req: Request, res: Response, next: NextFunctio
     const token = authHeader && authHeader.split(' ')[1];
 
     if (!token) {
+        console.warn(`[AUTH] Missing access token for request to: ${req.originalUrl}`);
         return res.status(401).json({ message: 'Access token is missing' });
     }
 
@@ -17,6 +18,7 @@ export function authenticateToken(req: Request, res: Response, next: NextFunctio
         req.user = payload; // Assign payload to request object for downstream use
         next();
     } catch (error) {
+        console.error(`[AUTH] Invalid or expired token for request to: ${req.originalUrl}`);
         return res.status(403).json({ message: 'Invalid or expired access token' });
     }
 }
