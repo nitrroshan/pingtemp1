@@ -1,50 +1,81 @@
 import { Request, Response } from 'express';
 import jwt from 'jsonwebtoken';
 import { UserModel } from './user.model';
-import { getCache, setCache } from './cache.service';
 
 const JWT_SECRET = process.env.JWT_SECRET;
 const REFRESH_TOKEN_SECRET = process.env.REFRESH_TOKEN_SECRET;
-const REFRESH_TOKEN_TTL = 60 * 60 * 24 * 7; // 7 days
 
-if (!REFRESH_TOKEN_SECRET) {
-    throw new Error('Environment variable REFRESH_TOKEN_SECRET must be set');
+if (!JWT_SECRET || !REFRESH_TOKEN_SECRET) {
+    throw new Error('Environment variables JWT_SECRET and REFRESH_TOKEN_SECRET must be set');
+}
+
+const TOKEN_EXPIRATION = '1h';
+const REFRESH_TOKEN_EXPIRATION = '7d';
+
+// In-memory store for refresh tokens (can be replaced with a database)
+const refreshTokens: Record<string, string> = {};
+
+/**
+ * Generate both access and refresh tokens
+ */
+function generateTokens(userId: string, email: string): { accessToken: string; refreshToken: string } {
+    const accessToken = jwt.sign({ id: userId, email }, JWT_SECRET, { expiresIn: TOKEN_EXPIRATION });
+    const refreshToken = jwt.sign({ id: userId, email }, REFRESH_TOKEN_SECRET, { expiresIn: REFRESH_TOKEN_EXPIRATION });
+
+    refreshTokens[refreshToken] = userId; // Save refresh token
+    return { accessToken, refreshToken };
 }
 
 /**
- * Refresh the access token using a valid refresh token.
+ * Refresh token endpoint handler
  */
 export async function refreshToken(req: Request, res: Response): Promise<Response> {
     try {
         const { refreshToken } = req.body;
-
         if (!refreshToken) {
-            return res.status(400).json({ message: 'Refresh token is required' });
+            return res.status(400).json({ error: 'Refresh token is required' });
         }
 
         // Verify refresh token
-        let payload;
-        try {
-            payload = jwt.verify(refreshToken, REFRESH_TOKEN_SECRET);
-        } catch {
-            return res.status(401).json({ message: 'Invalid or expired refresh token' });
+        const payload = jwt.verify(refreshToken, REFRESH_TOKEN_SECRET);
+        if (typeof payload !== 'object' || !refreshTokens[refreshToken]) {
+            return res.status(401).json({ error: 'Invalid or expired refresh token' });
         }
 
-        // Check if refresh token is blacklisted
-        const isBlacklisted = await getCache(`blacklisted_refresh_token:${refreshToken}`);
-        if (isBlacklisted) {
-            return res.status(403).json({ message: 'Token has been revoked' });
-        }
-
-        // Generate new access token
-        const user = await UserModel.findById(payload.id);
+        const userId = refreshTokens[refreshToken];
+        const user = await UserModel.findById(userId);
         if (!user) {
-            return res.status(404).json({ message: 'User not found' });
+            return res.status(404).json({ error: 'User not found' });
         }
 
-        const newAccessToken = jwt.sign({ id: user.id, email: user.email }, JWT_SECRET, { expiresIn: '1h' });
-        return res.status(200).json({ token: newAccessToken });
+        // Generate new tokens
+        const tokens = generateTokens(user.id, user.email);
+
+        return res.status(200).json({ message: 'Token refreshed', ...tokens });
     } catch (error) {
-        return res.status(500).json({ message: 'Internal server error' });
+        return res.status(500).json({ error: 'Internal server error' });
     }
 }
+
+/**
+ * Revoke refresh token endpoint handler
+ */
+export async function revokeRefreshToken(req: Request, res: Response): Promise<Response> {
+    try {
+        const { refreshToken } = req.body;
+        if (!refreshToken) {
+            return res.status(400).json({ error: 'Refresh token is required' });
+        }
+
+        if (refreshTokens[refreshToken]) {
+            delete refreshTokens[refreshToken];
+            return res.status(200).json({ message: 'Refresh token revoked successfully' });
+        }
+
+        return res.status(404).json({ error: 'Refresh token not found' });
+    } catch (error) {
+        return res.status(500).json({ error: 'Internal server error' });
+    }
+}
+
+export { generateTokens };

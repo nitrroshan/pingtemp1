@@ -1,25 +1,13 @@
 import { Router } from 'express';
 import { registerUser, loginUser } from './auth.controller';
+import { refreshToken, revokeRefreshToken } from './refreshToken.controller';
 
 const router = Router();
 
-// Register user endpoint
-router.post('/register', registerUser);
-
-// Login user endpoint
-router.post('/login', loginUser);
-
-// Logout user endpoint
-import { logoutUser } from './logout.controller';
-import { authenticateToken } from './auth.middleware';
-
-// Logout user endpoint
-router.post('/logout', authenticateToken, logoutUser);
-
-import { refreshToken } from './refreshToken.controller';
-
-// Refresh token endpoint
-// Refresh token endpoint
-router.post('/refresh-token', authenticateToken, refreshToken);
+// Authentication routes
+router.post('/auth/register', registerUser);
+router.post('/auth/login', loginUser);
+router.post('/auth/token/refresh', refreshToken);
+router.post('/auth/token/revoke', revokeRefreshToken);
 
 export default router;

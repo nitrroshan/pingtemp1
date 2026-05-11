@@ -31,7 +31,7 @@ describe('Authentication Endpoints', () => {
         .send({ email: 'duplicate@example.com', password: 'password123' });
 
       expect(response.status).toBe(400);
-      expect(response.body).toHaveProperty('error', 'User already exists');
+      expect(response.body).toHaveProperty('error', 'Email is already registered');
     });
   });
 
@@ -52,8 +52,77 @@ describe('Authentication Endpoints', () => {
         .post('/auth/login')
         .send({ email: 'invalid@example.com', password: 'wrongpassword' });
 
-      expect(response.status).toBe(400);
+      expect(response.status).toBe(401);
       expect(response.body).toHaveProperty('error', 'Invalid credentials');
+    });
+  });
+
+  describe('POST /auth/token/refresh', () => {
+    let refreshToken: string;
+
+    beforeAll(async () => {
+      const registerResponse = await request(app)
+        .post('/auth/register')
+        .send({ email: 'refresh@example.com', password: 'password123' });
+
+      const loginResponse = await request(app)
+        .post('/auth/login')
+        .send({ email: 'refresh@example.com', password: 'password123' });
+
+      refreshToken = loginResponse.body.refreshToken;
+    });
+
+    it('should refresh the token with a valid refresh token', async () => {
+      const response = await request(app)
+        .post('/auth/token/refresh')
+        .send({ refreshToken });
+
+      expect(response.status).toBe(200);
+      expect(response.body).toHaveProperty('accessToken');
+      expect(response.body).toHaveProperty('refreshToken');
+    });
+
+    it('should not refresh the token with an invalid refresh token', async () => {
+      const response = await request(app)
+        .post('/auth/token/refresh')
+        .send({ refreshToken: 'invalid-token' });
+
+      expect(response.status).toBe(401);
+      expect(response.body).toHaveProperty('error', 'Invalid or expired refresh token');
+    });
+  });
+
+  describe('POST /auth/token/revoke', () => {
+    let refreshToken: string;
+
+    beforeAll(async () => {
+      const registerResponse = await request(app)
+        .post('/auth/register')
+        .send({ email: 'revoke@example.com', password: 'password123' });
+
+      const loginResponse = await request(app)
+        .post('/auth/login')
+        .send({ email: 'revoke@example.com', password: 'password123' });
+
+      refreshToken = loginResponse.body.refreshToken;
+    });
+
+    it('should revoke the refresh token', async () => {
+      const response = await request(app)
+        .post('/auth/token/revoke')
+        .send({ refreshToken });
+
+      expect(response.status).toBe(200);
+      expect(response.body).toHaveProperty('message', 'Refresh token revoked successfully');
+    });
+
+    it('should not revoke an invalid refresh token', async () => {
+      const response = await request(app)
+        .post('/auth/token/revoke')
+        .send({ refreshToken: 'invalid-token' });
+
+      expect(response.status).toBe(404);
+      expect(response.body).toHaveProperty('error', 'Refresh token not found');
     });
   });
 });
