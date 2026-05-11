@@ -1,380 +1,380 @@
 {
   "version": "1.0",
-  "workspaceId": "ws-dbabcf98-task-8-moxu0xp4",
-  "taskId": "dbabcf98-task-8",
+  "workspaceId": "ws-3f7c2f0e-auth-setup-mp0sko6y",
+  "taskId": "3f7c2f0e-auth-setup",
   "agentId": "backend",
-  "branchName": "goal-dbabcf98-7ca7-4c5c-8e74-1dd88e0540ac/task-dbabcf98-task-8",
+  "branchName": "goal-3f7c2f0e-61f4-45f5-9a60-49aa2f37183c/task-3f7c2f0e-auth-setup",
   "baseBranch": "main",
   "baseCommit": "",
   "knowledgeRefs": [],
   "dependencyTasks": [],
-  "createdAt": "2026-05-09T04:16:42.193Z",
-  "lastCommitAt": "2026-05-09T04:17:10.900Z",
+  "createdAt": "2026-05-11T05:59:23.808Z",
+  "lastCommitAt": "2026-05-11T06:00:54.641Z",
   "status": "published",
   "retryCount": 0,
   "publishedArtifacts": [
     {
-      "id": "dbabcf98-task-8-migrations-002_create_tags_table.sql",
+      "id": "3f7c2f0e-auth-setup-migrations-002_create_tags_table.sql",
       "path": "migrations/002_create_tags_table.sql",
       "type": "file"
     },
     {
-      "id": "dbabcf98-task-8-migrations-create_users_table.sql",
+      "id": "3f7c2f0e-auth-setup-migrations-create_users_table.sql",
       "path": "migrations/create_users_table.sql",
       "type": "file"
     },
     {
-      "id": "dbabcf98-task-8-migrations-002_create_notes_table.sql",
+      "id": "3f7c2f0e-auth-setup-migrations-002_create_notes_table.sql",
       "path": "migrations/002_create_notes_table.sql",
       "type": "file"
     },
     {
-      "id": "dbabcf98-task-8-migrations-002_create_notes_table_up.sql",
+      "id": "3f7c2f0e-auth-setup-migrations-002_create_notes_table_up.sql",
       "path": "migrations/002_create_notes_table_up.sql",
       "type": "file"
     },
     {
-      "id": "dbabcf98-task-8-migrations-002-create-notes.sql",
+      "id": "3f7c2f0e-auth-setup-migrations-002-create-notes.sql",
       "path": "migrations/002-create-notes.sql",
       "type": "file"
     },
     {
-      "id": "dbabcf98-task-8-migrations-003_create_notes_table.sql",
+      "id": "3f7c2f0e-auth-setup-migrations-003_create_notes_table.sql",
       "path": "migrations/003_create_notes_table.sql",
       "type": "file"
     },
     {
-      "id": "dbabcf98-task-8-migrations-004_create_notes_tags_table.sql",
+      "id": "3f7c2f0e-auth-setup-migrations-004_create_notes_tags_table.sql",
       "path": "migrations/004_create_notes_tags_table.sql",
       "type": "file"
     },
     {
-      "id": "dbabcf98-task-8-migrations-001-create-users.sql",
+      "id": "3f7c2f0e-auth-setup-migrations-001-create-users.sql",
       "path": "migrations/001-create-users.sql",
       "type": "file"
     },
     {
-      "id": "dbabcf98-task-8-migrations-002-create-notes-table.sql",
+      "id": "3f7c2f0e-auth-setup-migrations-002-create-notes-table.sql",
       "path": "migrations/002-create-notes-table.sql",
       "type": "file"
     },
     {
-      "id": "dbabcf98-task-8-migrations-001_create_users_table_down.sql",
+      "id": "3f7c2f0e-auth-setup-migrations-001_create_users_table_down.sql",
       "path": "migrations/001_create_users_table_down.sql",
       "type": "file"
     },
     {
-      "id": "dbabcf98-task-8-migrations-README.md",
+      "id": "3f7c2f0e-auth-setup-migrations-README.md",
       "path": "migrations/README.md",
       "type": "file"
     },
     {
-      "id": "dbabcf98-task-8-migrations-001-create-users-table.sql",
+      "id": "3f7c2f0e-auth-setup-migrations-001-create-users-table.sql",
       "path": "migrations/001-create-users-table.sql",
       "type": "file"
     },
     {
-      "id": "dbabcf98-task-8-migrations-002_create_notes_table_down.sql",
+      "id": "3f7c2f0e-auth-setup-migrations-002_create_notes_table_down.sql",
       "path": "migrations/002_create_notes_table_down.sql",
       "type": "file"
     },
     {
-      "id": "dbabcf98-task-8-migrations-001-create-users-and-notes.sql",
+      "id": "3f7c2f0e-auth-setup-migrations-001-create-users-and-notes.sql",
       "path": "migrations/001-create-users-and-notes.sql",
       "type": "file"
     },
     {
-      "id": "dbabcf98-task-8-migrations-001_create_users_table_up.sql",
+      "id": "3f7c2f0e-auth-setup-migrations-001_create_users_table_up.sql",
       "path": "migrations/001_create_users_table_up.sql",
       "type": "file"
     },
     {
-      "id": "dbabcf98-task-8-migrations-001_create_users_table.sql",
+      "id": "3f7c2f0e-auth-setup-migrations-001_create_users_table.sql",
       "path": "migrations/001_create_users_table.sql",
       "type": "file"
     },
     {
-      "id": "dbabcf98-task-8-migrations-create_notes_table.sql",
+      "id": "3f7c2f0e-auth-setup-migrations-create_notes_table.sql",
       "path": "migrations/create_notes_table.sql",
       "type": "file"
     },
     {
-      "id": "dbabcf98-task-8-migrations-001_create_users_and_notes.sql",
+      "id": "3f7c2f0e-auth-setup-migrations-001_create_users_and_notes.sql",
       "path": "migrations/001_create_users_and_notes.sql",
       "type": "file"
     },
     {
-      "id": "dbabcf98-task-8-activity-activity.jsonl",
+      "id": "3f7c2f0e-auth-setup-activity-activity.jsonl",
       "path": "activity/activity.jsonl",
       "type": "file"
     },
     {
-      "id": "dbabcf98-task-8-index.js",
+      "id": "3f7c2f0e-auth-setup-index.js",
       "path": "index.js",
       "type": "file"
     },
     {
-      "id": "dbabcf98-task-8-auth-system-auth.controller.ts",
+      "id": "3f7c2f0e-auth-setup-auth-system-auth.controller.ts",
       "path": "auth-system/auth.controller.ts",
       "type": "file"
     },
     {
-      "id": "dbabcf98-task-8-auth-system-endpoints-spec.md",
+      "id": "3f7c2f0e-auth-setup-auth-system-endpoints-spec.md",
       "path": "auth-system/endpoints-spec.md",
       "type": "file"
     },
     {
-      "id": "dbabcf98-task-8-auth-system-auth.test.ts",
+      "id": "3f7c2f0e-auth-setup-auth-system-auth.test.ts",
       "path": "auth-system/auth.test.ts",
       "type": "file"
     },
     {
-      "id": "dbabcf98-task-8-auth-system-auth-middleware.js",
+      "id": "3f7c2f0e-auth-setup-auth-system-auth-middleware.js",
       "path": "auth-system/auth-middleware.js",
       "type": "file"
     },
     {
-      "id": "dbabcf98-task-8-auth-system-auth.routes.ts",
+      "id": "3f7c2f0e-auth-setup-auth-system-auth.routes.ts",
       "path": "auth-system/auth.routes.ts",
       "type": "file"
     },
     {
-      "id": "dbabcf98-task-8-auth-system-routes-auth.js",
+      "id": "3f7c2f0e-auth-setup-auth-system-routes-auth.js",
       "path": "auth-system/routes/auth.js",
       "type": "file"
     },
     {
-      "id": "dbabcf98-task-8-auth-system-app.js",
+      "id": "3f7c2f0e-auth-setup-auth-system-app.js",
       "path": "auth-system/app.js",
       "type": "file"
     },
     {
-      "id": "dbabcf98-task-8-docs-websockets_vs_polling.md",
+      "id": "3f7c2f0e-auth-setup-docs-websockets_vs_polling.md",
       "path": "docs/websockets_vs_polling.md",
       "type": "file"
     },
     {
-      "id": "dbabcf98-task-8-README.md",
+      "id": "3f7c2f0e-auth-setup-README.md",
       "path": "README.md",
       "type": "file"
     },
     {
-      "id": "dbabcf98-task-8-scratch-run_initialize-react.sh",
+      "id": "3f7c2f0e-auth-setup-scratch-run_initialize-react.sh",
       "path": "scratch/run_initialize-react.sh",
       "type": "file"
     },
     {
-      "id": "dbabcf98-task-8-initialize-react.sh",
+      "id": "3f7c2f0e-auth-setup-initialize-react.sh",
       "path": "initialize-react.sh",
       "type": "file"
     },
     {
-      "id": "dbabcf98-task-8-.gitignore",
+      "id": "3f7c2f0e-auth-setup-.gitignore",
       "path": ".gitignore",
       "type": "file"
     },
     {
-      "id": "dbabcf98-task-8-package.json",
+      "id": "3f7c2f0e-auth-setup-package.json",
       "path": "package.json",
       "type": "file"
     },
     {
-      "id": "dbabcf98-task-8-db-migrations-001_create_users.sql",
+      "id": "3f7c2f0e-auth-setup-db-migrations-001_create_users.sql",
       "path": "db/migrations/001_create_users.sql",
       "type": "file"
     },
     {
-      "id": "dbabcf98-task-8-db-migrations-20230508_create_users_notes.sql",
+      "id": "3f7c2f0e-auth-setup-db-migrations-20230508_create_users_notes.sql",
       "path": "db/migrations/20230508_create_users_notes.sql",
       "type": "file"
     },
     {
-      "id": "dbabcf98-task-8-db-migrations-002_create_notes.sql",
+      "id": "3f7c2f0e-auth-setup-db-migrations-002_create_notes.sql",
       "path": "db/migrations/002_create_notes.sql",
       "type": "file"
     },
     {
-      "id": "dbabcf98-task-8-db-migrations-003_create_tags.sql",
+      "id": "3f7c2f0e-auth-setup-db-migrations-003_create_tags.sql",
       "path": "db/migrations/003_create_tags.sql",
       "type": "file"
     },
     {
-      "id": "dbabcf98-task-8-db-migrations-20230508_create_users_notes_migration.js",
+      "id": "3f7c2f0e-auth-setup-db-migrations-20230508_create_users_notes_migration.js",
       "path": "db/migrations/20230508_create_users_notes_migration.js",
       "type": "file"
     },
     {
-      "id": "dbabcf98-task-8-src-middleware-rateLimit.middleware.ts",
+      "id": "3f7c2f0e-auth-setup-src-middleware-rateLimit.middleware.ts",
       "path": "src/middleware/rateLimit.middleware.ts",
       "type": "file"
     },
     {
-      "id": "dbabcf98-task-8-src-auth.test.ts",
+      "id": "3f7c2f0e-auth-setup-src-auth.test.ts",
       "path": "src/auth.test.ts",
       "type": "file"
     },
     {
-      "id": "dbabcf98-task-8-src-auth-user.model.ts",
+      "id": "3f7c2f0e-auth-setup-src-auth-user.model.ts",
       "path": "src/auth/user.model.ts",
       "type": "file"
     },
     {
-      "id": "dbabcf98-task-8-src-auth-auth.controller.ts",
+      "id": "3f7c2f0e-auth-setup-src-auth-auth.controller.ts",
       "path": "src/auth/auth.controller.ts",
       "type": "file"
     },
     {
-      "id": "dbabcf98-task-8-src-auth-routes.ts",
+      "id": "3f7c2f0e-auth-setup-src-auth-routes.ts",
       "path": "src/auth/routes.ts",
       "type": "file"
     },
     {
-      "id": "dbabcf98-task-8-src-auth-middleware.ts",
+      "id": "3f7c2f0e-auth-setup-src-auth-middleware.ts",
       "path": "src/auth/middleware.ts",
       "type": "file"
     },
     {
-      "id": "dbabcf98-task-8-src-auth-auth.test.ts",
+      "id": "3f7c2f0e-auth-setup-src-auth-auth.test.ts",
       "path": "src/auth/auth.test.ts",
       "type": "file"
     },
     {
-      "id": "dbabcf98-task-8-src-auth-auth.service.ts",
+      "id": "3f7c2f0e-auth-setup-src-auth-auth.service.ts",
       "path": "src/auth/auth.service.ts",
       "type": "file"
     },
     {
-      "id": "dbabcf98-task-8-src-auth-tests-auth.test.ts",
+      "id": "3f7c2f0e-auth-setup-src-auth-tests-auth.test.ts",
       "path": "src/auth/tests/auth.test.ts",
       "type": "file"
     },
     {
-      "id": "dbabcf98-task-8-src-auth-validators.ts",
+      "id": "3f7c2f0e-auth-setup-src-auth-validators.ts",
       "path": "src/auth/validators.ts",
       "type": "file"
     },
     {
-      "id": "dbabcf98-task-8-src-auth-auth.middleware.ts",
+      "id": "3f7c2f0e-auth-setup-src-auth-auth.middleware.ts",
       "path": "src/auth/auth.middleware.ts",
       "type": "file"
     },
     {
-      "id": "dbabcf98-task-8-src-auth-auth.routes.ts",
+      "id": "3f7c2f0e-auth-setup-src-auth-auth.routes.ts",
       "path": "src/auth/auth.routes.ts",
       "type": "file"
     },
     {
-      "id": "dbabcf98-task-8-src-auth-refreshToken.controller.ts",
+      "id": "3f7c2f0e-auth-setup-src-auth-refreshToken.controller.ts",
       "path": "src/auth/refreshToken.controller.ts",
       "type": "file"
     },
     {
-      "id": "dbabcf98-task-8-src-auth-auth.ts",
+      "id": "3f7c2f0e-auth-setup-src-auth-auth.ts",
       "path": "src/auth/auth.ts",
       "type": "file"
     },
     {
-      "id": "dbabcf98-task-8-src-auth-cache.service.ts",
+      "id": "3f7c2f0e-auth-setup-src-auth-cache.service.ts",
       "path": "src/auth/cache.service.ts",
       "type": "file"
     },
     {
-      "id": "dbabcf98-task-8-src-auth-logout.controller.ts",
+      "id": "3f7c2f0e-auth-setup-src-auth-logout.controller.ts",
       "path": "src/auth/logout.controller.ts",
       "type": "file"
     },
     {
-      "id": "dbabcf98-task-8-src-layout-DashboardLayout.tsx",
+      "id": "3f7c2f0e-auth-setup-src-layout-DashboardLayout.tsx",
       "path": "src/layout/DashboardLayout.tsx",
       "type": "file"
     },
     {
-      "id": "dbabcf98-task-8-src-layout-index.ts",
+      "id": "3f7c2f0e-auth-setup-src-layout-index.ts",
       "path": "src/layout/index.ts",
       "type": "file"
     },
     {
-      "id": "dbabcf98-task-8-src-app.ts",
+      "id": "3f7c2f0e-auth-setup-src-app.ts",
       "path": "src/app.ts",
       "type": "file"
     },
     {
-      "id": "dbabcf98-task-8-src-utils-retryRequest.ts",
+      "id": "3f7c2f0e-auth-setup-src-utils-retryRequest.ts",
       "path": "src/utils/retryRequest.ts",
       "type": "file"
     },
     {
-      "id": "dbabcf98-task-8-src-components-ChartComponent.tsx",
+      "id": "3f7c2f0e-auth-setup-src-components-ChartComponent.tsx",
       "path": "src/components/ChartComponent.tsx",
       "type": "file"
     },
     {
-      "id": "dbabcf98-task-8-src-notes-routes.ts",
+      "id": "3f7c2f0e-auth-setup-src-notes-routes.ts",
       "path": "src/notes/routes.ts",
       "type": "file"
     },
     {
-      "id": "dbabcf98-task-8-src-notes-tests-notes.test.ts",
+      "id": "3f7c2f0e-auth-setup-src-notes-tests-notes.test.ts",
       "path": "src/notes/tests/notes.test.ts",
       "type": "file"
     },
     {
-      "id": "dbabcf98-task-8-src-notes-notes.controller.ts",
+      "id": "3f7c2f0e-auth-setup-src-notes-notes.controller.ts",
       "path": "src/notes/notes.controller.ts",
       "type": "file"
     },
     {
-      "id": "dbabcf98-task-8-src-notes-notes.routes.ts",
+      "id": "3f7c2f0e-auth-setup-src-notes-notes.routes.ts",
       "path": "src/notes/notes.routes.ts",
       "type": "file"
     },
     {
-      "id": "dbabcf98-task-8-src-notes-handlers.ts",
+      "id": "3f7c2f0e-auth-setup-src-notes-handlers.ts",
       "path": "src/notes/handlers.ts",
       "type": "file"
     },
     {
-      "id": "dbabcf98-task-8-src-notes-notes.service.ts",
+      "id": "3f7c2f0e-auth-setup-src-notes-notes.service.ts",
       "path": "src/notes/notes.service.ts",
       "type": "file"
     },
     {
-      "id": "dbabcf98-task-8-src-notes-services.ts",
+      "id": "3f7c2f0e-auth-setup-src-notes-services.ts",
       "path": "src/notes/services.ts",
       "type": "file"
     },
     {
-      "id": "dbabcf98-task-8-src-notes-note.model.ts",
+      "id": "3f7c2f0e-auth-setup-src-notes-note.model.ts",
       "path": "src/notes/note.model.ts",
       "type": "file"
     },
     {
-      "id": "dbabcf98-task-8-src-hooks-useRealTimeData.ts",
+      "id": "3f7c2f0e-auth-setup-src-hooks-useRealTimeData.ts",
       "path": "src/hooks/useRealTimeData.ts",
       "type": "file"
     },
     {
-      "id": "dbabcf98-task-8-src-server.ts",
+      "id": "3f7c2f0e-auth-setup-src-server.ts",
       "path": "src/server.ts",
       "type": "file"
     },
     {
-      "id": "dbabcf98-task-8-src-db.ts",
+      "id": "3f7c2f0e-auth-setup-src-db.ts",
       "path": "src/db.ts",
       "type": "file"
     },
     {
-      "id": "dbabcf98-task-8-src-routes-search.ts",
+      "id": "3f7c2f0e-auth-setup-src-routes-search.ts",
       "path": "src/routes/search.ts",
       "type": "file"
     },
     {
-      "id": "dbabcf98-task-8-src-routes-search.test.ts",
+      "id": "3f7c2f0e-auth-setup-src-routes-search.test.ts",
       "path": "src/routes/search.test.ts",
       "type": "file"
     },
     {
-      "id": "dbabcf98-task-8-src-auth.ts",
+      "id": "3f7c2f0e-auth-setup-src-auth.ts",
       "path": "src/auth.ts",
       "type": "file"
     }
