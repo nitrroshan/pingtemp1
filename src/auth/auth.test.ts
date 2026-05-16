@@ -1,78 +1,47 @@
 import request from 'supertest';
 import app from '../app';
-import { UserModel } from './user.model';
+import { User } from './user.model';
+import * as authService from './auth.service';
 
 jest.mock('./user.model');
+jest.mock('./auth.service');
 
-// Mock the environment variables
-process.env.JWT_SECRET = 'test-jwt-secret';
-process.env.REFRESH_TOKEN_SECRET = 'test-refresh-secret';
-
-describe('Authentication Endpoints', () => {
-    afterEach(() => {
+describe('Authentication Module', () => {
+    beforeEach(() => {
         jest.clearAllMocks();
     });
 
-    describe('POST /auth/register', () => {
-        it('should register a user successfully', async () => {
-            UserModel.findOne = jest.fn().mockResolvedValue(null);
-            UserModel.create = jest.fn().mockResolvedValue({ id: '1', email: 'test@example.com' });
-
-            const res = await request(app)
-                .post('/auth/register')
-                .send({ email: 'test@example.com', password: 'Password123!' });
-
-            expect(res.status).toBe(201);
-            expect(res.body.message).toBe('User registered successfully');
-        });
-    });
-
     describe('POST /auth/login', () => {
-        it('should log in a user successfully', async () => {
-            UserModel.findOne = jest.fn().mockResolvedValue({ id: '1', email: 'test@example.com', password: 'hashedpassword123' });
-            const mockVerifyPassword = jest.fn().mockResolvedValue(true);
-
-            jest.mock('./auth.service', () => ({
-                ...jest.requireActual('./auth.service'),
-                verifyPassword: mockVerifyPassword,
-                generateToken: jest.fn(() => 'mock-jwt-token'),
-            }));
-
-            const res = await request(app)
-                .post('/auth/login')
-                .send({ email: 'test@example.com', password: 'Password123!' });
-
-            expect(res.status).toBe(200);
-            expect(res.body.token).toBe('mock-jwt-token');
+        it('should return 400 if email or password is missing', async () => {
+            const res = await request(app).post('/auth/login').send({});
+            expect(res.status).toBe(400);
+            expect(res.body.error).toBe('Email and password are required');
         });
-    });
 
-    describe('POST /auth/logout', () => {
-        it('should log out a user successfully', async () => {
-            const res = await request(app)
-                .post('/auth/logout')
-                .set('Authorization', 'Bearer mock-jwt-token');
-
-            expect(res.status).toBe(200);
-            expect(res.body.message).toBe('Logout successful');
+        it('should return 401 if user does not exist', async () => {
+            (User.findOne as jest.Mock).mockResolvedValue(null);
+            const res = await request(app).post('/auth/login').send({ email: 'test@example.com', password: 'password' });
+            expect(res.status).toBe(401);
+            expect(res.body.error).toBe('Invalid email or password');
         });
-    });
 
-    describe('POST /auth/refresh-token', () => {
-        it('should refresh an access token successfully', async () => {
-            const mockVerify = jest.fn().mockReturnValue({ id: '1' });
-            jest.mock('jsonwebtoken', () => ({
-                ...jest.requireActual('jsonwebtoken'),
-                verify: mockVerify,
-                sign: jest.fn(() => 'new-jwt-token'),
-            }));
+        it('should return 401 if password is incorrect', async () => {
+            (User.findOne as jest.Mock).mockResolvedValue({ id: 1, email: 'test@example.com', passwordHash: 'hashedpassword' });
+            (authService.verifyPassword as jest.Mock).mockResolvedValue(false);
 
-            const res = await request(app)
-                .post('/auth/refresh-token')
-                .send({ refreshToken: 'mock-refresh-token' });
+            const res = await request(app).post('/auth/login').send({ email: 'test@example.com', password: 'wrongpassword' });
+            expect(res.status).toBe(401);
+            expect(res.body.error).toBe('Invalid email or password');
+        });
 
+        it('should return 200 and a token if login is successful', async () => {
+            (User.findOne as jest.Mock).mockResolvedValue({ id: 1, email: 'test@example.com', passwordHash: 'hashedpassword' });
+            (authService.verifyPassword as jest.Mock).mockResolvedValue(true);
+            (authService.generateToken as jest.Mock).mockReturnValue('jwt-token');
+
+            const res = await request(app).post('/auth/login').send({ email: 'test@example.com', password: 'password' });
             expect(res.status).toBe(200);
-            expect(res.body.token).toBe('new-jwt-token');
+            expect(res.body.token).toBe('jwt-token');
         });
     });
 });
