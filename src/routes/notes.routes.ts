@@ -1,7 +1,7 @@
 import express from 'express';
 import { NotesService } from '../services/notes.service';
 import { Pool } from 'pg';
-import { body, param, validationResult } from 'express-validator';
+import { body, param, query, validationResult } from 'express-validator';
 
 const router = express.Router();
 const pool = new Pool(); // Normally, you'd configure this properly
@@ -110,6 +110,24 @@ router.delete(
         return res.status(404).json({ message: 'Note not found' });
       }
       res.status(204).send();
+    } catch (error) {
+      console.error(error);
+      res.status(500).json({ message: 'Internal server error' });
+    }
+  }
+);
+
+// Search notes
+router.get(
+  '/search',
+  [query('q').isString().notEmpty().withMessage('Search term is required')],
+  handleValidationErrors,
+  async (req, res) => {
+    try {
+      const userId = req.user.id; // Assuming req.user is populated via auth middleware
+      const searchTerm = req.query.q;
+      const notes = await notesService.searchNotes(userId, searchTerm);
+      res.status(200).json(notes);
     } catch (error) {
       console.error(error);
       res.status(500).json({ message: 'Internal server error' });
