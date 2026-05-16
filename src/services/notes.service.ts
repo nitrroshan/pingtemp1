@@ -69,4 +69,17 @@ export class NotesService {
     const result = await this.pool.query(query, [userId, noteId]);
     return result.rowCount > 0;
   }
+
+  // Search notes using full-text search
+  async searchNotes(userId: string, searchTerm: string): Promise<Note[]> {
+    const query = `
+      SELECT id, user_id, title, content, created_at, updated_at
+      FROM notes
+      WHERE user_id = $1 AND to_tsvector('english', title || ' ' || content) @@ plainto_tsquery('english', $2)
+      ORDER BY updated_at DESC;
+    `;
+
+    const result = await this.pool.query(query, [userId, searchTerm]);
+    return result.rows;
+  }
 }
