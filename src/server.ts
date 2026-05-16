@@ -1,27 +1,20 @@
 import express from 'express';
-import mongoose from 'mongoose';
-import authRoutes from './auth/auth.routes';
+import bodyParser from 'body-parser';
+import cors from 'cors';
 
 const app = express();
 const PORT = process.env.PORT || 3000;
-const MONGO_URI = process.env.MONGO_URI || 'mongodb://localhost:27017/notes_app';
 
 // Middleware
-app.use(express.json());
+app.use(bodyParser.json());
+app.use(cors());
 
-// Routes
-app.use('/auth', authRoutes);
+// Health check endpoint
+app.get('/health', (req, res) => {
+  res.status(200).send('API is healthy!');
+});
 
-// Database connection
-mongoose.connect(MONGO_URI, { useNewUrlParser: true, useUnifiedTopology: true })
-    .then(() => {
-        console.log('Connected to MongoDB');
-
-        // Start server
-        app.listen(PORT, () => {
-            console.log(`Server running on port ${PORT}`);
-        });
-    })
-    .catch((error) => {
-        console.error('Error connecting to database', error);
-    });
+// Start server
+app.listen(PORT, () => {
+  console.log(`Server is running on http://localhost:${PORT}`);
+});
