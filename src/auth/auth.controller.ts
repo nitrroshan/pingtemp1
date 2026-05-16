@@ -78,6 +78,7 @@ export async function loginUser(req: Request, res: Response): Promise<Response> 
 
         // Generate JWT token
         const token = generateToken(user);
+        const refreshToken = issueRefreshToken(user);
 
         return res.status(200).json({ message: 'Login successful', token });
     } catch (error) {
