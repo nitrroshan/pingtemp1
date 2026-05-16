@@ -1,6 +1,11 @@
 import { Pool } from 'pg';
 
-// Configure the database connection
-export const pool = new Pool({
-  connectionString: process.env.DATABASE_URL || 'postgres://user:password@localhost:5432/mydb',
+const pool = new Pool({
+  user: process.env.DB_USER,
+  host: process.env.DB_HOST,
+  database: process.env.DB_NAME,
+  password: process.env.DB_PASSWORD,
+  port: parseInt(process.env.DB_PORT || '5432', 10),
 });
+
+export default pool;
