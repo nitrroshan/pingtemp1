@@ -1,13 +1,15 @@
 import { Router } from 'express';
-import { registerUser, loginUser } from './auth.controller';
-import { refreshToken, revokeRefreshToken } from './refreshToken.controller';
+import { register, login, logout } from './auth.controller';
 
 const router = Router();
 
-// Authentication routes
-router.post('/auth/register', registerUser);
-router.post('/auth/login', loginUser);
-router.post('/auth/token/refresh', refreshToken);
-router.post('/auth/token/revoke', revokeRefreshToken);
+// User registration
+router.post('/register', register);
+
+// User login
+router.post('/login', login);
+
+// User logout
+router.post('/logout', logout);
 
 export default router;
