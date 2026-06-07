@@ -1,39 +1,60 @@
 # Notes API
 
-This project is a REST API for managing notes with authentication and search capabilities.
+This project is a REST API for managing notes, built with Express.js and TypeScript.
 
-## Setup
+## Prerequisites
 
-1. Install dependencies:
+- Node.js (>= 14.x)
+- npm (>= 6.x)
 
+## Getting Started
+
+1. Clone the repository:
+   ```bash
+   git clone <repository-url>
+   ```
+
+2. Navigate to the project directory:
+   ```bash
+   cd notes-api
+   ```
+
+3. Install dependencies:
    ```bash
    npm install
    ```
 
-2. Run the application:
-
-   ```bash
-   npm start
-   ```
-
-3. For development:
-
+4. Start the development server:
    ```bash
    npm run dev
    ```
 
+5. Build the project:
+   ```bash
+   npm run build
+   ```
+
+6. Run tests:
+   ```bash
+   npm test
+   ```
+
 ## Project Structure
 
-- `index.js`: Entry point of the application.
-- `package.json`: Project metadata and dependencies.
+- `src/`: Contains the source code
+  - `auth/`: Authentication-related modules
+  - `notes/`: Notes feature implementation
+  - `middleware/`: Middleware functions
+- `dist/`: Compiled output
+- `tests/`: Unit and integration tests
 
-## Dependencies
+## Scripts
 
-- [Express](https://expressjs.com/): Fast, unopinionated, minimalist web framework for Node.js.
-- [Body Parser](https://github.com/expressjs/body-parser): Middleware for parsing request bodies.
-- [CORS](https://github.com/expressjs/cors): Middleware for enabling Cross-Origin Resource Sharing.
-- [Nodemon](https://nodemon.io/): Tool for automatically restarting the application during development.
+- `npm start`: Start the application.
+- `npm run dev`: Start the development server with hot reloading.
+- `npm run build`: Compile TypeScript to JavaScript.
+- `npm test`: Run the test suite.
 
 ## License
 
-ISC
+This project is licensed under the ISC License.
