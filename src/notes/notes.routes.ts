@@ -1,11 +1,11 @@
 import express from 'express';
-import { 
+import { validateCreateNote, validateUpdateNote, validateDeleteNote, 
     createNoteHandler, 
     getNotesHandler, 
     updateNoteHandler, 
     deleteNoteHandler
 } from './handlers';
-import { authenticateJWT } from '../auth/auth.middleware';
+import { validateCreateNote, validateUpdateNote, validateDeleteNote, authenticateJWT } from '../auth/auth.middleware';
 
 const router = express.Router();
 
@@ -19,6 +19,6 @@ router.get('/', authenticateJWT, getNotesHandler);
 router.put('/:id', authenticateJWT, updateNoteHandler);
 
 // Delete a note by ID
-router.delete('/:id', authenticateJWT, deleteNoteHandler);
+router.delete('/:id', authenticateJWT, validateDeleteNote, deleteNoteHandler);
 
 export default router;
