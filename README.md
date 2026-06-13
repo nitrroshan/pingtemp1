@@ -1,60 +1,67 @@
 # Notes API
 
-This project is a REST API for managing notes, built with Express.js and TypeScript.
+This project is a REST API for managing notes. It is built using Node.js, Express, and Sequelize.
 
-## Prerequisites
+## Project Structure
 
-- Node.js (>= 14.x)
-- npm (>= 6.x)
+```
+/src
+  /auth         # Authentication and Authorization modules
+  /notes        # Notes-related features
+  /middleware   # Middleware for request handling
+  /models       # Sequelize models and database interaction
+  /routes       # API routes
+  /utils        # Utility functions
+  /db.ts        # Database connection setup
+  server.ts     # Entry point of the application
+```
 
 ## Getting Started
+
+### Prerequisites
+
+- Node.js >= 14.x
+- MySQL server
+
+### Installation
 
 1. Clone the repository:
    ```bash
    git clone <repository-url>
    ```
 
-2. Navigate to the project directory:
-   ```bash
-   cd notes-api
-   ```
-
-3. Install dependencies:
+2. Install dependencies:
    ```bash
    npm install
    ```
 
-4. Start the development server:
+3. Set up environment variables by creating a `.env` file:
+   ```env
+   DB_NAME=your_database_name
+   DB_USER=your_database_user
+   DB_PASSWORD=your_database_password
+   DB_HOST=localhost
+   PORT=3000
+   ```
+
+4. Run the development server:
    ```bash
    npm run dev
    ```
 
-5. Build the project:
-   ```bash
-   npm run build
-   ```
+### Testing Database Connection
 
-6. Run tests:
-   ```bash
-   npm test
-   ```
-
-## Project Structure
-
-- `src/`: Contains the source code
-  - `auth/`: Authentication-related modules
-  - `notes/`: Notes feature implementation
-  - `middleware/`: Middleware functions
-- `dist/`: Compiled output
-- `tests/`: Unit and integration tests
+Ensure the database connection is configured correctly. On server startup, a message will indicate if the database connection is successful or not.
 
 ## Scripts
 
-- `npm start`: Start the application.
-- `npm run dev`: Start the development server with hot reloading.
+- `npm run dev`: Start the development server with hot-reloading.
 - `npm run build`: Compile TypeScript to JavaScript.
-- `npm test`: Run the test suite.
+- `npm start`: Run the production server.
 
-## License
+## Dependencies
 
-This project is licensed under the ISC License.
+- **Express**: Web framework for Node.js
+- **Sequelize**: ORM for database interaction
+- **dotenv**: Environment variable management
+- **mysql2**: MySQL driver for Node.js
