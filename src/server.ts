@@ -3,6 +3,12 @@ import bodyParser from 'body-parser';
 import cors from 'cors';
 
 const app = express();
+import sequelize from './db';
+
+// Test database connection
+sequelize.authenticate()
+    .then(() => console.log('Database connected successfully'))
+    .catch(err => console.error('Unable to connect to the database:', err));
 const PORT = process.env.PORT || 3000;
 
 // Middleware
