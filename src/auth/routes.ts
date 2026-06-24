@@ -1,8 +1,11 @@
 import express from 'express';
-import { loginHandler, logoutHandler } from './auth.controller';
+import { loginHandler, logoutHandler, register } from './auth.controller';
 import { authenticateJWT } from './auth.middleware';
 
 const router = express.Router();
+
+// Public route for user registration
+router.post('/register', register);
 
 // Public route for user login
 router.post('/login', loginHandler);
